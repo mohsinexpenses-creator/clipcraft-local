@@ -20,6 +20,13 @@
 # production
 /build
 
+# local processing & media storage
+/.data/
+/.tmp/
+/uploads/
+/generated-clips/
+/models/*.bin
+
 # misc
 .DS_Store
 *.pem
