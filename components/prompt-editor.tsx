@@ -90,7 +90,7 @@ export const PromptEditor: React.FC<PromptEditorProps> = ({
           {/* System Prompt Input */}
           <div>
             <label className="block text-xs font-semibold text-slate-300 mb-1.5">
-              System Prompt (Claude Role Definition)
+              System Prompt (Gemini AI Role Definition)
             </label>
             <textarea
               rows={3}

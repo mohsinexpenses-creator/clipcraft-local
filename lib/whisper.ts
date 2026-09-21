@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import { TranscriptData, WordTimestamp, TranscriptSegment } from './types';
 import { extractAudio16kMono, getVideoMetadata } from './ffmpeg';
+import { transcribeWithDeepgram } from './deepgram';
 
 export function getWhisperCliPath(): string {
   const customPath = process.env.WHISPER_CLI_PATH;
@@ -42,14 +43,25 @@ export async function transcribeVideo(videoPath: string): Promise<TranscriptData
   const audioWavPath = path.join(videoDir, 'audio_16k.wav');
   const jsonOutBase = path.join(videoDir, 'transcript_out');
 
-  console.log(`[Whisper] Extracting 16kHz audio from ${videoPath}...`);
+  console.log(`[Transcription] Extracting 16kHz audio from ${videoPath}...`);
   await extractAudio16kMono(videoPath, audioWavPath);
 
+  // 1. Check if Deepgram API key is set
+  if (process.env.DEEPGRAM_API_KEY && process.env.DEEPGRAM_API_KEY.trim() !== '') {
+    console.log('[Transcription] DEEPGRAM_API_KEY detected. Using Deepgram API for speech-to-text...');
+    const deepgramTranscript = await transcribeWithDeepgram(audioWavPath);
+    if (deepgramTranscript) {
+      return deepgramTranscript;
+    }
+    console.warn('[Transcription] Deepgram API failed or returned empty. Falling back to local whisper.cpp...');
+  }
+
+  // 2. Fall back to local whisper.cpp
   const whisperBin = getWhisperCliPath();
   const modelPath = getWhisperModelPath();
 
   if (fs.existsSync(whisperBin) && modelPath) {
-    console.log(`[Whisper] Executing whisper-cli with model ${modelPath}...`);
+    console.log(`[Whisper] Executing local whisper-cli with model ${modelPath}...`);
     try {
       const args = [
         '-m', modelPath,
@@ -88,7 +100,7 @@ export async function transcribeVideo(videoPath: string): Promise<TranscriptData
     }
   }
 
-  console.warn('[Whisper] No local model binary found or whisper failed. Using intelligent fallback audio timeline transcription...');
+  console.warn('[Whisper] No local model binary found or whisper failed. Using fallback transcript...');
   return generateFallbackTranscript(videoPath);
 }
 
@@ -113,7 +125,6 @@ function parseWhisperJsonOutput(raw: any): TranscriptData {
         text,
       });
 
-      // Parse tokens/words if available
       const tokens = seg.tokens || [];
       if (tokens.length > 0) {
         tokens.forEach((tok: any) => {
@@ -129,7 +140,6 @@ function parseWhisperJsonOutput(raw: any): TranscriptData {
           }
         });
       } else {
-        // Synthesize word timings from segment text
         const wList = text.split(/\s+/).filter(Boolean);
         if (wList.length > 0) {
           const duration = Math.max(0.5, segEnd - segStart);
@@ -156,7 +166,6 @@ function parseWhisperJsonOutput(raw: any): TranscriptData {
 function parseTimeMs(val: any): number {
   if (typeof val === 'number') return val;
   if (typeof val === 'string') {
-    // format HH:MM:SS,mmm or HH:MM:SS.mmm
     const match = val.match(/(\d+):(\d+):(\d+)[\.,](\d+)/);
     if (match) {
       const h = parseInt(match[1], 10);
@@ -201,7 +210,7 @@ async function generateFallbackTranscript(videoPath: string): Promise<Transcript
     "First, you have to find the most engaging parts of the video.",
     "Then you have to crop it to portrait, add dynamic color filters, and style animated captions.",
     "With this automated AI clip generator, all of that is done for you in seconds.",
-    "It uses face detection for smart cropping, Claude AI to detect viral hooks, and Remotion for animated captions.",
+    "It uses face detection for smart cropping, Gemini AI to detect viral hooks, and Remotion for animated captions.",
     "Notice how the clip starts with a duplicated intro hook to grab your attention immediately.",
     "This simple strategy increases viewer retention by over forty percent on short form platforms.",
     "Make sure to test out different caption presets, like Bold Yellow Karaoke or Neon Cyber Pop.",

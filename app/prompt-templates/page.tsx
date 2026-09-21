@@ -51,7 +51,7 @@ export default function PromptTemplatesPage() {
           LLM Prompt Templates Manager
         </h1>
         <p className="text-sm text-slate-400">
-          View and customize the Claude API prompt templates used for (1) viral segment candidate detection and (2) short-form intro hook text overlay generation.
+          View and customize the Gemini AI prompt templates used for (1) viral segment candidate detection and (2) short-form intro hook text overlay generation.
         </p>
       </div>
 
@@ -74,7 +74,7 @@ export default function PromptTemplatesPage() {
         </h3>
         <ul className="text-xs text-slate-400 space-y-2 leading-relaxed list-disc list-inside">
           <li>
-            <strong className="text-slate-200">Viral Detection Prompt:</strong> Must contain <code className="text-amber-400 bg-slate-950 px-1.5 py-0.5 rounded">&#123;&#123;transcript&#125;&#125;</code> where the video transcript with timestamps will be injected. Must instruct Claude to return a strict JSON array of objects with <code className="text-slate-300">start</code>, <code className="text-slate-300">end</code>, <code className="text-slate-300">score</code>, <code className="text-slate-300">reason</code>, and <code className="text-slate-300">hookText</code> fields.
+            <strong className="text-slate-200">Viral Detection Prompt:</strong> Must contain <code className="text-amber-400 bg-slate-950 px-1.5 py-0.5 rounded">&#123;&#123;transcript&#125;&#125;</code> where the video transcript with timestamps will be injected. Must instruct Gemini to return a strict JSON array of objects with <code className="text-slate-300">start</code>, <code className="text-slate-300">end</code>, <code className="text-slate-300">score</code>, <code className="text-slate-300">reason</code>, and <code className="text-slate-300">hookText</code> fields.
           </li>
           <li>
             <strong className="text-slate-200">Hook Text Prompt:</strong> Must contain <code className="text-amber-400 bg-slate-950 px-1.5 py-0.5 rounded">&#123;&#123;clipTranscript&#125;&#125;</code> where the target clip's transcript text will be injected.

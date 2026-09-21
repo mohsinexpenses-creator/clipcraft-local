@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getVideo, saveClip } from '@/lib/db';
-import { detectViralSegments, generateHookText } from '@/lib/claude';
+import { detectViralSegments, generateHookText } from '@/lib/gemini';
 import { ClipRecord } from '@/lib/types';
 
 export async function POST(
@@ -22,7 +22,7 @@ export async function POST(
       );
     }
 
-    console.log(`[API Detect Viral] Analyzing transcript for video ${id}...`);
+    console.log(`[API Detect Viral] Analyzing transcript with Gemini AI for video ${id}...`);
     const viralSegments = await detectViralSegments(
       video.transcript,
       video.duration || 60
@@ -33,7 +33,6 @@ export async function POST(
     for (const seg of viralSegments) {
       const clipId = `clip_${Date.now()}_${Math.random().toString(36).substring(7)}`;
 
-      // Find transcript segment text for hook refinement
       const segText = video.transcript.segments
         .filter((s) => s.start >= seg.start - 1 && s.end <= seg.end + 1)
         .map((s) => s.text)

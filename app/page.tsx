@@ -110,7 +110,7 @@ function DashboardContent() {
       await fetchClipsAndPresets();
     } catch (err: any) {
       console.error('Detect viral error:', err);
-      setErrorMessage(err.message || 'Failed to analyze viral segments with Claude AI');
+      setErrorMessage(err.message || 'Failed to analyze viral segments with Gemini AI');
     } finally {
       setIsDetectingViral(false);
     }
@@ -156,7 +156,7 @@ function DashboardContent() {
             Video Clip Dashboard
           </h1>
           <p className="text-sm text-slate-400 mt-1">
-            Manage source videos, run Claude AI viral segment analysis, and render 9:16 portrait clips.
+            Manage source videos, run Gemini AI viral segment analysis, and render 9:16 portrait clips.
           </p>
         </div>
 
@@ -296,12 +296,12 @@ function DashboardContent() {
                       {isDetectingViral ? (
                         <>
                           <Loader2 className="h-4 w-4 animate-spin" />
-                          Claude AI Analyzing...
+                          Gemini AI Analyzing...
                         </>
                       ) : (
                         <>
                           <Sparkles className="h-4 w-4" />
-                          Detect Viral Clips (Claude AI)
+                          Detect Viral Clips (Gemini AI)
                         </>
                       )}
                     </button>
@@ -351,7 +351,7 @@ function DashboardContent() {
                     <Sparkles className="h-10 w-10 text-amber-400/60 mx-auto" />
                     <p className="text-base font-bold text-slate-200">No short clips created yet</p>
                     <p className="text-xs text-slate-400 max-w-md mx-auto">
-                      Click <span className="text-amber-400 font-semibold">"Detect Viral Clips (Claude AI)"</span> above to automatically identify high-engagement segments.
+                      Click <span className="text-amber-400 font-semibold">"Detect Viral Clips (Gemini AI)"</span> above to automatically identify high-engagement segments.
                     </p>
                   </div>
                 ) : (
