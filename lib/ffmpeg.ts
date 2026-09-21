@@ -3,21 +3,40 @@ import path from 'path';
 import fs from 'fs';
 
 export function getFfmpegPath(): string {
+  // 1. Check custom environment variable
   if (process.env.FFMPEG_PATH && fs.existsSync(process.env.FFMPEG_PATH)) {
     return process.env.FFMPEG_PATH;
   }
 
-  const staticBin = path.join(process.cwd(), 'node_modules', 'ffmpeg-static', 'ffmpeg');
-  if (fs.existsSync(staticBin)) {
-    return staticBin;
+  // 2. Try ffmpeg-static require safely
+  try {
+    const ffmpegStatic = eval('require')('ffmpeg-static');
+    if (ffmpegStatic && typeof ffmpegStatic === 'string' && fs.existsSync(ffmpegStatic)) {
+      return ffmpegStatic;
+    }
+  } catch (e) {
+    // fallback
   }
 
-  const installerBin = path.join(process.cwd(), 'node_modules', '@ffmpeg-installer', 'linux-x64', 'ffmpeg');
-  if (fs.existsSync(installerBin)) {
-    return installerBin;
+  // 3. Check standard node_modules paths (with and without .exe for Windows/Linux/macOS)
+  const isWin = process.platform === 'win32';
+  const exeExt = isWin ? '.exe' : '';
+
+  const candidates = [
+    path.join(process.cwd(), 'node_modules', 'ffmpeg-static', `ffmpeg${exeExt}`),
+    path.join(process.cwd(), 'node_modules', 'ffmpeg-static', 'ffmpeg'),
+    path.join(process.cwd(), 'node_modules', '@ffmpeg-installer', 'win32-x64', 'ffmpeg.exe'),
+    path.join(process.cwd(), 'node_modules', '@ffmpeg-installer', 'linux-x64', 'ffmpeg'),
+    path.join(process.cwd(), 'node_modules', '@ffmpeg-installer', 'darwin-x64', 'ffmpeg'),
+  ];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
   }
 
-  return 'ffmpeg'; // system fallback
+  return 'ffmpeg';
 }
 
 export interface FfmpegProgress {
@@ -72,7 +91,7 @@ export function runFfmpeg(
     });
 
     child.on('error', (err) => {
-      reject(new Error(`Failed to start ffmpeg process: ${err.message}`));
+      reject(new Error(`Failed to start ffmpeg process (${ffmpegBin}): ${err.message}`));
     });
 
     child.on('close', (code) => {
@@ -132,7 +151,7 @@ export async function getVideoMetadata(inputPath: string): Promise<VideoMetadata
     });
 
     child.on('error', (err) => {
-      reject(new Error(`Error probing video metadata: ${err.message}`));
+      reject(new Error(`Error probing video metadata (${ffmpegBin}): ${err.message}`));
     });
   });
 }
