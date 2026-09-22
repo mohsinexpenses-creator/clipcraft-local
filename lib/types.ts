@@ -29,6 +29,9 @@ export interface VideoRecord {
   fileSize: number;
   status: 'uploaded' | 'transcribing' | 'transcribed' | 'failed';
   transcript?: TranscriptData;
+  transcriptionProvider?: 'deepgram' | 'whisper.cpp';
+  transcriptionModel?: string;
+  error?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -75,7 +78,7 @@ export interface CaptionPreset {
 
 export interface PromptTemplate {
   _id: string;
-  type: 'viral_detection' | 'hook_generation';
+  type: 'viral_detection' | 'hook_generation' | 'cta_generation';
   name: string;
   description: string;
   systemPrompt: string;
@@ -91,6 +94,8 @@ export interface ClipRecord {
   end: number;   // end time in original video
   hookDuration: number; // duration of duplicated hook intro in seconds (e.g. 3)
   hookText: string; // short punchy text overlay during hook intro
+  ctaText?: string; // short CTA text shown near the end of the clip
+  ctaDuration?: number; // duration of CTA overlay in seconds
   filterPreset: string; // filter preset id
   captionPresetId: string;
   captionPreset?: CaptionPreset;
@@ -112,6 +117,8 @@ export interface JobData {
   end: number;
   hookDuration: number;
   hookText?: string;
+  ctaText?: string;
+  ctaDuration?: number;
   filterPreset: string;
   captionPresetId: string;
 }

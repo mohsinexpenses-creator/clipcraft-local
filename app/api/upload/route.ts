@@ -1,11 +1,12 @@
-import { NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
+import { NextResponse } from 'next/server';
 import { saveVideo } from '@/lib/db';
+import { AppError, toErrorMessage, toErrorStatus } from '@/lib/errors';
 import { getVideoMetadata } from '@/lib/ffmpeg';
-import { transcribeVideo } from '@/lib/whisper';
-import { downloadYoutubeVideo } from '@/lib/youtube';
 import { VideoRecord } from '@/lib/types';
+import { getPlannedTranscriptionEngine, transcribeVideo } from '@/lib/whisper';
+import { downloadYoutubeVideo } from '@/lib/youtube';
 
 export async function POST(request: Request) {
   try {
@@ -39,25 +40,21 @@ export async function POST(request: Request) {
     const filePath = path.join(uploadsDir, 'original.mp4');
     let originalName = 'Uploaded Video';
     let fileSize = 0;
-    let duration = 0;
 
     if (youtubeUrl && youtubeUrl.trim()) {
       console.log(`[API Upload] Processing YouTube URL: ${youtubeUrl}`);
-      try {
-        const ytInfo = await downloadYoutubeVideo(youtubeUrl.trim(), filePath);
-        originalName = ytInfo.title;
-        duration = ytInfo.duration;
+      const ytInfo = await downloadYoutubeVideo(youtubeUrl.trim(), filePath);
+      originalName = ytInfo.title;
 
-        if (fs.existsSync(filePath)) {
-          fileSize = fs.statSync(filePath).size;
-        }
-      } catch (err: any) {
-        console.error('[API Upload] YouTube download error:', err);
-        return NextResponse.json(
-          { error: `YouTube download failed: ${err.message || String(err)}` },
-          { status: 500 }
-        );
+      if (!fs.existsSync(filePath)) {
+        throw new AppError('YouTube download finished without creating the source video file.', {
+          status: 500,
+          details: filePath,
+          resolution: 'Retry the YouTube download, or upload the source MP4 file manually.',
+        });
       }
+
+      fileSize = fs.statSync(filePath).size;
     } else if (file) {
       originalName = file.name;
       const bytes = await file.arrayBuffer();
@@ -67,17 +64,16 @@ export async function POST(request: Request) {
       console.log(`[API Upload] Saved uploaded file ${file.name} (${fileSize} bytes)`);
     }
 
-    // Get metadata from FFmpeg
-    let metadata = { duration: duration || 0, width: 1920, height: 1080, fps: 30 };
-    try {
-      const ffmpegMeta = await getVideoMetadata(filePath);
-      if (ffmpegMeta.duration > 0) metadata.duration = ffmpegMeta.duration;
-      metadata.width = ffmpegMeta.width || 1920;
-      metadata.height = ffmpegMeta.height || 1080;
-      metadata.fps = ffmpegMeta.fps || 30;
-    } catch (e) {
-      console.warn('[API Upload] FFmpeg metadata extraction warning:', e);
+    if (!fs.existsSync(filePath)) {
+      throw new AppError('The uploaded video file could not be found on disk after saving.', {
+        status: 500,
+        details: filePath,
+        resolution: 'Retry the upload and confirm the app can write to the uploads directory.',
+      });
     }
+
+    const metadata = await getVideoMetadata(filePath);
+    const transcriptionEngine = getPlannedTranscriptionEngine();
 
     const videoRecord: VideoRecord = {
       _id: videoId,
@@ -87,25 +83,27 @@ export async function POST(request: Request) {
       width: metadata.width,
       height: metadata.height,
       fileSize,
-      status: 'uploaded',
+      status: 'transcribing',
+      transcriptionProvider: transcriptionEngine.provider,
+      transcriptionModel: transcriptionEngine.model,
+      error: undefined,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
 
     await saveVideo(videoRecord);
 
-    // Trigger asynchronous transcription pipeline
     runBackgroundTranscription(videoId, filePath);
 
     return NextResponse.json({
       success: true,
       video: videoRecord,
     });
-  } catch (err: any) {
-    console.error('[API Upload] Error uploading video:', err);
+  } catch (error) {
+    console.error('[API Upload] Error uploading video:', error);
     return NextResponse.json(
-      { error: err.message || 'Failed to process video' },
-      { status: 500 }
+      { error: toErrorMessage(error, 'Failed to process video upload.') },
+      { status: toErrorStatus(error, 500) }
     );
   }
 }
@@ -120,16 +118,23 @@ async function runBackgroundTranscription(videoId: string, filePath: string) {
     if (video) {
       video.transcript = transcript;
       video.status = 'transcribed';
+      video.error = undefined;
       await saveVideo(video);
       console.log(`[Background Transcribe] Finished transcription for video ${videoId}.`);
     }
-  } catch (err) {
-    console.error(`[Background Transcribe] Failed for video ${videoId}:`, err);
-    const { getVideo, saveVideo } = await import('@/lib/db');
-    const video = await getVideo(videoId);
-    if (video) {
-      video.status = 'failed';
-      await saveVideo(video);
+  } catch (error) {
+    console.error(`[Background Transcribe] Failed for video ${videoId}:`, error);
+
+    try {
+      const { getVideo, saveVideo } = await import('@/lib/db');
+      const video = await getVideo(videoId);
+      if (video) {
+        video.status = 'failed';
+        video.error = toErrorMessage(error, 'Transcription failed.');
+        await saveVideo(video);
+      }
+    } catch (saveError) {
+      console.error(`[Background Transcribe] Failed to persist error state for video ${videoId}:`, saveError);
     }
   }
 }

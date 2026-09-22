@@ -5,6 +5,7 @@ import { CaptionPreset } from '@/lib/types';
 import { CaptionPreview } from '@/components/caption-preview';
 import { DEFAULT_CAPTION_PRESETS } from '@/lib/presets';
 import { Button } from '@/components/ui/button';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
   Card,
   CardAction,
@@ -26,6 +27,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import {
+  AlertCircle,
   CheckCircle2,
   Loader2,
   MonitorPlay,
@@ -65,39 +67,54 @@ function ColorField({
   );
 }
 
+async function getErrorFromResponse(response: Response, fallback: string) {
+  try {
+    const data = await response.json();
+    return data.error || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 export default function CaptionPresetsPage() {
   const [presets, setPresets] = useState<CaptionPreset[]>([]);
   const [activePresetId, setActivePresetId] = useState<string>('');
   const [activePreset, setActivePreset] = useState<CaptionPreset>(DEFAULT_CAPTION_PRESETS[0]);
   const [sampleHookText, setSampleHookText] = useState('THE 1 SECRET YOU WERE NEVER TOLD');
+  const [sampleCtaText, setSampleCtaText] = useState('FOLLOW FOR MORE BREAKDOWNS');
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const initializedRef = useRef(false);
 
   const loadPresets = useCallback(async (): Promise<CaptionPreset[]> => {
-    try {
-      const res = await fetch('/api/caption-presets');
-      if (res.ok) {
-        const data = await res.json();
-        return data.presets || DEFAULT_CAPTION_PRESETS;
-      }
-    } catch (err) {
-      console.error('Error loading presets:', err);
+    const res = await fetch('/api/caption-presets');
+    if (!res.ok) {
+      throw new Error(await getErrorFromResponse(res, 'Failed to load caption presets.'));
     }
-    return DEFAULT_CAPTION_PRESETS;
+
+    const data = await res.json();
+    return data.presets || [];
   }, []);
 
   useEffect(() => {
     let ignore = false;
     (async () => {
-      const list = await loadPresets();
-      if (ignore) return;
-      setPresets(list);
-      if (!initializedRef.current && list.length > 0) {
-        initializedRef.current = true;
-        setActivePresetId(list[0]._id);
-        setActivePreset(list[0]);
+      try {
+        const list = await loadPresets();
+        if (ignore) return;
+        setPresets(list);
+        setErrorMessage(null);
+        if (!initializedRef.current && list.length > 0) {
+          initializedRef.current = true;
+          setActivePresetId(list[0]._id);
+          setActivePreset(list[0]);
+        }
+      } catch (err) {
+        if (!ignore) {
+          setErrorMessage(err instanceof Error ? err.message : 'Failed to load caption presets.');
+        }
       }
     })();
     return () => {
@@ -106,7 +123,10 @@ export default function CaptionPresetsPage() {
   }, [loadPresets]);
 
   const refreshPresets = useCallback(async () => {
-    setPresets(await loadPresets());
+    const list = await loadPresets();
+    setPresets(list);
+    setErrorMessage(null);
+    return list;
   }, [loadPresets]);
 
   const handleSelectPreset = (id: string) => {
@@ -144,6 +164,7 @@ export default function CaptionPresetsPage() {
   const handleSavePreset = async () => {
     setIsSaving(true);
     setSaveSuccess(false);
+    setErrorMessage(null);
 
     try {
       const res = await fetch('/api/caption-presets', {
@@ -152,13 +173,18 @@ export default function CaptionPresetsPage() {
         body: JSON.stringify(activePreset),
       });
 
-      if (res.ok) {
-        setSaveSuccess(true);
-        await refreshPresets();
-        setTimeout(() => setSaveSuccess(false), 3000);
+      if (!res.ok) {
+        throw new Error(await getErrorFromResponse(res, 'Failed to save caption preset.'));
       }
+
+      setSaveSuccess(true);
+      const list = await refreshPresets();
+      const savedPreset = list.find((preset) => preset._id === activePreset._id) || activePreset;
+      setActivePreset(savedPreset);
+      setTimeout(() => setSaveSuccess(false), 3000);
     } catch (err) {
       console.error('Error saving preset:', err);
+      setErrorMessage(err instanceof Error ? err.message : 'Failed to save caption preset.');
     } finally {
       setIsSaving(false);
     }
@@ -166,11 +192,20 @@ export default function CaptionPresetsPage() {
 
   const handleDeletePreset = async (id: string) => {
     if (!confirm('Are you sure you want to delete this preset?')) return;
+    setErrorMessage(null);
     try {
-      await fetch(`/api/caption-presets?id=${id}`, { method: 'DELETE' });
-      await refreshPresets();
+      const res = await fetch(`/api/caption-presets?id=${id}`, { method: 'DELETE' });
+      if (!res.ok) {
+        throw new Error(await getErrorFromResponse(res, 'Failed to delete caption preset.'));
+      }
+      const list = await refreshPresets();
+      if (list.length > 0) {
+        setActivePresetId(list[0]._id);
+        setActivePreset(list[0]);
+      }
     } catch (err) {
       console.error('Error deleting preset:', err);
+      setErrorMessage(err instanceof Error ? err.message : 'Failed to delete caption preset.');
     }
   };
 
@@ -190,6 +225,13 @@ export default function CaptionPresetsPage() {
           New preset
         </Button>
       </div>
+
+      {errorMessage && (
+        <Alert variant="destructive" className="animate-fade-up">
+          <AlertCircle className="mt-0.5" />
+          <AlertDescription>{errorMessage}</AlertDescription>
+        </Alert>
+      )}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
         {/* Editor */}
@@ -253,6 +295,15 @@ export default function CaptionPresetsPage() {
                     id="sample-hook"
                     value={sampleHookText}
                     onChange={(e) => setSampleHookText(e.target.value)}
+                  />
+                </div>
+
+                <div className="space-y-2 sm:col-span-2">
+                  <Label htmlFor="sample-cta">Sample CTA text (preview)</Label>
+                  <Input
+                    id="sample-cta"
+                    value={sampleCtaText}
+                    onChange={(e) => setSampleCtaText(e.target.value)}
                   />
                 </div>
 
@@ -413,7 +464,11 @@ export default function CaptionPresetsPage() {
               Live preview
             </h2>
 
-            <CaptionPreview preset={activePreset} hookText={sampleHookText} />
+            <CaptionPreview
+              preset={activePreset}
+              hookText={sampleHookText}
+              ctaText={sampleCtaText}
+            />
 
             <p className="text-center text-xs leading-relaxed text-muted-foreground">
               Interactive Remotion Player showing the 9:16 layout, hook overlay, and

@@ -146,4 +146,19 @@ Clip Transcript:
 {{clipTranscript}}`,
     updatedAt: new Date().toISOString(),
   },
+  {
+    _id: 'prompt-cta-generation',
+    type: 'cta_generation',
+    name: 'End CTA Generator',
+    description: 'Generates a short end-of-clip call to action that feels native to short-form video',
+    systemPrompt: 'You are a short-form video strategist. You write concise end-of-video calls to action that feel natural, boost engagement, and fit as on-screen text overlays.',
+    template: `Generate one short end-of-video CTA overlay (MAX 10 WORDS) for this clip transcript.
+The CTA should encourage engagement such as follow, comment, save, share, or watch the next clip.
+It must feel punchy, platform-native, and safe to place in the final 2 to 3 seconds.
+Use ALL CAPS or strong action phrasing. Return ONLY the CTA text string without quotes.
+
+Clip Transcript:
+{{clipTranscript}}`,
+    updatedAt: new Date().toISOString(),
+  },
 ];

@@ -60,6 +60,25 @@ function formatTime(seconds: number) {
   return `${m}:${s < 10 ? '0' : ''}${s}`;
 }
 
+function formatTranscriptionEngine(video: VideoRecord) {
+  if (!video.transcriptionProvider) return 'Transcription engine not selected yet';
+
+  if (video.transcriptionProvider === 'deepgram') {
+    return `Deepgram · ${video.transcriptionModel || 'nova-2'}`;
+  }
+
+  return `whisper.cpp · ${video.transcriptionModel || 'local model'}`;
+}
+
+async function getErrorFromResponse(response: Response, fallback: string) {
+  try {
+    const data = await response.json();
+    return data.error || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 function DashboardContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -75,43 +94,36 @@ function DashboardContent() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const loadVideos = useCallback(async (): Promise<VideoRecord[]> => {
-    try {
-      const res = await fetch('/api/videos');
-      if (res.ok) {
-        const data = await res.json();
-        return data.videos || [];
-      }
-    } catch (err) {
-      console.error('Error fetching videos:', err);
+    const res = await fetch('/api/videos');
+    if (!res.ok) {
+      throw new Error(await getErrorFromResponse(res, 'Failed to load videos.'));
     }
-    return [];
+
+    const data = await res.json();
+    return data.videos || [];
   }, []);
 
   const loadClipsAndPresets = useCallback(
     async (): Promise<{ clips: ClipRecord[]; presets: CaptionPreset[] }> => {
-      const result: { clips: ClipRecord[]; presets: CaptionPreset[] } = {
-        clips: [],
-        presets: [],
-      };
-      try {
-        const [clipsRes, presetsRes] = await Promise.all([
-          fetch(selectedVideoId ? `/api/clips?videoId=${selectedVideoId}` : '/api/clips'),
-          fetch('/api/caption-presets'),
-        ]);
+      const [clipsRes, presetsRes] = await Promise.all([
+        fetch(selectedVideoId ? `/api/clips?videoId=${selectedVideoId}` : '/api/clips'),
+        fetch('/api/caption-presets'),
+      ]);
 
-        if (clipsRes.ok) {
-          const data = await clipsRes.json();
-          result.clips = data.clips || [];
-        }
-
-        if (presetsRes.ok) {
-          const data = await presetsRes.json();
-          result.presets = data.presets || [];
-        }
-      } catch (err) {
-        console.error('Error fetching clips or presets:', err);
+      if (!clipsRes.ok) {
+        throw new Error(await getErrorFromResponse(clipsRes, 'Failed to load clips.'));
       }
-      return result;
+
+      if (!presetsRes.ok) {
+        throw new Error(await getErrorFromResponse(presetsRes, 'Failed to load caption presets.'));
+      }
+
+      const [clipsData, presetsData] = await Promise.all([clipsRes.json(), presetsRes.json()]);
+
+      return {
+        clips: clipsData.clips || [],
+        presets: presetsData.presets || [],
+      };
     },
     [selectedVideoId]
   );
@@ -120,19 +132,29 @@ function DashboardContent() {
     const data = await loadClipsAndPresets();
     setClips(data.clips);
     setCaptionPresets(data.presets);
+    setErrorMessage(null);
   }, [loadClipsAndPresets]);
 
   // Initial video load
   useEffect(() => {
     let ignore = false;
     (async () => {
-      const list = await loadVideos();
-      if (ignore) return;
-      setVideos(list);
-      if (!selectedVideoId && list.length > 0) {
-        setSelectedVideoId(list[0]._id);
+      try {
+        const list = await loadVideos();
+        if (ignore) return;
+        setVideos(list);
+        if (!selectedVideoId && list.length > 0) {
+          setSelectedVideoId(list[0]._id);
+        }
+      } catch (err) {
+        if (!ignore) {
+          setErrorMessage(err instanceof Error ? err.message : 'Failed to load videos.');
+        }
+      } finally {
+        if (!ignore) {
+          setIsLoadingVideos(false);
+        }
       }
-      setIsLoadingVideos(false);
     })();
     return () => {
       ignore = true;
@@ -143,10 +165,16 @@ function DashboardContent() {
   useEffect(() => {
     let ignore = false;
     (async () => {
-      const data = await loadClipsAndPresets();
-      if (ignore) return;
-      setClips(data.clips);
-      setCaptionPresets(data.presets);
+      try {
+        const data = await loadClipsAndPresets();
+        if (ignore) return;
+        setClips(data.clips);
+        setCaptionPresets(data.presets);
+      } catch (err) {
+        if (!ignore) {
+          setErrorMessage(err instanceof Error ? err.message : 'Failed to load clips or presets.');
+        }
+      }
     })();
     return () => {
       ignore = true;
@@ -159,13 +187,33 @@ function DashboardContent() {
     if (!hasActiveJobs) return;
 
     const interval = setInterval(async () => {
-      const data = await loadClipsAndPresets();
-      setClips(data.clips);
-      setCaptionPresets(data.presets);
+      try {
+        const data = await loadClipsAndPresets();
+        setClips(data.clips);
+        setCaptionPresets(data.presets);
+      } catch (err) {
+        setErrorMessage(err instanceof Error ? err.message : 'Failed to refresh clip status.');
+      }
     }, 3000);
 
     return () => clearInterval(interval);
   }, [clips, loadClipsAndPresets]);
+
+  useEffect(() => {
+    const hasTranscribingVideo = videos.some((video) => video.status === 'transcribing');
+    if (!hasTranscribingVideo) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const latestVideos = await loadVideos();
+        setVideos(latestVideos);
+      } catch (err) {
+        setErrorMessage(err instanceof Error ? err.message : 'Failed to refresh video status.');
+      }
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [loadVideos, videos]);
 
   const selectedVideo = videos.find((v) => v._id === selectedVideoId);
 
@@ -188,7 +236,7 @@ function DashboardContent() {
     } catch (err) {
       console.error('Detect viral error:', err);
       setErrorMessage(
-        err instanceof Error ? err.message : 'Failed to analyze viral segments with Gemini AI'
+        err instanceof Error ? err.message : 'Failed to analyze viral segments with the configured AI provider.'
       );
     } finally {
       setIsDetectingViral(false);
@@ -198,11 +246,16 @@ function DashboardContent() {
   const handleReTranscribe = async () => {
     if (!selectedVideoId) return;
     setIsTranscribing(true);
+    setErrorMessage(null);
     try {
-      await fetch(`/api/videos/${selectedVideoId}/transcript`, { method: 'POST' });
+      const res = await fetch(`/api/videos/${selectedVideoId}/transcript`, { method: 'POST' });
+      if (!res.ok) {
+        throw new Error(await getErrorFromResponse(res, 'Failed to transcribe video.'));
+      }
       setVideos(await loadVideos());
     } catch (err) {
       console.error('Re-transcribe error:', err);
+      setErrorMessage(err instanceof Error ? err.message : 'Failed to transcribe video.');
     } finally {
       setIsTranscribing(false);
     }
@@ -210,18 +263,28 @@ function DashboardContent() {
 
   const handleDeleteVideo = async (videoId: string) => {
     if (!confirm('Are you sure you want to delete this video and all its clips?')) return;
+    setErrorMessage(null);
     try {
-      await fetch(`/api/videos/${videoId}`, { method: 'DELETE' });
+      const res = await fetch(`/api/videos/${videoId}`, { method: 'DELETE' });
+      if (!res.ok) {
+        throw new Error(await getErrorFromResponse(res, 'Failed to delete video.'));
+      }
       if (selectedVideoId === videoId) setSelectedVideoId(null);
       setVideos(await loadVideos());
       await refreshClipsAndPresets();
     } catch (err) {
       console.error('Delete video error:', err);
+      setErrorMessage(err instanceof Error ? err.message : 'Failed to delete video.');
     }
   };
 
   const handleRefreshVideos = async () => {
-    setVideos(await loadVideos());
+    setErrorMessage(null);
+    try {
+      setVideos(await loadVideos());
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : 'Failed to refresh videos.');
+    }
   };
 
   return (
@@ -239,6 +302,13 @@ function DashboardContent() {
           Upload video
         </Button>
       </div>
+
+      {errorMessage && !selectedVideo && (
+        <Alert variant="destructive">
+          <AlertCircle className="mt-0.5" />
+          <AlertDescription>{errorMessage}</AlertDescription>
+        </Alert>
+      )}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
         {/* Source videos */}
@@ -322,11 +392,18 @@ function DashboardContent() {
                             <Trash2 />
                           </Button>
                         </div>
-                        <div className="mt-2 flex items-center justify-between">
-                          <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                            <Clock className="size-3" />
-                            {formatTime(vid.duration || 0)}
-                          </span>
+                        <div className="mt-2 flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                              <Clock className="size-3" />
+                              {formatTime(vid.duration || 0)}
+                            </span>
+                            {(vid.status === 'transcribing' || vid.status === 'transcribed') && (
+                              <p className="mt-1 truncate text-[11px] text-muted-foreground">
+                                {formatTranscriptionEngine(vid)}
+                              </p>
+                            )}
+                          </div>
                           <VideoStatusBadge status={vid.status} />
                         </div>
                       </div>
@@ -381,11 +458,24 @@ function DashboardContent() {
                   </CardAction>
                 </CardHeader>
 
-                {errorMessage && (
+                {selectedVideo.status === 'transcribing' && (
+                  <CardContent className="pt-0">
+                    <Alert>
+                      <Loader2 className="mt-0.5 animate-spin text-primary" />
+                      <AlertDescription>
+                        Transcript is being generated with {formatTranscriptionEngine(selectedVideo)}.
+                      </AlertDescription>
+                    </Alert>
+                  </CardContent>
+                )}
+
+                {(errorMessage || (selectedVideo.status === 'failed' && selectedVideo.error)) && (
                   <CardContent className="pt-0">
                     <Alert variant="destructive">
                       <AlertCircle className="mt-0.5" />
-                      <AlertDescription>{errorMessage}</AlertDescription>
+                      <AlertDescription>
+                        {errorMessage || selectedVideo.error}
+                      </AlertDescription>
                     </Alert>
                   </CardContent>
                 )}
@@ -395,7 +485,7 @@ function DashboardContent() {
                     <div className="rounded-lg bg-muted/60 p-4">
                       <p className="mb-1 text-xs font-medium text-muted-foreground">
                         Transcript overview · {selectedVideo.transcript.segments?.length || 0}{' '}
-                        segments
+                        segments · {formatTranscriptionEngine(selectedVideo)}
                       </p>
                       <p className="line-clamp-2 text-sm leading-relaxed text-foreground/80">
                         “{selectedVideo.transcript.text || 'No transcript text extracted yet.'}”

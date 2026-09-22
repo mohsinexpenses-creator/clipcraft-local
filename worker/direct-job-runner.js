@@ -1,10 +1,9 @@
-const path = require('path');
+/* eslint-disable @typescript-eslint/no-require-imports */
 
-// Register ts-node / typescript transpiler on the fly
 try {
   require('ts-node').register({ transpileOnly: true });
-} catch (e) {
-  // if ts-node is not installed, register tsx or swc or basic ts transpiler
+} catch {
+  // Ignore: ts-node is optional here because this direct runner is no longer the primary path.
 }
 
 async function run() {
@@ -19,13 +18,13 @@ async function run() {
 
   try {
     const { processClipJob } = require('./processor');
-    await processClipJob(jobData, (p) => {
-      console.log(`[Direct Worker Runner] Clip ${jobData.clipId} progress: ${p}%`);
+    await processClipJob(jobData, (progress) => {
+      console.log(`[Direct Worker Runner] Clip ${jobData.clipId} progress: ${progress}%`);
     });
     console.log('[Direct Worker Runner] Job completed successfully!');
     process.exit(0);
-  } catch (err) {
-    console.error('[Direct Worker Runner] Job failed:', err);
+  } catch (error) {
+    console.error('[Direct Worker Runner] Job failed:', error);
     process.exit(1);
   }
 }

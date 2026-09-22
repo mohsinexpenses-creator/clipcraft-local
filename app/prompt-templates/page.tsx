@@ -3,35 +3,52 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { PromptTemplate } from '@/lib/types';
 import { PromptEditor } from '@/components/prompt-editor';
-import { DEFAULT_PROMPT_TEMPLATES } from '@/lib/presets';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Info } from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { AlertCircle, Info } from 'lucide-react';
+
+async function getErrorFromResponse(response: Response, fallback: string) {
+  try {
+    const data = await response.json();
+    return data.error || fallback;
+  } catch {
+    return fallback;
+  }
+}
 
 export default function PromptTemplatesPage() {
   const [templates, setTemplates] = useState<PromptTemplate[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const loadTemplates = useCallback(async (): Promise<PromptTemplate[]> => {
-    try {
-      const res = await fetch('/api/prompt-templates');
-      if (res.ok) {
-        const data = await res.json();
-        return data.templates || DEFAULT_PROMPT_TEMPLATES;
-      }
-    } catch (err) {
-      console.error('Error fetching prompt templates:', err);
+    const res = await fetch('/api/prompt-templates');
+    if (!res.ok) {
+      throw new Error(await getErrorFromResponse(res, 'Failed to load prompt templates.'));
     }
-    return DEFAULT_PROMPT_TEMPLATES;
+
+    const data = await res.json();
+    return data.templates || [];
   }, []);
 
   useEffect(() => {
     let ignore = false;
     (async () => {
-      const list = await loadTemplates();
-      if (ignore) return;
-      setTemplates(list);
-      setIsLoading(false);
+      try {
+        const list = await loadTemplates();
+        if (ignore) return;
+        setTemplates(list);
+        setErrorMessage(null);
+      } catch (err) {
+        if (!ignore) {
+          setErrorMessage(err instanceof Error ? err.message : 'Failed to load prompt templates.');
+        }
+      } finally {
+        if (!ignore) {
+          setIsLoading(false);
+        }
+      }
     })();
     return () => {
       ignore = true;
@@ -46,10 +63,11 @@ export default function PromptTemplatesPage() {
     });
 
     if (!res.ok) {
-      throw new Error('Failed to update prompt template');
+      throw new Error(await getErrorFromResponse(res, 'Failed to update prompt template.'));
     }
 
     setTemplates(await loadTemplates());
+    setErrorMessage(null);
   };
 
   return (
@@ -62,17 +80,30 @@ export default function PromptTemplatesPage() {
         </p>
       </div>
 
+      {errorMessage && (
+        <Alert variant="destructive" className="animate-fade-up">
+          <AlertCircle className="mt-0.5" />
+          <AlertDescription>{errorMessage}</AlertDescription>
+        </Alert>
+      )}
+
       <div className="animate-fade-up" style={{ animationDelay: '60ms' }}>
         {isLoading ? (
           <div className="space-y-3">
             <Skeleton className="h-9 w-80 rounded-lg" />
             <Skeleton className="h-96 w-full rounded-xl" />
           </div>
-        ) : (
+        ) : templates.length > 0 ? (
           <PromptEditor
-            initialTemplates={templates.length > 0 ? templates : DEFAULT_PROMPT_TEMPLATES}
+            initialTemplates={templates}
             onSave={handleSaveTemplate}
           />
+        ) : (
+          <Card>
+            <CardContent className="py-10 text-sm text-muted-foreground">
+              No prompt templates were found in MongoDB. Restart the app to seed the default templates.
+            </CardContent>
+          </Card>
         )}
       </div>
 
@@ -107,6 +138,13 @@ export default function PromptTemplatesPage() {
               {'{{clipTranscript}}'}
             </code>{' '}
             where the clip&apos;s transcript text is injected.
+          </p>
+          <p>
+            <strong className="font-medium text-foreground">CTA prompt</strong> — also uses{' '}
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground">
+              {'{{clipTranscript}}'}
+            </code>{' '}
+            and should return only a short end-of-video CTA string.
           </p>
         </CardContent>
       </Card>

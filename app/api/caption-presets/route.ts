@@ -1,10 +1,11 @@
 import { NextResponse } from 'next/server';
 import {
-  listCaptionPresets,
-  getCaptionPreset,
-  saveCaptionPreset,
   deleteCaptionPreset,
+  getCaptionPreset,
+  listCaptionPresets,
+  saveCaptionPreset,
 } from '@/lib/db';
+import { toErrorMessage, toErrorStatus } from '@/lib/errors';
 import { CaptionPreset } from '@/lib/types';
 
 export async function GET(request: Request) {
@@ -19,8 +20,11 @@ export async function GET(request: Request) {
 
     const presets = await listCaptionPresets();
     return NextResponse.json({ presets });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+  } catch (error) {
+    return NextResponse.json(
+      { error: toErrorMessage(error, 'Failed to load caption presets.') },
+      { status: toErrorStatus(error, 500) }
+    );
   }
 }
 
@@ -47,8 +51,11 @@ export async function POST(request: Request) {
 
     const saved = await saveCaptionPreset(newPreset);
     return NextResponse.json({ success: true, preset: saved });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+  } catch (error) {
+    return NextResponse.json(
+      { error: toErrorMessage(error, 'Failed to create caption preset.') },
+      { status: toErrorStatus(error, 500) }
+    );
   }
 }
 
@@ -61,8 +68,11 @@ export async function PUT(request: Request) {
 
     const saved = await saveCaptionPreset(body);
     return NextResponse.json({ success: true, preset: saved });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+  } catch (error) {
+    return NextResponse.json(
+      { error: toErrorMessage(error, 'Failed to update caption preset.') },
+      { status: toErrorStatus(error, 500) }
+    );
   }
 }
 
@@ -77,7 +87,10 @@ export async function DELETE(request: Request) {
 
     await deleteCaptionPreset(id);
     return NextResponse.json({ success: true });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+  } catch (error) {
+    return NextResponse.json(
+      { error: toErrorMessage(error, 'Failed to delete caption preset.') },
+      { status: toErrorStatus(error, 500) }
+    );
   }
 }

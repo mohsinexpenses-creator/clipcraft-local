@@ -8,11 +8,13 @@ import { CaptionPreset } from '@/lib/types';
 interface CaptionPreviewProps {
   preset: CaptionPreset;
   hookText?: string;
+  ctaText?: string;
 }
 
 export const CaptionPreview: React.FC<CaptionPreviewProps> = ({
   preset,
   hookText = 'THE 1 SECRET YOU WERE NEVER TOLD',
+  ctaText = 'FOLLOW FOR MORE BREAKDOWNS',
 }) => {
   const sampleWords = [
     { word: 'Welcome', start: 0.2, end: 0.6 },
@@ -30,9 +32,7 @@ export const CaptionPreview: React.FC<CaptionPreviewProps> = ({
   return (
     <div className="relative mx-auto aspect-[9/16] w-full max-w-xs overflow-hidden rounded-xl border bg-muted shadow-sm sm:max-w-sm">
       <Player
-        component={
-          CaptionComposition as unknown as ComponentType<Record<string, unknown>>
-        }
+        component={CaptionComposition as unknown as ComponentType<Record<string, unknown>>}
         durationInFrames={30 * 8}
         fps={30}
         compositionWidth={1080}
@@ -40,6 +40,7 @@ export const CaptionPreview: React.FC<CaptionPreviewProps> = ({
         controls
         autoPlay
         loop
+        acknowledgeRemotionLicense
         style={{
           width: '100%',
           height: '100%',
@@ -47,6 +48,8 @@ export const CaptionPreview: React.FC<CaptionPreviewProps> = ({
         inputProps={{
           hookText,
           hookDuration: 2.5,
+          ctaText,
+          ctaDuration: 2.2,
           words: sampleWords,
           preset,
         }}

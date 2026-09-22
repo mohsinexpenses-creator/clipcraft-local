@@ -1,7 +1,8 @@
-import { NextResponse } from 'next/server';
-import { getVideo, deleteVideo, listClips } from '@/lib/db';
 import fs from 'fs';
 import path from 'path';
+import { NextResponse } from 'next/server';
+import { deleteVideo, getVideo, listClips } from '@/lib/db';
+import { toErrorMessage, toErrorStatus } from '@/lib/errors';
 
 export async function GET(
   request: Request,
@@ -16,8 +17,11 @@ export async function GET(
 
     const clips = await listClips(id);
     return NextResponse.json({ video, clips });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+  } catch (error) {
+    return NextResponse.json(
+      { error: toErrorMessage(error, 'Failed to load video details.') },
+      { status: toErrorStatus(error, 500) }
+    );
   }
 }
 
@@ -34,7 +38,6 @@ export async function DELETE(
 
     await deleteVideo(id);
 
-    // Remove video uploads folder and generated clips folder
     const uploadDir = path.join(process.cwd(), 'uploads', id);
     const clipsDir = path.join(process.cwd(), 'generated-clips', id);
 
@@ -46,7 +49,10 @@ export async function DELETE(
     }
 
     return NextResponse.json({ success: true });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+  } catch (error) {
+    return NextResponse.json(
+      { error: toErrorMessage(error, 'Failed to delete video.') },
+      { status: toErrorStatus(error, 500) }
+    );
   }
 }

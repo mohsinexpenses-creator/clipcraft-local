@@ -2,12 +2,15 @@ import React from 'react';
 import { useCurrentFrame, useVideoConfig } from 'remotion';
 import { WordTimestamp, CaptionPreset } from '../lib/types';
 import { AnimatedWord } from './AnimatedWord';
+import { CTAOverlay } from './CTAOverlay';
 import { HookOverlay } from './HookOverlay';
 
 export interface CaptionCompositionProps {
   videoUrl?: string;
   hookText: string;
   hookDuration: number; // in seconds
+  ctaText: string;
+  ctaDuration: number; // in seconds
   words: WordTimestamp[];
   preset: CaptionPreset;
   videoWidth?: number;
@@ -18,14 +21,16 @@ export const CaptionComposition: React.FC<CaptionCompositionProps> = ({
   videoUrl,
   hookText,
   hookDuration = 3,
+  ctaText,
+  ctaDuration = 2.5,
   words = [],
   preset,
 }) => {
   const frame = useCurrentFrame();
-  const { fps } = useVideoConfig();
+  const { fps, durationInFrames } = useVideoConfig();
   const currentTime = frame / fps;
+  const totalDurationInSeconds = durationInFrames / fps;
 
-  // Time-shift transcript words by +hookDuration for the second part of video
   const shiftedWords: WordTimestamp[] = words.map((w) => ({
     ...w,
     start: w.start + hookDuration,
@@ -45,7 +50,6 @@ export const CaptionComposition: React.FC<CaptionCompositionProps> = ({
         justifyContent: 'center',
       }}
     >
-      {/* Video layer if videoUrl exists */}
       {videoUrl ? (
         <video
           src={videoUrl}
@@ -88,7 +92,6 @@ export const CaptionComposition: React.FC<CaptionCompositionProps> = ({
         </div>
       )}
 
-      {/* Hook Overlay Banner */}
       {hookDuration > 0 && (
         <HookOverlay
           hookText={hookText}
@@ -97,12 +100,20 @@ export const CaptionComposition: React.FC<CaptionCompositionProps> = ({
         />
       )}
 
-      {/* Word-synced Animated Captions */}
       {preset && (
         <AnimatedWord
           words={shiftedWords}
           currentTime={currentTime}
           preset={preset}
+        />
+      )}
+
+      {ctaDuration > 0 && (
+        <CTAOverlay
+          ctaText={ctaText}
+          ctaDurationInSeconds={ctaDuration}
+          currentTime={currentTime}
+          totalDurationInSeconds={totalDurationInSeconds}
         />
       )}
     </div>

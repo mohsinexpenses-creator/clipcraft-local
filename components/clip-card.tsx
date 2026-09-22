@@ -26,11 +26,12 @@ import {
   Sparkles,
   Trash2,
 } from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 
 interface ClipCardProps {
   clip: ClipRecord;
   captionPresets: CaptionPreset[];
-  onRefresh: () => void;
+  onRefresh: () => Promise<void>;
 }
 
 function ClipStatusBadge({ status }: { status: ClipRecord['status'] }) {
@@ -61,17 +62,30 @@ function ClipStatusBadge({ status }: { status: ClipRecord['status'] }) {
   }
 }
 
+async function getErrorFromResponse(response: Response, fallback: string) {
+  try {
+    const data = await response.json();
+    return data.error || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 export const ClipCard: React.FC<ClipCardProps> = ({ clip, captionPresets, onRefresh }) => {
   const [filterPreset, setFilterPreset] = useState(clip.filterPreset || 'vibrant');
   const [captionPresetId, setCaptionPresetId] = useState(
     clip.captionPresetId || 'preset-bold-yellow'
   );
   const [hookText, setHookText] = useState(clip.hookText || '');
+  const [ctaText, setCtaText] = useState(clip.ctaText || '');
   const [hookDuration] = useState(clip.hookDuration ?? 3);
+  const [ctaDuration] = useState(clip.ctaDuration ?? 2.5);
   const [isTriggering, setIsTriggering] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const handleRender = async () => {
     setIsTriggering(true);
+    setActionError(null);
     try {
       const res = await fetch('/api/clips', {
         method: 'POST',
@@ -83,18 +97,21 @@ export const ClipCard: React.FC<ClipCardProps> = ({ clip, captionPresets, onRefr
           end: clip.end,
           hookDuration,
           hookText,
+          ctaText,
+          ctaDuration,
           filterPreset,
           captionPresetId,
         }),
       });
 
       if (!res.ok) {
-        throw new Error('Failed to start rendering job');
+        throw new Error(await getErrorFromResponse(res, 'Failed to start rendering job.'));
       }
 
-      onRefresh();
+      await onRefresh();
     } catch (err) {
       console.error('Error starting render:', err);
+      setActionError(err instanceof Error ? err.message : 'Failed to start rendering job.');
     } finally {
       setIsTriggering(false);
     }
@@ -102,11 +119,16 @@ export const ClipCard: React.FC<ClipCardProps> = ({ clip, captionPresets, onRefr
 
   const handleDelete = async () => {
     if (!confirm('Are you sure you want to delete this clip?')) return;
+    setActionError(null);
     try {
-      await fetch(`/api/clips/${clip._id}`, { method: 'DELETE' });
-      onRefresh();
+      const res = await fetch(`/api/clips/${clip._id}`, { method: 'DELETE' });
+      if (!res.ok) {
+        throw new Error(await getErrorFromResponse(res, 'Failed to delete clip.'));
+      }
+      await onRefresh();
     } catch (err) {
       console.error('Error deleting clip:', err);
+      setActionError(err instanceof Error ? err.message : 'Failed to delete clip.');
     }
   };
 
@@ -165,7 +187,7 @@ export const ClipCard: React.FC<ClipCardProps> = ({ clip, captionPresets, onRefr
             className="absolute top-2.5 left-2.5 gap-1 bg-background/90 backdrop-blur-sm"
           >
             <Flame className="text-primary" />
-            {clip.viralScore?.toFixed(1) || '8.5'}
+            {typeof clip.viralScore === 'number' ? clip.viralScore.toFixed(1) : '—'}
           </Badge>
         </div>
 
@@ -192,10 +214,24 @@ export const ClipCard: React.FC<ClipCardProps> = ({ clip, captionPresets, onRefr
             </p>
           )}
 
+          {clip.ctaText && (
+            <p className="mt-3 rounded-lg border border-dashed px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+              <span className="font-medium text-foreground/80">End CTA: </span>
+              {clip.ctaText}
+            </p>
+          )}
+
           {clip.error && (
             <p className="mt-3 rounded-lg bg-destructive/5 px-3 py-2 text-xs leading-relaxed text-destructive">
               {clip.error}
             </p>
+          )}
+
+          {actionError && (
+            <Alert variant="destructive" className="mt-3">
+              <AlertCircle className="mt-0.5" />
+              <AlertDescription>{actionError}</AlertDescription>
+            </Alert>
           )}
 
           {/* Settings */}
@@ -207,6 +243,17 @@ export const ClipCard: React.FC<ClipCardProps> = ({ clip, captionPresets, onRefr
                 value={hookText}
                 onChange={(e) => setHookText(e.target.value)}
                 placeholder="e.g. WATCH THIS FIRST"
+                disabled={isProcessing}
+              />
+            </div>
+
+            <div className="space-y-2 sm:col-span-2">
+              <Label htmlFor={`cta-${clip._id}`}>End CTA text</Label>
+              <Input
+                id={`cta-${clip._id}`}
+                value={ctaText}
+                onChange={(e) => setCtaText(e.target.value)}
+                placeholder="e.g. FOLLOW FOR MORE"
                 disabled={isProcessing}
               />
             </div>

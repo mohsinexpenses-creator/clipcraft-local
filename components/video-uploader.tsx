@@ -60,7 +60,10 @@ export const VideoUploader = () => {
       }
 
       const data = await res.json();
-      setStatusMessage('Upload complete. Redirecting to dashboard…');
+      const transcriptionLabel = data.video?.transcriptionProvider === 'deepgram'
+        ? `Deepgram (${data.video?.transcriptionModel || 'nova-2'})`
+        : `whisper.cpp (${data.video?.transcriptionModel || 'local model'})`;
+      setStatusMessage(`Upload complete. Transcription is starting with ${transcriptionLabel}. Redirecting to dashboard…`);
 
       setTimeout(() => {
         router.push(`/?videoId=${data.video._id}`);
@@ -92,7 +95,10 @@ export const VideoUploader = () => {
       }
 
       const data = await res.json();
-      setStatusMessage('YouTube video fetched. Redirecting to dashboard…');
+      const transcriptionLabel = data.video?.transcriptionProvider === 'deepgram'
+        ? `Deepgram (${data.video?.transcriptionModel || 'nova-2'})`
+        : `whisper.cpp (${data.video?.transcriptionModel || 'local model'})`;
+      setStatusMessage(`YouTube video fetched. Transcription is starting with ${transcriptionLabel}. Redirecting to dashboard…`);
 
       setTimeout(() => {
         router.push(`/?videoId=${data.video._id}`);

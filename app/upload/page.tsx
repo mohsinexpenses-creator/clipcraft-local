@@ -8,19 +8,19 @@ const steps = [
     icon: AudioLines,
     title: '1. Transcription',
     description:
-      'Audio is extracted with FFmpeg and transcribed locally with word-level timestamps.',
+      'Audio is extracted with FFmpeg and transcribed with Deepgram or local whisper.cpp with word-level timestamps.',
   },
   {
     icon: Sparkles,
     title: '2. AI analysis',
     description:
-      'Gemini AI scans the transcript to find viral segments and writes punchy hook text.',
+      'AI scans the transcript to find viral segments, writes punchy hook text, and generates an end CTA.',
   },
   {
     icon: Clapperboard,
     title: '3. 9:16 rendering',
     description:
-      'Smart face crop, color filters, duplicated hook intro, and animated captions.',
+      'Smart face crop, color filters, duplicated hook intro, animated captions, and an end CTA overlay.',
   },
 ];
 

@@ -1,14 +1,14 @@
 import React from 'react';
 import { Composition, registerRoot } from 'remotion';
-import { CaptionComposition } from './CaptionComposition';
 import { DEFAULT_CAPTION_PRESETS } from '../lib/presets';
+import { CaptionComposition } from './CaptionComposition';
 
 export const RemotionRoot: React.FC = () => {
   return (
     <>
       <Composition
         id="CaptionComposition"
-        component={CaptionComposition as any}
+        component={CaptionComposition as unknown as React.ComponentType<Record<string, unknown>>}
         durationInFrames={30 * 30}
         fps={30}
         width={1080}
@@ -16,6 +16,8 @@ export const RemotionRoot: React.FC = () => {
         defaultProps={{
           hookText: 'THE 1 SECRET YOU WERE NEVER TOLD',
           hookDuration: 3,
+          ctaText: 'FOLLOW FOR MORE CLIPS LIKE THIS',
+          ctaDuration: 2.5,
           preset: DEFAULT_CAPTION_PRESETS[0],
           words: [
             { word: 'Welcome', start: 0.2, end: 0.7 },

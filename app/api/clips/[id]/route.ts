@@ -1,7 +1,8 @@
-import { NextResponse } from 'next/server';
-import { getClip, deleteClip } from '@/lib/db';
 import fs from 'fs';
 import path from 'path';
+import { NextResponse } from 'next/server';
+import { deleteClip, getClip } from '@/lib/db';
+import { toErrorMessage, toErrorStatus } from '@/lib/errors';
 
 export async function GET(
   request: Request,
@@ -14,8 +15,11 @@ export async function GET(
       return NextResponse.json({ error: 'Clip not found' }, { status: 404 });
     }
     return NextResponse.json({ clip });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+  } catch (error) {
+    return NextResponse.json(
+      { error: toErrorMessage(error, 'Failed to load clip.') },
+      { status: toErrorStatus(error, 500) }
+    );
   }
 }
 
@@ -40,7 +44,10 @@ export async function DELETE(
     }
 
     return NextResponse.json({ success: true });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+  } catch (error) {
+    return NextResponse.json(
+      { error: toErrorMessage(error, 'Failed to delete clip.') },
+      { status: toErrorStatus(error, 500) }
+    );
   }
 }

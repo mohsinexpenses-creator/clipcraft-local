@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import { listPromptTemplates, getPromptTemplate, savePromptTemplate } from '@/lib/db';
+import { getPromptTemplate, listPromptTemplates, savePromptTemplate } from '@/lib/db';
+import { toErrorMessage, toErrorStatus } from '@/lib/errors';
 
 export async function GET(request: Request) {
   try {
@@ -13,8 +14,11 @@ export async function GET(request: Request) {
 
     const templates = await listPromptTemplates();
     return NextResponse.json({ templates });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+  } catch (error) {
+    return NextResponse.json(
+      { error: toErrorMessage(error, 'Failed to load prompt templates.') },
+      { status: toErrorStatus(error, 500) }
+    );
   }
 }
 
@@ -38,7 +42,10 @@ export async function PUT(request: Request) {
     });
 
     return NextResponse.json({ success: true, template: updated });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+  } catch (error) {
+    return NextResponse.json(
+      { error: toErrorMessage(error, 'Failed to update prompt template.') },
+      { status: toErrorStatus(error, 500) }
+    );
   }
 }

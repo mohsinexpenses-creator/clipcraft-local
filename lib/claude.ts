@@ -1,12 +1,10 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { TranscriptData, ViralSegment } from './types';
 import { getPromptTemplate } from './db';
+import { AppError, ensureEnvVar, toErrorMessage } from './errors';
+import { TranscriptData, ViralSegment } from './types';
 
-function getAnthropicClient(): Anthropic | null {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey || apiKey.trim() === '' || apiKey.includes('your_api_key')) {
-    return null;
-  }
+function getAnthropicClient(): Anthropic {
+  const apiKey = ensureEnvVar('ANTHROPIC_API_KEY', 'call Claude for viral segment detection and hook generation');
   return new Anthropic({ apiKey });
 }
 
@@ -14,171 +12,202 @@ export async function detectViralSegments(
   transcript: TranscriptData,
   videoDuration: number
 ): Promise<ViralSegment[]> {
+  if (!transcript.segments.length) {
+    throw new AppError('Cannot run viral detection without transcript segments.', {
+      status: 400,
+      resolution: 'Re-run transcription first and make sure the transcript contains timestamped segments.',
+    });
+  }
+
   const templateDoc = await getPromptTemplate('viral_detection');
-  const client = getAnthropicClient();
-
-  if (client && templateDoc) {
-    try {
-      console.log('[Claude] Calling Claude API for viral segment detection...');
-
-      // Format transcript text with timestamps
-      const formattedTranscript = transcript.segments
-        .map((s) => `[${s.start.toFixed(1)}s - ${s.end.toFixed(1)}s]: ${s.text}`)
-        .join('\n');
-
-      const userPrompt = templateDoc.template.replace('{{transcript}}', formattedTranscript);
-
-      const response = await client.messages.create({
-        model: 'claude-3-haiku-20240307',
-        max_tokens: 1500,
-        temperature: 0.5,
-        system: templateDoc.systemPrompt,
-        messages: [{ role: 'user', content: userPrompt }],
-      });
-
-      const contentText = response.content[0].type === 'text' ? response.content[0].text : '';
-      console.log('[Claude] Raw response:', contentText);
-
-      // Extract JSON array from response
-      const jsonMatch = contentText.match(/\[\s*\{[\s\S]*\}\s*\]/);
-      if (jsonMatch) {
-        const parsed: ViralSegment[] = JSON.parse(jsonMatch[0]);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed.map((item) => ({
-            start: Math.max(0, Number(item.start) || 0),
-            end: Math.min(videoDuration, Number(item.end) || videoDuration),
-            score: Math.min(10, Math.max(1, Number(item.score) || 7.5)),
-            reason: String(item.reason || 'High engagement segment'),
-            hookText: String(item.hookText || 'WATCH THIS FIRST').toUpperCase(),
-          }));
-        }
-      }
-    } catch (err) {
-      console.warn('[Claude] Viral segment detection API call failed, using fallback:', err);
-    }
-  } else {
-    console.log('[Claude] ANTHROPIC_API_KEY not set or template missing. Generating fallback viral segments...');
+  if (!templateDoc) {
+    throw new AppError('The viral_detection prompt template was not found in MongoDB.', {
+      status: 500,
+      resolution: 'Restart the app so default prompt templates seed into MongoDB, or recreate the template in the Prompt Templates page.',
+    });
   }
 
-  return generateFallbackViralSegments(transcript, videoDuration);
-}
-
-export async function generateHookText(
-  clipTranscriptText: string
-): Promise<string> {
-  const templateDoc = await getPromptTemplate('hook_generation');
-  const client = getAnthropicClient();
-
-  if (client && templateDoc) {
-    try {
-      console.log('[Claude] Calling Claude API for hook text generation...');
-
-      const userPrompt = templateDoc.template.replace('{{clipTranscript}}', clipTranscriptText);
-
-      const response = await client.messages.create({
-        model: 'claude-3-haiku-20240307',
-        max_tokens: 100,
-        temperature: 0.7,
-        system: templateDoc.systemPrompt,
-        messages: [{ role: 'user', content: userPrompt }],
-      });
-
-      const contentText = response.content[0].type === 'text' ? response.content[0].text.trim() : '';
-      // Clean up quotes or markdown formatting
-      const cleaned = contentText.replace(/^["']|["']$/g, '').trim().toUpperCase();
-      if (cleaned.length > 0 && cleaned.length < 80) {
-        return cleaned;
-      }
-    } catch (err) {
-      console.warn('[Claude] Hook text API call failed, using fallback:', err);
-    }
+  if (!templateDoc.template.includes('{{transcript}}')) {
+    throw new AppError('The viral_detection prompt template is missing the {{transcript}} placeholder.', {
+      status: 500,
+      resolution: 'Edit the prompt template and add {{transcript}} where the transcript should be injected.',
+    });
   }
 
-  return generateFallbackHookText(clipTranscriptText);
-}
+  try {
+    const client = getAnthropicClient();
+    console.log('[Claude] Calling Claude API for viral segment detection...');
 
-function generateFallbackViralSegments(
-  transcript: TranscriptData,
-  duration: number
-): ViralSegment[] {
-  const segments: ViralSegment[] = [];
+    const formattedTranscript = transcript.segments
+      .map((segment) => `[${segment.start.toFixed(1)}s - ${segment.end.toFixed(1)}s]: ${segment.text}`)
+      .join('\n');
 
-  if (transcript.segments.length >= 3) {
-    const totalSegs = transcript.segments.length;
-    
-    // Pick 3 spread-out windows
-    const idx1 = Math.floor(totalSegs * 0.1);
-    const idx2 = Math.floor(totalSegs * 0.4);
-    const idx3 = Math.floor(totalSegs * 0.7);
+    const userPrompt = templateDoc.template.replace('{{transcript}}', formattedTranscript);
 
-    const s1 = transcript.segments[idx1];
-    const s2 = transcript.segments[idx2];
-    const s3 = transcript.segments[idx3];
-
-    segments.push({
-      start: Math.max(0, s1.start),
-      end: Math.min(duration, s1.start + 25),
-      score: 9.4,
-      reason: 'Strong initial statement with key value proposition.',
-      hookText: 'THIS CHANGES EVERYTHING YOU KNOW',
+    const response = await client.messages.create({
+      model: 'claude-3-haiku-20240307',
+      max_tokens: 1500,
+      temperature: 0.5,
+      system: templateDoc.systemPrompt,
+      messages: [{ role: 'user', content: userPrompt }],
     });
 
-    segments.push({
-      start: Math.max(0, s2.start),
-      end: Math.min(duration, s2.start + 28),
-      score: 8.8,
-      reason: 'Surprising insight and core technical breakdown.',
-      hookText: 'THE SECRET NO ONE TALKS ABOUT',
-    });
+    const contentText = response.content[0]?.type === 'text' ? response.content[0].text.trim() : '';
+    console.log('[Claude] Raw response:', contentText);
 
-    if (s3) {
-      segments.push({
-        start: Math.max(0, s3.start),
-        end: Math.min(duration, s3.start + 30),
-        score: 8.2,
-        reason: 'Actionable takeaway and conclusion summary.',
-        hookText: 'STOP DOING IT THE OLD WAY',
+    const jsonMatch = contentText.match(/\[\s*\{[\s\S]*\}\s*\]/);
+    if (!jsonMatch) {
+      throw new AppError('Claude did not return a JSON array for viral segments.', {
+        status: 502,
+        details: contentText,
+        resolution: 'Tighten the viral detection prompt so the model returns only strict JSON.',
       });
     }
-  } else {
-    // Default segments based on video length
-    const segDur = Math.min(25, Math.max(10, duration / 2));
-    segments.push({
-      start: 0,
-      end: Math.min(duration, segDur),
-      score: 9.0,
-      reason: 'Opening highlight and introductory hook.',
-      hookText: 'MUST WATCH HIGHLIGHT',
-    });
 
-    if (duration > segDur + 10) {
-      segments.push({
-        start: Math.min(duration - 15, segDur + 5),
-        end: Math.min(duration, segDur + 5 + segDur),
-        score: 8.5,
-        reason: 'Key breakdown and conclusion.',
-        hookText: 'DO NOT MISS THIS PART',
+    const parsed = JSON.parse(jsonMatch[0]);
+    if (!Array.isArray(parsed) || parsed.length === 0) {
+      throw new AppError('Claude returned an empty viral segment list.', {
+        status: 502,
+        resolution: 'Adjust the transcript or prompt template and retry viral detection.',
       });
     }
+
+    return parsed.map((item, index) => sanitizeSegment(item, index, videoDuration));
+  } catch (error) {
+    if (error instanceof AppError) {
+      throw error;
+    }
+
+    throw new AppError('Claude viral segment detection failed.', {
+      status: 502,
+      details: toErrorMessage(error),
+      resolution:
+        'Verify ANTHROPIC_API_KEY and the viral detection prompt template, then retry.',
+    });
   }
-
-  return segments;
 }
 
-function generateFallbackHookText(transcriptText: string): string {
-  const words = transcriptText.split(/\s+/).filter(Boolean);
-  if (words.length <= 6) {
-    return words.join(' ').toUpperCase();
+export async function generateHookText(clipTranscriptText: string): Promise<string> {
+  return generateShortOverlayText({
+    transcriptText: clipTranscriptText,
+    templateType: 'hook_generation',
+    logLabel: 'hook text generation',
+    invalidResponseSummary: 'Claude returned an invalid hook text response.',
+    failureSummary: 'Claude hook text generation failed.',
+  });
+}
+
+export async function generateCtaText(clipTranscriptText: string): Promise<string> {
+  return generateShortOverlayText({
+    transcriptText: clipTranscriptText,
+    templateType: 'cta_generation',
+    logLabel: 'CTA generation',
+    invalidResponseSummary: 'Claude returned an invalid CTA response.',
+    failureSummary: 'Claude CTA generation failed.',
+  });
+}
+
+async function generateShortOverlayText(options: {
+  transcriptText: string;
+  templateType: 'hook_generation' | 'cta_generation';
+  logLabel: string;
+  invalidResponseSummary: string;
+  failureSummary: string;
+}): Promise<string> {
+  const normalizedTranscript = options.transcriptText.trim();
+  if (!normalizedTranscript) {
+    throw new AppError('Cannot generate overlay text from an empty clip transcript.', {
+      status: 400,
+      resolution: 'Choose a clip segment that contains spoken transcript text.',
+    });
   }
 
-  const hooks = [
-    'STOP SCROLLING FOR A SECOND',
-    'THE 1 THING YOU NEED TO KNOW',
-    'THIS IS REVOLUTIONARY',
-    'YOU WON T BELIEVE THIS',
-    'WATCH UNTIL THE VERY END',
-  ];
+  const templateDoc = await getPromptTemplate(options.templateType);
+  if (!templateDoc) {
+    throw new AppError(`The ${options.templateType} prompt template was not found in MongoDB.`, {
+      status: 500,
+      resolution:
+        'Restart the app so default prompt templates seed into MongoDB, or recreate the missing template in the Prompt Templates page.',
+    });
+  }
 
-  const randomIndex = Math.floor(Math.random() * hooks.length);
-  return hooks[randomIndex];
+  if (!templateDoc.template.includes('{{clipTranscript}}')) {
+    throw new AppError(`The ${options.templateType} prompt template is missing the {{clipTranscript}} placeholder.`, {
+      status: 500,
+      resolution:
+        'Edit the prompt template and add {{clipTranscript}} where the clip transcript should be injected.',
+    });
+  }
+
+  try {
+    const client = getAnthropicClient();
+    console.log(`[Claude] Calling Claude API for ${options.logLabel}...`);
+
+    const userPrompt = templateDoc.template.replace('{{clipTranscript}}', normalizedTranscript);
+
+    const response = await client.messages.create({
+      model: 'claude-3-haiku-20240307',
+      max_tokens: 100,
+      temperature: 0.7,
+      system: templateDoc.systemPrompt,
+      messages: [{ role: 'user', content: userPrompt }],
+    });
+
+    const contentText = response.content[0]?.type === 'text' ? response.content[0].text.trim() : '';
+    const cleaned = contentText.replace(/^["']|["']$/g, '').trim().toUpperCase();
+
+    if (!cleaned || cleaned.length >= 80) {
+      throw new AppError(options.invalidResponseSummary, {
+        status: 502,
+        details: contentText,
+        resolution: 'Tighten the prompt so the model returns a short plain-text overlay.',
+      });
+    }
+
+    return cleaned;
+  } catch (error) {
+    if (error instanceof AppError) {
+      throw error;
+    }
+
+    throw new AppError(options.failureSummary, {
+      status: 502,
+      details: toErrorMessage(error),
+      resolution:
+        'Verify ANTHROPIC_API_KEY and the prompt template, then retry.',
+    });
+  }
+}
+
+function sanitizeSegment(item: unknown, index: number, videoDuration: number): ViralSegment {
+  const segment = (item || {}) as Record<string, unknown>;
+  const start = Number(segment.start);
+  const end = Number(segment.end);
+  const score = Number(segment.score);
+  const reason = String(segment.reason || '').trim();
+  const hookText = String(segment.hookText || '').trim().toUpperCase();
+
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+    throw new AppError(`Claude returned invalid timestamps for viral segment #${index + 1}.`, {
+      status: 502,
+      details: JSON.stringify(item),
+      resolution: 'Update the viral detection prompt so every segment includes numeric start and end values.',
+    });
+  }
+
+  if (!reason) {
+    throw new AppError(`Claude returned a viral segment without a reason (#${index + 1}).`, {
+      status: 502,
+      details: JSON.stringify(item),
+      resolution: 'Update the viral detection prompt so every segment includes a reason field.',
+    });
+  }
+
+  return {
+    start: Math.max(0, start),
+    end: Math.min(videoDuration, end),
+    score: Number.isFinite(score) ? Math.min(10, Math.max(1, score)) : 8,
+    reason,
+    hookText,
+  };
 }

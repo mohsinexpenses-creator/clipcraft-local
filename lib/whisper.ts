@@ -1,14 +1,22 @@
 import { spawn } from 'child_process';
-import path from 'path';
 import fs from 'fs';
-import { TranscriptData, WordTimestamp, TranscriptSegment } from './types';
-import { extractAudio16kMono, getVideoMetadata } from './ffmpeg';
+import path from 'path';
+import { extractAudio16kMono } from './ffmpeg';
+import { AppError, toErrorMessage } from './errors';
 import { transcribeWithDeepgram } from './deepgram';
+import { TranscriptData, TranscriptSegment, WordTimestamp } from './types';
 
-export function getWhisperCliPath(): string {
-  const customPath = process.env.WHISPER_CLI_PATH;
-  if (customPath && fs.existsSync(customPath)) {
-    return customPath;
+export interface TranscriptionEngineInfo {
+  provider: 'deepgram' | 'whisper.cpp';
+  label: string;
+  model: string;
+  modelPath?: string;
+}
+
+export function getWhisperCliPath(): string | null {
+  const customPath = process.env.WHISPER_CLI_PATH?.trim();
+  if (customPath) {
+    return fs.existsSync(customPath) ? customPath : null;
   }
 
   const localBin = path.join(process.cwd(), 'bin', 'whisper-cli');
@@ -16,12 +24,13 @@ export function getWhisperCliPath(): string {
     return localBin;
   }
 
-  return 'whisper-cli';
+  return null;
 }
 
 export function getWhisperModelPath(): string | null {
-  if (process.env.WHISPER_MODEL_PATH && fs.existsSync(process.env.WHISPER_MODEL_PATH)) {
-    return process.env.WHISPER_MODEL_PATH;
+  const configuredPath = process.env.WHISPER_MODEL_PATH?.trim();
+  if (configuredPath) {
+    return fs.existsSync(configuredPath) ? configuredPath : null;
   }
 
   const defaultModels = [
@@ -31,128 +40,222 @@ export function getWhisperModelPath(): string | null {
     path.join(process.cwd(), 'models', 'ggml-tiny.bin'),
   ];
 
-  for (const m of defaultModels) {
-    if (fs.existsSync(m)) return m;
+  for (const modelPath of defaultModels) {
+    if (fs.existsSync(modelPath)) return modelPath;
   }
 
   return null;
+}
+
+export function getPlannedTranscriptionEngine(): TranscriptionEngineInfo {
+  if (process.env.DEEPGRAM_API_KEY?.trim()) {
+    return {
+      provider: 'deepgram',
+      label: 'Deepgram',
+      model: 'nova-2',
+    };
+  }
+
+  const whisperBin = getWhisperCliPath();
+  const modelPath = getWhisperModelPath();
+
+  if (!whisperBin) {
+    throw new AppError('Local whisper.cpp binary is missing.', {
+      status: 500,
+      resolution:
+        'Set WHISPER_CLI_PATH to a valid whisper-cli binary, place bin/whisper-cli in the repo, or configure DEEPGRAM_API_KEY instead.',
+    });
+  }
+
+  if (!modelPath) {
+    throw new AppError('No Whisper model file was found for local transcription.', {
+      status: 500,
+      resolution:
+        'Set WHISPER_MODEL_PATH to a valid ggml model file or add a model under ./models, or configure DEEPGRAM_API_KEY instead.',
+    });
+  }
+
+  return {
+    provider: 'whisper.cpp',
+    label: 'whisper.cpp',
+    model: path.basename(modelPath),
+    modelPath,
+  };
 }
 
 export async function transcribeVideo(videoPath: string): Promise<TranscriptData> {
   const videoDir = path.dirname(videoPath);
   const audioWavPath = path.join(videoDir, 'audio_16k.wav');
   const jsonOutBase = path.join(videoDir, 'transcript_out');
+  const engine = getPlannedTranscriptionEngine();
 
   console.log(`[Transcription] Extracting 16kHz audio from ${videoPath}...`);
   await extractAudio16kMono(videoPath, audioWavPath);
 
-  // 1. Check if Deepgram API key is set
-  if (process.env.DEEPGRAM_API_KEY && process.env.DEEPGRAM_API_KEY.trim() !== '') {
-    console.log('[Transcription] DEEPGRAM_API_KEY detected. Using Deepgram API for speech-to-text...');
-    const deepgramTranscript = await transcribeWithDeepgram(audioWavPath);
-    if (deepgramTranscript) {
-      return deepgramTranscript;
-    }
-    console.warn('[Transcription] Deepgram API failed or returned empty. Falling back to local whisper.cpp...');
+  if (engine.provider === 'deepgram') {
+    console.log(`[Transcription] Using ${engine.label} (${engine.model}) for speech-to-text...`);
+    return transcribeWithDeepgram(audioWavPath);
   }
 
-  // 2. Fall back to local whisper.cpp
   const whisperBin = getWhisperCliPath();
   const modelPath = getWhisperModelPath();
 
-  if (fs.existsSync(whisperBin) && modelPath) {
-    console.log(`[Whisper] Executing local whisper-cli with model ${modelPath}...`);
-    try {
-      const args = [
-        '-m', modelPath,
-        '-f', audioWavPath,
-        '-ojf', // output json full
-        '-of', jsonOutBase,
-        '-ml', '1',
-        '-sow',
-        '-t', '4',
-      ];
-
-      await new Promise<void>((resolve, reject) => {
-        const child = spawn(whisperBin, args);
-        let stderr = '';
-
-        child.stderr.on('data', (d) => {
-          stderr += d.toString();
-        });
-
-        child.on('close', (code) => {
-          if (code === 0) resolve();
-          else reject(new Error(`whisper-cli failed code ${code}: ${stderr}`));
-        });
-
-        child.on('error', (err) => reject(err));
-      });
-
-      const jsonPath = `${jsonOutBase}.json`;
-      if (fs.existsSync(jsonPath)) {
-        const rawContent = fs.readFileSync(jsonPath, 'utf-8');
-        const parsed = JSON.parse(rawContent);
-        return parseWhisperJsonOutput(parsed);
-      }
-    } catch (err) {
-      console.warn('[Whisper] whisper-cli execution encountered an issue:', err);
-    }
+  if (!whisperBin || !modelPath) {
+    throw new AppError('whisper.cpp was selected but the local binary or model path is unavailable.', {
+      status: 500,
+      resolution:
+        'Provide a valid whisper-cli binary and model file, or configure DEEPGRAM_API_KEY instead.',
+    });
   }
 
-  console.warn('[Whisper] No local model binary found or whisper failed. Using fallback transcript...');
-  return generateFallbackTranscript(videoPath);
+  console.log(`[Whisper] Executing local whisper-cli with model ${modelPath}...`);
+
+  try {
+    const args = [
+      '-m', modelPath,
+      '-f', audioWavPath,
+      '-ojf',
+      '-of', jsonOutBase,
+      '-ml', '1',
+      '-sow',
+      '-t', '4',
+    ];
+
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(whisperBin, args);
+      let stderr = '';
+
+      child.stderr.on('data', (chunk) => {
+        stderr += chunk.toString();
+      });
+
+      child.on('close', (code) => {
+        if (code === 0) {
+          resolve();
+          return;
+        }
+
+        reject(
+          new AppError('whisper-cli exited with a non-zero status.', {
+            details: `Exit code ${code}. ${stderr}`.trim(),
+            resolution:
+              'Verify WHISPER_CLI_PATH, WHISPER_MODEL_PATH, and that the model matches your whisper.cpp binary version.',
+          })
+        );
+      });
+
+      child.on('error', (error) => {
+        reject(
+          new AppError('Failed to start whisper-cli.', {
+            details: toErrorMessage(error),
+            resolution:
+              'Make sure the whisper-cli binary exists and is executable, then retry transcription.',
+          })
+        );
+      });
+    });
+
+    const jsonPath = `${jsonOutBase}.json`;
+    if (!fs.existsSync(jsonPath)) {
+      throw new AppError('whisper-cli completed without creating transcript_out.json.', {
+        resolution:
+          'Inspect the whisper.cpp logs, confirm the output directory is writable, and retry transcription.',
+      });
+    }
+
+    const rawContent = fs.readFileSync(jsonPath, 'utf-8');
+    const parsed = JSON.parse(rawContent) as Record<string, unknown>;
+    const transcript = parseWhisperJsonOutput(parsed);
+
+    if (!transcript.text.trim() || transcript.words.length === 0 || transcript.segments.length === 0) {
+      throw new AppError('whisper.cpp returned an incomplete transcript.', {
+        details: `text=${transcript.text.length} chars, words=${transcript.words.length}, segments=${transcript.segments.length}`,
+        resolution:
+          'Try a different Whisper model, inspect the source audio quality, or switch to Deepgram transcription.',
+      });
+    }
+
+    return transcript;
+  } catch (error) {
+    if (error instanceof AppError) {
+      throw error;
+    }
+
+    throw new AppError('Local whisper transcription failed.', {
+      details: toErrorMessage(error),
+      resolution:
+        'Verify the whisper.cpp binary, model path, and extracted audio file, then retry transcription.',
+    });
+  }
 }
 
-function parseWhisperJsonOutput(raw: any): TranscriptData {
+function parseWhisperJsonOutput(raw: Record<string, unknown>): TranscriptData {
   const words: WordTimestamp[] = [];
   const segments: TranscriptSegment[] = [];
   let fullText = '';
 
   const rawSegments = raw.transcription || raw.segments || [];
+  if (!Array.isArray(rawSegments) || rawSegments.length === 0) {
+    throw new AppError('whisper.cpp JSON did not contain any transcript segments.', {
+      resolution:
+        'Inspect the transcript_out.json file and confirm whisper.cpp was run with JSON output enabled.',
+    });
+  }
 
-  rawSegments.forEach((seg: any, idx: number) => {
-    const segStart = (seg.timestamps?.from ? parseTimeMs(seg.timestamps.from) : (seg.from || seg.offsets?.from || 0)) / 1000;
-    const segEnd = (seg.timestamps?.to ? parseTimeMs(seg.timestamps.to) : (seg.to || seg.offsets?.to || 0)) / 1000;
-    const text = (seg.text || '').trim();
+  rawSegments.forEach((rawSegment: unknown, idx: number) => {
+    const segment = rawSegment as Record<string, unknown>;
+    const timestamps = (segment.timestamps || {}) as Record<string, unknown>;
+    const offsets = (segment.offsets || {}) as Record<string, unknown>;
+    const segStart =
+      (timestamps.from ? parseTimeMs(timestamps.from) : Number(segment.from || offsets.from || 0)) / 1000;
+    const segEnd =
+      (timestamps.to ? parseTimeMs(timestamps.to) : Number(segment.to || offsets.to || 0)) / 1000;
+    const text = String(segment.text || '').trim();
 
-    if (text) {
-      fullText += (fullText ? ' ' : '') + text;
-      segments.push({
-        id: idx,
-        start: segStart,
-        end: segEnd,
-        text,
-      });
+    if (!text) return;
 
-      const tokens = seg.tokens || [];
-      if (tokens.length > 0) {
-        tokens.forEach((tok: any) => {
-          const wText = (tok.text || tok.word || '').trim();
-          if (wText && !wText.startsWith('[')) {
-            const wStart = (tok.timestamps?.from ? parseTimeMs(tok.timestamps.from) : (tok.from || segStart * 1000)) / 1000;
-            const wEnd = (tok.timestamps?.to ? parseTimeMs(tok.timestamps.to) : (tok.to || segEnd * 1000)) / 1000;
-            words.push({
-              word: wText,
-              start: wStart,
-              end: Math.max(wStart + 0.1, wEnd),
-            });
-          }
+    fullText += (fullText ? ' ' : '') + text;
+    segments.push({
+      id: idx,
+      start: segStart,
+      end: segEnd,
+      text,
+    });
+
+    const tokens = Array.isArray(segment.tokens) ? segment.tokens : [];
+    if (tokens.length > 0) {
+      tokens.forEach((rawToken: unknown) => {
+        const token = rawToken as Record<string, unknown>;
+        const tokenTimestamps = (token.timestamps || {}) as Record<string, unknown>;
+        const wordText = String(token.text || token.word || '').trim();
+        if (!wordText || wordText.startsWith('[')) return;
+
+        const wordStart =
+          (tokenTimestamps.from
+            ? parseTimeMs(tokenTimestamps.from)
+            : Number(token.from || segStart * 1000)) / 1000;
+        const wordEnd =
+          (tokenTimestamps.to ? parseTimeMs(tokenTimestamps.to) : Number(token.to || segEnd * 1000)) /
+          1000;
+        words.push({
+          word: wordText,
+          start: wordStart,
+          end: Math.max(wordStart + 0.1, wordEnd),
         });
-      } else {
-        const wList = text.split(/\s+/).filter(Boolean);
-        if (wList.length > 0) {
-          const duration = Math.max(0.5, segEnd - segStart);
-          const timePerWord = duration / wList.length;
-          wList.forEach((w: string, i: number) => {
-            words.push({
-              word: w,
-              start: segStart + i * timePerWord,
-              end: segStart + (i + 1) * timePerWord,
-            });
-          });
-        }
-      }
+      });
+    } else {
+      const wordList = text.split(/\s+/).filter(Boolean);
+      if (wordList.length === 0) return;
+
+      const duration = Math.max(0.5, segEnd - segStart);
+      const timePerWord = duration / wordList.length;
+      wordList.forEach((word: string, index: number) => {
+        words.push({
+          word,
+          start: segStart + index * timePerWord,
+          end: segStart + (index + 1) * timePerWord,
+        });
+      });
     }
   });
 
@@ -163,10 +266,11 @@ function parseWhisperJsonOutput(raw: any): TranscriptData {
   };
 }
 
-function parseTimeMs(val: any): number {
-  if (typeof val === 'number') return val;
-  if (typeof val === 'string') {
-    const match = val.match(/(\d+):(\d+):(\d+)[\.,](\d+)/);
+function parseTimeMs(value: unknown): number {
+  if (typeof value === 'number') return value;
+
+  if (typeof value === 'string') {
+    const match = value.match(/(\d+):(\d+):(\d+)[\.,](\d+)/);
     if (match) {
       const h = parseInt(match[1], 10);
       const m = parseInt(match[2], 10);
@@ -175,82 +279,27 @@ function parseTimeMs(val: any): number {
       return h * 3600000 + m * 60000 + s * 1000 + ms;
     }
   }
+
   return 0;
 }
 
 function synthesizeWordsFromSegments(segments: TranscriptSegment[]): WordTimestamp[] {
   const words: WordTimestamp[] = [];
+
   segments.forEach((seg) => {
     const list = seg.text.split(/\s+/).filter(Boolean);
-    const segDur = Math.max(0.5, seg.end - seg.start);
-    const perWord = segDur / list.length;
-    list.forEach((w, i) => {
+    if (list.length === 0) return;
+
+    const segDuration = Math.max(0.5, seg.end - seg.start);
+    const perWord = segDuration / list.length;
+    list.forEach((word, index) => {
       words.push({
-        word: w,
-        start: seg.start + i * perWord,
-        end: seg.start + (i + 1) * perWord,
+        word,
+        start: seg.start + index * perWord,
+        end: seg.start + (index + 1) * perWord,
       });
     });
   });
+
   return words;
-}
-
-async function generateFallbackTranscript(videoPath: string): Promise<TranscriptData> {
-  let duration = 60;
-  try {
-    const meta = await getVideoMetadata(videoPath);
-    if (meta.duration > 0) duration = meta.duration;
-  } catch (e) {
-    // default
-  }
-
-  const sampleScript = [
-    "Welcome back to the channel! Today we are looking at something completely game changing.",
-    "If you have ever tried creating short form videos from long content, you know how hard it is.",
-    "First, you have to find the most engaging parts of the video.",
-    "Then you have to crop it to portrait, add dynamic color filters, and style animated captions.",
-    "With this automated AI clip generator, all of that is done for you in seconds.",
-    "It uses face detection for smart cropping, Gemini AI to detect viral hooks, and Remotion for animated captions.",
-    "Notice how the clip starts with a duplicated intro hook to grab your attention immediately.",
-    "This simple strategy increases viewer retention by over forty percent on short form platforms.",
-    "Make sure to test out different caption presets, like Bold Yellow Karaoke or Neon Cyber Pop.",
-    "Thanks for watching, and let us know what features you want to see next!"
-  ];
-
-  const segments: TranscriptSegment[] = [];
-  const words: WordTimestamp[] = [];
-  let currentTime = 2.0;
-
-  sampleScript.forEach((line, idx) => {
-    if (currentTime >= duration - 2) return;
-    const lineWords = line.split(/\s+/);
-    const segDuration = Math.min(6, Math.max(2.5, lineWords.length * 0.35));
-    const segEnd = Math.min(duration - 0.5, currentTime + segDuration);
-
-    segments.push({
-      id: idx,
-      start: currentTime,
-      end: segEnd,
-      text: line,
-    });
-
-    const timePerWord = (segEnd - currentTime) / lineWords.length;
-    lineWords.forEach((w, wIdx) => {
-      words.push({
-        word: w,
-        start: currentTime + wIdx * timePerWord,
-        end: currentTime + (wIdx + 1) * timePerWord,
-      });
-    });
-
-    currentTime = segEnd + 1.2;
-  });
-
-  const fullText = segments.map((s) => s.text).join(' ');
-
-  return {
-    text: fullText,
-    segments,
-    words,
-  };
 }

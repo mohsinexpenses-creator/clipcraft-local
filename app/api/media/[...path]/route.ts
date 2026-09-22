@@ -79,7 +79,8 @@ export async function GET(
         },
       });
     }
-  } catch (err: any) {
-    return new NextResponse(err.message, { status: 500 });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Failed to stream media file';
+    return new NextResponse(message, { status: 500 });
   }
 }
