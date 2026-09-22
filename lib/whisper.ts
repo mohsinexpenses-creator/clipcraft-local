@@ -19,7 +19,7 @@ export function getWhisperCliPath(): string | null {
     return fs.existsSync(customPath) ? customPath : null;
   }
 
-  const localBin = path.join(process.cwd(), 'bin', 'whisper-cli');
+  const localBin = path.join(process.cwd(), 'bin', 'whisper-cli.exe');
   if (fs.existsSync(localBin)) {
     return localBin;
   }
