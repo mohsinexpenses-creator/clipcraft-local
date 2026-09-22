@@ -5,19 +5,60 @@ import Link from 'next/link';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { VideoRecord, ClipRecord, CaptionPreset } from '@/lib/types';
 import { ClipCard } from '@/components/clip-card';
+import { Button } from '@/components/ui/button';
+import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Separator } from '@/components/ui/separator';
 import {
-  Film,
-  Sparkles,
-  Upload,
-  RefreshCw,
-  Clock,
-  CheckCircle2,
   AlertCircle,
+  CheckCircle2,
+  Clock,
+  Clapperboard,
+  Film,
   Loader2,
+  RefreshCw,
+  Scissors,
+  Sparkles,
   Trash2,
-  Layers,
-  Zap,
+  Upload,
 } from 'lucide-react';
+import { cn } from 'cn';
+
+function VideoStatusBadge({ status }: { status: VideoRecord['status'] }) {
+  switch (status) {
+    case 'transcribed':
+      return (
+        <Badge variant="success">
+          <CheckCircle2 />
+          Transcribed
+        </Badge>
+      );
+    case 'transcribing':
+      return (
+        <Badge variant="secondary">
+          <Loader2 className="animate-spin" />
+          Transcribing
+        </Badge>
+      );
+    case 'failed':
+      return (
+        <Badge variant="destructive">
+          <AlertCircle />
+          Failed
+        </Badge>
+      );
+    default:
+      return <Badge variant="outline">Uploaded</Badge>;
+  }
+}
+
+function formatTime(seconds: number) {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s < 10 ? '0' : ''}${s}`;
+}
 
 function DashboardContent() {
   const searchParams = useSearchParams();
@@ -33,62 +74,98 @@ function DashboardContent() {
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const fetchVideos = useCallback(async () => {
+  const loadVideos = useCallback(async (): Promise<VideoRecord[]> => {
     try {
       const res = await fetch('/api/videos');
       if (res.ok) {
         const data = await res.json();
-        setVideos(data.videos || []);
-        if (!selectedVideoId && data.videos && data.videos.length > 0) {
-          setSelectedVideoId(data.videos[0]._id);
-        }
+        return data.videos || [];
       }
     } catch (err) {
       console.error('Error fetching videos:', err);
-    } finally {
+    }
+    return [];
+  }, []);
+
+  const loadClipsAndPresets = useCallback(
+    async (): Promise<{ clips: ClipRecord[]; presets: CaptionPreset[] }> => {
+      const result: { clips: ClipRecord[]; presets: CaptionPreset[] } = {
+        clips: [],
+        presets: [],
+      };
+      try {
+        const [clipsRes, presetsRes] = await Promise.all([
+          fetch(selectedVideoId ? `/api/clips?videoId=${selectedVideoId}` : '/api/clips'),
+          fetch('/api/caption-presets'),
+        ]);
+
+        if (clipsRes.ok) {
+          const data = await clipsRes.json();
+          result.clips = data.clips || [];
+        }
+
+        if (presetsRes.ok) {
+          const data = await presetsRes.json();
+          result.presets = data.presets || [];
+        }
+      } catch (err) {
+        console.error('Error fetching clips or presets:', err);
+      }
+      return result;
+    },
+    [selectedVideoId]
+  );
+
+  const refreshClipsAndPresets = useCallback(async () => {
+    const data = await loadClipsAndPresets();
+    setClips(data.clips);
+    setCaptionPresets(data.presets);
+  }, [loadClipsAndPresets]);
+
+  // Initial video load
+  useEffect(() => {
+    let ignore = false;
+    (async () => {
+      const list = await loadVideos();
+      if (ignore) return;
+      setVideos(list);
+      if (!selectedVideoId && list.length > 0) {
+        setSelectedVideoId(list[0]._id);
+      }
       setIsLoadingVideos(false);
-    }
-  }, [selectedVideoId]);
+    })();
+    return () => {
+      ignore = true;
+    };
+  }, [loadVideos, selectedVideoId]);
 
-  const fetchClipsAndPresets = useCallback(async () => {
-    try {
-      const [clipsRes, presetsRes] = await Promise.all([
-        fetch(selectedVideoId ? `/api/clips?videoId=${selectedVideoId}` : '/api/clips'),
-        fetch('/api/caption-presets'),
-      ]);
-
-      if (clipsRes.ok) {
-        const data = await clipsRes.json();
-        setClips(data.clips || []);
-      }
-
-      if (presetsRes.ok) {
-        const data = await presetsRes.json();
-        setCaptionPresets(data.presets || []);
-      }
-    } catch (err) {
-      console.error('Error fetching clips or presets:', err);
-    }
-  }, [selectedVideoId]);
-
+  // Load clips + presets whenever the selected video changes
   useEffect(() => {
-    fetchVideos();
-  }, [fetchVideos]);
+    let ignore = false;
+    (async () => {
+      const data = await loadClipsAndPresets();
+      if (ignore) return;
+      setClips(data.clips);
+      setCaptionPresets(data.presets);
+    })();
+    return () => {
+      ignore = true;
+    };
+  }, [loadClipsAndPresets]);
 
-  useEffect(() => {
-    fetchClipsAndPresets();
-  }, [fetchClipsAndPresets]);
-
+  // Poll while render jobs are active
   useEffect(() => {
     const hasActiveJobs = clips.some((c) => c.status === 'pending' || c.status === 'processing');
     if (!hasActiveJobs) return;
 
-    const interval = setInterval(() => {
-      fetchClipsAndPresets();
+    const interval = setInterval(async () => {
+      const data = await loadClipsAndPresets();
+      setClips(data.clips);
+      setCaptionPresets(data.presets);
     }, 3000);
 
     return () => clearInterval(interval);
-  }, [clips, fetchClipsAndPresets]);
+  }, [clips, loadClipsAndPresets]);
 
   const selectedVideo = videos.find((v) => v._id === selectedVideoId);
 
@@ -107,10 +184,12 @@ function DashboardContent() {
         throw new Error(errData.error || 'Failed to detect viral segments');
       }
 
-      await fetchClipsAndPresets();
-    } catch (err: any) {
+      await refreshClipsAndPresets();
+    } catch (err) {
       console.error('Detect viral error:', err);
-      setErrorMessage(err.message || 'Failed to analyze viral segments with Gemini AI');
+      setErrorMessage(
+        err instanceof Error ? err.message : 'Failed to analyze viral segments with Gemini AI'
+      );
     } finally {
       setIsDetectingViral(false);
     }
@@ -121,7 +200,7 @@ function DashboardContent() {
     setIsTranscribing(true);
     try {
       await fetch(`/api/videos/${selectedVideoId}/transcript`, { method: 'POST' });
-      await fetchVideos();
+      setVideos(await loadVideos());
     } catch (err) {
       console.error('Re-transcribe error:', err);
     } finally {
@@ -134,226 +213,228 @@ function DashboardContent() {
     try {
       await fetch(`/api/videos/${videoId}`, { method: 'DELETE' });
       if (selectedVideoId === videoId) setSelectedVideoId(null);
-      await fetchVideos();
-      await fetchClipsAndPresets();
+      setVideos(await loadVideos());
+      await refreshClipsAndPresets();
     } catch (err) {
       console.error('Delete video error:', err);
     }
   };
 
-  const formatTime = (seconds: number) => {
-    const m = Math.floor(seconds / 60);
-    const s = Math.floor(seconds % 60);
-    return `${m}:${s < 10 ? '0' : ''}${s}`;
+  const handleRefreshVideos = async () => {
+    setVideos(await loadVideos());
   };
 
   return (
     <div className="space-y-8">
-      {/* Header Section */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-slate-800/80 pb-6">
-        <div>
-          <h1 className="text-3xl font-extrabold text-slate-100 tracking-tight">
-            Video Clip Dashboard
-          </h1>
-          <p className="text-sm text-slate-400 mt-1">
-            Manage source videos, run Gemini AI viral segment analysis, and render 9:16 portrait clips.
+      {/* Page header */}
+      <div className="flex animate-fade-up flex-col justify-between gap-4 sm:flex-row sm:items-center">
+        <div className="space-y-1">
+          <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
+          <p className="text-sm text-muted-foreground">
+            Manage source videos, detect viral moments with AI, and render 9:16 portrait clips.
           </p>
         </div>
-
-        <Link
-          href="/upload"
-          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-rose-500 text-white font-semibold text-sm shadow-lg shadow-rose-500/20 hover:opacity-95 transition"
-        >
-          <Upload className="h-4 w-4" />
-          Upload New Video
-        </Link>
+        <Button size="lg" render={<Link href="/upload" />}>
+          <Upload />
+          Upload video
+        </Button>
       </div>
 
-      {/* Main Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-        {/* Source Videos List Sidebar */}
-        <div className="lg:col-span-4 space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-base font-bold text-slate-200 flex items-center gap-2">
-              <Film className="h-4 w-4 text-amber-400" />
-              Source Videos ({videos.length})
-            </h2>
-            <button
-              onClick={fetchVideos}
-              className="p-1.5 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition"
-              title="Refresh videos"
-            >
-              <RefreshCw className="h-3.5 w-3.5" />
-            </button>
-          </div>
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+        {/* Source videos */}
+        <div className="animate-fade-up lg:col-span-4" style={{ animationDelay: '60ms' }}>
+          <Card className="gap-4">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-base">
+                Source videos
+                <Badge variant="secondary">{videos.length}</Badge>
+              </CardTitle>
+              <CardDescription>Videos uploaded for clipping</CardDescription>
+              <CardAction>
+                <Button variant="ghost" size="icon" onClick={handleRefreshVideos} title="Refresh videos">
+                  <RefreshCw />
+                </Button>
+              </CardAction>
+            </CardHeader>
 
-          {isLoadingVideos ? (
-            <div className="flex items-center justify-center p-8 rounded-2xl border border-slate-800 bg-slate-900/40 text-slate-500">
-              <Loader2 className="h-5 w-5 animate-spin mr-2" />
-              Loading videos...
-            </div>
-          ) : videos.length === 0 ? (
-            <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/30 p-8 text-center">
-              <Film className="h-8 w-8 text-slate-600 mx-auto mb-3" />
-              <p className="text-sm font-medium text-slate-300">No videos uploaded yet</p>
-              <p className="text-xs text-slate-500 mt-1 mb-4">Upload a long-form landscape video to get started.</p>
-              <Link
-                href="/upload"
-                className="inline-flex items-center gap-1.5 text-xs font-semibold text-amber-400 hover:underline"
-              >
-                Upload Video →
-              </Link>
-            </div>
-          ) : (
-            <div className="space-y-2.5 max-h-[600px] overflow-y-auto pr-1">
-              {videos.map((vid) => {
-                const isSelected = vid._id === selectedVideoId;
-                return (
-                  <div
-                    key={vid._id}
-                    onClick={() => {
-                      setSelectedVideoId(vid._id);
-                      router.push(`/?videoId=${vid._id}`);
-                    }}
-                    className={`group relative flex flex-col justify-between rounded-xl border p-3.5 cursor-pointer transition ${
-                      isSelected
-                        ? 'border-amber-500/80 bg-amber-500/10 shadow-lg shadow-amber-500/5'
-                        : 'border-slate-800 bg-slate-900/50 hover:border-slate-700 hover:bg-slate-900'
-                    }`}
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <p className="text-xs font-bold text-slate-200 truncate group-hover:text-amber-300">
-                        {vid.originalName}
-                      </p>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDeleteVideo(vid._id);
-                        }}
-                        className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 transition"
-                        title="Delete video"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-
-                    <div className="flex items-center justify-between text-[11px] text-slate-400 mt-2">
-                      <span className="flex items-center gap-1">
-                        <Clock className="h-3 w-3 text-slate-500" />
-                        {formatTime(vid.duration || 0)}
-                      </span>
-
-                      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-medium ${
-                        vid.status === 'transcribed'
-                          ? 'bg-emerald-500/10 text-emerald-400'
-                          : vid.status === 'transcribing'
-                          ? 'bg-amber-500/10 text-amber-400'
-                          : 'bg-slate-800 text-slate-400'
-                      }`}>
-                        {vid.status === 'transcribed' && <CheckCircle2 className="h-2.5 w-2.5" />}
-                        {vid.status === 'transcribing' && <Loader2 className="h-2.5 w-2.5 animate-spin" />}
-                        <span className="capitalize">{vid.status}</span>
-                      </span>
-                    </div>
+            <CardContent>
+              {isLoadingVideos ? (
+                <div className="space-y-2">
+                  {[0, 1, 2].map((i) => (
+                    <Skeleton key={i} className="h-[74px] w-full rounded-lg" />
+                  ))}
+                </div>
+              ) : videos.length === 0 ? (
+                <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed px-6 py-10 text-center">
+                  <div className="flex size-10 items-center justify-center rounded-full bg-muted">
+                    <Film className="size-5 text-muted-foreground" />
                   </div>
-                );
-              })}
-            </div>
-          )}
+                  <div>
+                    <p className="text-sm font-medium">No videos yet</p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Upload a long-form landscape video to get started.
+                    </p>
+                  </div>
+                  <Button variant="outline" size="sm" render={<Link href="/upload" />}>
+                    <Upload />
+                    Upload video
+                  </Button>
+                </div>
+              ) : (
+                <div className="max-h-[560px] space-y-2 overflow-y-auto pr-1">
+                  {videos.map((vid) => {
+                    const isSelected = vid._id === selectedVideoId;
+                    return (
+                      <div
+                        key={vid._id}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => {
+                          setSelectedVideoId(vid._id);
+                          router.push(`/?videoId=${vid._id}`);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            setSelectedVideoId(vid._id);
+                            router.push(`/?videoId=${vid._id}`);
+                          }
+                        }}
+                        className={cn(
+                          'group cursor-pointer rounded-lg border p-3 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/40',
+                          isSelected
+                            ? 'border-primary/40 bg-accent'
+                            : 'border-border hover:bg-muted'
+                        )}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="truncate text-sm font-medium">{vid.originalName}</p>
+                          <Button
+                            variant="ghost"
+                            size="icon-xs"
+                            className="opacity-0 transition-opacity group-hover:opacity-100 hover:text-destructive focus-visible:opacity-100"
+                            title="Delete video"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteVideo(vid._id);
+                            }}
+                          >
+                            <Trash2 />
+                          </Button>
+                        </div>
+                        <div className="mt-2 flex items-center justify-between">
+                          <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                            <Clock className="size-3" />
+                            {formatTime(vid.duration || 0)}
+                          </span>
+                          <VideoStatusBadge status={vid.status} />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </div>
 
-        {/* Selected Video & Clip Generation Content */}
-        <div className="lg:col-span-8 space-y-6">
+        {/* Selected video + clips */}
+        <div className="animate-fade-up space-y-6 lg:col-span-8" style={{ animationDelay: '120ms' }}>
           {selectedVideo ? (
             <>
-              {/* Video Header Card */}
-              <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6 shadow-xl space-y-4">
-                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                  <div>
-                    <h2 className="text-xl font-bold text-slate-100">{selectedVideo.originalName}</h2>
-                    <p className="text-xs text-slate-400 mt-0.5">
-                      Duration: {formatTime(selectedVideo.duration)} • Resolution: {selectedVideo.width}x{selectedVideo.height} • Uploaded {new Date(selectedVideo.createdAt).toLocaleDateString()}
-                    </p>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    {selectedVideo.status !== 'transcribed' && (
-                      <button
-                        onClick={handleReTranscribe}
-                        disabled={isTranscribing}
-                        className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-800 text-xs font-semibold text-slate-200 hover:bg-slate-700 transition cursor-pointer"
-                      >
-                        {isTranscribing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-                        Transcribe Audio
-                      </button>
-                    )}
-
-                    <button
-                      onClick={handleDetectViralClips}
-                      disabled={isDetectingViral || selectedVideo.status !== 'transcribed'}
-                      className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-rose-500 text-white font-bold text-xs shadow-lg shadow-rose-500/20 hover:opacity-95 transition disabled:opacity-50 cursor-pointer"
-                    >
-                      {isDetectingViral ? (
-                        <>
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                          Gemini AI Analyzing...
-                        </>
-                      ) : (
-                        <>
-                          <Sparkles className="h-4 w-4" />
-                          Detect Viral Clips (Gemini AI)
-                        </>
+              <Card className="gap-4">
+                <CardHeader>
+                  <CardTitle className="text-lg">{selectedVideo.originalName}</CardTitle>
+                  <CardDescription>
+                    {formatTime(selectedVideo.duration || 0)} • {selectedVideo.width}×
+                    {selectedVideo.height} • Uploaded{' '}
+                    {new Date(selectedVideo.createdAt).toLocaleDateString()}
+                  </CardDescription>
+                  <CardAction>
+                    <div className="flex items-center gap-2">
+                      {selectedVideo.status !== 'transcribed' && (
+                        <Button
+                          variant="outline"
+                          onClick={handleReTranscribe}
+                          disabled={isTranscribing}
+                        >
+                          {isTranscribing ? (
+                            <Loader2 className="animate-spin" />
+                          ) : (
+                            <RefreshCw />
+                          )}
+                          Transcribe
+                        </Button>
                       )}
-                    </button>
-                  </div>
-                </div>
+                      <Button
+                        onClick={handleDetectViralClips}
+                        disabled={isDetectingViral || selectedVideo.status !== 'transcribed'}
+                      >
+                        {isDetectingViral ? (
+                          <Loader2 className="animate-spin" />
+                        ) : (
+                          <Sparkles />
+                        )}
+                        {isDetectingViral ? 'Analyzing…' : 'Detect viral clips'}
+                      </Button>
+                    </div>
+                  </CardAction>
+                </CardHeader>
 
                 {errorMessage && (
-                  <div className="flex items-center gap-2 rounded-xl bg-rose-500/10 border border-rose-500/20 p-3 text-xs text-rose-400">
-                    <AlertCircle className="h-4 w-4 shrink-0" />
-                    <span>{errorMessage}</span>
-                  </div>
+                  <CardContent className="pt-0">
+                    <Alert variant="destructive">
+                      <AlertCircle className="mt-0.5" />
+                      <AlertDescription>{errorMessage}</AlertDescription>
+                    </Alert>
+                  </CardContent>
                 )}
 
-                {/* Video Transcript Highlight Preview */}
                 {selectedVideo.transcript && (
-                  <div className="rounded-xl bg-slate-950/60 p-3.5 border border-slate-800/80">
-                    <p className="text-xs font-semibold text-slate-400 mb-1 flex items-center gap-1.5">
-                      <Zap className="h-3.5 w-3.5 text-amber-400" />
-                      Transcript Overview ({selectedVideo.transcript.segments?.length || 0} segments)
-                    </p>
-                    <p className="text-xs text-slate-300 line-clamp-2 leading-relaxed italic">
-                      "{selectedVideo.transcript.text || 'No transcript text extracted yet.'}"
-                    </p>
-                  </div>
+                  <CardContent className="pt-0">
+                    <div className="rounded-lg bg-muted/60 p-4">
+                      <p className="mb-1 text-xs font-medium text-muted-foreground">
+                        Transcript overview · {selectedVideo.transcript.segments?.length || 0}{' '}
+                        segments
+                      </p>
+                      <p className="line-clamp-2 text-sm leading-relaxed text-foreground/80">
+                        “{selectedVideo.transcript.text || 'No transcript text extracted yet.'}”
+                      </p>
+                    </div>
+                  </CardContent>
                 )}
-              </div>
+              </Card>
 
-              {/* Generated Clips Section */}
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
-                  <h3 className="text-lg font-bold text-slate-100 flex items-center gap-2">
-                    <Layers className="h-5 w-5 text-amber-400" />
-                    Generated Short Clips ({clips.length})
-                  </h3>
-
-                  <button
-                    onClick={fetchClipsAndPresets}
-                    className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-200 transition"
-                  >
-                    <RefreshCw className="h-3.5 w-3.5" />
-                    Refresh Clips
-                  </button>
+                  <h2 className="flex items-center gap-2 text-base font-semibold">
+                    <Clapperboard className="size-4 text-muted-foreground" />
+                    Generated clips
+                    <Badge variant="secondary">{clips.length}</Badge>
+                  </h2>
+                  <Button variant="ghost" size="sm" onClick={refreshClipsAndPresets}>
+                    <RefreshCw />
+                    Refresh
+                  </Button>
                 </div>
 
+                <Separator />
+
                 {clips.length === 0 ? (
-                  <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/30 p-10 text-center space-y-3">
-                    <Sparkles className="h-10 w-10 text-amber-400/60 mx-auto" />
-                    <p className="text-base font-bold text-slate-200">No short clips created yet</p>
-                    <p className="text-xs text-slate-400 max-w-md mx-auto">
-                      Click <span className="text-amber-400 font-semibold">"Detect Viral Clips (Gemini AI)"</span> above to automatically identify high-engagement segments.
-                    </p>
-                  </div>
+                  <Card className="border-dashed">
+                    <CardContent className="flex flex-col items-center gap-3 py-10 text-center">
+                      <div className="flex size-10 items-center justify-center rounded-full bg-muted">
+                        <Scissors className="size-5 text-muted-foreground" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium">No clips created yet</p>
+                        <p className="mx-auto mt-1 max-w-md text-xs text-muted-foreground">
+                          Run “Detect viral clips” above to automatically identify
+                          high-engagement segments from the transcript.
+                        </p>
+                      </div>
+                    </CardContent>
+                  </Card>
                 ) : (
                   <div className="space-y-4">
                     {clips.map((clip) => (
@@ -361,7 +442,7 @@ function DashboardContent() {
                         key={clip._id}
                         clip={clip}
                         captionPresets={captionPresets}
-                        onRefresh={fetchClipsAndPresets}
+                        onRefresh={refreshClipsAndPresets}
                       />
                     ))}
                   </div>
@@ -369,13 +450,20 @@ function DashboardContent() {
               </div>
             </>
           ) : (
-            <div className="flex flex-col items-center justify-center p-16 rounded-2xl border border-slate-800 bg-slate-900/30 text-center">
-              <Film className="h-12 w-12 text-slate-600 mb-4" />
-              <h3 className="text-lg font-bold text-slate-200">Select a video to view clips</h3>
-              <p className="text-xs text-slate-400 mt-1 max-w-sm">
-                Choose an uploaded video from the left sidebar or upload a new landscape video.
-              </p>
-            </div>
+            <Card className="border-dashed">
+              <CardContent className="flex flex-col items-center gap-3 py-16 text-center">
+                <div className="flex size-12 items-center justify-center rounded-full bg-muted">
+                  <Film className="size-6 text-muted-foreground" />
+                </div>
+                <div>
+                  <p className="text-sm font-medium">Select a video to view clips</p>
+                  <p className="mx-auto mt-1 max-w-sm text-xs text-muted-foreground">
+                    Choose an uploaded video from the list, or upload a new landscape
+                    video to get started.
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
           )}
         </div>
       </div>
@@ -387,9 +475,9 @@ export default function DashboardPage() {
   return (
     <Suspense
       fallback={
-        <div className="flex items-center justify-center p-12 text-slate-500">
-          <Loader2 className="h-6 w-6 animate-spin mr-2" />
-          Loading ClipCraft Dashboard...
+        <div className="flex items-center justify-center gap-2 p-12 text-muted-foreground">
+          <Loader2 className="size-5 animate-spin" />
+          Loading dashboard…
         </div>
       }
     >

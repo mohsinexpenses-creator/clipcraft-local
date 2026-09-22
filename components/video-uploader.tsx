@@ -2,14 +2,20 @@
 
 import React, { useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { Upload, Tv, Loader2, CheckCircle, AlertCircle, FileVideo } from 'lucide-react';
+import { Upload, Tv, Loader2, CheckCircle2, AlertCircle, FileVideo } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { cn } from 'cn';
 
 export const VideoUploader = () => {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [activeTab, setActiveTab] = useState<'file' | 'youtube'>('file');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [isDragActive, setIsDragActive] = useState(false);
   const [youtubeUrl, setYoutubeUrl] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -22,11 +28,21 @@ export const VideoUploader = () => {
     }
   };
 
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragActive(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) {
+      setSelectedFile(file);
+      setErrorMessage(null);
+    }
+  };
+
   const handleUploadFile = async () => {
     if (!selectedFile) return;
 
     setIsProcessing(true);
-    setStatusMessage('Uploading video file...');
+    setStatusMessage('Uploading video file…');
     setErrorMessage(null);
 
     try {
@@ -44,14 +60,14 @@ export const VideoUploader = () => {
       }
 
       const data = await res.json();
-      setStatusMessage('Upload complete! Redirecting to dashboard...');
+      setStatusMessage('Upload complete. Redirecting to dashboard…');
 
       setTimeout(() => {
         router.push(`/?videoId=${data.video._id}`);
-      }, 1000);
-    } catch (err: any) {
+      }, 800);
+    } catch (err) {
       console.error('Upload error:', err);
-      setErrorMessage(err.message || 'Failed to upload video');
+      setErrorMessage(err instanceof Error ? err.message : 'Failed to upload video');
       setIsProcessing(false);
     }
   };
@@ -60,7 +76,7 @@ export const VideoUploader = () => {
     if (!youtubeUrl.trim()) return;
 
     setIsProcessing(true);
-    setStatusMessage('Fetching video from YouTube...');
+    setStatusMessage('Fetching video from YouTube…');
     setErrorMessage(null);
 
     try {
@@ -76,57 +92,58 @@ export const VideoUploader = () => {
       }
 
       const data = await res.json();
-      setStatusMessage('YouTube video fetched! Redirecting to dashboard...');
+      setStatusMessage('YouTube video fetched. Redirecting to dashboard…');
 
       setTimeout(() => {
         router.push(`/?videoId=${data.video._id}`);
-      }, 1000);
-    } catch (err: any) {
+      }, 800);
+    } catch (err) {
       console.error('YouTube error:', err);
-      setErrorMessage(err.message || 'Failed to fetch YouTube video');
+      setErrorMessage(err instanceof Error ? err.message : 'Failed to fetch YouTube video');
       setIsProcessing(false);
     }
   };
 
   return (
-    <div className="w-full max-w-xl mx-auto space-y-6">
-      {/* Tab Selector */}
-      <div className="flex rounded-xl bg-slate-900 p-1 border border-slate-800">
-        <button
-          onClick={() => { setActiveTab('file'); setErrorMessage(null); }}
-          className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-xs font-bold transition ${
-            activeTab === 'file'
-              ? 'bg-slate-800 text-amber-400 shadow-sm'
-              : 'text-slate-400 hover:text-slate-200'
-          }`}
-        >
-          <FileVideo className="h-4 w-4" />
-          Upload Video File
-        </button>
+    <div className="mx-auto w-full max-w-xl">
+      <Tabs defaultValue="file" onValueChange={() => setErrorMessage(null)}>
+        <TabsList className="w-full">
+          <TabsTrigger value="file" className="flex-1">
+            <FileVideo />
+            Video file
+          </TabsTrigger>
+          <TabsTrigger value="youtube" className="flex-1">
+            <Tv />
+            YouTube link
+          </TabsTrigger>
+        </TabsList>
 
-        <button
-          onClick={() => { setActiveTab('youtube'); setErrorMessage(null); }}
-          className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-xs font-bold transition ${
-            activeTab === 'youtube'
-              ? 'bg-slate-800 text-red-400 shadow-sm'
-              : 'text-slate-400 hover:text-slate-200'
-          }`}
-        >
-          <Tv className="h-4 w-4" />
-          Paste YouTube Link
-        </button>
-      </div>
-
-      {/* Tab 1: File Dropzone */}
-      {activeTab === 'file' && (
-        <div className="space-y-4">
+        {/* File upload */}
+        <TabsContent value="file" className="mt-4 space-y-4">
           <div
+            role="button"
+            tabIndex={0}
             onClick={() => fileInputRef.current?.click()}
-            className={`flex flex-col items-center justify-center rounded-2xl border-2 border-dashed p-8 text-center cursor-pointer transition ${
-              selectedFile
-                ? 'border-amber-500/60 bg-amber-500/5'
-                : 'border-slate-800 bg-slate-900/40 hover:border-slate-700'
-            }`}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                fileInputRef.current?.click();
+              }
+            }}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setIsDragActive(true);
+            }}
+            onDragLeave={() => setIsDragActive(false)}
+            onDrop={handleDrop}
+            className={cn(
+              'flex cursor-pointer flex-col items-center justify-center gap-3 rounded-lg border border-dashed px-6 py-10 text-center transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/40',
+              isDragActive
+                ? 'border-primary bg-accent'
+                : selectedFile
+                  ? 'border-primary/50 bg-accent/50'
+                  : 'border-input bg-muted/30 hover:border-ring hover:bg-muted/50'
+            )}
           >
             <input
               ref={fileInputRef}
@@ -136,78 +153,76 @@ export const VideoUploader = () => {
               className="hidden"
             />
 
-            <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-slate-800 text-amber-400">
-              <Upload className="h-6 w-6" />
+            <div className="flex size-11 items-center justify-center rounded-full bg-muted">
+              <Upload className="size-5 text-muted-foreground" />
             </div>
 
             {selectedFile ? (
               <div>
-                <p className="text-sm font-semibold text-slate-100">{selectedFile.name}</p>
-                <p className="text-xs text-slate-400 mt-1">
-                  {(selectedFile.size / (1024 * 1024)).toFixed(1)} MB • Click to change
+                <p className="text-sm font-medium">{selectedFile.name}</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {(selectedFile.size / (1024 * 1024)).toFixed(1)} MB · Click to change
                 </p>
               </div>
             ) : (
               <div>
-                <p className="text-sm font-medium text-slate-200">
-                  Click or drag video file here (.mp4, .mov, .mkv)
-                </p>
+                <p className="text-sm font-medium">Click or drag a video file here</p>
+                <p className="mt-1 text-xs text-muted-foreground">MP4, MOV, MKV</p>
               </div>
             )}
           </div>
 
           {selectedFile && !isProcessing && (
-            <button
-              onClick={handleUploadFile}
-              className="w-full py-3 rounded-xl bg-gradient-to-r from-amber-500 to-rose-500 text-white font-bold text-sm shadow-md hover:opacity-95 transition cursor-pointer"
-            >
-              Upload & Process Video
-            </button>
+            <Button size="lg" className="w-full" onClick={handleUploadFile}>
+              <Upload />
+              Upload & process video
+            </Button>
           )}
-        </div>
-      )}
+        </TabsContent>
 
-      {/* Tab 2: YouTube URL Input */}
-      {activeTab === 'youtube' && (
-        <div className="space-y-4">
-          <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-6 space-y-3">
-            <label className="block text-xs font-semibold text-slate-300">
-              Paste YouTube Video URL
-            </label>
-            <input
-              type="text"
-              placeholder="https://www.youtube.com/watch?v=..."
+        {/* YouTube */}
+        <TabsContent value="youtube" className="mt-4 space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="youtube-url">YouTube video URL</Label>
+            <Input
+              id="youtube-url"
+              type="url"
+              placeholder="https://www.youtube.com/watch?v=…"
               value={youtubeUrl}
-              onChange={(e) => { setYoutubeUrl(e.target.value); setErrorMessage(null); }}
-              className="w-full rounded-xl bg-slate-950 border border-slate-800 p-3 text-xs text-slate-100 focus:border-red-500 focus:outline-none"
+              onChange={(e) => {
+                setYoutubeUrl(e.target.value);
+                setErrorMessage(null);
+              }}
+              disabled={isProcessing}
             />
           </div>
 
           {youtubeUrl.trim() && !isProcessing && (
-            <button
-              onClick={handleProcessYoutube}
-              className="w-full py-3 rounded-xl bg-gradient-to-r from-red-500 to-amber-500 text-white font-bold text-sm shadow-md hover:opacity-95 transition cursor-pointer flex items-center justify-center gap-2"
-            >
-              <Tv className="h-4 w-4" />
-              Fetch YouTube Video
-            </button>
+            <Button size="lg" className="w-full" onClick={handleProcessYoutube}>
+              <Tv />
+              Fetch YouTube video
+            </Button>
           )}
-        </div>
-      )}
+        </TabsContent>
+      </Tabs>
 
-      {/* Messages */}
+      {/* Feedback */}
       {errorMessage && (
-        <div className="flex items-center gap-2 rounded-xl bg-rose-500/10 border border-rose-500/20 p-3.5 text-xs text-rose-400">
-          <AlertCircle className="h-4 w-4 shrink-0" />
-          <span>{errorMessage}</span>
-        </div>
+        <Alert variant="destructive" className="mt-4 animate-fade-in">
+          <AlertCircle className="mt-0.5" />
+          <AlertDescription>{errorMessage}</AlertDescription>
+        </Alert>
       )}
 
       {statusMessage && (
-        <div className="flex items-center gap-2 rounded-xl bg-amber-500/10 border border-amber-500/20 p-3.5 text-xs text-amber-300">
-          {isProcessing ? <Loader2 className="h-4 w-4 animate-spin text-amber-400" /> : <CheckCircle className="h-4 w-4 text-emerald-400" />}
-          <span>{statusMessage}</span>
-        </div>
+        <Alert className="mt-4 animate-fade-in">
+          {isProcessing ? (
+            <Loader2 className="mt-0.5 animate-spin text-primary" />
+          ) : (
+            <CheckCircle2 className="mt-0.5 text-primary" />
+          )}
+          <AlertDescription>{statusMessage}</AlertDescription>
+        </Alert>
       )}
     </div>
   );

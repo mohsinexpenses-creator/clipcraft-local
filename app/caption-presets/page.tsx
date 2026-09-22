@@ -1,10 +1,69 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { CaptionPreset } from '@/lib/types';
 import { CaptionPreview } from '@/components/caption-preview';
 import { DEFAULT_CAPTION_PRESETS } from '@/lib/presets';
-import { Sliders, Plus, Save, Trash2, CheckCircle2, Loader2, Sparkles, Type } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Slider } from '@/components/ui/slider';
+import { Switch } from '@/components/ui/switch';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
+  CheckCircle2,
+  Loader2,
+  MonitorPlay,
+  Plus,
+  Save,
+  Trash2,
+} from 'lucide-react';
+import { cn } from 'cn';
+
+function ColorField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <Label>{label}</Label>
+      <div className="flex items-center gap-2">
+        <input
+          type="color"
+          value={/^#[0-9a-fA-F]{6}$/.test(value) ? value : '#ffffff'}
+          onChange={(e) => onChange(e.target.value)}
+          className="h-9 w-11 shrink-0 cursor-pointer rounded-md border bg-transparent p-1"
+          aria-label={`${label} picker`}
+        />
+        <Input
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="font-mono text-xs uppercase"
+        />
+      </div>
+    </div>
+  );
+}
 
 export default function CaptionPresetsPage() {
   const [presets, setPresets] = useState<CaptionPreset[]>([]);
@@ -14,26 +73,41 @@ export default function CaptionPresetsPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
-  const fetchPresets = async () => {
+  const initializedRef = useRef(false);
+
+  const loadPresets = useCallback(async (): Promise<CaptionPreset[]> => {
     try {
       const res = await fetch('/api/caption-presets');
       if (res.ok) {
         const data = await res.json();
-        const list = data.presets || DEFAULT_CAPTION_PRESETS;
-        setPresets(list);
-        if (!activePresetId && list.length > 0) {
-          setActivePresetId(list[0]._id);
-          setActivePreset(list[0]);
-        }
+        return data.presets || DEFAULT_CAPTION_PRESETS;
       }
     } catch (err) {
       console.error('Error loading presets:', err);
     }
-  };
+    return DEFAULT_CAPTION_PRESETS;
+  }, []);
 
   useEffect(() => {
-    fetchPresets();
-  }, []);
+    let ignore = false;
+    (async () => {
+      const list = await loadPresets();
+      if (ignore) return;
+      setPresets(list);
+      if (!initializedRef.current && list.length > 0) {
+        initializedRef.current = true;
+        setActivePresetId(list[0]._id);
+        setActivePreset(list[0]);
+      }
+    })();
+    return () => {
+      ignore = true;
+    };
+  }, [loadPresets]);
+
+  const refreshPresets = useCallback(async () => {
+    setPresets(await loadPresets());
+  }, [loadPresets]);
 
   const handleSelectPreset = (id: string) => {
     setActivePresetId(id);
@@ -47,7 +121,7 @@ export default function CaptionPresetsPage() {
   const handleCreateNewPreset = () => {
     const newPreset: CaptionPreset = {
       _id: `preset_${Date.now()}_${Math.random().toString(36).substring(7)}`,
-      name: 'Custom New Preset',
+      name: 'Custom preset',
       fontFamily: 'Inter, sans-serif',
       fontSize: 50,
       fontWeight: 'bold',
@@ -80,7 +154,7 @@ export default function CaptionPresetsPage() {
 
       if (res.ok) {
         setSaveSuccess(true);
-        await fetchPresets();
+        await refreshPresets();
         setTimeout(() => setSaveSuccess(false), 3000);
       }
     } catch (err) {
@@ -94,7 +168,7 @@ export default function CaptionPresetsPage() {
     if (!confirm('Are you sure you want to delete this preset?')) return;
     try {
       await fetch(`/api/caption-presets?id=${id}`, { method: 'DELETE' });
-      await fetchPresets();
+      await refreshPresets();
     } catch (err) {
       console.error('Error deleting preset:', err);
     }
@@ -102,30 +176,25 @@ export default function CaptionPresetsPage() {
 
   return (
     <div className="space-y-8">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-slate-800/80 pb-6">
-        <div>
-          <h1 className="text-3xl font-extrabold text-slate-100 tracking-tight flex items-center gap-3">
-            <Sliders className="h-8 w-8 text-amber-400" />
-            Caption Presets & Live Preview
-          </h1>
-          <p className="text-sm text-slate-400 mt-1">
-            Customize caption typography, active word highlight colors, stroke outlines, and animation styles with a live Remotion Player preview.
+      {/* Page header */}
+      <div className="flex animate-fade-up flex-col justify-between gap-4 sm:flex-row sm:items-center">
+        <div className="space-y-1">
+          <h1 className="text-2xl font-semibold tracking-tight">Caption presets</h1>
+          <p className="text-sm text-muted-foreground">
+            Design caption styles with live preview — typography, colors, stroke, and
+            animation.
           </p>
         </div>
-
-        <button
-          onClick={handleCreateNewPreset}
-          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-rose-500 text-white font-semibold text-sm shadow-lg shadow-rose-500/20 hover:opacity-95 transition cursor-pointer"
-        >
-          <Plus className="h-4 w-4" />
-          Create New Preset
-        </button>
+        <Button size="lg" onClick={handleCreateNewPreset}>
+          <Plus />
+          New preset
+        </Button>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-        {/* Left Column: Preset Controls Editor */}
-        <div className="lg:col-span-7 space-y-6">
-          {/* Preset Selector Tabs */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+        {/* Editor */}
+        <div className="animate-fade-up space-y-4 lg:col-span-7" style={{ animationDelay: '60ms' }}>
+          {/* Preset selector */}
           <div className="flex flex-wrap gap-2">
             {presets.map((p) => {
               const isActive = p._id === activePresetId;
@@ -133,251 +202,222 @@ export default function CaptionPresetsPage() {
                 <button
                   key={p._id}
                   onClick={() => handleSelectPreset(p._id)}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer border ${
+                  className={cn(
+                    'cursor-pointer rounded-md border px-3 py-1.5 text-sm font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/40',
                     isActive
-                      ? 'border-amber-500 bg-amber-500/10 text-amber-400 shadow-md shadow-amber-500/5'
-                      : 'border-slate-800 bg-slate-900/60 text-slate-400 hover:text-slate-200 hover:bg-slate-900'
-                  }`}
+                      ? 'border-transparent bg-primary text-primary-foreground'
+                      : 'border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground'
+                  )}
                 >
-                  <Type className="h-3.5 w-3.5" />
-                  <span>{p.name}</span>
+                  {p.name}
                 </button>
               );
             })}
           </div>
 
-          {/* Preset Settings Form */}
-          <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6 space-y-5 shadow-xl">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-              <h2 className="text-lg font-bold text-slate-100 flex items-center gap-2">
-                <Sparkles className="h-4 w-4 text-amber-400" />
-                Customize Preset Style
-              </h2>
-
+          <Card className="gap-5">
+            <CardHeader>
+              <CardTitle className="text-base">Customize style</CardTitle>
+              <CardDescription>
+                Changes apply to the live preview immediately
+              </CardDescription>
               {!activePreset.isDefault && (
-                <button
-                  onClick={() => handleDeletePreset(activePreset._id)}
-                  className="p-2 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 transition cursor-pointer"
-                  title="Delete preset"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </button>
+                <CardAction>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => handleDeletePreset(activePreset._id)}
+                    title="Delete preset"
+                    className="hover:text-destructive"
+                  >
+                    <Trash2 />
+                  </Button>
+                </CardAction>
               )}
-            </div>
+            </CardHeader>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {/* Preset Name */}
-              <div className="sm:col-span-2">
-                <label className="block text-xs font-semibold text-slate-300 mb-1">Preset Name</label>
-                <input
-                  type="text"
-                  value={activePreset.name}
-                  onChange={(e) => setActivePreset({ ...activePreset, name: e.target.value })}
-                  className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3.5 py-2.5 text-xs text-slate-100 focus:border-amber-500 focus:outline-none"
-                />
-              </div>
-
-              {/* Sample Hook Text */}
-              <div className="sm:col-span-2">
-                <label className="block text-xs font-semibold text-slate-300 mb-1">Sample Hook Intro Text (Live Preview)</label>
-                <input
-                  type="text"
-                  value={sampleHookText}
-                  onChange={(e) => setSampleHookText(e.target.value)}
-                  className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3.5 py-2.5 text-xs text-slate-100 focus:border-amber-500 focus:outline-none"
-                />
-              </div>
-
-              {/* Animation Style */}
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">Animation Style</label>
-                <select
-                  value={activePreset.animationStyle}
-                  onChange={(e) => setActivePreset({ ...activePreset, animationStyle: e.target.value as any })}
-                  className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3.5 py-2.5 text-xs text-slate-100 focus:border-amber-500 focus:outline-none"
-                >
-                  <option value="karaoke">Karaoke Word Fill</option>
-                  <option value="word-pop">Word Pop Scale</option>
-                  <option value="fade-in">Clean Fade In</option>
-                  <option value="static">Static Block</option>
-                </select>
-              </div>
-
-              {/* Font Weight */}
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">Font Weight</label>
-                <select
-                  value={activePreset.fontWeight}
-                  onChange={(e) => setActivePreset({ ...activePreset, fontWeight: e.target.value as any })}
-                  className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3.5 py-2.5 text-xs text-slate-100 focus:border-amber-500 focus:outline-none"
-                >
-                  <option value="normal">Normal</option>
-                  <option value="bold">Bold</option>
-                  <option value="extra-bold">Extra Bold</option>
-                  <option value="black">Black Heavy</option>
-                </select>
-              </div>
-
-              {/* Font Size Slider */}
-              <div>
-                <div className="flex justify-between text-xs font-semibold text-slate-300 mb-1">
-                  <span>Font Size</span>
-                  <span className="text-amber-400">{activePreset.fontSize}px</span>
-                </div>
-                <input
-                  type="range"
-                  min="24"
-                  max="72"
-                  value={activePreset.fontSize}
-                  onChange={(e) => setActivePreset({ ...activePreset, fontSize: Number(e.target.value) })}
-                  className="w-full accent-amber-500"
-                />
-              </div>
-
-              {/* Position Y Slider */}
-              <div>
-                <div className="flex justify-between text-xs font-semibold text-slate-300 mb-1">
-                  <span>Vertical Position Y</span>
-                  <span className="text-amber-400">{activePreset.positionY}% from bottom</span>
-                </div>
-                <input
-                  type="range"
-                  min="10"
-                  max="50"
-                  value={activePreset.positionY}
-                  onChange={(e) => setActivePreset({ ...activePreset, positionY: Number(e.target.value) })}
-                  className="w-full accent-amber-500"
-                />
-              </div>
-
-              {/* Main Text Color */}
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">Base Text Color</label>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="color"
-                    value={activePreset.textColor}
-                    onChange={(e) => setActivePreset({ ...activePreset, textColor: e.target.value })}
-                    className="h-9 w-12 rounded bg-transparent cursor-pointer"
-                  />
-                  <input
-                    type="text"
-                    value={activePreset.textColor}
-                    onChange={(e) => setActivePreset({ ...activePreset, textColor: e.target.value })}
-                    className="flex-1 rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-xs font-mono text-slate-100"
+            <CardContent>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div className="space-y-2 sm:col-span-2">
+                  <Label htmlFor="preset-name">Preset name</Label>
+                  <Input
+                    id="preset-name"
+                    value={activePreset.name}
+                    onChange={(e) => setActivePreset({ ...activePreset, name: e.target.value })}
                   />
                 </div>
-              </div>
 
-              {/* Highlight Active Word Color */}
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">Active Word Highlight Color</label>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="color"
-                    value={activePreset.highlightColor}
-                    onChange={(e) => setActivePreset({ ...activePreset, highlightColor: e.target.value })}
-                    className="h-9 w-12 rounded bg-transparent cursor-pointer"
-                  />
-                  <input
-                    type="text"
-                    value={activePreset.highlightColor}
-                    onChange={(e) => setActivePreset({ ...activePreset, highlightColor: e.target.value })}
-                    className="flex-1 rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-xs font-mono text-slate-100"
+                <div className="space-y-2 sm:col-span-2">
+                  <Label htmlFor="sample-hook">Sample hook text (preview)</Label>
+                  <Input
+                    id="sample-hook"
+                    value={sampleHookText}
+                    onChange={(e) => setSampleHookText(e.target.value)}
                   />
                 </div>
-              </div>
 
-              {/* Stroke Outline Color */}
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">Text Outline Stroke Color</label>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="color"
-                    value={activePreset.strokeColor}
-                    onChange={(e) => setActivePreset({ ...activePreset, strokeColor: e.target.value })}
-                    className="h-9 w-12 rounded bg-transparent cursor-pointer"
-                  />
-                  <input
-                    type="text"
-                    value={activePreset.strokeColor}
-                    onChange={(e) => setActivePreset({ ...activePreset, strokeColor: e.target.value })}
-                    className="flex-1 rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-xs font-mono text-slate-100"
+                <div className="space-y-2">
+                  <Label id="animation-label">Animation style</Label>
+                  <Select
+                    value={activePreset.animationStyle}
+                    onValueChange={(v) =>
+                      setActivePreset({
+                        ...activePreset,
+                        animationStyle: (v as CaptionPreset['animationStyle']) || 'karaoke',
+                      })
+                    }
+                  >
+                    <SelectTrigger aria-labelledby="animation-label">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="karaoke">Karaoke fill</SelectItem>
+                      <SelectItem value="word-pop">Word pop</SelectItem>
+                      <SelectItem value="fade-in">Fade in</SelectItem>
+                      <SelectItem value="static">Static</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label id="weight-label">Font weight</Label>
+                  <Select
+                    value={activePreset.fontWeight}
+                    onValueChange={(v) =>
+                      setActivePreset({
+                        ...activePreset,
+                        fontWeight: (v as CaptionPreset['fontWeight']) || 'bold',
+                      })
+                    }
+                  >
+                    <SelectTrigger aria-labelledby="weight-label">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="normal">Normal</SelectItem>
+                      <SelectItem value="bold">Bold</SelectItem>
+                      <SelectItem value="extra-bold">Extra bold</SelectItem>
+                      <SelectItem value="black">Black</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <Label>Font size</Label>
+                    <span className="text-xs font-medium text-muted-foreground tabular-nums">
+                      {activePreset.fontSize}px
+                    </span>
+                  </div>
+                  <Slider
+                    min={24}
+                    max={72}
+                    value={activePreset.fontSize}
+                    onValueChange={(v) => setActivePreset({ ...activePreset, fontSize: v })}
+                    aria-label="Font size"
                   />
                 </div>
-              </div>
 
-              {/* Stroke Width Slider */}
-              <div>
-                <div className="flex justify-between text-xs font-semibold text-slate-300 mb-1">
-                  <span>Outline Stroke Width</span>
-                  <span className="text-amber-400">{activePreset.strokeWidth}px</span>
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <Label>Vertical position</Label>
+                    <span className="text-xs font-medium text-muted-foreground tabular-nums">
+                      {activePreset.positionY}% from bottom
+                    </span>
+                  </div>
+                  <Slider
+                    min={10}
+                    max={50}
+                    value={activePreset.positionY}
+                    onValueChange={(v) => setActivePreset({ ...activePreset, positionY: v })}
+                    aria-label="Vertical position"
+                  />
                 </div>
-                <input
-                  type="range"
-                  min="0"
-                  max="8"
-                  value={activePreset.strokeWidth}
-                  onChange={(e) => setActivePreset({ ...activePreset, strokeWidth: Number(e.target.value) })}
-                  className="w-full accent-amber-500"
+
+                <ColorField
+                  label="Text color"
+                  value={activePreset.textColor}
+                  onChange={(v) => setActivePreset({ ...activePreset, textColor: v })}
                 />
-              </div>
 
-              {/* Uppercase Toggle */}
-              <div className="sm:col-span-2 flex items-center gap-3 pt-2">
-                <input
-                  type="checkbox"
-                  id="uppercase-toggle"
-                  checked={activePreset.uppercase ?? true}
-                  onChange={(e) => setActivePreset({ ...activePreset, uppercase: e.target.checked })}
-                  className="h-4 w-4 rounded accent-amber-500 cursor-pointer"
+                <ColorField
+                  label="Active word highlight"
+                  value={activePreset.highlightColor}
+                  onChange={(v) => setActivePreset({ ...activePreset, highlightColor: v })}
                 />
-                <label htmlFor="uppercase-toggle" className="text-xs font-semibold text-slate-200 cursor-pointer">
-                  Convert caption text to ALL CAPS
-                </label>
-              </div>
-            </div>
 
-            {/* Save Action */}
-            <div className="flex items-center justify-between pt-4 border-t border-slate-800">
+                <ColorField
+                  label="Stroke color"
+                  value={activePreset.strokeColor}
+                  onChange={(v) => setActivePreset({ ...activePreset, strokeColor: v })}
+                />
+
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <Label>Stroke width</Label>
+                    <span className="text-xs font-medium text-muted-foreground tabular-nums">
+                      {activePreset.strokeWidth}px
+                    </span>
+                  </div>
+                  <Slider
+                    min={0}
+                    max={8}
+                    value={activePreset.strokeWidth}
+                    onValueChange={(v) => setActivePreset({ ...activePreset, strokeWidth: v })}
+                    aria-label="Stroke width"
+                  />
+                </div>
+
+                <div className="flex items-center justify-between rounded-lg border p-3 sm:col-span-2">
+                  <div className="space-y-0.5">
+                    <Label htmlFor="uppercase-toggle">Uppercase captions</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Render all caption text in capital letters
+                    </p>
+                  </div>
+                  <Switch
+                    id="uppercase-toggle"
+                    checked={activePreset.uppercase ?? true}
+                    onCheckedChange={(checked) =>
+                      setActivePreset({ ...activePreset, uppercase: checked })
+                    }
+                  />
+                </div>
+              </div>
+            </CardContent>
+
+            <CardFooter className="justify-between border-t pt-5">
               {saveSuccess ? (
-                <div className="flex items-center gap-2 text-xs font-semibold text-emerald-400">
-                  <CheckCircle2 className="h-4 w-4" />
-                  Preset saved to MongoDB!
-                </div>
+                <span className="flex animate-fade-in items-center gap-1.5 text-xs font-medium text-primary">
+                  <CheckCircle2 />
+                  Preset saved
+                </span>
               ) : (
-                <span className="text-xs text-slate-500">
-                  Save preset changes to make available across all clips.
+                <span className="text-xs text-muted-foreground">
+                  Save to use this style on your clips
                 </span>
               )}
-
-              <button
-                onClick={handleSavePreset}
-                disabled={isSaving}
-                className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-rose-500 text-white font-semibold text-xs shadow-lg shadow-rose-500/20 hover:opacity-95 transition cursor-pointer disabled:opacity-50"
-              >
-                {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                Save Preset
-              </button>
-            </div>
-          </div>
+              <Button onClick={handleSavePreset} disabled={isSaving}>
+                {isSaving ? <Loader2 className="animate-spin" /> : <Save />}
+                Save preset
+              </Button>
+            </CardFooter>
+          </Card>
         </div>
 
-        {/* Right Column: Remotion Live In-App Preview Player */}
-        <div className="lg:col-span-5 flex flex-col items-center">
-          <div className="sticky top-24 w-full space-y-3 flex flex-col items-center">
-            <h2 className="text-base font-bold text-slate-200 flex items-center gap-2 self-start">
-              <Sparkles className="h-4 w-4 text-amber-400" />
-              Live Remotion Player Preview
+        {/* Live preview */}
+        <div className="animate-fade-up lg:col-span-5" style={{ animationDelay: '120ms' }}>
+          <div className="sticky top-20 space-y-3">
+            <h2 className="flex items-center gap-2 text-sm font-semibold">
+              <MonitorPlay className="size-4 text-muted-foreground" />
+              Live preview
             </h2>
 
-            <CaptionPreview
-              preset={activePreset}
-              hookText={sampleHookText}
-            />
+            <CaptionPreview preset={activePreset} hookText={sampleHookText} />
 
-            <p className="text-xs text-slate-500 text-center max-w-xs">
-              Interactive Remotion Player previewing the 9:16 portrait video layout, intro hook badge, and word-synced animated captions.
+            <p className="text-center text-xs leading-relaxed text-muted-foreground">
+              Interactive Remotion Player showing the 9:16 layout, hook overlay, and
+              word-synced captions.
             </p>
           </div>
         </div>

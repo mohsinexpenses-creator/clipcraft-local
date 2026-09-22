@@ -2,17 +2,19 @@
 
 import React, { useState } from 'react';
 import { PromptTemplate } from '@/lib/types';
-import { Sparkles, Save, CheckCircle2, Loader2, HelpCircle } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { CheckCircle2, Loader2, Save, Sparkles } from 'lucide-react';
 
 interface PromptEditorProps {
   initialTemplates: PromptTemplate[];
   onSave: (template: PromptTemplate) => Promise<void>;
 }
 
-export const PromptEditor: React.FC<PromptEditorProps> = ({
-  initialTemplates,
-  onSave,
-}) => {
+export const PromptEditor: React.FC<PromptEditorProps> = ({ initialTemplates, onSave }) => {
   const [selectedTypeId, setSelectedTypeId] = useState<string>(
     initialTemplates[0]?._id || 'prompt-viral-detection'
   );
@@ -24,7 +26,7 @@ export const PromptEditor: React.FC<PromptEditorProps> = ({
   const [systemPrompt, setSystemPrompt] = useState(activeTemplate?.systemPrompt || '');
   const [userTemplate, setUserTemplate] = useState(activeTemplate?.template || '');
   const [isSaving, setIsSaving] = useState(false);
-  const [saveSuccess, setSaveSavingSuccess] = useState(false);
+  const [saveSuccess, setSaveSuccess] = useState(false);
 
   const handleSelectType = (id: string) => {
     setSelectedTypeId(id);
@@ -32,14 +34,14 @@ export const PromptEditor: React.FC<PromptEditorProps> = ({
     if (tmpl) {
       setSystemPrompt(tmpl.systemPrompt);
       setUserTemplate(tmpl.template);
-      setSaveSavingSuccess(false);
+      setSaveSuccess(false);
     }
   };
 
   const handleSave = async () => {
     if (!activeTemplate) return;
     setIsSaving(true);
-    setSaveSavingSuccess(false);
+    setSaveSuccess(false);
 
     try {
       await onSave({
@@ -48,8 +50,8 @@ export const PromptEditor: React.FC<PromptEditorProps> = ({
         template: userTemplate,
         updatedAt: new Date().toISOString(),
       });
-      setSaveSavingSuccess(true);
-      setTimeout(() => setSaveSavingSuccess(false), 3000);
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 3000);
     } catch (err) {
       console.error('Failed to save template:', err);
     } finally {
@@ -57,105 +59,90 @@ export const PromptEditor: React.FC<PromptEditorProps> = ({
     }
   };
 
+  if (!activeTemplate) return null;
+
+  const variableHint =
+    activeTemplate.type === 'viral_detection' ? '{{transcript}}' : '{{clipTranscript}}';
+
   return (
-    <div className="space-y-6">
-      {/* Template Type Selector Tabs */}
-      <div className="flex border-b border-slate-800">
+    <div className="space-y-4">
+      {/* Template selector */}
+      <div className="flex flex-wrap gap-2">
         {initialTemplates.map((t) => {
           const isActive = t._id === selectedTypeId || t.type === selectedTypeId;
           return (
             <button
               key={t._id}
               onClick={() => handleSelectType(t._id)}
-              className={`flex items-center gap-2 px-5 py-3 border-b-2 text-sm font-semibold transition cursor-pointer ${
+              className={`flex cursor-pointer items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/40 ${
                 isActive
-                  ? 'border-amber-500 text-amber-400 bg-slate-900/60'
-                  : 'border-transparent text-slate-400 hover:text-slate-200'
+                  ? 'border-transparent bg-primary text-primary-foreground'
+                  : 'border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground'
               }`}
             >
-              <Sparkles className="h-4 w-4" />
+              <Sparkles className="size-3.5" />
               {t.name}
             </button>
           );
         })}
       </div>
 
-      {activeTemplate && (
-        <div className="space-y-5 rounded-2xl border border-slate-800 bg-slate-900/50 p-6 shadow-xl">
-          <div>
-            <h2 className="text-xl font-bold text-slate-100">{activeTemplate.name}</h2>
-            <p className="text-xs text-slate-400 mt-1">{activeTemplate.description}</p>
-          </div>
+      <Card className="gap-5 animate-fade-in" key={activeTemplate._id}>
+        <CardHeader>
+          <CardTitle className="text-base">{activeTemplate.name}</CardTitle>
+          <CardDescription>{activeTemplate.description}</CardDescription>
+        </CardHeader>
 
-          {/* System Prompt Input */}
-          <div>
-            <label className="block text-xs font-semibold text-slate-300 mb-1.5">
-              System Prompt (Gemini AI Role Definition)
-            </label>
-            <textarea
+        <CardContent className="space-y-5">
+          <div className="space-y-2">
+            <Label htmlFor="system-prompt">System prompt</Label>
+            <Textarea
+              id="system-prompt"
               rows={3}
               value={systemPrompt}
               onChange={(e) => setSystemPrompt(e.target.value)}
-              className="w-full rounded-xl bg-slate-950 border border-slate-800 p-3 text-xs text-slate-100 focus:border-amber-500 focus:outline-none"
+              placeholder="Defines the AI's role and expertise…"
             />
           </div>
 
-          {/* User Prompt Template Input */}
-          <div>
-            <div className="flex items-center justify-between mb-1.5">
-              <label className="block text-xs font-semibold text-slate-300">
-                User Prompt Template (Supports variables)
-              </label>
-              <div className="flex items-center gap-1 text-[11px] text-amber-400">
-                <HelpCircle className="h-3.5 w-3.5" />
-                <span>
-                  {activeTemplate.type === 'viral_detection'
-                    ? 'Use {{transcript}} variable'
-                    : 'Use {{clipTranscript}} variable'}
-                </span>
-              </div>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label htmlFor="user-template">Prompt template</Label>
+              <Badge variant="secondary" className="font-mono">
+                {variableHint}
+              </Badge>
             </div>
-            <textarea
+            <Textarea
+              id="user-template"
               rows={10}
               value={userTemplate}
               onChange={(e) => setUserTemplate(e.target.value)}
-              className="w-full rounded-xl bg-slate-950 border border-slate-800 p-3 text-xs font-mono text-slate-100 focus:border-amber-500 focus:outline-none leading-relaxed"
+              className="font-mono text-xs leading-relaxed"
             />
+            <p className="text-xs text-muted-foreground">
+              The variable above is replaced with the video transcript when the AI runs.
+            </p>
           </div>
+        </CardContent>
 
-          {/* Save Action Bar */}
-          <div className="flex items-center justify-between pt-3 border-t border-slate-800">
-            {saveSuccess ? (
-              <div className="flex items-center gap-2 text-xs font-semibold text-emerald-400">
-                <CheckCircle2 className="h-4 w-4" />
-                Prompt template saved successfully to MongoDB!
-              </div>
-            ) : (
-              <span className="text-xs text-slate-500">
-                Changes will take effect on the next AI analysis run.
-              </span>
-            )}
+        <CardFooter className="justify-between border-t pt-5">
+          {saveSuccess ? (
+            <span className="flex animate-fade-in items-center gap-1.5 text-xs font-medium text-primary">
+              <CheckCircle2 />
+              Template saved
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground">
+              Changes apply to the next AI analysis run
+            </span>
+          )}
 
-            <button
-              onClick={handleSave}
-              disabled={isSaving}
-              className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-rose-500 text-white text-xs font-semibold shadow-lg shadow-rose-500/20 hover:opacity-95 transition cursor-pointer disabled:opacity-50"
-            >
-              {isSaving ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Saving...
-                </>
-              ) : (
-                <>
-                  <Save className="h-4 w-4" />
-                  Save Prompt Template
-                </>
-              )}
-            </button>
-          </div>
-        </div>
-      )}
+          <Button onClick={handleSave} disabled={isSaving}>
+            {isSaving ? <Loader2 className="animate-spin" /> : <Save />}
+            Save template
+          </Button>
+        </CardFooter>
+      </Card>
     </div>
   );
 };

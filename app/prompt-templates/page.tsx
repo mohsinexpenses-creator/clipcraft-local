@@ -1,33 +1,42 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { PromptTemplate } from '@/lib/types';
 import { PromptEditor } from '@/components/prompt-editor';
 import { DEFAULT_PROMPT_TEMPLATES } from '@/lib/presets';
-import { Sparkles, Terminal } from 'lucide-react';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Info } from 'lucide-react';
 
 export default function PromptTemplatesPage() {
   const [templates, setTemplates] = useState<PromptTemplate[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  const fetchTemplates = async () => {
+  const loadTemplates = useCallback(async (): Promise<PromptTemplate[]> => {
     try {
       const res = await fetch('/api/prompt-templates');
       if (res.ok) {
         const data = await res.json();
-        setTemplates(data.templates || DEFAULT_PROMPT_TEMPLATES);
+        return data.templates || DEFAULT_PROMPT_TEMPLATES;
       }
     } catch (err) {
       console.error('Error fetching prompt templates:', err);
-      setTemplates(DEFAULT_PROMPT_TEMPLATES);
-    } finally {
-      setIsLoading(false);
     }
-  };
+    return DEFAULT_PROMPT_TEMPLATES;
+  }, []);
 
   useEffect(() => {
-    fetchTemplates();
-  }, []);
+    let ignore = false;
+    (async () => {
+      const list = await loadTemplates();
+      if (ignore) return;
+      setTemplates(list);
+      setIsLoading(false);
+    })();
+    return () => {
+      ignore = true;
+    };
+  }, [loadTemplates]);
 
   const handleSaveTemplate = async (template: PromptTemplate) => {
     const res = await fetch('/api/prompt-templates', {
@@ -40,47 +49,67 @@ export default function PromptTemplatesPage() {
       throw new Error('Failed to update prompt template');
     }
 
-    await fetchTemplates();
+    setTemplates(await loadTemplates());
   };
 
   return (
-    <div className="space-y-8 max-w-5xl mx-auto">
-      <div className="border-b border-slate-800/80 pb-6 space-y-2">
-        <h1 className="text-3xl font-extrabold text-slate-100 tracking-tight flex items-center gap-3">
-          <Sparkles className="h-8 w-8 text-amber-400" />
-          LLM Prompt Templates Manager
-        </h1>
-        <p className="text-sm text-slate-400">
-          View and customize the Gemini AI prompt templates used for (1) viral segment candidate detection and (2) short-form intro hook text overlay generation.
+    <div className="mx-auto max-w-5xl space-y-8">
+      <div className="animate-fade-up space-y-1">
+        <h1 className="text-2xl font-semibold tracking-tight">Prompt templates</h1>
+        <p className="text-sm text-muted-foreground">
+          Customize the AI prompts used for viral segment detection and hook text
+          generation.
         </p>
       </div>
 
-      {isLoading ? (
-        <div className="flex items-center justify-center p-12 text-slate-500">
-          Loading prompt templates...
-        </div>
-      ) : (
-        <PromptEditor
-          initialTemplates={templates.length > 0 ? templates : DEFAULT_PROMPT_TEMPLATES}
-          onSave={handleSaveTemplate}
-        />
-      )}
-
-      {/* Guidance Info Card */}
-      <div className="rounded-2xl border border-slate-800 bg-slate-900/30 p-6 space-y-3">
-        <h3 className="text-sm font-bold text-slate-200 flex items-center gap-2">
-          <Terminal className="h-4 w-4 text-amber-400" />
-          Template Variable Guidance
-        </h3>
-        <ul className="text-xs text-slate-400 space-y-2 leading-relaxed list-disc list-inside">
-          <li>
-            <strong className="text-slate-200">Viral Detection Prompt:</strong> Must contain <code className="text-amber-400 bg-slate-950 px-1.5 py-0.5 rounded">&#123;&#123;transcript&#125;&#125;</code> where the video transcript with timestamps will be injected. Must instruct Gemini to return a strict JSON array of objects with <code className="text-slate-300">start</code>, <code className="text-slate-300">end</code>, <code className="text-slate-300">score</code>, <code className="text-slate-300">reason</code>, and <code className="text-slate-300">hookText</code> fields.
-          </li>
-          <li>
-            <strong className="text-slate-200">Hook Text Prompt:</strong> Must contain <code className="text-amber-400 bg-slate-950 px-1.5 py-0.5 rounded">&#123;&#123;clipTranscript&#125;&#125;</code> where the target clip's transcript text will be injected.
-          </li>
-        </ul>
+      <div className="animate-fade-up" style={{ animationDelay: '60ms' }}>
+        {isLoading ? (
+          <div className="space-y-3">
+            <Skeleton className="h-9 w-80 rounded-lg" />
+            <Skeleton className="h-96 w-full rounded-xl" />
+          </div>
+        ) : (
+          <PromptEditor
+            initialTemplates={templates.length > 0 ? templates : DEFAULT_PROMPT_TEMPLATES}
+            onSave={handleSaveTemplate}
+          />
+        )}
       </div>
+
+      <Card className="animate-fade-up" style={{ animationDelay: '120ms' }}>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Info className="size-4 text-muted-foreground" />
+            Template variables
+          </CardTitle>
+          <CardDescription>
+            Keep these placeholders in your prompts so the right data gets injected
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2 text-sm leading-relaxed text-muted-foreground">
+          <p>
+            <strong className="font-medium text-foreground">Viral detection prompt</strong> —
+            must contain{' '}
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground">
+              {'{{transcript}}'}
+            </code>{' '}
+            where the timestamped transcript is injected, and must ask the model to return a
+            strict JSON array with <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs text-foreground">start</code>,{' '}
+            <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs text-foreground">end</code>,{' '}
+            <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs text-foreground">score</code>,{' '}
+            <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs text-foreground">reason</code> and{' '}
+            <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs text-foreground">hookText</code> fields.
+          </p>
+          <p>
+            <strong className="font-medium text-foreground">Hook text prompt</strong> — must
+            contain{' '}
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground">
+              {'{{clipTranscript}}'}
+            </code>{' '}
+            where the clip&apos;s transcript text is injected.
+          </p>
+        </CardContent>
+      </Card>
     </div>
   );
 }

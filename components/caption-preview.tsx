@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { ComponentType } from 'react';
 import { Player } from '@remotion/player';
 import { CaptionComposition } from '@/remotion/CaptionComposition';
 import { CaptionPreset } from '@/lib/types';
@@ -28,10 +28,12 @@ export const CaptionPreview: React.FC<CaptionPreviewProps> = ({
   ];
 
   return (
-    <div className="relative w-full max-w-sm aspect-[9/16] rounded-2xl overflow-hidden border-2 border-slate-800 bg-slate-950 shadow-2xl">
+    <div className="relative mx-auto aspect-[9/16] w-full max-w-xs overflow-hidden rounded-xl border bg-muted shadow-sm sm:max-w-sm">
       <Player
-        component={CaptionComposition as any}
-        durationInFrames={30 * 8} // 8 seconds preview
+        component={
+          CaptionComposition as unknown as ComponentType<Record<string, unknown>>
+        }
+        durationInFrames={30 * 8}
         fps={30}
         compositionWidth={1080}
         compositionHeight={1920}
