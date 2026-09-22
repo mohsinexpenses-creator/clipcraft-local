@@ -297,7 +297,7 @@ function DashboardContent() {
             Manage source videos, detect viral moments with AI, and render 9:16 portrait clips.
           </p>
         </div>
-        <Button size="lg" render={<Link href="/upload" />}>
+                <Button size="lg" nativeButton={false} render={<Link href="/upload" />}>
           <Upload />
           Upload video
         </Button>
@@ -345,7 +345,7 @@ function DashboardContent() {
                       Upload a long-form landscape video to get started.
                     </p>
                   </div>
-                  <Button variant="outline" size="sm" render={<Link href="/upload" />}>
+                  <Button variant="outline" size="sm" nativeButton={false} render={<Link href="/upload" />}>
                     <Upload />
                     Upload video
                   </Button>

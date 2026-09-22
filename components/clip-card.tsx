@@ -316,6 +316,7 @@ export const ClipCard: React.FC<ClipCardProps> = ({ clip, captionPresets, onRefr
               {clip.status === 'done' && mediaUrl && (
                 <Button
                   variant="outline"
+                  nativeButton={false}
                   render={<a href={mediaUrl} download={`clip_${clip._id}.mp4`} />}
                 >
                   <Download />

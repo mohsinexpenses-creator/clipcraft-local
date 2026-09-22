@@ -1,7 +1,10 @@
+// import { loadEnvConfig } from '@next/env';
 import { Job, Worker } from 'bullmq';
 import { ensureEnvVar, toErrorMessage } from '../lib/errors';
 import { JobData } from '../lib/types';
 import { processClipJob } from './processor';
+
+// loadEnvConfig(process.cwd());
 
 function parseRedisUrl(url: string) {
   try {
@@ -17,9 +20,6 @@ function parseRedisUrl(url: string) {
 }
 
 async function startWorker() {
-  console.log(process.env.MONGODB_URI);
-  console.log(process.env.REDIS_URL);
-  
   const redisUrl = ensureEnvVar('REDIS_URL', 'connect the BullMQ worker to Redis');
 
   console.log('[BullMQ Worker] Starting clip processing worker...');

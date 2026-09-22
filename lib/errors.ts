@@ -1,3 +1,7 @@
+import { loadEnvConfig } from '@next/env';
+
+loadEnvConfig(process.cwd());
+
 export interface AppErrorOptions {
   status?: number;
   details?: string;
@@ -74,18 +78,22 @@ export function toErrorStatus(error: unknown, fallback = 500): number {
 }
 
 export function ensureEnvVar(name: string, purpose: string): string {
-  const value = process.env[name]?.trim();
+  const envName = name.trim().replace(/^\$\{?(.+?)\}?$/, '$1');
+  const value =
+    process.env[envName]?.trim() ??
+    process.env[envName.toUpperCase()]?.trim();
+
   if (!value) {
-    throw new AppError(`${name} is not configured.`, {
+    throw new AppError(`${envName} is not configured.`, {
       status: 500,
-      resolution: `Set ${name} in your .env.local file so ClipCraft can ${purpose}.`,
+      resolution: `Set ${envName} in your .env.local file so ClipCraft can ${purpose}.`,
     });
   }
 
-  if (value.includes('your_api_key')) {
-    throw new AppError(`${name} is still using the placeholder value.`, {
+  if (value.toLowerCase().includes('your_api_key')) {
+    throw new AppError(`${envName} is still using the placeholder value.`, {
       status: 500,
-      resolution: `Replace ${name} in .env.local with a real value so ClipCraft can ${purpose}.`,
+      resolution: `Replace ${envName} in .env.local with a real value so ClipCraft can ${purpose}.`,
     });
   }
 
