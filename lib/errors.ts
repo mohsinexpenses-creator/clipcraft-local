@@ -57,6 +57,39 @@ export class AppError extends Error {
   }
 }
 
+/**
+ * Route-handler error payload.
+ *
+ * The dashboard reads `data.error` (see getErrorFromResponse in app/page.tsx) while the
+ * richer AppError fields are `summary` / `resolution`. Expose both `error` and `message`
+ * so the real text reaches the UI instead of a generic fallback, and keep the
+ * "How to fix" hint separate so it can be rendered as help text.
+ */
+export function getErrorResponse(error: unknown): {
+  success: false;
+  statusCode: number;
+  error: string;
+  message: string;
+  resolution?: string;
+  details?: string;
+} {
+  const statusCode = toErrorStatus(error);
+
+  if (error instanceof AppError) {
+    return {
+      success: false,
+      statusCode: error.status,
+      error: error.summary,
+      message: error.summary,
+      ...(error.resolution ? { resolution: error.resolution } : {}),
+      ...(error.details ? { details: error.details } : {}),
+    };
+  }
+
+  const message = toErrorMessage(error);
+  return { success: false, statusCode, error: message, message };
+}
+
 export function toErrorMessage(error: unknown, fallback = 'An unexpected error occurred.'): string {
   if (error instanceof Error && error.message.trim()) {
     return error.message;

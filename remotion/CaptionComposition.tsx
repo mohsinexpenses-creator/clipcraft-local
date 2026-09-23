@@ -1,24 +1,60 @@
 import React from 'react';
-import { useCurrentFrame, useVideoConfig } from 'remotion';
-import { WordTimestamp, CaptionPreset } from '../lib/types';
-import { AnimatedWord } from './AnimatedWord';
-import { CTAOverlay } from './CTAOverlay';
+import { AbsoluteFill, OffthreadVideo, useCurrentFrame, useVideoConfig } from 'remotion';
+import { CaptionPreset, WordTimestamp } from '../lib/types';
+import { AnimatedWord, CaptionChunk } from './AnimatedWord';
+import { CTAOverlay, getCtaBottomLiftPercent } from './CTAOverlay';
 import { HookOverlay } from './HookOverlay';
 
 export interface CaptionCompositionProps {
-  videoUrl?: string;
-  hookText: string;
-  hookDuration: number; // in seconds
-  ctaText: string;
-  ctaDuration: number; // in seconds
-  words: WordTimestamp[];
-  preset: CaptionPreset;
+  /**
+   * ABSOLUTE FILE PATH of the processed clip (never a `file://` URL).
+   * <OffthreadVideo> extracts frames with ffmpeg outside the browser, so a plain
+   * path works during rendering and needs no CORS headers.
+   *
+   * Not supported in the in-app <Player> preview (that runs fully in the browser),
+   * which is why the preview page simply does not pass this prop and gets the
+   * gradient placeholder below instead.
+   */
+  videoSrc?: string;
+  /** Keep the clip's own audio. Always true for real renders. */
+  videoHasAudio?: boolean;
   videoWidth?: number;
   videoHeight?: number;
+  sourceFps?: number;
+  hookText: string;
+  /** Length of the duplicated hook intro, in seconds. */
+  hookDuration: number;
+  ctaText: string;
+  ctaDuration: number;
+  /** Word timings relative to the START of the source segment (0 = segment start). */
+  words: WordTimestamp[];
+  preset: CaptionPreset;
+}
+
+/** Group the transcript into short readable caption lines (TikTok/Shorts style). */
+export function buildCaptionChunks(words: WordTimestamp[], wordsPerChunk = 4): CaptionChunk[] {
+  if (!words || words.length === 0) return [];
+
+  const chunks: CaptionChunk[] = [];
+  for (let i = 0; i < words.length; i += wordsPerChunk) {
+    const slice = words.slice(i, i + wordsPerChunk);
+    if (slice.length === 0) continue;
+
+    chunks.push({
+      id: `${slice[0].start.toFixed(3)}-${i}`,
+      words: slice,
+      start: slice[0].start,
+      end: slice[slice.length - 1].end,
+    });
+  }
+  return chunks;
 }
 
 export const CaptionComposition: React.FC<CaptionCompositionProps> = ({
-  videoUrl,
+  videoSrc,
+  videoHasAudio = true,
+  videoWidth,
+  videoHeight,
   hookText,
   hookDuration = 3,
   ctaText,
@@ -28,94 +64,101 @@ export const CaptionComposition: React.FC<CaptionCompositionProps> = ({
 }) => {
   const frame = useCurrentFrame();
   const { fps, durationInFrames } = useVideoConfig();
-  const currentTime = frame / fps;
   const totalDurationInSeconds = durationInFrames / fps;
 
+  /**
+   * The rendered clip is [hook intro][full segment], so every transcript word has
+   * to move later by exactly hookDuration seconds.
+   */
   const shiftedWords: WordTimestamp[] = words.map((w) => ({
     ...w,
     start: w.start + hookDuration,
     end: w.end + hookDuration,
   }));
+  const chunks = buildCaptionChunks(shiftedWords);
+
+  const currentTime = frame / fps;
+  // Lift the captions while the end CTA card occupies the same bottom area.
+  const captionLiftPercent = getCtaBottomLiftPercent(ctaDuration, totalDurationInSeconds, currentTime);
+
+  // Native size, centred: the FFmpeg stage already produced a 9:16 canvas, so this
+  // is a 1:1 blit. Falls back to cover-fit when the dimensions are unknown.
+  const nativeFit =
+    videoWidth && videoHeight ? (
+      <AbsoluteFill style={{ alignItems: 'center', justifyContent: 'center', backgroundColor: '#000' }}>
+        <div style={{ width: videoWidth, height: videoHeight }}>
+          <OffthreadVideo
+            src={videoSrc as string}
+            muted={!videoHasAudio}
+            style={{ width: '100%', height: '100%' }}
+          />
+        </div>
+      </AbsoluteFill>
+    ) : (
+      <AbsoluteFill style={{ backgroundColor: '#000' }}>
+        <OffthreadVideo
+          src={videoSrc as string}
+          muted={!videoHasAudio}
+          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+        />
+      </AbsoluteFill>
+    );
 
   return (
-    <div
-      style={{
-        position: 'relative',
-        width: '100%',
-        height: '100%',
-        backgroundColor: '#0F172A',
-        overflow: 'hidden',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-      }}
-    >
-      {videoUrl ? (
-        <video
-          src={videoUrl}
-          style={{
-            width: '100%',
-            height: '100%',
-            objectFit: 'cover',
-          }}
-          muted
-        />
+    <AbsoluteFill style={{ backgroundColor: '#0F172A', overflow: 'hidden' }}>
+      {videoSrc ? (
+        nativeFit
       ) : (
-        <div
+        <AbsoluteFill
           style={{
-            position: 'absolute',
-            inset: 0,
             background: 'linear-gradient(180deg, #1E293B 0%, #0F172A 100%)',
-            display: 'flex',
-            flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
             color: '#64748B',
-            fontSize: '18px',
+            fontSize: 18,
           }}
         >
           <div
             style={{
-              width: '80px',
-              height: '80px',
+              width: 80,
+              height: 80,
               borderRadius: '50%',
               border: '3px solid #334155',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              marginBottom: '16px',
+              marginBottom: 16,
             }}
           >
             🎬
           </div>
           <div>9:16 Portrait Caption Preview</div>
-        </div>
+        </AbsoluteFill>
       )}
 
-      {hookDuration > 0 && (
-        <HookOverlay
-          hookText={hookText}
-          durationInSeconds={hookDuration}
-          currentTime={currentTime}
-        />
-      )}
+      {hookDuration > 0 ? (
+        <HookOverlay hookText={hookText} hookDurationInSeconds={hookDuration} frame={frame} fps={fps} />
+      ) : null}
 
-      {preset && (
+      {preset ? (
         <AnimatedWord
-          words={shiftedWords}
-          currentTime={currentTime}
+          chunks={chunks}
+          frame={frame}
+          fps={fps}
           preset={preset}
+          bottomLiftPercent={captionLiftPercent}
         />
-      )}
+      ) : null}
 
-      {ctaDuration > 0 && (
+      {ctaDuration > 0 ? (
         <CTAOverlay
           ctaText={ctaText}
           ctaDurationInSeconds={ctaDuration}
-          currentTime={currentTime}
           totalDurationInSeconds={totalDurationInSeconds}
+          frame={frame}
+          fps={fps}
         />
-      )}
-    </div>
+      ) : null}
+    </AbsoluteFill>
   );
 };

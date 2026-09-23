@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { getPromptTemplate } from './db';
 import { AppError, ensureEnvVar, toErrorMessage } from './errors';
+import { getClaudeModel } from './models';
 import { TranscriptData, ViralSegment } from './types';
 
 function getAnthropicClient(): Anthropic {
@@ -45,7 +46,7 @@ export async function detectViralSegments(
     const userPrompt = templateDoc.template.replace('{{transcript}}', formattedTranscript);
 
     const response = await client.messages.create({
-      model: 'claude-3-haiku-20240307',
+      model: getClaudeModel(),
       max_tokens: 1500,
       temperature: 0.5,
       system: templateDoc.systemPrompt,
@@ -146,7 +147,7 @@ async function generateShortOverlayText(options: {
     const userPrompt = templateDoc.template.replace('{{clipTranscript}}', normalizedTranscript);
 
     const response = await client.messages.create({
-      model: 'claude-3-haiku-20240307',
+      model: getClaudeModel(),
       max_tokens: 100,
       temperature: 0.7,
       system: templateDoc.systemPrompt,

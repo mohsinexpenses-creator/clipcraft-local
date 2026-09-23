@@ -1,11 +1,12 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { getPromptTemplate } from './db';
 import { AppError, ensureEnvVar, toErrorMessage } from './errors';
+import { getGeminiModelName } from './models';
 import { TranscriptData, ViralSegment } from './types';
 
 function getGeminiModel() {
   const apiKey = ensureEnvVar('GEMINI_API_KEY', 'call Gemini for viral segment detection and hook generation');
-  const modelName = process.env.GEMINI_MODEL?.trim() || 'gemini-1.5-flash';
+  const modelName = getGeminiModelName();
   console.log(`[Gemini] Initializing Gemini model '${modelName}'...`);
 
   const genAI = new GoogleGenerativeAI(apiKey);

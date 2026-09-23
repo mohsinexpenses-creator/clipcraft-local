@@ -1,5 +1,10 @@
 PROJECT: Personal-use AI clip generator (Next.js, no Python)
 
+> **This file is the original product specification and is kept unchanged.**
+> For installation, environment variables, running the worker and troubleshooting,
+> see **[SETUP.md](./SETUP.md)**.
+
+
 GOAL
 Build a personal-use (not for production/multi-user deployment) web app that takes a
 long-form landscape video (e.g. a YouTube video) and automatically produces several

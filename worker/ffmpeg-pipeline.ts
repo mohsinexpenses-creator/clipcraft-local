@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { AppError, toErrorMessage } from '../lib/errors';
 import { DEFAULT_FILTER_PRESETS } from '../lib/presets';
-import { runFfmpeg } from '../lib/ffmpeg';
+import { getVideoMetadata, runFfmpeg } from '../lib/ffmpeg';
 
 export interface ProcessSegmentOptions {
   sourceVideoPath: string;
@@ -12,7 +12,99 @@ export interface ProcessSegmentOptions {
   hookDuration: number;
   filterPresetId: string;
   cropFilter: string;
+  /** Width/height of the crop window, used to size the output canvas. */
+  cropWidth: number;
+  cropHeight: number;
+  /** fps the Remotion composition will use; the intermediate is normalised to it. */
+  targetFps: number;
+  /** False when the source has no audio stream -> a silent track is muxed in. */
+  sourceHasAudio: boolean;
   onProgress?: (progress: number) => void;
+}
+
+/** The composition is 1080x1920; never upscale past it, never exceed it. */
+const MAX_OUTPUT_WIDTH = 1080;
+const MAX_OUTPUT_HEIGHT = 1920;
+
+/** libx264 refuses odd widths/heights, and `crop` happily produces them. */
+export function evenSize(value: number, minimum = 2): number {
+  const rounded = Math.floor(value / 2) * 2;
+  return Math.max(minimum, rounded);
+}
+
+/**
+ * Snap an arbitrary source fps to a value that is both a sane composition fps and
+ * well supported by encoders/players. Keeps 23.976/29.97/59.94 NTSC rates intact.
+ */
+export function normalizeFps(sourceFps: number): number {
+  if (!Number.isFinite(sourceFps) || sourceFps <= 0) return 30;
+
+  const candidates = [23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60];
+  let best = candidates[0];
+  let bestDelta = Number.POSITIVE_INFINITY;
+
+  for (const candidate of candidates) {
+    const delta = Math.abs(candidate - sourceFps);
+    if (delta < bestDelta) {
+      bestDelta = delta;
+      best = candidate;
+    }
+  }
+
+  // Anything exotic (e.g. 12fps screen capture) falls back to 30.
+  return bestDelta <= 1.5 ? best : 30;
+}
+
+/**
+ * Output canvas for the processed clip: same 9:16 shape as the crop, downscaled to
+ * fit the composition but never upscaled (a 720p source stays 720x1280).
+ */
+export function computeOutputSize(cropWidth: number, cropHeight: number): { width: number; height: number } {
+  /**
+   * Validate BEFORE evenSize(): evenSize(0) clamps up to 2, so a 0x0 crop used to
+   * produce a 2x2 output canvas instead of falling back to 1080x1920.
+   */
+  if (
+    !Number.isFinite(cropWidth) ||
+    !Number.isFinite(cropHeight) ||
+    cropWidth < 16 ||
+    cropHeight < 16
+  ) {
+    return { width: MAX_OUTPUT_WIDTH, height: MAX_OUTPUT_HEIGHT };
+  }
+
+  const w = evenSize(cropWidth);
+  const h = evenSize(cropHeight);
+  const scale = Math.min(1, MAX_OUTPUT_WIDTH / w, MAX_OUTPUT_HEIGHT / h);
+
+  // libx264 needs even dimensions and something it can actually macro-block.
+  return { width: Math.max(16, evenSize(w * scale)), height: Math.max(16, evenSize(h * scale)) };
+}
+
+/**
+ * The concat demuxer treats `'` specially, and Windows paths contain backslashes it
+ * also interprets. Forward slashes + single-quote escaping covers both.
+ */
+function concatListEntry(filePath: string): string {
+  const normalized = filePath.replace(/\\/g, '/');
+  return `file '${normalized.replace(/'/g, "'\\''")}'`;
+}
+
+function assertUsableFile(filePath: string, step: string): void {
+  if (!fs.existsSync(filePath)) {
+    throw new AppError(`FFmpeg finished "${step}" without creating ${filePath}.`, {
+      resolution: 'Inspect the FFmpeg command and stderr printed in the worker log, then retry.',
+    });
+  }
+
+  const { size } = fs.statSync(filePath);
+  if (size < 1024) {
+    throw new AppError(`FFmpeg produced an empty file during "${step}".`, {
+      details: `${filePath} (${size} bytes)`,
+      resolution:
+        'The clip window is probably too short or the crop/filter chain is invalid - check the timestamps and retry.',
+    });
+  }
 }
 
 export async function processVideoSegment(options: ProcessSegmentOptions): Promise<string> {
@@ -24,10 +116,14 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
     hookDuration,
     filterPresetId,
     cropFilter,
+    cropWidth,
+    cropHeight,
+    targetFps,
+    sourceHasAudio,
     onProgress,
   } = options;
 
-  if (end <= start) {
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
     throw new AppError('Clip end time must be greater than clip start time.', {
       status: 400,
       details: `start=${start}, end=${end}`,
@@ -39,126 +135,193 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
   if (!filterPreset) {
     throw new AppError(`Unknown filter preset: ${filterPresetId}.`, {
       status: 400,
+      details: `Available: ${DEFAULT_FILTER_PRESETS.map((p) => p.id).join(', ')}`,
       resolution: 'Select one of the available filter presets from the dashboard and retry.',
     });
   }
 
   const segmentDuration = end - start;
-  const tempDir = path.dirname(outputPath);
-  if (!fs.existsSync(tempDir)) {
-    fs.mkdirSync(tempDir, { recursive: true });
+  const fps = normalizeFps(targetFps);
+  const { width: outWidth, height: outHeight } = computeOutputSize(cropWidth, cropHeight);
+
+  if (outWidth < 16 || outHeight < 16 || !cropFilter.trim()) {
+    throw new AppError('Cannot build the FFmpeg filter chain without a valid crop window.', {
+      status: 400,
+      details: `crop=${cropWidth}x${cropHeight}, output=${outWidth}x${outHeight}, cropFilter="${cropFilter}"`,
+      resolution:
+        'The smart crop returned an unusable window - re-run the render, and check the [FaceDetector] line in the worker log.',
+    });
   }
+
+  const tempDir = path.dirname(outputPath);
+  if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
 
   const baseName = path.basename(outputPath, '.mp4');
   const processedBaseClip = path.join(tempDir, `${baseName}_base.mp4`);
   const hookIntroClip = path.join(tempDir, `${baseName}_hook_intro.mp4`);
   const concatListPath = path.join(tempDir, `${baseName}_concat.txt`);
 
+  // Shared encoder settings. `+global_header` is required so the concat demuxer can
+  // stream-copy the two files without complaining about extradata.
+  const videoArgs = [
+    '-c:v', 'libx264',
+    '-preset', 'fast',
+    '-crf', '20',
+    '-pix_fmt', 'yuv420p',
+    '-profile:v', 'high',
+    '-r', String(fps),
+    '-vsync', 'cfr',
+    '-movflags', '+faststart',
+    '-fflags', '+genpts',
+    '-flags', '+global_header',
+  ];
+
+  /**
+   * ALL inputs must be declared before -filter_complex. When the source has no audio
+   * we add an `anullsrc` input so the output always carries an AAC track - otherwise
+   * the concat step and the Remotion audio track both break on a video-only file.
+   */
+  const inputArgs = [
+    // `-ss` before `-i` seeks by timestamp; pair it with `-t` (duration), NOT `-to`.
+    // ffmpeg warns that "-to and -t are mutually exclusive and -to takes precedence"
+    // and the meaning of `-to` after an input seek is version-dependent.
+    '-ss', start.toFixed(3),
+    '-t', segmentDuration.toFixed(3),
+    '-i', sourceVideoPath,
+    ...(sourceHasAudio ? [] : ['-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100']),
+  ];
+  const audioInputIndex = sourceHasAudio ? '0' : '1';
+  const audioArgs = ['-c:a', 'aac', '-b:a', '160k', '-ar', '44100', '-ac', '2'];
+
   try {
-    let colorFilterStr = filterPreset.ffmpegFilter;
-    if (colorFilterStr === 'null' || !colorFilterStr) {
-      colorFilterStr = '';
-    }
+    let colorFilterStr = filterPreset.ffmpegFilter.trim();
+    if (colorFilterStr === 'null' || colorFilterStr === '') colorFilterStr = '';
 
-    const filterComplexParts = ['hflip', cropFilter];
-    if (colorFilterStr) {
-      filterComplexParts.push(colorFilterStr);
-    }
-    const videoFilterStr = filterComplexParts.join(',');
+    /**
+     * Order matters: `hflip` runs BEFORE `crop`, so the crop coordinates must be
+     * expressed in MIRRORED space. worker/face-detector.ts now samples frames with
+     * `hflip` already applied, which is what makes `cropFilter` line up with the
+     * subject. (Previously the detector measured un-mirrored frames, so the crop
+     * window landed on the opposite side of the speaker.)
+     *
+     * The trailing `scale` guarantees an exact, even output size so the Remotion
+     * composition never sees black bars or a resolution mismatch.
+     */
+    const filterParts = ['hflip', cropFilter];
+    if (colorFilterStr) filterParts.push(colorFilterStr);
+    filterParts.push(`scale=${outWidth}:${outHeight}:flags=lanczos`);
+    filterParts.push('format=yuv420p');
 
-    console.log(`[FFmpeg Pipeline] Step 1: Processing base clip (${start}s to ${end}s, dur=${segmentDuration}s)...`);
+    console.log(
+      `[FFmpeg Pipeline] Step 1: base clip ${start}s -> ${end}s ` +
+      `(dur=${segmentDuration.toFixed(2)}s, fps=${fps}, out=${outWidth}x${outHeight}, audio=${sourceHasAudio ? 'source' : 'silent'})`
+    );
     if (onProgress) onProgress(10);
 
     const pass1Args = [
       '-y',
-      '-ss', start.toString(),
-      '-to', end.toString(),
-      '-i', sourceVideoPath,
-      '-vf', videoFilterStr,
-      '-c:v', 'libx264',
-      '-preset', 'fast',
-      '-crf', '22',
-      '-c:a', 'aac',
-      '-b:a', '128k',
+      '-hide_banner',
+      '-loglevel', 'error',
+      '-stats',
+      ...inputArgs,
+      '-vf', filterParts.join(','),
+      '-map', '0:v:0',
+      '-map', `${audioInputIndex}:a:0`,
+      ...videoArgs,
+      ...audioArgs,
+      ...(sourceHasAudio ? [] : ['-shortest']),
       processedBaseClip,
     ];
 
     await runFfmpeg(pass1Args, {
+      label: 'trim+mirror+crop+color',
       totalDurationSeconds: segmentDuration,
       onProgress: (progress) => {
-        if (onProgress && progress.percent) {
-          onProgress(10 + Math.floor(progress.percent * 0.4));
-        }
+        if (onProgress && progress.percent) onProgress(10 + Math.floor(progress.percent * 0.4));
       },
     });
 
-    const actualHookDur = Math.min(Math.max(hookDuration, 0), segmentDuration);
+    assertUsableFile(processedBaseClip, 'trim+mirror+crop+color');
+
+    const actualHookDur = Math.min(Math.max(Number(hookDuration) || 0, 0), segmentDuration);
+
     if (actualHookDur > 0) {
-      console.log(`[FFmpeg Pipeline] Step 2: Extracting ${actualHookDur}s duplicated hook intro...`);
+      console.log(`[FFmpeg Pipeline] Step 2: extracting ${actualHookDur.toFixed(2)}s duplicated hook intro...`);
       if (onProgress) onProgress(55);
 
+      // Re-encode (not `-c copy`) so the hook intro starts on a keyframe and its
+      // encoder parameters are byte-identical to the base clip -> clean concat.
       const hookExtractArgs = [
         '-y',
+        '-hide_banner',
+        '-loglevel', 'error',
         '-ss', '0',
-        '-t', actualHookDur.toString(),
+        '-t', actualHookDur.toFixed(3),
         '-i', processedBaseClip,
-        '-c:v', 'libx264',
-        '-preset', 'fast',
-        '-crf', '22',
-        '-c:a', 'aac',
-        '-b:a', '128k',
+        '-map', '0:v:0',
+        '-map', '0:a:0',
+        ...videoArgs,
+        ...audioArgs,
         hookIntroClip,
       ];
 
-      await runFfmpeg(hookExtractArgs);
+      await runFfmpeg(hookExtractArgs, { label: 'hook-intro' });
+      assertUsableFile(hookIntroClip, 'hook intro extraction');
 
-      console.log('[FFmpeg Pipeline] Step 3: Concatenating hook intro + base clip...');
+      console.log('[FFmpeg Pipeline] Step 3: concatenating hook intro + base clip...');
       if (onProgress) onProgress(70);
 
-      const concatContent = `file '${hookIntroClip}'\nfile '${processedBaseClip}'\n`;
-      fs.writeFileSync(concatListPath, concatContent, 'utf-8');
+      fs.writeFileSync(
+        concatListPath,
+        `${concatListEntry(hookIntroClip)}\n${concatListEntry(processedBaseClip)}\n`,
+        'utf-8'
+      );
 
       const concatArgs = [
         '-y',
+        '-hide_banner',
+        '-loglevel', 'error',
         '-f', 'concat',
         '-safe', '0',
         '-i', concatListPath,
         '-c', 'copy',
+        '-movflags', '+faststart',
         outputPath,
       ];
 
-      await runFfmpeg(concatArgs);
+      await runFfmpeg(concatArgs, { label: 'concat' });
     } else {
+      console.log('[FFmpeg Pipeline] Step 2: hookDuration=0, using the base clip as the output.');
       if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
-      fs.renameSync(processedBaseClip, outputPath);
+      fs.copyFileSync(processedBaseClip, outputPath);
     }
 
-    if (!fs.existsSync(outputPath)) {
-      throw new AppError('FFmpeg pipeline completed without producing the processed clip file.', {
-        resolution: 'Inspect the FFmpeg logs for the trim/crop/concat steps and retry rendering.',
-      });
-    }
+    assertUsableFile(outputPath, 'final processed clip');
+
+    // Fail loudly here instead of handing Remotion a broken file.
+    const meta = await getVideoMetadata(outputPath);
+    console.log(
+      `[FFmpeg Pipeline] Processed clip ready: ${meta.width}x${meta.height} @ ${meta.fps}fps, ` +
+      `${meta.duration.toFixed(2)}s, audio=${meta.hasAudio ? 'yes' : 'no'} -> ${outputPath}`
+    );
 
     if (onProgress) onProgress(80);
-    console.log(`[FFmpeg Pipeline] Video processing complete: ${outputPath}`);
     return outputPath;
   } catch (error) {
-    if (error instanceof AppError) {
-      throw error;
-    }
+    if (error instanceof AppError) throw error;
 
     throw new AppError('FFmpeg video processing failed.', {
       details: toErrorMessage(error),
       resolution:
-        'Inspect the FFmpeg pipeline logs, verify the source clip exists, and retry rendering.',
+        'Inspect the FFmpeg command in the worker log, verify the source clip exists and the crop window is inside the frame, and retry.',
     });
   } finally {
-    try {
-      if (fs.existsSync(processedBaseClip)) fs.unlinkSync(processedBaseClip);
-      if (fs.existsSync(hookIntroClip)) fs.unlinkSync(hookIntroClip);
-      if (fs.existsSync(concatListPath)) fs.unlinkSync(concatListPath);
-    } catch {
-      // Ignore cleanup errors.
+    for (const temp of [processedBaseClip, hookIntroClip, concatListPath]) {
+      try {
+        if (fs.existsSync(temp)) fs.unlinkSync(temp);
+      } catch {
+        // Ignore cleanup errors.
+      }
     }
   }
 }

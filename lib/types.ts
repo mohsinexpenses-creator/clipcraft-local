@@ -22,6 +22,8 @@ export interface TranscriptData {
 export interface VideoRecord {
   _id: string;
   originalName: string;
+  /** Sanitised on-disk name inside UPLOAD_DIR (never user-controlled path parts). */
+  fileName: string;
   filePath: string;
   duration: number; // in seconds
   width: number;
@@ -102,7 +104,9 @@ export interface ClipRecord {
   cropData?: CropWindow;
   viralScore: number;
   viralReason?: string;
-  outputPath?: string; // relative path to output mp4
+  outputPath?: string; // relative path to output mp4, e.g. /generated-clips/{videoId}/{clipId}.mp4
+  outputFileSize?: number; // bytes, 0/undefined means the render did not produce a usable file
+  outputFps?: number; // fps actually used for the render
   status: 'pending' | 'processing' | 'done' | 'failed';
   progress?: number; // 0-100
   error?: string;
@@ -121,4 +125,15 @@ export interface JobData {
   ctaDuration?: number;
   filterPreset: string;
   captionPresetId: string;
+}
+
+/**
+ * Queued by the upload/transcript API routes and consumed by the worker, so a
+ * dev-server reload can no longer orphan an in-flight transcription.
+ */
+export interface TranscriptionJobData {
+  videoId: string;
+  filePath: string;
+  /** Set when the user pressed "Transcribe again" on the dashboard. */
+  retry?: boolean;
 }

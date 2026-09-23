@@ -1,12 +1,15 @@
 import { NextResponse } from 'next/server';
 import { getVideo, saveVideo } from '@/lib/db';
-import { toErrorMessage, toErrorStatus } from '@/lib/errors';
-import { getPlannedTranscriptionEngine, transcribeVideo } from '@/lib/whisper';
+import { toErrorStatus, toErrorMessage } from '@/lib/errors';
+import { enqueueTranscriptionJob } from '@/lib/queue';
+import { getPlannedTranscriptionEngine } from '@/lib/whisper';
+
+export const runtime = 'nodejs';
 
 export async function GET(
-  request: Request,
+  _request: Request,
   { params }: { params: Promise<{ id: string }> }
-) {
+): Promise<NextResponse> {
   try {
     const { id } = await params;
     const video = await getVideo(id);
@@ -29,41 +32,55 @@ export async function GET(
   }
 }
 
+/**
+ * "Transcribe again" / retry endpoint.
+ *
+ * It now only ENQUEUES the job. The previous version awaited `transcribeVideo()`
+ * inside the request, which held the HTTP connection open for the whole whisper run
+ * (minutes on a long video) - any proxy timeout or page refresh left the video stuck
+ * in `transcribing` with no way to recover except editing MongoDB by hand.
+ */
 export async function POST(
-  request: Request,
+  _request: Request,
   { params }: { params: Promise<{ id: string }> }
-) {
+): Promise<NextResponse> {
   let videoId = '';
 
   try {
     const { id } = await params;
     videoId = id;
+
     const video = await getVideo(id);
     if (!video) {
       return NextResponse.json({ error: 'Video not found' }, { status: 404 });
     }
 
-    const transcriptionEngine = getPlannedTranscriptionEngine();
+    // Fail fast, in the request, if no engine could ever run - better than queueing a
+    // job that immediately errors in the worker.
+    const engine = getPlannedTranscriptionEngine();
+
     video.status = 'transcribing';
-    video.transcriptionProvider = transcriptionEngine.provider;
-    video.transcriptionModel = transcriptionEngine.model;
+    video.transcriptionProvider = engine.provider;
+    video.transcriptionModel = engine.model;
     video.error = undefined;
     await saveVideo(video);
 
-    const transcript = await transcribeVideo(video.filePath);
-    video.transcript = transcript;
-    video.status = 'transcribed';
-    video.error = undefined;
-    await saveVideo(video);
+    await enqueueTranscriptionJob({ videoId: video._id, filePath: video.filePath, retry: true });
 
-    return NextResponse.json({ success: true, transcript });
+    return NextResponse.json({
+      success: true,
+      queued: true,
+      engine: `${engine.label} (${engine.model})`,
+      message:
+        'Transcription queued. The worker will pick it up - refresh the dashboard to follow its progress.',
+    });
   } catch (error) {
     if (videoId) {
       try {
         const video = await getVideo(videoId);
         if (video) {
           video.status = 'failed';
-          video.error = toErrorMessage(error, 'Transcription failed.');
+          video.error = toErrorMessage(error, 'Failed to queue transcription.');
           await saveVideo(video);
         }
       } catch (saveError) {
@@ -72,7 +89,7 @@ export async function POST(
     }
 
     return NextResponse.json(
-      { error: toErrorMessage(error, 'Failed to transcribe video.') },
+      { error: toErrorMessage(error, 'Failed to queue transcription.') },
       { status: toErrorStatus(error, 500) }
     );
   }

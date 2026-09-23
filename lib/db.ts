@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { Db, MongoClient } from 'mongodb';
 import { CaptionPreset, ClipRecord, PromptTemplate, VideoRecord } from './types';
 import { DEFAULT_CAPTION_PRESETS, DEFAULT_PROMPT_TEMPLATES } from './presets';
@@ -68,6 +69,15 @@ export async function getDb(): Promise<Db> {
 
 export async function saveVideo(video: VideoRecord): Promise<VideoRecord> {
   const mongodb = await getDb();
+
+  /**
+   * New records arrive without an _id. The old code upserted on `{ _id: undefined }`,
+   * which MongoDB treats as `_id: null` - so the SECOND upload ever made would
+   * overwrite the first video's document, and `video._id` stayed undefined for the
+   * caller (which then crashed on `video._id.toString()`).
+   */
+  if (!video._id) video._id = randomUUID();
+
   video.updatedAt = new Date().toISOString();
   if (!video.createdAt) video.createdAt = video.updatedAt;
 
@@ -103,6 +113,8 @@ export async function deleteVideo(id: string): Promise<boolean> {
 
 export async function saveClip(clip: ClipRecord): Promise<ClipRecord> {
   const mongodb = await getDb();
+  // Same guard as saveVideo: never upsert on an undefined _id.
+  if (!clip._id) clip._id = randomUUID();
   clip.updatedAt = new Date().toISOString();
   if (!clip.createdAt) clip.createdAt = clip.updatedAt;
 

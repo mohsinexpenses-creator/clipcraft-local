@@ -1,56 +1,93 @@
 import React from 'react';
+import { interpolate, spring } from 'remotion';
 import { CaptionPreset, WordTimestamp } from '../lib/types';
 
-interface AnimatedWordProps {
+export interface CaptionChunk {
+  id: string;
   words: WordTimestamp[];
-  currentTime: number; // in seconds
-  preset: CaptionPreset;
+  /** Seconds, on the FINAL clip timeline (already shifted by hookDuration). */
+  start: number;
+  /** Seconds, on the FINAL clip timeline. */
+  end: number;
 }
 
+interface AnimatedWordProps {
+  chunks: CaptionChunk[];
+  frame: number;
+  fps: number;
+  preset: CaptionPreset;
+  /** Extra space to keep clear at the bottom, in % of the composition height (used by the CTA). */
+  bottomLiftPercent?: number;
+}
+
+/** 8-direction text outline; a real `-webkit-text-stroke` eats the glyph interiors. */
+function buildOutline(color: string, width: number): string {
+  if (!width || width <= 0) return 'none';
+
+  const offsets: Array<[number, number]> = [
+    [width, 0], [-width, 0], [0, width], [0, -width],
+    [width, width], [-width, width], [width, -width], [-width, -width],
+  ];
+  const shadows = offsets.map(([x, y]) => `${x}px ${y}px 0 ${color}`);
+  shadows.push(`0 ${Math.round(width * 1.5)}px ${Math.round(width * 3)}px rgba(0,0,0,0.55)`);
+  return shadows.join(', ');
+}
+
+function fontWeightToCss(weight: CaptionPreset['fontWeight']): number {
+  switch (weight) {
+    case 'black':
+      return 900;
+    case 'extra-bold':
+      return 800;
+    case 'bold':
+      return 700;
+    default:
+      return 400;
+  }
+}
+
+/**
+ * Karaoke / word-pop / fade-in captions.
+ *
+ * Everything is derived from `useCurrentFrame()` via interpolate()/spring().
+ * The previous version used CSS `transition: all 0.1s ease-out`, which Remotion
+ * cannot reproduce deterministically: each rendered frame is a fresh screenshot,
+ * so a CSS transition either never runs or runs at wall-clock speed, producing
+ * inconsistent animation between preview and render.
+ */
 export const AnimatedWord: React.FC<AnimatedWordProps> = ({
-  words,
-  currentTime,
+  chunks,
+  frame,
+  fps,
   preset,
+  bottomLiftPercent = 0,
 }) => {
-  if (!words || words.length === 0) return null;
+  if (!chunks || chunks.length === 0) return null;
 
-  // Group active words to display in small chunks (e.g. 3-5 words per caption line)
-  const chunkSize = 4;
-  
-  // Find current active word index
-  const activeWordIdx = words.findIndex(
-    (w) => currentTime >= w.start && currentTime <= w.end
-  );
+  const currentTime = frame / fps;
 
-  // If no word is currently active, find nearest upcoming or recent word chunk
-  let currentChunkIdx = 0;
-  if (activeWordIdx >= 0) {
-    currentChunkIdx = Math.floor(activeWordIdx / chunkSize);
-  } else {
-    // Find last word before currentTime
-    const lastPastWordIdx = words.findLastIndex((w) => currentTime >= w.end);
-    if (lastPastWordIdx >= 0) {
-      currentChunkIdx = Math.floor(lastPastWordIdx / chunkSize);
-    } else {
-      currentChunkIdx = 0;
+  // Keep the previous chunk on screen briefly so captions never strobe between words.
+  const HOLD_AFTER_SECONDS = 0.35;
+  const LOOKAHEAD_SECONDS = 0.06;
+
+  let active: CaptionChunk | null = null;
+  for (const chunk of chunks) {
+    if (currentTime >= chunk.start - LOOKAHEAD_SECONDS && currentTime <= chunk.end + HOLD_AFTER_SECONDS) {
+      active = chunk;
+      break;
     }
   }
 
-  const visibleWords = words.slice(
-    currentChunkIdx * chunkSize,
-    (currentChunkIdx + 1) * chunkSize
-  );
-
-  // Check if chunk is within visible window
-  const chunkStart = visibleWords[0]?.start ?? 0;
-  const chunkEnd = visibleWords[visibleWords.length - 1]?.end ?? 0;
-
-  if (currentTime < chunkStart - 0.2 || currentTime > chunkEnd + 0.8) {
-    return null;
+  // Nothing in range: show the next upcoming chunk slightly early rather than a gap.
+  if (!active) {
+    const upcoming = chunks.find((chunk) => chunk.start > currentTime);
+    if (upcoming && upcoming.start - currentTime <= LOOKAHEAD_SECONDS) active = upcoming;
   }
 
+  if (!active) return null;
+
   const {
-    fontFamily = 'Inter, sans-serif',
+    fontFamily = 'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif',
     fontSize = 48,
     fontWeight = 'bold',
     textColor = '#FFFFFF',
@@ -62,65 +99,106 @@ export const AnimatedWord: React.FC<AnimatedWordProps> = ({
     uppercase = true,
   } = preset;
 
+  const chunkDuration = Math.max(0.2, active.end - active.start);
+  const localTime = currentTime - active.start;
+
+  const fadeIn = interpolate(localTime, [0, Math.min(0.18, chunkDuration * 0.25)], [0, 1], {
+    extrapolateLeft: 'clamp',
+    extrapolateRight: 'clamp',
+  });
+  const fadeOut = interpolate(
+    localTime,
+    [chunkDuration, chunkDuration + HOLD_AFTER_SECONDS],
+    [1, 0],
+    { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' }
+  );
+  const opacity = Math.min(fadeIn, fadeOut);
+  if (opacity <= 0.01) return null;
+
+  const entrance = spring({
+    frame: frame - Math.round(active.start * fps),
+    fps,
+    config: { damping: 14, stiffness: 180, mass: 0.6 },
+    durationInFrames: Math.max(6, Math.round(0.22 * fps)),
+  });
+
+  const liftPx = (bottomLiftPercent / 100) * 1920;
+  const slidePx = interpolate(fadeIn, [0, 1], [14, 0]);
+
   const containerStyle: React.CSSProperties = {
     position: 'absolute',
-    bottom: `${positionY}%`,
+    bottom: `calc(${positionY}% + ${liftPx.toFixed(0)}px)`,
     left: '5%',
     right: '5%',
     display: 'flex',
     flexWrap: 'wrap',
     justifyContent: 'center',
     alignItems: 'center',
-    gap: '12px',
+    gap: 12,
     textAlign: 'center',
     zIndex: 20,
     padding: '8px 16px',
     fontFamily,
-    fontSize: `${fontSize}px`,
-    fontWeight: fontWeight === 'black' ? 900 : fontWeight === 'extra-bold' ? 800 : fontWeight === 'bold' ? 700 : 400,
+    fontSize,
+    fontWeight: fontWeightToCss(fontWeight),
     textTransform: uppercase ? 'uppercase' : 'none',
+    opacity,
+    transform: `translateY(${(slidePx + (1 - entrance) * 10).toFixed(2)}px) scale(${(0.96 + entrance * 0.04).toFixed(4)})`,
+    lineHeight: 1.25,
   };
 
   return (
     <div style={containerStyle}>
-      {visibleWords.map((w, idx) => {
-        const isActive = currentTime >= w.start && currentTime <= w.end;
-        const isPast = currentTime > w.end;
+      {active.words.map((word: WordTimestamp, idx: number) => {
+        const isActive = currentTime >= word.start && currentTime <= word.end;
+        const isPast = currentTime > word.end;
 
-        let wordColor = textColor;
-        let transform = 'scale(1)';
-        let opacity = 1;
+        let color = textColor;
+        let scale = 1;
+        let wordOpacity = 1;
 
         if (animationStyle === 'karaoke') {
-          wordColor = isActive ? highlightColor : textColor;
-          transform = isActive ? 'scale(1.12)' : 'scale(1)';
+          // Hard highlight on the spoken word - the classic karaoke look.
+          color = isActive ? highlightColor : textColor;
+          scale = isActive ? 1.12 : 1;
         } else if (animationStyle === 'word-pop') {
-          wordColor = isActive ? highlightColor : isPast ? textColor : 'rgba(255,255,255,0.7)';
-          transform = isActive ? 'scale(1.22)' : 'scale(1)';
+          const pop = isActive
+            ? spring({
+                frame: frame - Math.round(word.start * fps),
+                fps,
+                config: { damping: 9, stiffness: 220, mass: 0.4 },
+                durationInFrames: Math.max(4, Math.round(0.2 * fps)),
+              })
+            : 0;
+          color = isActive ? highlightColor : textColor;
+          scale = 1 + pop * 0.24;
+          wordOpacity = isPast || isActive ? 1 : 0.62;
         } else if (animationStyle === 'fade-in') {
-          wordColor = isActive ? highlightColor : textColor;
-          opacity = isActive || isPast ? 1 : 0.4;
+          const reveal = interpolate(
+            currentTime,
+            [word.start - 0.12, word.start + 0.08],
+            [0.25, 1],
+            { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' }
+          );
+          color = isActive ? highlightColor : textColor;
+          wordOpacity = reveal;
         }
-
-        const textStrokeStyle = strokeWidth > 0
-          ? `${strokeWidth}px ${strokeColor}, -${strokeWidth}px ${strokeColor}, 0 ${strokeWidth}px ${strokeColor}, 0 -${strokeWidth}px ${strokeColor}`
-          : 'none';
+        // 'static' -> no per-word animation at all.
 
         return (
           <span
-            key={`${w.word}-${w.start}-${idx}`}
+            key={`${active.id}-${idx}-${word.word}`}
             style={{
-              color: wordColor,
-              opacity,
-              transform,
-              transition: 'all 0.1s ease-out',
+              color,
+              opacity: wordOpacity,
               display: 'inline-block',
-              textShadow: textStrokeStyle,
-              filter: isActive ? 'drop-shadow(0px 4px 12px rgba(0,0,0,0.6))' : 'none',
+              transform: `scale(${scale.toFixed(4)})`,
+              textShadow: buildOutline(strokeColor, strokeWidth),
               padding: '0 4px',
+              whiteSpace: 'pre',
             }}
           >
-            {w.word}
+            {word.word}
           </span>
         );
       })}

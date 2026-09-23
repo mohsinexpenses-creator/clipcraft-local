@@ -11,58 +11,77 @@ import {
 } from './gemini';
 import { TranscriptData, ViralSegment } from './types';
 
-function hasConfiguredValue(name: string) {
+export type AiProvider = 'gemini' | 'anthropic';
+
+function hasConfiguredValue(name: string): boolean {
   const value = process.env[name]?.trim();
-  return Boolean(value && !value.includes('your_api_key'));
+  return Boolean(value && !value.toLowerCase().includes('your_api_key'));
+}
+
+/**
+ * Which provider will actually be used.
+ *
+ * Priority: explicit AI_PROVIDER override -> GEMINI_API_KEY -> ANTHROPIC_API_KEY.
+ * The override exists so you can keep both keys in .env.local (e.g. Gemini for
+ * cheap bulk analysis, Claude for a quality comparison) without editing code.
+ */
+export function resolveAiProvider(): AiProvider | null {
+  const forced = process.env.AI_PROVIDER?.trim().toLowerCase();
+
+  if (forced === 'gemini' || forced === 'anthropic' || forced === 'claude') {
+    const provider: AiProvider = forced === 'gemini' ? 'gemini' : 'anthropic';
+    const keyName = provider === 'gemini' ? 'GEMINI_API_KEY' : 'ANTHROPIC_API_KEY';
+    if (!hasConfiguredValue(keyName)) {
+      throw new AppError(`AI_PROVIDER is set to "${provider}" but ${keyName} is missing.`, {
+        status: 500,
+        resolution: `Add ${keyName} to .env.local, or clear AI_PROVIDER to fall back to auto-detection.`,
+      });
+    }
+    return provider;
+  }
+
+  if (hasConfiguredValue('GEMINI_API_KEY')) return 'gemini';
+  if (hasConfiguredValue('ANTHROPIC_API_KEY')) return 'anthropic';
+
+  return null;
+}
+
+function requireProvider(task: string): AiProvider {
+  const provider = resolveAiProvider();
+
+  if (!provider) {
+    throw new AppError(`No AI provider is configured for ${task}.`, {
+      status: 500,
+      resolution:
+        'Set GEMINI_API_KEY (recommended, plus GEMINI_MODEL) or ANTHROPIC_API_KEY in .env.local before running AI analysis.',
+    });
+  }
+
+  return provider;
 }
 
 export async function detectViralSegments(
   transcript: TranscriptData,
   videoDuration: number
 ): Promise<ViralSegment[]> {
-  if (hasConfiguredValue('GEMINI_API_KEY')) {
-    return detectWithGemini(transcript, videoDuration);
-  }
+  const provider = requireProvider('viral segment detection');
 
-  if (hasConfiguredValue('ANTHROPIC_API_KEY')) {
-    return detectWithClaude(transcript, videoDuration);
-  }
-
-  throw new AppError('No AI provider is configured for viral detection.', {
-    status: 500,
-    resolution:
-      'Set GEMINI_API_KEY or ANTHROPIC_API_KEY in .env.local before running viral clip detection.',
-  });
+  console.log(`[AI] Viral segment detection via ${provider}.`);
+  return provider === 'gemini'
+    ? detectWithGemini(transcript, videoDuration)
+    : detectWithClaude(transcript, videoDuration);
 }
 
 export async function generateHookText(clipTranscriptText: string): Promise<string> {
-  if (hasConfiguredValue('GEMINI_API_KEY')) {
-    return generateHookWithGemini(clipTranscriptText);
-  }
-
-  if (hasConfiguredValue('ANTHROPIC_API_KEY')) {
-    return generateHookWithClaude(clipTranscriptText);
-  }
-
-  throw new AppError('No AI provider is configured for hook generation.', {
-    status: 500,
-    resolution:
-      'Set GEMINI_API_KEY or ANTHROPIC_API_KEY in .env.local before generating hook text.',
-  });
+  const provider = requireProvider('hook text generation');
+  return provider === 'gemini'
+    ? generateHookWithGemini(clipTranscriptText)
+    : generateHookWithClaude(clipTranscriptText);
 }
 
 export async function generateCtaText(clipTranscriptText: string): Promise<string> {
-  if (hasConfiguredValue('GEMINI_API_KEY')) {
-    return generateCtaWithGemini(clipTranscriptText);
-  }
-
-  if (hasConfiguredValue('ANTHROPIC_API_KEY')) {
-    return generateCtaWithClaude(clipTranscriptText);
-  }
-
-  throw new AppError('No AI provider is configured for CTA generation.', {
-    status: 500,
-    resolution:
-      'Set GEMINI_API_KEY or ANTHROPIC_API_KEY in .env.local before generating CTA text.',
-  });
+  const provider = requireProvider('CTA text generation');
+  return provider === 'gemini'
+    ? generateCtaWithGemini(clipTranscriptText)
+    : generateCtaWithClaude(clipTranscriptText);
 }
