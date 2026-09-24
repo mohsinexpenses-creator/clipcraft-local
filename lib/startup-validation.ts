@@ -353,13 +353,28 @@ async function validatePromptTemplates(): Promise<StartupCheck> {
 }
 
 /**
+ * `createRequire` that works in both ways this code can run:
+ * - the worker (tsx): `__filename` is a real path, so use it;
+ * - Next.js dev (Turbopack): `__filename` is a VIRTUAL path like
+ *   `/ROOT/lib/startup-validation.ts` that does not exist on disk, so requiring
+ *   from it can never find node_modules (both Remotion packages were falsely
+ *   reported as "not installed").
+ * `process.cwd()` is the project root in every supported invocation, so it is
+ * the safe fallback base.
+ */
+function projectRequire(): NodeJS.Require {
+  if (typeof __filename === 'string' && __filename.startsWith(process.cwd())) {
+    return createRequire(__filename);
+  }
+  return createRequire(path.join(process.cwd(), 'noop.js'));
+}
+/**
  * The Remotion render stage needs `@remotion/bundler` (bundling) and a writable
  * output directory. Both used to fail only minutes into a render.
  */
 async function validateRemotion(): Promise<StartupCheck> {
   const problems: string[] = [];
-  // createRequire keeps this working under both CJS and ESM execution (tsx/Next).
-  const nodeRequire = createRequire(__filename);
+  const nodeRequire = projectRequire();
 
   for (const pkg of ['@remotion/bundler', '@remotion/renderer']) {
     try {

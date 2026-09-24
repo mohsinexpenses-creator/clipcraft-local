@@ -5,7 +5,23 @@ import { Jimp } from 'jimp';
 import { AppError, toErrorMessage } from '../lib/errors';
 import { runFfmpeg } from '../lib/ffmpeg';
 
-const nodeRequire = createRequire(__filename);
+/**
+ * `createRequire` that works in both ways this code can run:
+ * - the worker (tsx): `__filename` is a real path, so use it;
+ * - Next.js dev (Turbopack): `__filename` is a VIRTUAL path like
+ *   `/ROOT/lib/startup-validation.ts` that does not exist on disk, so requiring
+ *   from it can never find node_modules (both Remotion packages were falsely
+ *   reported as "not installed").
+ * `process.cwd()` is the project root in every supported invocation, so it is
+ * the safe fallback base.
+ */
+function projectRequire(): NodeJS.Require {
+  if (typeof __filename === 'string' && __filename.startsWith(process.cwd())) {
+    return createRequire(__filename);
+  }
+  return createRequire(path.join(process.cwd(), 'noop.js'));
+}
+const nodeRequire = projectRequire();
 
 export interface CropWindowResult {
   cropW: number;
