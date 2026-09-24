@@ -1,7 +1,7 @@
-import { spawn } from 'child_process';
-import fs from 'fs';
-import path from 'path';
-import { AppError, toErrorMessage } from './errors';
+import { spawn } from "child_process";
+import fs from "fs";
+import path from "path";
+import { AppError, toErrorMessage } from "./errors";
 
 /**
  * Static import (replaces the old `eval('require')('ffmpeg-static')` hack, which
@@ -10,36 +10,66 @@ import { AppError, toErrorMessage } from './errors';
  * and its postinstall failure (common behind proxies) is tolerated: we verify the
  * binary actually exists before using it and fall back to PATH otherwise.
  */
-import ffmpegStaticPath from 'ffmpeg-static';
+import ffmpegStaticPath from "ffmpeg-static";
 
 export function getFfmpegPath(): string {
   const configured = process.env.FFMPEG_PATH?.trim();
-  if (configured && configured.toLowerCase() !== 'your_ffmpeg_path') {
+  if (configured && configured.toLowerCase() !== "your_ffmpeg_path") {
     if (fs.existsSync(configured)) return configured;
-    console.warn(`[FFmpeg] FFMPEG_PATH="${configured}" does not exist - falling back to bundled/PATH ffmpeg.`);
+    console.warn(
+      `[FFmpeg] FFMPEG_PATH="${configured}" does not exist - falling back to bundled/PATH ffmpeg.`,
+    );
   }
 
   try {
-    if (typeof ffmpegStaticPath === 'string' && ffmpegStaticPath && fs.existsSync(ffmpegStaticPath)) {
+    if (
+      typeof ffmpegStaticPath === "string" &&
+      ffmpegStaticPath &&
+      fs.existsSync(ffmpegStaticPath)
+    ) {
       return ffmpegStaticPath;
     }
     console.warn(
-      '[FFmpeg] ffmpeg-static is installed but its binary is missing (its postinstall downloads from GitHub). ' +
-      'Install ffmpeg and set FFMPEG_PATH in .env.local, or re-run `npm install` with network access.'
+      "[FFmpeg] ffmpeg-static is installed but its binary is missing (its postinstall downloads from GitHub). " +
+        "Install ffmpeg and set FFMPEG_PATH in .env.local, or re-run `npm install` with network access.",
     );
   } catch {
     // Fall through to the other candidates.
   }
 
-  const isWin = process.platform === 'win32';
-  const exeExt = isWin ? '.exe' : '';
+  const isWin = process.platform === "win32";
+  const exeExt = isWin ? ".exe" : "";
 
   const candidates = [
-    path.join(process.cwd(), 'node_modules', 'ffmpeg-static', `ffmpeg${exeExt}`),
-    path.join(process.cwd(), 'node_modules', 'ffmpeg-static', 'ffmpeg'),
-    path.join(process.cwd(), 'node_modules', '@ffmpeg-installer', 'win32-x64', 'ffmpeg.exe'),
-    path.join(process.cwd(), 'node_modules', '@ffmpeg-installer', 'linux-x64', 'ffmpeg'),
-    path.join(process.cwd(), 'node_modules', '@ffmpeg-installer', 'darwin-x64', 'ffmpeg'),
+    path.join(process.cwd(), "bin", "ffmpeg", `ffmpeg.exe`),
+    path.join(
+      process.cwd(),
+      "node_modules",
+      "ffmpeg-static",
+      `ffmpeg${exeExt}`,
+    ),
+    path.join(process.cwd(), "node_modules", "ffmpeg-static", "ffmpeg"),
+    path.join(
+      process.cwd(),
+      "node_modules",
+      "@ffmpeg-installer",
+      "win32-x64",
+      "ffmpeg.exe",
+    ),
+    path.join(
+      process.cwd(),
+      "node_modules",
+      "@ffmpeg-installer",
+      "linux-x64",
+      "ffmpeg",
+    ),
+    path.join(
+      process.cwd(),
+      "node_modules",
+      "@ffmpeg-installer",
+      "darwin-x64",
+      "ffmpeg",
+    ),
   ];
 
   for (const candidate of candidates) {
@@ -47,7 +77,7 @@ export function getFfmpegPath(): string {
   }
 
   // Last resort: whatever is on PATH (Windows: `winget install Gyan.FFmpeg`).
-  return isWin ? 'ffmpeg.exe' : 'ffmpeg';
+  return isWin ? "ffmpeg.exe" : "ffmpeg";
 }
 
 export interface FfmpegProgress {
@@ -68,28 +98,31 @@ export interface RunFfmpegOptions {
 
 const DEFAULT_FFMPEG_TIMEOUT_MS = 30 * 60 * 1000;
 
-export function runFfmpeg(args: string[], options?: RunFfmpegOptions): Promise<{ stdout: string; stderr: string }> {
+export function runFfmpeg(
+  args: string[],
+  options?: RunFfmpegOptions,
+): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const ffmpegBin = getFfmpegPath();
-    const label = options?.label ? ` (${options.label})` : '';
-    console.log(`[FFmpeg]${label} Spawning: ${ffmpegBin} ${args.join(' ')}`);
+    const label = options?.label ? ` (${options.label})` : "";
+    console.log(`[FFmpeg]${label} Spawning: ${ffmpegBin} ${args.join(" ")}`);
 
     const child = spawn(ffmpegBin, args, { windowsHide: true });
-    let stdout = '';
-    let stderr = '';
+    let stdout = "";
+    let stderr = "";
     let timedOut = false;
 
     const timeoutMs = options?.timeoutMs ?? DEFAULT_FFMPEG_TIMEOUT_MS;
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGKILL');
+      child.kill("SIGKILL");
     }, timeoutMs);
 
-    child.stdout?.on('data', (chunk) => {
+    child.stdout?.on("data", (chunk) => {
       stdout += chunk.toString();
     });
 
-    child.stderr?.on('data', (chunk) => {
+    child.stderr?.on("data", (chunk) => {
       const text = chunk.toString();
       stderr += text;
 
@@ -102,8 +135,17 @@ export function runFfmpeg(args: string[], options?: RunFfmpegOptions): Promise<{
           const currentSeconds = hours * 3600 + mins * 60 + secs;
 
           let percent: number | undefined;
-          if (options.totalDurationSeconds && options.totalDurationSeconds > 0) {
-            percent = Math.min(100, Math.max(0, (currentSeconds / options.totalDurationSeconds) * 100));
+          if (
+            options.totalDurationSeconds &&
+            options.totalDurationSeconds > 0
+          ) {
+            percent = Math.min(
+              100,
+              Math.max(
+                0,
+                (currentSeconds / options.totalDurationSeconds) * 100,
+              ),
+            );
           }
 
           options.onProgress({ timeSeconds: currentSeconds, percent });
@@ -111,26 +153,30 @@ export function runFfmpeg(args: string[], options?: RunFfmpegOptions): Promise<{
       }
     });
 
-    child.on('error', (error) => {
+    child.on("error", (error) => {
       clearTimeout(timer);
       reject(
-        new AppError('Failed to start FFmpeg.', {
+        new AppError("Failed to start FFmpeg.", {
           details: `${ffmpegBin}: ${error.message}`,
           resolution:
-            'Install ffmpeg (`winget install Gyan.FFmpeg` on Windows) or set FFMPEG_PATH in .env.local, then retry.',
-        })
+            "Install ffmpeg (`winget install Gyan.FFmpeg` on Windows) or set FFMPEG_PATH in .env.local, then retry.",
+        }),
       );
     });
 
-    child.on('close', (code) => {
+    child.on("close", (code) => {
       clearTimeout(timer);
 
       if (timedOut) {
         reject(
-          new AppError(`FFmpeg was killed after exceeding the timeout${label}.`, {
-            details: `timeout=${Math.round(timeoutMs / 60000)} minutes`,
-            resolution: 'Shorten the clip, or raise the timeout for this step.',
-          })
+          new AppError(
+            `FFmpeg was killed after exceeding the timeout${label}.`,
+            {
+              details: `timeout=${Math.round(timeoutMs / 60000)} minutes`,
+              resolution:
+                "Shorten the clip, or raise the timeout for this step.",
+            },
+          ),
         );
         return;
       }
@@ -144,8 +190,8 @@ export function runFfmpeg(args: string[], options?: RunFfmpegOptions): Promise<{
         new AppError(`FFmpeg exited with a non-zero status${label}.`, {
           details: `Exit code ${code}. ${stderr.slice(-2000)}`,
           resolution:
-            'Inspect the FFmpeg command printed above, confirm the input file exists and is a readable video, and retry.',
-        })
+            "Inspect the FFmpeg command printed above, confirm the input file exists and is a readable video, and retry.",
+        }),
       );
     });
   });
@@ -172,9 +218,8 @@ export interface VideoMetadata {
  * whether to mux in silence).
  */
 export function parseFfmpegProbeOutput(stderr: string): Partial<VideoMetadata> {
-  const videoLine =
-    stderr.match(/Stream[^\n]*?\bVideo:[^\n]*/i)?.[0] ?? '';
-  const audioLine = stderr.match(/Stream[^\n]*?\bAudio:[^\n]*/i)?.[0] ?? '';
+  const videoLine = stderr.match(/Stream[^\n]*?\bVideo:[^\n]*/i)?.[0] ?? "";
+  const audioLine = stderr.match(/Stream[^\n]*?\bAudio:[^\n]*/i)?.[0] ?? "";
 
   const durationMatch = stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
   let duration: number | undefined;
@@ -187,7 +232,8 @@ export function parseFfmpegProbeOutput(stderr: string): Partial<VideoMetadata> {
 
   // 1920x1080 [SAR 1:1 DAR 16:9]  |  1080x1920, yuv420p  |  720x1280 (320x568)
   const resolutionMatch =
-    videoLine.match(/(\d{2,5})x(\d{2,5})(?![\dx])/) ?? stderr.match(/,\s*(\d{2,5})x(\d{2,5})[\s,(]/);
+    videoLine.match(/(\d{2,5})x(\d{2,5})(?![\dx])/) ??
+    stderr.match(/,\s*(\d{2,5})x(\d{2,5})[\s,(]/);
 
   const fpsMatch =
     videoLine.match(/(\d+(?:\.\d+)?)\s+fps/i) ??
@@ -195,7 +241,8 @@ export function parseFfmpegProbeOutput(stderr: string): Partial<VideoMetadata> {
     stderr.match(/(\d+(?:\.\d+)?)\s+fps/i);
 
   const rotationMatch =
-    stderr.match(/rotate\s*:\s*(-?\d+)/i) ?? stderr.match(/displaymatrix:[^\n]*?(-?\d+(?:\.\d+)?)\s*degrees/i);
+    stderr.match(/rotate\s*:\s*(-?\d+)/i) ??
+    stderr.match(/displaymatrix:[^\n]*?(-?\d+(?:\.\d+)?)\s*degrees/i);
 
   return {
     duration,
@@ -203,63 +250,83 @@ export function parseFfmpegProbeOutput(stderr: string): Partial<VideoMetadata> {
     height: resolutionMatch ? parseInt(resolutionMatch[2], 10) : undefined,
     fps: fpsMatch ? parseFloat(fpsMatch[1]) : undefined,
     hasAudio: Boolean(audioLine),
-    rotation: rotationMatch ? Math.abs(Math.round(parseFloat(rotationMatch[1]))) % 360 : 0,
+    rotation: rotationMatch
+      ? Math.abs(Math.round(parseFloat(rotationMatch[1]))) % 360
+      : 0,
   };
 }
 
-export async function getVideoMetadata(inputPath: string): Promise<VideoMetadata> {
+export async function getVideoMetadata(
+  inputPath: string,
+): Promise<VideoMetadata> {
   if (!fs.existsSync(inputPath)) {
-    throw new AppError('Video metadata could not be read because the file does not exist.', {
-      status: 404,
-      details: inputPath,
-      resolution: 'Upload the source video again and retry.',
-    });
+    throw new AppError(
+      "Video metadata could not be read because the file does not exist.",
+      {
+        status: 404,
+        details: inputPath,
+        resolution: "Upload the source video again and retry.",
+      },
+    );
   }
 
   const ffmpegBin = getFfmpegPath();
 
   return new Promise((resolve, reject) => {
     // `ffmpeg -i` with no output always exits non-zero, so we parse stderr on close.
-    const child = spawn(ffmpegBin, ['-hide_banner', '-i', inputPath], { windowsHide: true });
-    let stderr = '';
+    const child = spawn(ffmpegBin, ["-hide_banner", "-i", inputPath], {
+      windowsHide: true,
+    });
+    let stderr = "";
 
-    child.stderr?.on('data', (data) => {
+    child.stderr?.on("data", (data) => {
       stderr += data.toString();
     });
 
-    child.on('error', (error) => {
+    child.on("error", (error) => {
       reject(
-        new AppError('FFmpeg failed while probing video metadata.', {
+        new AppError("FFmpeg failed while probing video metadata.", {
           details: `${ffmpegBin}: ${toErrorMessage(error)}`,
           resolution:
-            'Install ffmpeg (`winget install Gyan.FFmpeg` on Windows) or set FFMPEG_PATH in .env.local.',
-        })
+            "Install ffmpeg (`winget install Gyan.FFmpeg` on Windows) or set FFMPEG_PATH in .env.local.",
+        }),
       );
     });
 
-    child.on('close', () => {
+    child.on("close", () => {
       try {
         const parsed = parseFfmpegProbeOutput(stderr);
 
         if (!parsed.duration || parsed.duration <= 0) {
-          throw new AppError('FFmpeg could not detect the video duration.', {
+          throw new AppError("FFmpeg could not detect the video duration.", {
             details: stderr.slice(-1000),
-            resolution: 'Confirm the uploaded file is a valid readable video and retry.',
+            resolution:
+              "Confirm the uploaded file is a valid readable video and retry.",
           });
         }
 
-        if (!parsed.width || !parsed.height || parsed.width <= 0 || parsed.height <= 0) {
-          throw new AppError('FFmpeg could not detect the video resolution.', {
+        if (
+          !parsed.width ||
+          !parsed.height ||
+          parsed.width <= 0 ||
+          parsed.height <= 0
+        ) {
+          throw new AppError("FFmpeg could not detect the video resolution.", {
             details: stderr.slice(-1000),
-            resolution: 'Confirm the uploaded file is a valid readable video and retry.',
+            resolution:
+              "Confirm the uploaded file is a valid readable video and retry.",
           });
         }
 
         if (!parsed.fps || parsed.fps <= 0 || parsed.fps > 240) {
-          throw new AppError('FFmpeg could not detect a sane video frame rate.', {
-            details: `fps=${String(parsed.fps)} | ${stderr.slice(-600)}`,
-            resolution: 'Use a standard video file with a detectable frame rate and retry.',
-          });
+          throw new AppError(
+            "FFmpeg could not detect a sane video frame rate.",
+            {
+              details: `fps=${String(parsed.fps)} | ${stderr.slice(-600)}`,
+              resolution:
+                "Use a standard video file with a detectable frame rate and retry.",
+            },
+          );
         }
 
         resolve({
@@ -277,31 +344,40 @@ export async function getVideoMetadata(inputPath: string): Promise<VideoMetadata
   });
 }
 
-export async function extractAudio16kMono(inputVideoPath: string, outputWavPath: string): Promise<string> {
+export async function extractAudio16kMono(
+  inputVideoPath: string,
+  outputWavPath: string,
+): Promise<string> {
   const outputDir = path.dirname(outputWavPath);
   if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
 
   const args = [
-    '-y',
-    '-hide_banner',
-    '-loglevel', 'error',
-    '-stats',
-    '-i', inputVideoPath,
-    '-vn',
-    '-sn',
-    '-dn',
-    '-acodec', 'pcm_s16le',
-    '-ar', '16000',
-    '-ac', '1',
+    "-y",
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-stats",
+    "-i",
+    inputVideoPath,
+    "-vn",
+    "-sn",
+    "-dn",
+    "-acodec",
+    "pcm_s16le",
+    "-ar",
+    "16000",
+    "-ac",
+    "1",
     outputWavPath,
   ];
 
-  await runFfmpeg(args, { label: 'extract-audio-16k-mono' });
+  await runFfmpeg(args, { label: "extract-audio-16k-mono" });
 
   if (!fs.existsSync(outputWavPath) || fs.statSync(outputWavPath).size < 1024) {
-    throw new AppError('Audio extraction produced an empty WAV file.', {
+    throw new AppError("Audio extraction produced an empty WAV file.", {
       details: outputWavPath,
-      resolution: 'Confirm the source video actually contains an audio track, then retry.',
+      resolution:
+        "Confirm the source video actually contains an audio track, then retry.",
     });
   }
 
