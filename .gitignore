@@ -29,6 +29,7 @@
 # whisper.cpp ggml models are 75MB-1.5GB each -> download them locally with
 # `npm run setup:whisper` (see SETUP.md). They are intentionally NOT committed.
 /models/*.bin
+/bin/ffmpeg/
 
 # The tiny face-detection weights under /models/face/ (~200KB) ARE committed - the
 # pattern above only matches *.bin directly inside /models, so nothing to un-ignore.
