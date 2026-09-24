@@ -1,180 +1,58 @@
 import fs from 'fs';
 import path from 'path';
 import { NextRequest, NextResponse } from 'next/server';
-import { listVideos, saveVideo } from '../../../lib/db';
-import { AppError, getErrorResponse, toErrorMessage } from '../../../lib/errors';
-import { getVideoMetadata } from '../../../lib/ffmpeg';
-import { enqueueTranscriptionJob } from '../../../lib/queue';
-import { VideoRecord } from '../../../lib/types';
-import { getPlannedTranscriptionEngine } from '../../../lib/whisper';
+import { listVideos } from '../../../lib/db';
+import { AppError, toErrorMessage } from '../../../lib/errors';
+import {
+  buildStoredFileName,
+  formatBytes,
+  getMultipartLimitBytes,
+  jsonError,
+  QUEUE_MESSAGES,
+  registerUploadedVideo,
+  resolveUploadDir,
+  validateUploadFileName,
+} from '../../../lib/upload';
 
 export const runtime = 'nodejs';
 
-const ALLOWED_EXTENSIONS = new Set(['.mp4', '.mov', '.avi', '.mkv', '.webm']);
-const MAX_SIZE_MB = 512;
-const MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024;
-
-/** Error responses must carry the real HTTP status, not a 200 with an error body. */
-function jsonError(error: unknown): NextResponse {
-  const payload = getErrorResponse(error);
-  return NextResponse.json(payload, { status: payload.statusCode });
-}
-
-function validateUploadFileName(fileName: string): string {
-  const trimmed = fileName.trim();
-
-  // Reject path separators outright - this name is later appended to UPLOAD_DIR.
-  if (trimmed.includes('/') || trimmed.includes('\\') || trimmed.includes('\0')) {
-    throw new AppError('Invalid file name.', {
-      status: 400,
-      details: fileName,
-      resolution: 'Re-upload with a plain file name (no path separators or control characters).',
-    });
-  }
-
-  if (!ALLOWED_EXTENSIONS.has(path.extname(trimmed).toLowerCase())) {
-    throw new AppError('Unsupported file extension.', {
-      status: 400,
-      details: trimmed,
-      resolution: `Upload one of: ${[...ALLOWED_EXTENSIONS].join(', ')}.`,
-    });
-  }
-
-  return trimmed;
-}
-
 /**
- * Build a complete VideoRecord.
+ * POST /api/upload
  *
- * `duration` / `width` / `height` / `fileSize` are required fields that the dashboard
- * renders - the old code saved a record without any of them, so every uploaded video
- * showed as 0x0 / 0s. A probe failure is downgraded to zeros instead of rejecting an
- * upload that is already safely on disk.
+ * Compatibility endpoint for small, single-shot uploads (scripts, Postman, the YouTube
+ * importer). `request.formData()` has to buffer the whole multipart body in memory -
+ * undici has no streaming multipart parser - so this route refuses bodies above
+ * MAX_MULTIPART_MB (256 MB by default) and tells the caller to use the resumable,
+ * chunked endpoint instead:
+ *
+ *   POST /api/upload/session          -> start (no size limit)
+ *   PUT  /api/upload/session/[id]     -> append a chunk
+ *   POST /api/upload/session/[id]     -> finalize
+ *
+ * The web UI always uses the resumable path, so long podcast recordings never hit the
+ * memory guard - and the old hard-coded 512 MB rejection is gone entirely.
  */
-async function buildVideoRecord(
-  originalName: string,
-  fileName: string,
-  filePath: string
-): Promise<VideoRecord> {
-  const now = new Date().toISOString();
-  let width = 0;
-  let height = 0;
-  let duration = 0;
-
-  try {
-    const meta = await getVideoMetadata(filePath);
-    width = meta.width;
-    height = meta.height;
-    duration = meta.duration;
-  } catch (error) {
-    console.warn(
-      `[Upload] FFmpeg could not read ${fileName} - saving it with zeroed media facts: ${toErrorMessage(error)}`
-    );
-  }
-
-  let fileSize = 0;
-  try {
-    fileSize = fs.statSync(filePath).size;
-  } catch {
-    // Leave 0; the record is still useful.
-  }
-
-  // The uploader UI shows which engine will run, so resolve it up-front. If no engine is
-  // configured yet the upload still succeeds - the queued job reports the real error and
-  // the user can fix .env.local and press "Transcribe again".
-  let transcriptionProvider: VideoRecord['transcriptionProvider'];
-  let transcriptionModel: string | undefined;
-  try {
-    const engine = getPlannedTranscriptionEngine();
-    transcriptionProvider = engine.provider;
-    transcriptionModel = engine.model;
-  } catch (error) {
-    console.warn(`[Upload] Transcription engine not ready yet: ${toErrorMessage(error)}`);
-  }
-
-  return {
-    _id: '', // saveVideo() assigns a UUID
-    originalName,
-    fileName,
-    filePath,
-    duration,
-    width,
-    height,
-    fileSize,
-    status: 'uploaded',
-    ...(transcriptionProvider ? { transcriptionProvider } : {}),
-    ...(transcriptionModel ? { transcriptionModel } : {}),
-    createdAt: now,
-    updatedAt: now,
-  };
-}
-
-/** Write the uploaded bytes to disk in chunks instead of buffering them in RAM. */
-async function streamFileToDisk(file: File, filePath: string): Promise<void> {
-  const fileStream = fs.createWriteStream(filePath);
-
-  try {
-    const reader = file.stream().getReader();
-    let written = 0;
-
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      const chunk = Buffer.from(value);
-      written += chunk.byteLength;
-      if (written > MAX_SIZE_BYTES) {
-        await reader.cancel();
-        throw new AppError(`File is too large (max ${MAX_SIZE_MB} MB).`, { status: 400 });
-      }
-
-      // Respect backpressure so memory stays flat on huge uploads.
-      if (!fileStream.write(chunk)) {
-        await new Promise<void>((resolve) => fileStream.once('drain', resolve));
-      }
-    }
-
-    await new Promise<void>((resolve, reject) => {
-      fileStream.once('finish', () => resolve());
-      fileStream.once('error', reject);
-      fileStream.end();
-    });
-  } catch (error) {
-    fileStream.destroy();
-    try {
-      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-    } catch {
-      // Ignore cleanup errors.
-    }
-    throw error;
-  }
-}
-
-/** Queue the transcription and persist the outcome; never throws. */
-async function queueTranscription(video: VideoRecord): Promise<boolean> {
-  try {
-    await enqueueTranscriptionJob({ videoId: video._id, filePath: video.filePath });
-    return true;
-  } catch (error) {
-    video.status = 'failed';
-    video.error = toErrorMessage(error, 'Could not queue the transcription job.');
-    await saveVideo(video).catch((saveError) =>
-      console.error('[Upload] Could not persist the queue failure:', saveError)
-    );
-    return false;
-  }
-}
-
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
     const contentType = request.headers.get('content-type') || '';
 
-    /**
-     * A multipart/form-data stream can be written straight to disk. The previous
-     * version called `file.arrayBuffer()`, which buffers the ENTIRE upload in RAM - a
-     * 500 MB talking-head video could OOM the dev server before transcription started.
-     */
     if (contentType.includes('multipart/form-data')) {
+      // Content-Length is present for any non-streaming browser/curl upload, so refusing
+      // early is what keeps a 4 GB multipart POST from exhausting the dev server's RAM.
+      const declaredLength = Number(request.headers.get('content-length') || '');
+      const multipartLimit = getMultipartLimitBytes();
+      if (Number.isFinite(declaredLength) && declaredLength > multipartLimit) {
+        throw new AppError(
+          `Single-request uploads are limited to ${formatBytes(multipartLimit)} because they are buffered in memory.`,
+          {
+            status: 413,
+            details: `${formatBytes(declaredLength)} was declared`,
+            resolution:
+              'Use the resumable uploader (POST /api/upload/session - no size limit), which the web UI uses automatically.',
+          }
+        );
+      }
+
       const formData = await request.formData();
       const file = formData.get('file');
 
@@ -191,45 +69,21 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         );
       }
 
-      if (file.size > MAX_SIZE_BYTES) {
-        return jsonError(
-          new AppError(`File is too large (max ${MAX_SIZE_MB} MB).`, {
-            status: 400,
-            details: `${(file.size / 1024 / 1024).toFixed(1)} MB uploaded`,
-          })
-        );
-      }
-
       const originalName = validateUploadFileName(file.name);
-
-      const uploadDir = path.join(process.cwd(), process.env.UPLOAD_DIR || 'uploads');
-      fs.mkdirSync(uploadDir, { recursive: true });
-
-      const fileExtension = path.extname(originalName).toLowerCase();
-      const fileName = `${Date.now()}-${Math.random().toString(36).slice(2)}${fileExtension}`;
+      const uploadDir = resolveUploadDir();
+      const fileName = buildStoredFileName(originalName);
       const filePath = path.join(uploadDir, fileName);
 
-      await streamFileToDisk(file, filePath);
+      await writeFileToDisk(file, filePath);
 
-      const video = await buildVideoRecord(originalName, fileName, filePath);
-      await saveVideo(video);
-
-      /**
-       * Transcription now runs in the BullMQ worker instead of inside this request. The
-       * old code awaited `transcribeVideo()` here, so the browser request stayed open for
-       * the whole whisper run and any proxy timeout (or a page refresh) left the video
-       * stuck in `transcribing` forever.
-       */
-      const queued = await queueTranscription(video);
+      const { video, queued } = await registerUploadedVideo(originalName, fileName, filePath);
 
       // Shape matters: components/video-uploader.tsx reads `data.video._id`.
       return NextResponse.json({
         success: true,
         video,
         transcriptionQueued: queued,
-        message: queued
-          ? 'Upload complete. Transcription is queued - refresh the dashboard to follow its progress.'
-          : 'Upload complete, but the transcription job could not be queued. Is Redis running?',
+        message: queued ? QUEUE_MESSAGES.queued : QUEUE_MESSAGES.notQueued,
       });
     }
 
@@ -264,18 +118,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         // is not even in package.json - only @distube/ytdl-core is.)
         const { downloadYoutubeVideo } = await import('../../../lib/youtube');
 
-        const uploadDir = path.join(process.cwd(), process.env.UPLOAD_DIR || 'uploads');
-        fs.mkdirSync(uploadDir, { recursive: true });
-
+        const uploadDir = resolveUploadDir();
         const fileName = `${Date.now()}-youtube.mp4`;
         const filePath = path.join(uploadDir, fileName);
 
         const info = await downloadYoutubeVideo(url, filePath);
 
-        const video = await buildVideoRecord(`${info.title}.mp4`, fileName, filePath);
-        await saveVideo(video);
-
-        const queued = await queueTranscription(video);
+        const { video, queued } = await registerUploadedVideo(`${info.title}.mp4`, fileName, filePath);
 
         return NextResponse.json({
           success: true,
@@ -317,5 +166,42 @@ export async function GET(): Promise<NextResponse> {
     return NextResponse.json({ success: true, data: videos });
   } catch (error) {
     return jsonError(error);
+  }
+}
+
+/**
+ * The multipart body is already in memory (`request.formData()`), so this just copies it
+ * to disk. Anything that needs to stay memory-flat for multi-GB files goes through
+ * lib/upload-session.ts instead.
+ */
+async function writeFileToDisk(file: File, filePath: string): Promise<void> {
+  const fileStream = fs.createWriteStream(filePath);
+
+  try {
+    const reader = file.stream().getReader();
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+
+      if (!fileStream.write(Buffer.from(value))) {
+        await new Promise<void>((resolve) => fileStream.once('drain', resolve));
+      }
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      fileStream.once('finish', () => resolve());
+      fileStream.once('error', reject);
+      fileStream.end();
+    });
+  } catch (error) {
+    fileStream.destroy();
+    try {
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    } catch {
+      // Ignore cleanup errors.
+    }
+    throw error;
   }
 }

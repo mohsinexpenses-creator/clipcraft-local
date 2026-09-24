@@ -72,6 +72,12 @@ GEMINI_API_KEY=your-key            # or ANTHROPIC_API_KEY
 | `REMOTION_LOG_LEVEL` | `info` | `verbose` when debugging a render. |
 | `REMOTION_TIMEOUT_MINUTES` | `60` | Per-render ceiling. |
 | `ENABLE_YT_IMPORT` | `0` | Set to `1` to re-enable the fragile YouTube download path. |
+| `UPLOAD_DIR` | `uploads` | Where source videos + in-progress upload sessions are stored. |
+| `MAX_UPLOAD_MB` | `0` (unlimited) | Optional guard rail for a single upload. Long podcasts need no limit, so leave it at 0. |
+| `UPLOAD_CHUNK_MB` | `8` | Chunk size the resumable uploader is told to use. |
+| `MAX_MULTIPART_MB` | `256` | Size cap for the single-request `POST /api/upload` (it buffers the body in RAM). The resumable endpoint has no cap. |
+| `UPLOAD_SESSION_TTL_HOURS` | `24` | Unfinished upload sessions are deleted after this long. |
+| `ALLOWED_DEV_ORIGINS` | `*.e2b.app` | Extra hostnames allowed to load dev assets (tunnels, LAN). Comma-separated, no scheme/port. |
 
 ---
 
@@ -139,16 +145,24 @@ and tells you exactly what to fix.
 
 ### What happens after you upload
 
-1. `POST /api/upload` **streams** the file to `uploads/` (no more buffering the whole
-   video in RAM) and enqueues a **transcription job** — the HTTP request returns
-   immediately.
-2. The worker transcribes with whisper.cpp (or Deepgram) and stores word-level
+1. The browser uploads through `POST /api/upload/session` + `PUT /api/upload/session/{id}`
+   in chunks (8 MB by default). **There is no size limit** — a three-hour podcast is a
+   normal input — and because each chunk is streamed straight to disk, a multi-GB file
+   never sits in the server's RAM. Losing the connection (VPN hiccup, dev-server reload,
+   laptop sleep) is fine: press **Resume upload** and it continues from the last byte the
+   server confirmed. The old 512 MB rejection is gone.
+   The single-request `POST /api/upload` is still there for scripts/Postman, but it
+   buffers the multipart body in memory, so it is capped at `MAX_MULTIPART_MB` (256 MB)
+   and points callers at the resumable endpoint.
+2. Finishing the upload moves the assembled file into `uploads/`, probes it with FFmpeg
+   and enqueues a **transcription job** — the request returns immediately.
+3. The worker transcribes with whisper.cpp (or Deepgram) and stores word-level
    timestamps in MongoDB.
-3. "Detect viral segments" asks the LLM for `{start, end, hookText, score}`.
-4. Rendering a clip enqueues a BullMQ job → the worker runs:
+4. "Detect viral segments" asks the LLM for `{start, end, hookText, score}`.
+5. Rendering a clip enqueues a BullMQ job → the worker runs:
    smart crop detection → FFmpeg (mirror + crop + colour + hook intro) → Remotion
    (captions + hook/CTA overlays) → `generated-clips/{videoId}/{clipId}.mp4`.
-5. The dashboard plays the clip through `/api/media/...` (a normal HTTP origin, with
+6. The dashboard plays the clip through `/api/media/...` (a normal HTTP origin, with
    HTTP Range support so seeking works).
 
 ---
@@ -208,6 +222,26 @@ Install the VC++ redistributable (§1).
 Those are newer whisper.cpp flags. The bundled build supports them; if you point
 `WHISPER_CLI_PATH` at an older build, use one that accepts `-ojf` (or re-run
 `npm run setup:whisper --force` to fetch the latest release).
+
+**Upload fails with "File is too large (max 512 MB)"**
+Gone — that check has been removed. Uploads are unlimited by default: the browser sends
+the file in chunks through `/api/upload/session`, streams them to disk and can resume
+after an interrupted connection. If you still see a size error, one of the optional guard
+rails is set: `MAX_UPLOAD_MB` (unlimited unless you set it) or `MAX_MULTIPART_MB` for the
+single-request `POST /api/upload` (scripts only). The UI never uses that endpoint.
+
+**Upload stops at a certain percentage / the connection drops mid-upload**
+Nothing is lost. The chunk that was in flight is re-sent from the last byte the server
+confirmed, and the uploader retries automatically. If the page was reloaded or the dev
+server restarted, press **Resume upload** — it continues from the server's byte count
+instead of starting over. Chunks are written to `uploads/.upload-sessions/<id>/data`;
+unfinished sessions are deleted after `UPLOAD_SESSION_TTL_HOURS` (24 h default).
+
+**The dev server gets slow or OOMs during a large upload**
+It should not: bytes are streamed to disk with backpressure, so memory stays flat (a
+1.5 GB upload keeps the server around ~100 MB RSS). The one buffered path left is the
+single-shot `POST /api/upload`, which is exactly why it is capped at `MAX_MULTIPART_MB`
+and why the UI always uses the chunked endpoint.
 
 **Video stuck in `transcribing` forever**
 The worker is not running (`npm run worker`), or Redis is unreachable. Transcription no
@@ -289,9 +323,13 @@ every stage now logs its inputs, its FFmpeg command and a probe of the file it p
 ## 10. Where things live
 
 ```
-app/api/upload/          stream-to-disk upload + transcription enqueue
+app/api/upload/          single-shot multipart upload (small files) + YouTube import
+app/api/upload/session/  resumable chunked upload (no size limit) + finalize/abort
 app/api/media/[...path]/ Range-enabled HTTP file server for uploads/ + generated-clips/
 app/startup-validation/  pre-flight checks UI
+lib/upload.ts            shared upload policy: names, sizes, video record, enqueue
+lib/upload-session.ts    resumable sessions on disk (append, finalize, TTL sweep)
+lib/upload-client.ts     browser chunking, progress, retry + resume
 lib/ffmpeg.ts            ffmpeg-static path resolution + probe + spawn wrapper
 lib/whisper.ts           cross-platform whisper.cpp discovery & transcription
 lib/deepgram.ts          optional cloud STT (REST, no SDK)
