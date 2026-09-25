@@ -40,6 +40,21 @@ export interface LlmProviderEntry {
   kind: LlmProviderKind;
   /** Base URL (no trailing slash), required when kind is 'openai-compatible'. */
   baseUrl?: string;
+  /**
+   * Optional hard cap on max_tokens for THIS model. Some models reject
+   * larger values outright (e.g. Groq's 512-context prompt-guard models
+   * 400 with "max_tokens must be less than or equal to 512"). When set,
+   * the request sends min(requested, this).
+   */
+  maxTokens?: number;
+  /**
+   * Optional extra attempts on TRANSIENT failures (HTTP 429/503 only),
+   * spaced LLM_RETRY_DELAY_MS apart, before giving up on this entry and
+   * moving to the next provider. Defaults to 0 = move on immediately
+   * (the original spec). Free tiers are bursty, so consider `retries: 1`
+   * on slots you rely on.
+   */
+  retries?: number;
 }
 
 /**
@@ -48,7 +63,7 @@ export interface LlmProviderEntry {
  *   Tier 1  Groq / Cerebras                     best free quality, low latency
  *   Tier 2  OpenRouter (Gemini Flash) / Google AI Studio   large context
  *   Tier 3  OpenRouter (Llama 70B) / Mistral   backup
- *   Tier 4  Groq 8B / OpenRouter (Llama 8B)    last resort, lower quality
+ *   Tier 4  Groq gpt-oss-20b / OpenRouter (Llama 8B)  last resort, lower quality
  *
  * Move entries up or down to change priority; delete an entry to stop using
  * it; add a new one with the same shape to introduce a provider.
@@ -81,13 +96,12 @@ export const LLM_PROVIDER_CHAIN: LlmProviderEntry[] = [
     baseUrl: 'https://openrouter.ai/api/v1',
   },
   {
-    // NOTE: Google retired `gemini-1.5-flash` on 2025-09-29, so this slot
-    // currently 404s and the chain falls through to Tier 3. If you have a
-    // Google AI Studio key, change the model to `gemini-flash-latest` (or a
-    // current pinned version) to keep this slot in play.
+    // `gemini-1.5-flash` was retired by Google on 2025-09-29 (404). Confirmed
+    // live on AI Studio as of 2026-09 (served with 503 "high demand" spikes);
+    // if Google renames it again, pick a current id from the AI Studio console.
     id: 'gemini-studio',
     provider: 'Google AI Studio',
-    model: 'gemini-1.5-flash',
+    model: 'gemini-3.6-flash',
     apiKeyEnv: 'GEMINI_API_KEY',
     kind: 'gemini-native',
   },
@@ -100,20 +114,26 @@ export const LLM_PROVIDER_CHAIN: LlmProviderEntry[] = [
     baseUrl: 'https://openrouter.ai/api/v1',
   },
   {
-    // NOTE: on La Plateforme `mistral-large-latest` is a paid model; the free
-    // tier normally covers e.g. `mistral-small-latest`. If this slot returns
-    // 401/403, change the model id here.
-    id: 'mistral-large',
+    // La Plateforme free tier (confirmed live 2026-09 - answers, then 429s
+    // under burst). `mistral-large-latest` is a PAID model; use it only with
+    // a billed account. 429s here are transient - retries: 1 helps.
+    id: 'mistral-small',
     provider: 'Mistral',
-    model: 'mistral-large-latest',
+    model: 'mistral-small-latest',
     apiKeyEnv: 'MISTRAL_API_KEY',
     kind: 'openai-compatible',
     baseUrl: 'https://api.mistral.ai/v1',
+    retries: 1,
   },
   {
-    id: 'groq-llama-8b',
+    // `llama-3.1-8b-instant` started returning 404 "does not exist or you do
+    // not have access to it" on Groq accounts in 2026. gpt-oss-20b is Groq's
+    // verified small chat model (1000+ t/s, 131K context). If Groq renames it,
+    // check the current list in the Groq console (Models) or via GET
+    // https://api.groq.com/openai/v1/models.
+    id: 'groq-gpt-oss-20b',
     provider: 'Groq',
-    model: 'llama-3.1-8b-instant',
+    model: 'openai/gpt-oss-20b',
     apiKeyEnv: 'GROQ_API_KEY',
     kind: 'openai-compatible',
     baseUrl: 'https://api.groq.com/openai/v1',
@@ -165,6 +185,13 @@ class LlmCallFailure extends Error {
 /** Per-call timeout so one hung provider cannot stall the whole analysis. */
 const LLM_CALL_TIMEOUT_MS = 120_000;
 
+/** Pause between retries of a transiently failing (429/503) entry. */
+const LLM_RETRY_DELAY_MS = 2_000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * True when the entry's env var holds a real key. Empty values and the
  * `.env.example` placeholder style (`your_api_key`) count as "not set", so
@@ -190,14 +217,22 @@ function describeHttpError(status: number, rawBody: string): string {
     // Non-JSON error body — the status code is enough.
   }
 
-  const kind = status === 429 || status === 503 ? 'rate limited / temporarily unavailable' : 'request failed';
+  const kind =
+    status === 429 || status === 503
+      ? 'rate limited / temporarily unavailable'
+      : status === 404
+        ? 'model not found / no access (the id may have been renamed or removed - check the provider\'s model list and update lib/llm.ts)'
+        : status === 402
+          ? 'payment required (this provider account needs billing set up)'
+          : 'request failed';
   return `${kind} (HTTP ${status}${detail ? `: ${detail.slice(0, 200)}` : ''})`;
 }
 
 async function callOpenAiCompatible(
   entry: LlmProviderEntry,
   apiKey: string,
-  request: LlmCompletionRequest
+  request: LlmCompletionRequest,
+  maxTokens: number
 ): Promise<string> {
   if (!entry.baseUrl) {
     throw new LlmCallFailure(entry, 'no baseUrl configured for this entry (lib/llm.ts)');
@@ -219,7 +254,7 @@ async function callOpenAiCompatible(
           ...(request.system ? [{ role: 'system' as const, content: request.system }] : []),
           { role: 'user' as const, content: request.prompt },
         ],
-        max_tokens: request.maxTokens ?? 1500,
+        max_tokens: maxTokens,
         temperature: request.temperature ?? 0.5,
       }),
       signal: AbortSignal.timeout(LLM_CALL_TIMEOUT_MS),
@@ -253,7 +288,8 @@ async function callOpenAiCompatible(
 async function callGeminiNative(
   entry: LlmProviderEntry,
   apiKey: string,
-  request: LlmCompletionRequest
+  request: LlmCompletionRequest,
+  maxTokens: number
 ): Promise<string> {
   let response: Response;
   try {
@@ -271,7 +307,7 @@ async function callGeminiNative(
           contents: [{ role: 'user', parts: [{ text: request.prompt }] }],
           generationConfig: {
             temperature: request.temperature ?? 0.5,
-            maxOutputTokens: request.maxTokens ?? 1500,
+            maxOutputTokens: maxTokens,
           },
         }),
         signal: AbortSignal.timeout(LLM_CALL_TIMEOUT_MS),
@@ -306,11 +342,21 @@ async function callGeminiNative(
   return text;
 }
 
+/**
+ * Effective max_tokens for one entry: the request's value (1500/100 per task)
+ * capped by the model's own limit, when the entry declares one. This is what
+ * keeps 512-context models (e.g. Groq's prompt-guard family) from 400ing.
+ */
+function effectiveMaxTokens(entry: LlmProviderEntry, request: LlmCompletionRequest): number {
+  return Math.min(request.maxTokens ?? 1500, entry.maxTokens ?? Number.MAX_SAFE_INTEGER);
+}
+
 async function callEntry(entry: LlmProviderEntry, request: LlmCompletionRequest): Promise<string> {
   const apiKey = process.env[entry.apiKeyEnv]?.trim() ?? '';
+  const maxTokens = effectiveMaxTokens(entry, request);
   return entry.kind === 'gemini-native'
-    ? callGeminiNative(entry, apiKey, request)
-    : callOpenAiCompatible(entry, apiKey, request);
+    ? callGeminiNative(entry, apiKey, request, maxTokens)
+    : callOpenAiCompatible(entry, apiKey, request, maxTokens);
 }
 
 /**
@@ -326,10 +372,13 @@ async function callEntry(entry: LlmProviderEntry, request: LlmCompletionRequest)
  * On success, logs which provider/model handled the request and how long it
  * took.
  */
-export async function completeWithFallback(request: LlmCompletionRequest): Promise<LlmCompletionResult> {
+export async function completeWithFallback(
+  request: LlmCompletionRequest,
+  chain: LlmProviderEntry[] = LLM_PROVIDER_CHAIN
+): Promise<LlmCompletionResult> {
   const attempts: string[] = [];
 
-  for (const entry of LLM_PROVIDER_CHAIN) {
+  for (const entry of chain) {
     const label = `${entry.provider} (${entry.model})`;
 
     if (!isLlmKeyConfigured(entry)) {
@@ -340,32 +389,54 @@ export async function completeWithFallback(request: LlmCompletionRequest): Promi
     }
 
     const startedAt = Date.now();
+    const maxAttempts = (entry.retries ?? 0) + 1;
     console.log(`[LLM] Trying ${label} for "${request.task}" ...`);
-    try {
-      const text = await callEntry(entry, request);
-      const tookMs = Date.now() - startedAt;
-      console.log(`[LLM] ${label} handled "${request.task}" in ${tookMs}ms`);
-      return { text, entry, tookMs };
-    } catch (error) {
-      const failure =
-        error instanceof LlmCallFailure ? error : new LlmCallFailure(entry, toErrorMessage(error));
-      const rateLimited = failure.statusCode === 429 || failure.statusCode === 503;
-      console.warn(
-        `[LLM] ${label} ${
-          rateLimited
-            ? `was rate limited / unavailable (HTTP ${failure.statusCode}) — moving to the next provider`
-            : `failed (${failure.message}) — moving to the next provider`
-        }`
-      );
-      attempts.push(`${label}: ${failure.message}`);
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const text = await callEntry(entry, request);
+        const tookMs = Date.now() - startedAt;
+        console.log(`[LLM] ${label} handled "${request.task}" in ${tookMs}ms`);
+        return { text, entry, tookMs };
+      } catch (error) {
+        const failure =
+          error instanceof LlmCallFailure ? error : new LlmCallFailure(entry, toErrorMessage(error));
+        const transient = failure.statusCode === 429 || failure.statusCode === 503;
+
+        if (transient && attempt < maxAttempts) {
+          console.warn(
+            `[LLM] ${label} got HTTP ${failure.statusCode} - transient, retrying in ${LLM_RETRY_DELAY_MS}ms ` +
+            `(attempt ${attempt + 1}/${maxAttempts})`
+          );
+          await sleep(LLM_RETRY_DELAY_MS);
+          continue;
+        }
+
+        console.warn(
+          `[LLM] ${label} ${
+            transient
+              ? `was rate limited / unavailable (HTTP ${failure.statusCode}) - moving to the next provider`
+              : `failed (${failure.message}) - moving to the next provider`
+          }`
+        );
+        attempts.push(
+          `${label}: ${failure.message}${transient ? ` (after ${attempt} attempt${attempt > 1 ? 's' : ''})` : ''}`
+        );
+        break;
+      }
     }
   }
 
-  throw new AppError(`Every provider in the LLM fallback chain failed for "${request.task}".`, {
-    status: 502,
-    details: attempts.join(' • '),
-    resolution:
-      'Set at least one working key in .env.local (GROQ_API_KEY, CEREBRAS_API_KEY, OPENROUTER_API_KEY, ' +
-      'GEMINI_API_KEY, MISTRAL_API_KEY), check the per-provider reasons in the details above, and retry.',
-  });
+  throw new AppError(
+    chain.length === LLM_PROVIDER_CHAIN.length
+      ? `Every provider in the LLM fallback chain failed for "${request.task}".`
+      : `Every provider in the requested LLM chain failed for "${request.task}".`,
+    {
+      status: 502,
+      details: attempts.join(' • '),
+      resolution:
+        'Set at least one working key in .env.local (GROQ_API_KEY, CEREBRAS_API_KEY, OPENROUTER_API_KEY, ' +
+        'GEMINI_API_KEY, MISTRAL_API_KEY), check the per-provider reasons in the details above, and retry.',
+    }
+  );
 }

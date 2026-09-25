@@ -57,11 +57,11 @@ GROQ_API_KEY=your-key              # or CEREBRAS_API_KEY / OPENROUTER_API_KEY / 
 |---|---|---|
 | `MONGODB_URI` | — | Use `127.0.0.1`, **not** `localhost`, if Docker/WSL2 resolves it to `::1`. |
 | `REDIS_URL` | — | Same note as above. |
-| `GROQ_API_KEY` | off | Groq — `llama-3.3-70b-versatile`, then `llama-3.1-8b-instant` (chain slots 1 + 7). |
+| `GROQ_API_KEY` | off | Groq — `llama-3.3-70b-versatile` (slot 1) then `openai/gpt-oss-20b` (slot 7). `llama-3.1-8b-instant` 404s on some accounts now. |
 | `CEREBRAS_API_KEY` | off | Cerebras — `llama-3.3-70b` (chain slot 2). |
 | `OPENROUTER_API_KEY` | off | OpenRouter free models (chain slots 3, 5, 8). |
-| `GEMINI_API_KEY` | off | Google AI Studio (chain slot 4). |
-| `MISTRAL_API_KEY` | off | Mistral La Plateforme (chain slot 6). |
+| `GEMINI_API_KEY` | off | Google AI Studio — `gemini-3.6-flash` (chain slot 4). 503s under high demand are transient. |
+| `MISTRAL_API_KEY` | off | Mistral La Plateforme — `mistral-small-latest` free tier (chain slot 6). |
 | — (no env var) | — | Chain order/models live in `LLM_PROVIDER_CHAIN` in `lib/llm.ts` — edit that array to reorder, add or remove providers. |
 | `DEEPGRAM_API_KEY` / `DEEPGRAM_MODEL` | off (`nova-2`) | If set, Deepgram wins over local whisper.cpp. |
 | `WHISPER_CLI_PATH` | auto-detect | Overrides binary discovery. |
