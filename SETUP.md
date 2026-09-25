@@ -69,7 +69,7 @@ GROQ_API_KEY=your-key              # or CEREBRAS_API_KEY / OPENROUTER_API_KEY / 
 | `WHISPER_MODEL_PATH` | auto-detect | Overrides model discovery (`models/ggml-*.bin`). |
 | `WHISPER_LANGUAGE` | `auto` | e.g. `ur`, `hi`, `en`. `auto` lets whisper detect. |
 | `WHISPER_THREADS` | half your cores | Raise for faster transcription. |
-| `FFMPEG_PATH` | `ffmpeg-static` | Point at your own `ffmpeg.exe` if you prefer. |
+| `FFMPEG_PATH` | `ffmpeg-static` (FFmpeg 7.x) | Point at your own `ffmpeg.exe` if you prefer - it must be FFmpeg ≥ 5.1 (the pipeline uses `-fps_mode`, which older builds don't have; `-vsync` was removed in 7). |
 | `PORT` | `3000` | Next.js port. |
 | `WORKER_CONCURRENCY` | `1` | Clips rendered in parallel. Keep at 1 unless you have ≥32 GB RAM. |
 | `REMOTION_CONCURRENCY` | auto (half the cores) | Chrome render threads. |

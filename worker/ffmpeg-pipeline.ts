@@ -170,7 +170,10 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
     '-pix_fmt', 'yuv420p',
     '-profile:v', 'high',
     '-r', String(fps),
-    '-vsync', 'cfr',
+    // FFmpeg 7 REMOVED -vsync (deprecated alias since 5.1) - the equivalent is
+    // -fps_mode. ffmpeg-static bundles FFmpeg 7.x, so '-vsync cfr' died with
+    // "Unrecognized option 'vsync'". (-fps_mode exists since FFmpeg 5.1.)
+    '-fps_mode', 'cfr',
     '-movflags', '+faststart',
     '-fflags', '+genpts',
     '-flags', '+global_header',
