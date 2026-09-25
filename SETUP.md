@@ -58,11 +58,11 @@ GROQ_API_KEY=your-key              # or CEREBRAS_API_KEY / OPENROUTER_API_KEY / 
 | `MONGODB_URI` | — | Use `127.0.0.1`, **not** `localhost`, if Docker/WSL2 resolves it to `::1`. |
 | `REDIS_URL` | — | Same note as above. |
 | `GROQ_API_KEY` | off | Groq — `qwen/qwen3.8-27b`, `openai/gpt-oss-120b`, `openai/gpt-oss-20b` (3 slots). Llama models left Groq's free plan in 2026. |
-| `GEMINI_API_KEY` | off | Google AI Studio — `gemini-3.6-flash` + `gemini-2.5-flash` (2 slots, separate daily pools, 1M context). |
+| `GEMINI_API_KEY` | off | Google AI Studio — `gemini-3.6-flash` + `gemini-3.8-flash` (2 slots, separate daily pools, 1M context). |
 | `OPENROUTER_API_KEY` | off | OpenRouter — `qwen/qwen3.8-27b:free`, `openai/gpt-oss-120b:free`, `meta-llama/llama-3.3-70b-instruct:free` (3 slots, 50 RPD each free). |
-| `CEREBRAS_API_KEY` | off | Cerebras — `qwen-3-235b-a22b-instruct-2507` (1 slot, 1M tokens/day). |
+| `CEREBRAS_API_KEY` | off | Cerebras — `gpt-oss-120b` (1 slot, 1M tokens/day). |
 | `MISTRAL_API_KEY` | off | Mistral La Plateforme — `mistral-small-latest` (1 slot, free tier ~1 RPM). |
-| `NVIDIA_API_KEY` | off (optional) | NVIDIA NIM — `meta/llama-3.3-70b-instruct` (1 slot, 1,000 free credits, phone verification at signup). |
+| `NVIDIA_API_KEY` | off (optional) | NVIDIA NIM — `meta/llama-4-scout-17b-16e-instruct` (1 slot, 40 RPM free). |
 | — (no env var) | — | Chain order/models live in `LLM_PROVIDER_CHAIN` in `lib/llm.ts` — edit that array to reorder, add or remove providers. |
 | `DEEPGRAM_API_KEY` / `DEEPGRAM_MODEL` | off (`nova-2`) | If set, Deepgram wins over local whisper.cpp. |
 | `WHISPER_CLI_PATH` | auto-detect | Overrides binary discovery. |

@@ -23,6 +23,85 @@ import { AppError, toErrorMessage } from './errors';
 import { completeWithFallback } from './llm';
 import { PromptTemplate, TranscriptData, ViralSegment } from './types';
 
+/**
+ * Output budget for viral detection. The segment JSON (timestamps + reason +
+ * hookText per segment) easily exceeds 1,500 tokens for a medium-length video,
+ * and a response cut off mid-JSON is what caused the "model did not return a
+ * JSON array" failures. 4,096 stays within the max-output limits of every
+ * provider in the chain (Cerebras free: 8K, Mistral small: 8K, Gemini/Groq/
+ * OpenRouter: far higher).
+ */
+export const DETECT_VIRAL_MAX_TOKENS = 4096;
+
+/**
+ * Extract the JSON segment array from a model response.
+ *
+ * Handles, in order of preference:
+ *   1. strict JSON (with or without surrounding prose / code fences)
+ *   2. TRUNCATED output - the model hit its max-output limit and the closing
+ *      `]` is missing. We then salvage every complete top-level `{...}`
+ *      object that made it out, so a 2,000-token video still yields its
+ *      segments instead of failing the whole detection.
+ *
+ * Returns null only when no usable JSON objects exist at all.
+ */
+export function extractViralSegmentArray(text: string): unknown[] | null {
+  const cleaned = text.trim();
+  const firstBracket = cleaned.indexOf('[');
+  if (firstBracket === -1) return null;
+
+  // 1) Strict parse: from the first '[' to the last ']'.
+  const lastBracket = cleaned.lastIndexOf(']');
+  if (lastBracket > firstBracket) {
+    try {
+      const parsed = JSON.parse(cleaned.slice(firstBracket, lastBracket + 1));
+      if (Array.isArray(parsed)) return parsed;
+    } catch {
+      // Not strict JSON (truncated or malformed) - fall through to repair.
+    }
+  }
+
+  // 2) Repair: walk the text tracking bracket/brace depth (string/escape
+  //    aware) and collect every complete top-level object inside the array.
+  //    Both '[' and '{' count toward depth, so a '{' seen at depth 1 is
+  //    exactly a top-level array element.
+  const objects: string[] = [];
+  let depth = 0;
+  let objectStart = -1;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = firstBracket; i < cleaned.length; i += 1) {
+    const ch = cleaned[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === '[' || ch === '{') {
+      if (ch === '{' && depth === 1) objectStart = i;
+      depth += 1;
+    } else if (ch === ']' || ch === '}') {
+      depth -= 1;
+      if (ch === '}' && depth === 1 && objectStart !== -1) {
+        objects.push(cleaned.slice(objectStart, i + 1));
+        objectStart = -1;
+      }
+      if (ch === ']' && depth === 0) break; // array closed cleanly
+    }
+  }
+
+  if (objects.length === 0) return null;
+  try {
+    return JSON.parse(`[${objects.join(',')}]`);
+  } catch {
+    return null;
+  }
+}
+
 async function requireTemplate(type: string): Promise<PromptTemplate> {
   const templateDoc = await getPromptTemplate(type);
   if (!templateDoc) {
@@ -67,7 +146,7 @@ export async function detectViralSegments(
       task: 'viral segment detection',
       system: templateDoc.systemPrompt,
       prompt: userPrompt,
-      maxTokens: 1500,
+      maxTokens: DETECT_VIRAL_MAX_TOKENS,
       temperature: 0.5,
     });
     contentText = result.text;
@@ -81,24 +160,21 @@ export async function detectViralSegments(
     });
   }
 
-  const jsonMatch = contentText.match(/\[\s*\{[\s\S]*\}\s*\]/);
-  if (!jsonMatch) {
-    throw new AppError('The model did not return a JSON array for viral segments.', {
-      status: 502,
-      details: contentText,
-      resolution: 'Tighten the viral detection prompt so the model returns only strict JSON.',
-    });
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(jsonMatch[0]);
-  } catch (error) {
-    throw new AppError('The model returned malformed JSON for viral segments.', {
-      status: 502,
-      details: toErrorMessage(error),
-      resolution: 'Retry viral detection, or tighten the prompt so the model returns only strict JSON.',
-    });
+  const parsed = extractViralSegmentArray(contentText);
+  if (!parsed) {
+    const looksTruncated = contentText.includes('[') && !contentText.trimEnd().endsWith(']');
+    throw new AppError(
+      looksTruncated
+        ? 'The model\'s viral segment JSON was cut off before it could be completed (likely the output token budget ran out).'
+        : 'The model did not return a JSON array for viral segments.',
+      {
+        status: 502,
+        details: contentText,
+        resolution: looksTruncated
+          ? 'Retry the analysis - on repeated failures raise DETECT_VIRAL_MAX_TOKENS in lib/ai.ts or shorten the transcript window.'
+          : 'Tighten the viral detection prompt so the model returns only strict JSON.',
+      }
+    );
   }
 
   if (!Array.isArray(parsed) || parsed.length === 0) {

@@ -60,8 +60,9 @@ export interface LlmProviderEntry {
 /**
  * THE FALLBACK CHAIN - tried in this exact order.
  *
- * Model ids below were verified against provider documentation and third-party
- * free-tier trackers as of 2026-09-25 (sources cited per entry). The Llama
+ * Model ids below were re-verified against provider documentation, third-party
+ * free-tier trackers and live API error responses as of 2026-09-25 (sources
+ * cited per entry). The Llama
  * models from the original chain (llama-3.3-70b-versatile on Groq,
  * llama-3.1-8b-instant, llama-3.3-70b on Cerebras, gemini-2.0-flash-exp:free
  * on OpenRouter) are all GONE from their free tiers by September 2026 -
@@ -110,24 +111,27 @@ export const LLM_PROVIDER_CHAIN: LlmProviderEntry[] = [
     baseUrl: 'https://api.groq.com/openai/v1',
   },
   {
-    // Documented stable free tier (Sep 2026): 10 RPM / 1,500 RPD / 1M context -
-    // a SEPARATE daily pool from gemini-3.6-flash, so the two Gemini slots
-    // effectively double the free Google budget.
-    id: 'gemini-studio-2-5',
+    // gemini-2.5-flash 404s as of late Sep 2026: "no longer available to new
+    // users. Please update your code to use models/gemini-3.8-flash" (Google's
+    // own error text). 1M context, ~1,500 RPD - a SEPARATE daily pool from
+    // gemini-3.6-flash, so the two Gemini slots double the free Google budget.
+    id: 'gemini-studio-3-8',
     provider: 'Google AI Studio',
-    model: 'gemini-2.5-flash',
+    model: 'gemini-3.8-flash',
     apiKeyEnv: 'GEMINI_API_KEY',
     kind: 'gemini-native',
     retries: 1,
   },
   {
-    // Cerebras free tier (Aug/Sep 2026): 235B MoE, 30 RPM / 1M tokens per day.
-    // Note: the free tier context is small (8K on some models), so very long
-    // transcripts will 400 here and the chain moves on - expected. qwen-3.8-27b
-    // (paid on Cerebras, 402) is NOT used; only free-tier ids go in this slot.
-    id: 'cerebras-qwen-235b',
+    // Cerebras free tier: gpt-oss-120b (listed online/free Aug-Sep 2026, 131K
+    // context). qwen-3-235b-a22b-instruct-2507 was 404 on some accounts
+    // ("model does not exist or you do not have access") - Cerebras rotates its
+    // free list, and qwen-3.8-27b there is PAID (402). If this id 404s on your
+    // account, check the Cerebras Cloud console and swap it here; the chain
+    // logs it and moves on either way.
+    id: 'cerebras-gpt-oss-120b',
     provider: 'Cerebras',
-    model: 'qwen-3-235b-a22b-instruct-2507',
+    model: 'gpt-oss-120b',
     apiKeyEnv: 'CEREBRAS_API_KEY',
     kind: 'openai-compatible',
     baseUrl: 'https://api.cerebras.ai/v1',
@@ -175,12 +179,15 @@ export const LLM_PROVIDER_CHAIN: LlmProviderEntry[] = [
     baseUrl: 'https://openrouter.ai/api/v1',
   },
   {
-    // OPTIONAL 6th key: NVIDIA NIM (build.nvidia.com, free 1,000 credits + up
-    // to 4,000 more on request, 40 RPM; phone verification required at signup).
+    // OPTIONAL 6th key: NVIDIA NIM (build.nvidia.com, 40 RPM, free credits).
+    // meta/llama-4-scout-17b-16e-instruct: verified in the NIM catalog
+    // (Sep 2026), 128K context. meta/llama-3.3-70b-instruct returned HTTP 410
+    // (Gone) - NIM retires models without much notice. NIM has also been
+    // flaky lately (504s/timeouts), so this stays near the bottom of the chain.
     // Skipped automatically when NVIDIA_API_KEY is empty.
-    id: 'nvidia-llama-70b',
+    id: 'nvidia-llama-4-scout',
     provider: 'NVIDIA NIM',
-    model: 'meta/llama-3.3-70b-instruct',
+    model: 'meta/llama-4-scout-17b-16e-instruct',
     apiKeyEnv: 'NVIDIA_API_KEY',
     kind: 'openai-compatible',
     baseUrl: 'https://integrate.api.nvidia.com/v1',
@@ -274,7 +281,11 @@ function describeHttpError(status: number, rawBody: string): string {
         ? 'model not found / no access (the id may have been renamed or removed - check the provider\'s model list and update lib/llm.ts)'
         : status === 402
           ? 'payment required (this provider account needs billing set up)'
-          : 'request failed';
+          : status === 413
+            ? 'request too large (the transcript exceeds this provider\'s free per-minute INPUT token cap - long videos should be handled by the large-context providers later in the chain)'
+            : status === 410
+              ? 'model gone (the provider retired this model id - update lib/llm.ts)'
+              : 'request failed';
   return `${kind} (HTTP ${status}${detail ? `: ${detail.slice(0, 200)}` : ''})`;
 }
 
