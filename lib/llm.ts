@@ -23,9 +23,9 @@
  * so the chain adds zero dependencies.
  */
 
-import { AppError, toErrorMessage } from './errors';
+import { AppError, toErrorMessage } from "./errors";
 
-export type LlmProviderKind = 'openai-compatible' | 'gemini-native';
+export type LlmProviderKind = "openai-compatible" | "gemini-native";
 
 export interface LlmProviderEntry {
   /** Stable id used in logs and error details. */
@@ -82,44 +82,44 @@ export const LLM_PROVIDER_CHAIN: LlmProviderEntry[] = [
     // Groq free tier (Sep 2026): qwen3.8-27b is the best free chat model left
     // on Groq after Llama was dropped from the free plan. 30 RPM / 1,000 RPD /
     // 200K tokens per day, 131K context.
-    id: 'groq-qwen3-8-27b',
-    provider: 'Groq',
-    model: 'qwen/qwen3.8-27b',
-    apiKeyEnv: 'GROQ_API_KEY',
-    kind: 'openai-compatible',
-    baseUrl: 'https://api.groq.com/openai/v1',
+    id: "groq-qwen3-8-27b",
+    provider: "Groq",
+    model: "qwen/qwen3.8-27b",
+    apiKeyEnv: "GROQ_API_KEY",
+    kind: "openai-compatible",
+    baseUrl: "https://api.groq.com/openai/v1",
   },
   {
     // Confirmed live on AI Studio in 2026-09 (503 = high-demand spike, not a
     // bad id). Gemini free tier: Flash models only since 2026-04-01, 1M context,
     // ~1,500 RPD. Strong multilingual support (Urdu/Hindi content).
-    id: 'gemini-studio-3-6',
-    provider: 'Google AI Studio',
-    model: 'gemini-3.6-flash',
-    apiKeyEnv: 'GEMINI_API_KEY',
-    kind: 'gemini-native',
+    id: "gemini-studio-3-6",
+    provider: "Google AI Studio",
+    model: "gemini-3.6-flash",
+    apiKeyEnv: "GEMINI_API_KEY",
+    kind: "gemini-native",
     retries: 1,
   },
   {
     // Groq free tier (Sep 2026): 131K context, separate per-model rate pool
     // from the qwen slot above.
-    id: 'groq-gpt-oss-120b',
-    provider: 'Groq',
-    model: 'openai/gpt-oss-120b',
-    apiKeyEnv: 'GROQ_API_KEY',
-    kind: 'openai-compatible',
-    baseUrl: 'https://api.groq.com/openai/v1',
+    id: "groq-gpt-oss-120b",
+    provider: "Groq",
+    model: "openai/gpt-oss-120b",
+    apiKeyEnv: "GROQ_API_KEY",
+    kind: "openai-compatible",
+    baseUrl: "https://api.groq.com/openai/v1",
   },
   {
     // gemini-2.5-flash 404s as of late Sep 2026: "no longer available to new
     // users. Please update your code to use models/gemini-3.8-flash" (Google's
     // own error text). 1M context, ~1,500 RPD - a SEPARATE daily pool from
     // gemini-3.6-flash, so the two Gemini slots double the free Google budget.
-    id: 'gemini-studio-3-8',
-    provider: 'Google AI Studio',
-    model: 'gemini-3.8-flash',
-    apiKeyEnv: 'GEMINI_API_KEY',
-    kind: 'gemini-native',
+    id: "gemini-studio-3-8",
+    provider: "Google AI Studio",
+    model: "gemini-3.8-flash",
+    apiKeyEnv: "GEMINI_API_KEY",
+    kind: "gemini-native",
     retries: 1,
   },
   {
@@ -129,54 +129,54 @@ export const LLM_PROVIDER_CHAIN: LlmProviderEntry[] = [
     // free list, and qwen-3.8-27b there is PAID (402). If this id 404s on your
     // account, check the Cerebras Cloud console and swap it here; the chain
     // logs it and moves on either way.
-    id: 'cerebras-gpt-oss-120b',
-    provider: 'Cerebras',
-    model: 'gpt-oss-120b',
-    apiKeyEnv: 'CEREBRAS_API_KEY',
-    kind: 'openai-compatible',
-    baseUrl: 'https://api.cerebras.ai/v1',
+    id: "cerebras-gpt-oss-120b",
+    provider: "Cerebras",
+    model: "gpt-oss-120b",
+    apiKeyEnv: "CEREBRAS_API_KEY",
+    kind: "openai-compatible",
+    baseUrl: "https://api.cerebras.ai/v1",
   },
   {
     // OpenRouter free (Sep 2026): 50 RPD per free model (1,000 RPD after a
     // one-time $10 top-up). "Safest default" per current free-model trackers.
-    id: 'openrouter-qwen3-8-27b',
-    provider: 'OpenRouter',
-    model: 'qwen/qwen3.8-27b:free',
-    apiKeyEnv: 'OPENROUTER_API_KEY',
-    kind: 'openai-compatible',
-    baseUrl: 'https://openrouter.ai/api/v1',
+    id: "openrouter-qwen3-8-27b",
+    provider: "OpenRouter",
+    model: "qwen/qwen3.8-27b:free",
+    apiKeyEnv: "OPENROUTER_API_KEY",
+    kind: "openai-compatible",
+    baseUrl: "https://openrouter.ai/api/v1",
   },
   {
     // OpenRouter free (Jul 2026, still listed): 131K context, strong general
     // reasoning for a free model.
-    id: 'openrouter-gpt-oss-120b',
-    provider: 'OpenRouter',
-    model: 'openai/gpt-oss-120b:free',
-    apiKeyEnv: 'OPENROUTER_API_KEY',
-    kind: 'openai-compatible',
-    baseUrl: 'https://openrouter.ai/api/v1',
+    id: "openrouter-gpt-oss-120b",
+    provider: "OpenRouter",
+    model: "openai/gpt-oss-120b:free",
+    apiKeyEnv: "OPENROUTER_API_KEY",
+    kind: "openai-compatible",
+    baseUrl: "https://openrouter.ai/api/v1",
   },
   {
     // La Plateforme free tier (confirmed live 2026-09 - answers, then 429s on
     // bursts; ~1 RPM). 429s are transient - retries: 1 helps.
-    id: 'mistral-small',
-    provider: 'Mistral',
-    model: 'mistral-small-latest',
-    apiKeyEnv: 'MISTRAL_API_KEY',
-    kind: 'openai-compatible',
-    baseUrl: 'https://api.mistral.ai/v1',
+    id: "mistral-small",
+    provider: "Mistral",
+    model: "mistral-small-latest",
+    apiKeyEnv: "MISTRAL_API_KEY",
+    kind: "openai-compatible",
+    baseUrl: "https://api.mistral.ai/v1",
     retries: 1,
   },
   {
     // OpenRouter free (Jul 2026): "most established pick - live and stable".
     // If it has been delisted by the time you run this, the slot 404s, the
     // chain logs it and moves on - swap the id here.
-    id: 'openrouter-llama-70b',
-    provider: 'OpenRouter',
-    model: 'meta-llama/llama-3.3-70b-instruct:free',
-    apiKeyEnv: 'OPENROUTER_API_KEY',
-    kind: 'openai-compatible',
-    baseUrl: 'https://openrouter.ai/api/v1',
+    id: "openrouter-llama-70b",
+    provider: "OpenRouter",
+    model: "meta-llama/llama-3.3-70b-instruct:free",
+    apiKeyEnv: "OPENROUTER_API_KEY",
+    kind: "openai-compatible",
+    baseUrl: "https://openrouter.ai/api/v1",
   },
   {
     // OPTIONAL 6th key: NVIDIA NIM (build.nvidia.com, 40 RPM, free credits).
@@ -185,25 +185,47 @@ export const LLM_PROVIDER_CHAIN: LlmProviderEntry[] = [
     // (Gone) - NIM retires models without much notice. NIM has also been
     // flaky lately (504s/timeouts), so this stays near the bottom of the chain.
     // Skipped automatically when NVIDIA_API_KEY is empty.
-    id: 'nvidia-llama-4-scout',
-    provider: 'NVIDIA NIM',
-    model: 'meta/llama-4-scout-17b-16e-instruct',
-    apiKeyEnv: 'NVIDIA_API_KEY',
-    kind: 'openai-compatible',
-    baseUrl: 'https://integrate.api.nvidia.com/v1',
+    id: "nvidia-llama-4-scout",
+    provider: "NVIDIA NIM",
+    model: "meta/llama-4-scout-17b-16e-instruct",
+    apiKeyEnv: "NVIDIA_API_KEY",
+    kind: "openai-compatible",
+    baseUrl: "https://integrate.api.nvidia.com/v1",
+  },
+  {
+    // OPTIONAL 6th key: NVIDIA NIM (build.nvidia.com, free 1,000 credits + up
+    // to 4,000 more on request, 40 RPM; phone verification required at signup).
+    // Skipped automatically when NVIDIA_API_KEY is empty.
+    id: "nvidia-gemma-4-31b",
+    provider: "NVIDIA NIM",
+    model: "google/gemma-4-31b-it",
+    apiKeyEnv: "NVIDIA_API_KEY",
+    kind: "openai-compatible",
+    baseUrl: "https://integrate.api.nvidia.com/v1",
+  },
+  {
+    // OPTIONAL 6th key: NVIDIA NIM (build.nvidia.com, free 1,000 credits + up
+    // to 4,000 more on request, 40 RPM; phone verification required at signup).
+    // Skipped automatically when NVIDIA_API_KEY is empty.
+    id: "nvidia-llama-90b",
+    provider: "NVIDIA NIM",
+    model: "meta/llama-3.2-90b-vision-instruct",
+    apiKeyEnv: "NVIDIA_API_KEY",
+    kind: "openai-compatible",
+    baseUrl: "https://integrate.api.nvidia.com/v1",
   },
   {
     // Last resort (Sep 2026): Groq's fastest free model (1,000+ t/s), 131K
     // context, own rate pool. Lower quality than the 120B/235B slots but
     // rarely rate-limited.
-    id: 'groq-gpt-oss-20b',
-    provider: 'Groq',
-    model: 'openai/gpt-oss-20b',
-    apiKeyEnv: 'GROQ_API_KEY',
-    kind: 'openai-compatible',
-    baseUrl: 'https://api.groq.com/openai/v1',
+    id: "groq-gpt-oss-20b",
+    provider: "Groq",
+    model: "openai/gpt-oss-20b",
+    apiKeyEnv: "GROQ_API_KEY",
+    kind: "openai-compatible",
+    baseUrl: "https://api.groq.com/openai/v1",
   },
-]
+];
 
 /** One chat completion, expressed provider-neutrally. */
 export interface LlmCompletionRequest {
@@ -233,7 +255,7 @@ class LlmCallFailure extends Error {
 
   constructor(entry: LlmProviderEntry, message: string, statusCode?: number) {
     super(message);
-    this.name = 'LlmCallFailure';
+    this.name = "LlmCallFailure";
     this.entry = entry;
     this.statusCode = statusCode;
   }
@@ -256,19 +278,20 @@ function sleep(ms: number): Promise<void> {
  */
 export function isLlmKeyConfigured(entry: LlmProviderEntry): boolean {
   const value = process.env[entry.apiKeyEnv]?.trim();
-  return Boolean(value && !value.toLowerCase().includes('your_api_key'));
+  return Boolean(value && !value.toLowerCase().includes("your_api_key"));
 }
 
 /** Pull a human-readable message out of a provider error body, when possible. */
 function describeHttpError(status: number, rawBody: string): string {
-  let detail = '';
+  let detail = "";
   try {
     const parsed = JSON.parse(rawBody) as {
       error?: { message?: string } | string;
       message?: string;
     };
-    if (typeof parsed.error === 'object' && parsed.error?.message) detail = parsed.error.message;
-    else if (typeof parsed.error === 'string') detail = parsed.error;
+    if (typeof parsed.error === "object" && parsed.error?.message)
+      detail = parsed.error.message;
+    else if (typeof parsed.error === "string") detail = parsed.error;
     else if (parsed.message) detail = parsed.message;
   } catch {
     // Non-JSON error body — the status code is enough.
@@ -276,44 +299,51 @@ function describeHttpError(status: number, rawBody: string): string {
 
   const kind =
     status === 429 || status === 503
-      ? 'rate limited / temporarily unavailable'
+      ? "rate limited / temporarily unavailable"
       : status === 404
-        ? 'model not found / no access (the id may have been renamed or removed - check the provider\'s model list and update lib/llm.ts)'
+        ? "model not found / no access (the id may have been renamed or removed - check the provider's model list and update lib/llm.ts)"
         : status === 402
-          ? 'payment required (this provider account needs billing set up)'
+          ? "payment required (this provider account needs billing set up)"
           : status === 413
-            ? 'request too large (the transcript exceeds this provider\'s free per-minute INPUT token cap - long videos should be handled by the large-context providers later in the chain)'
+            ? "request too large (the transcript exceeds this provider's free per-minute INPUT token cap - long videos should be handled by the large-context providers later in the chain)"
             : status === 410
-              ? 'model gone (the provider retired this model id - update lib/llm.ts)'
-              : 'request failed';
-  return `${kind} (HTTP ${status}${detail ? `: ${detail.slice(0, 200)}` : ''})`;
+              ? "model gone (the provider retired this model id - update lib/llm.ts)"
+              : "request failed";
+  return `${kind} (HTTP ${status}${detail ? `: ${detail.slice(0, 200)}` : ""})`;
 }
 
 async function callOpenAiCompatible(
   entry: LlmProviderEntry,
   apiKey: string,
   request: LlmCompletionRequest,
-  maxTokens: number
+  maxTokens: number,
 ): Promise<string> {
   if (!entry.baseUrl) {
-    throw new LlmCallFailure(entry, 'no baseUrl configured for this entry (lib/llm.ts)');
+    throw new LlmCallFailure(
+      entry,
+      "no baseUrl configured for this entry (lib/llm.ts)",
+    );
   }
 
   let response: Response;
   try {
     response = await fetch(`${entry.baseUrl}/chat/completions`, {
-      method: 'POST',
+      method: "POST",
       headers: {
-        'content-type': 'application/json',
+        "content-type": "application/json",
         authorization: `Bearer ${apiKey}`,
         // OpenRouter uses X-Title for attribution on the free tier.
-        ...(entry.provider === 'OpenRouter' ? { 'x-title': 'ClipCraft Local' } : {}),
+        ...(entry.provider === "OpenRouter"
+          ? { "x-title": "ClipCraft Local" }
+          : {}),
       },
       body: JSON.stringify({
         model: entry.model,
         messages: [
-          ...(request.system ? [{ role: 'system' as const, content: request.system }] : []),
-          { role: 'user' as const, content: request.prompt },
+          ...(request.system
+            ? [{ role: "system" as const, content: request.system }]
+            : []),
+          { role: "user" as const, content: request.prompt },
         ],
         max_tokens: maxTokens,
         temperature: request.temperature ?? 0.5,
@@ -327,21 +357,26 @@ async function callOpenAiCompatible(
 
   const rawBody = await response.text();
   if (!response.ok) {
-    throw new LlmCallFailure(entry, describeHttpError(response.status, rawBody), response.status);
+    throw new LlmCallFailure(
+      entry,
+      describeHttpError(response.status, rawBody),
+      response.status,
+    );
   }
 
   let json: unknown;
   try {
     json = JSON.parse(rawBody);
   } catch {
-    throw new LlmCallFailure(entry, 'returned a non-JSON response body');
+    throw new LlmCallFailure(entry, "returned a non-JSON response body");
   }
 
-  const content = (json as { choices?: Array<{ message?: { content?: string | null } }> }).choices?.[0]
-    ?.message?.content;
-  const text = typeof content === 'string' ? content.trim() : '';
+  const content = (
+    json as { choices?: Array<{ message?: { content?: string | null } }> }
+  ).choices?.[0]?.message?.content;
+  const text = typeof content === "string" ? content.trim() : "";
   if (!text) {
-    throw new LlmCallFailure(entry, 'returned an empty completion');
+    throw new LlmCallFailure(entry, "returned an empty completion");
   }
   return text;
 }
@@ -350,29 +385,31 @@ async function callGeminiNative(
   entry: LlmProviderEntry,
   apiKey: string,
   request: LlmCompletionRequest,
-  maxTokens: number
+  maxTokens: number,
 ): Promise<string> {
   let response: Response;
   try {
     response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(entry.model)}:generateContent`,
       {
-        method: 'POST',
+        method: "POST",
         headers: {
-          'content-type': 'application/json',
+          "content-type": "application/json",
           // Header form so the key never ends up in URLs/logs.
-          'x-goog-api-key': apiKey,
+          "x-goog-api-key": apiKey,
         },
         body: JSON.stringify({
-          ...(request.system ? { systemInstruction: { parts: [{ text: request.system }] } } : {}),
-          contents: [{ role: 'user', parts: [{ text: request.prompt }] }],
+          ...(request.system
+            ? { systemInstruction: { parts: [{ text: request.system }] } }
+            : {}),
+          contents: [{ role: "user", parts: [{ text: request.prompt }] }],
           generationConfig: {
             temperature: request.temperature ?? 0.5,
             maxOutputTokens: maxTokens,
           },
         }),
         signal: AbortSignal.timeout(LLM_CALL_TIMEOUT_MS),
-      }
+      },
     );
   } catch (error) {
     throw new LlmCallFailure(entry, toErrorMessage(error));
@@ -380,14 +417,18 @@ async function callGeminiNative(
 
   const rawBody = await response.text();
   if (!response.ok) {
-    throw new LlmCallFailure(entry, describeHttpError(response.status, rawBody), response.status);
+    throw new LlmCallFailure(
+      entry,
+      describeHttpError(response.status, rawBody),
+      response.status,
+    );
   }
 
   let json: unknown;
   try {
     json = JSON.parse(rawBody);
   } catch {
-    throw new LlmCallFailure(entry, 'returned a non-JSON response body');
+    throw new LlmCallFailure(entry, "returned a non-JSON response body");
   }
 
   const data = json as {
@@ -395,10 +436,18 @@ async function callGeminiNative(
     promptFeedback?: { blockReason?: string };
   };
 
-  const text = (data.candidates?.[0]?.content?.parts ?? []).map((part) => part.text ?? '').join('').trim();
+  const text = (data.candidates?.[0]?.content?.parts ?? [])
+    .map((part) => part.text ?? "")
+    .join("")
+    .trim();
   if (!text) {
     const blockReason = data.promptFeedback?.blockReason;
-    throw new LlmCallFailure(entry, blockReason ? `blocked by safety filter (${blockReason})` : 'returned an empty completion');
+    throw new LlmCallFailure(
+      entry,
+      blockReason
+        ? `blocked by safety filter (${blockReason})`
+        : "returned an empty completion",
+    );
   }
   return text;
 }
@@ -408,14 +457,23 @@ async function callGeminiNative(
  * capped by the model's own limit, when the entry declares one. This is what
  * keeps 512-context models (e.g. Groq's prompt-guard family) from 400ing.
  */
-function effectiveMaxTokens(entry: LlmProviderEntry, request: LlmCompletionRequest): number {
-  return Math.min(request.maxTokens ?? 1500, entry.maxTokens ?? Number.MAX_SAFE_INTEGER);
+function effectiveMaxTokens(
+  entry: LlmProviderEntry,
+  request: LlmCompletionRequest,
+): number {
+  return Math.min(
+    request.maxTokens ?? 1500,
+    entry.maxTokens ?? Number.MAX_SAFE_INTEGER,
+  );
 }
 
-async function callEntry(entry: LlmProviderEntry, request: LlmCompletionRequest): Promise<string> {
-  const apiKey = process.env[entry.apiKeyEnv]?.trim() ?? '';
+async function callEntry(
+  entry: LlmProviderEntry,
+  request: LlmCompletionRequest,
+): Promise<string> {
+  const apiKey = process.env[entry.apiKeyEnv]?.trim() ?? "";
   const maxTokens = effectiveMaxTokens(entry, request);
-  return entry.kind === 'gemini-native'
+  return entry.kind === "gemini-native"
     ? callGeminiNative(entry, apiKey, request, maxTokens)
     : callOpenAiCompatible(entry, apiKey, request, maxTokens);
 }
@@ -435,7 +493,7 @@ async function callEntry(entry: LlmProviderEntry, request: LlmCompletionRequest)
  */
 export async function completeWithFallback(
   request: LlmCompletionRequest,
-  chain: LlmProviderEntry[] = LLM_PROVIDER_CHAIN
+  chain: LlmProviderEntry[] = LLM_PROVIDER_CHAIN,
 ): Promise<LlmCompletionResult> {
   const attempts: string[] = [];
 
@@ -461,13 +519,16 @@ export async function completeWithFallback(
         return { text, entry, tookMs };
       } catch (error) {
         const failure =
-          error instanceof LlmCallFailure ? error : new LlmCallFailure(entry, toErrorMessage(error));
-        const transient = failure.statusCode === 429 || failure.statusCode === 503;
+          error instanceof LlmCallFailure
+            ? error
+            : new LlmCallFailure(entry, toErrorMessage(error));
+        const transient =
+          failure.statusCode === 429 || failure.statusCode === 503;
 
         if (transient && attempt < maxAttempts) {
           console.warn(
             `[LLM] ${label} got HTTP ${failure.statusCode} - transient, retrying in ${LLM_RETRY_DELAY_MS}ms ` +
-            `(attempt ${attempt + 1}/${maxAttempts})`
+              `(attempt ${attempt + 1}/${maxAttempts})`,
           );
           await sleep(LLM_RETRY_DELAY_MS);
           continue;
@@ -478,10 +539,10 @@ export async function completeWithFallback(
             transient
               ? `was rate limited / unavailable (HTTP ${failure.statusCode}) - moving to the next provider`
               : `failed (${failure.message}) - moving to the next provider`
-          }`
+          }`,
         );
         attempts.push(
-          `${label}: ${failure.message}${transient ? ` (after ${attempt} attempt${attempt > 1 ? 's' : ''})` : ''}`
+          `${label}: ${failure.message}${transient ? ` (after ${attempt} attempt${attempt > 1 ? "s" : ""})` : ""}`,
         );
         break;
       }
@@ -494,11 +555,11 @@ export async function completeWithFallback(
       : `Every provider in the requested LLM chain failed for "${request.task}".`,
     {
       status: 502,
-      details: attempts.join(' • '),
+      details: attempts.join(" • "),
       resolution:
-        'Set at least one working key in .env.local (GROQ_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY, ' +
-        'CEREBRAS_API_KEY, MISTRAL_API_KEY, optionally NVIDIA_API_KEY), check the per-provider ' +
-        'reasons in the details above, and retry.',
-    }
+        "Set at least one working key in .env.local (GROQ_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY, " +
+        "CEREBRAS_API_KEY, MISTRAL_API_KEY, optionally NVIDIA_API_KEY), check the per-provider " +
+        "reasons in the details above, and retry.",
+    },
   );
 }
