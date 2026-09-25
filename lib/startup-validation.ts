@@ -274,8 +274,8 @@ async function validateAiProvider(): Promise<StartupCheck> {
         (entry, index) => `${index + 1}. ${entry.provider} ${entry.model} (needs ${entry.apiKeyEnv})`
       ).join(' • '),
       resolution:
-        'Set at least one of GROQ_API_KEY, CEREBRAS_API_KEY, OPENROUTER_API_KEY, GEMINI_API_KEY, ' +
-        'MISTRAL_API_KEY in .env.local (see .env.example).',
+        'Set at least one of GROQ_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY, CEREBRAS_API_KEY, ' +
+        'MISTRAL_API_KEY (or optionally NVIDIA_API_KEY) in .env.local (see .env.example).',
     });
   }
 
