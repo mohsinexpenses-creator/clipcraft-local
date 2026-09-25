@@ -15,7 +15,7 @@ Docker. No Python, no cloud video services (except the optional LLM + Deepgram k
 | Node.js 20+ (LTS) | Next.js 16 + the worker | `node -v` |
 | Docker Desktop | MongoDB + Redis containers | `docker compose version` |
 | **Microsoft Visual C++ Redistributable (x64)** | `whisper-cli.exe` is a native build and needs `vcruntime140.dll` / `msvcp140.dll` | Install once: <https://aka.ms/vs/17/release/vc_redist.x64.exe> |
-| Gemini or Anthropic API key | Viral-segment detection + hook/CTA text | one of the two |
+| At least one LLM API key (Groq / Cerebras / OpenRouter / Google / Mistral) | Viral-segment detection + hook/CTA text (auto fallback chain) | any one |
 
 FFmpeg is **not** a manual install — `ffmpeg-static` downloads a binary during
 `npm install` and `lib/ffmpeg.ts` resolves it automatically.
@@ -48,7 +48,7 @@ Then edit `.env.local`. Minimum for a first run:
 ```ini
 MONGODB_URI=mongodb://127.0.0.1:27017
 REDIS_URL=redis://127.0.0.1:6379
-GEMINI_API_KEY=your-key            # or ANTHROPIC_API_KEY
+GROQ_API_KEY=your-key              # or CEREBRAS_API_KEY / OPENROUTER_API_KEY / GEMINI_API_KEY / MISTRAL_API_KEY
 ```
 
 ### All variables
@@ -57,9 +57,12 @@ GEMINI_API_KEY=your-key            # or ANTHROPIC_API_KEY
 |---|---|---|
 | `MONGODB_URI` | — | Use `127.0.0.1`, **not** `localhost`, if Docker/WSL2 resolves it to `::1`. |
 | `REDIS_URL` | — | Same note as above. |
-| `GEMINI_API_KEY` / `GEMINI_MODEL` | `gemini-flash-latest` | Rolling alias — never goes stale like `gemini-1.5-flash` did. |
-| `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` | `claude-haiku-4-5-20251001` | `claude-3-haiku-20240307` is retired and now returns a 404. |
-| `AI_PROVIDER` | auto | Force `gemini` or `anthropic` when both keys are set. |
+| `GROQ_API_KEY` | off | Groq — `llama-3.3-70b-versatile`, then `llama-3.1-8b-instant` (chain slots 1 + 7). |
+| `CEREBRAS_API_KEY` | off | Cerebras — `llama-3.3-70b` (chain slot 2). |
+| `OPENROUTER_API_KEY` | off | OpenRouter free models (chain slots 3, 5, 8). |
+| `GEMINI_API_KEY` | off | Google AI Studio (chain slot 4). |
+| `MISTRAL_API_KEY` | off | Mistral La Plateforme (chain slot 6). |
+| — (no env var) | — | Chain order/models live in `LLM_PROVIDER_CHAIN` in `lib/llm.ts` — edit that array to reorder, add or remove providers. |
 | `DEEPGRAM_API_KEY` / `DEEPGRAM_MODEL` | off (`nova-2`) | If set, Deepgram wins over local whisper.cpp. |
 | `WHISPER_CLI_PATH` | auto-detect | Overrides binary discovery. |
 | `WHISPER_MODEL_PATH` | auto-detect | Overrides model discovery (`models/ggml-*.bin`). |
@@ -334,8 +337,8 @@ lib/ffmpeg.ts            ffmpeg-static path resolution + probe + spawn wrapper
 lib/whisper.ts           cross-platform whisper.cpp discovery & transcription
 lib/deepgram.ts          optional cloud STT (REST, no SDK)
 lib/queue.ts             BullMQ queues: clip render + transcription
-lib/models.ts            LLM model ids, defaults and retired-model warnings
-lib/ai.ts                provider selection (AI_PROVIDER / Gemini / Anthropic)
+lib/llm.ts               LLM fallback chain (config array + plain fetch, no SDKs)
+lib/ai.ts                prompt templates + JSON parsing on top of the fallback chain
 lib/startup-validation.ts the checks behind /startup-validation
 worker/index.ts          both BullMQ workers, graceful shutdown
 worker/processor.ts      per-clip orchestration

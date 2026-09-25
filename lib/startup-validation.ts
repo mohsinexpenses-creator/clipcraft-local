@@ -4,11 +4,10 @@ import fs from 'fs';
 import path from 'path';
 import Redis from 'ioredis';
 import { MongoClient } from 'mongodb';
-import { resolveAiProvider } from './ai';
 import { getDb } from './db';
 import { toErrorMessage } from './errors';
 import { getFfmpegPath } from './ffmpeg';
-import { getClaudeModel, getGeminiModelName } from './models';
+import { LLM_PROVIDER_CHAIN, isLlmKeyConfigured } from './llm';
 import {
   getPlannedTranscriptionEngine,
   getWhisperCliPath,
@@ -31,11 +30,6 @@ export interface StartupValidationResult {
   ready: boolean;
   generatedAt: string;
   checks: StartupCheck[];
-}
-
-function hasConfiguredValue(name: string): boolean {
-  const value = process.env[name]?.trim();
-  return Boolean(value && !value.includes('your_api_key'));
 }
 
 function createCheck(check: StartupCheck): StartupCheck {
@@ -268,39 +262,38 @@ async function validateTranscription(): Promise<StartupCheck> {
 }
 
 async function validateAiProvider(): Promise<StartupCheck> {
-  const hasGemini = hasConfiguredValue('GEMINI_API_KEY');
-  const hasClaude = hasConfiguredValue('ANTHROPIC_API_KEY');
+  const withKeys = LLM_PROVIDER_CHAIN.filter(isLlmKeyConfigured);
 
-  if (!hasGemini && !hasClaude) {
+  if (withKeys.length === 0) {
     return createCheck({
       id: 'ai-provider',
       label: 'AI provider',
       status: 'error',
-      summary: 'No AI provider is configured.',
-      resolution: 'Set GEMINI_API_KEY or ANTHROPIC_API_KEY in .env.local (see .env.example).',
+      summary: 'No LLM API key is configured - the fallback chain would have nothing to call.',
+      details: LLM_PROVIDER_CHAIN.map(
+        (entry, index) => `${index + 1}. ${entry.provider} ${entry.model} (needs ${entry.apiKeyEnv})`
+      ).join(' • '),
+      resolution:
+        'Set at least one of GROQ_API_KEY, CEREBRAS_API_KEY, OPENROUTER_API_KEY, GEMINI_API_KEY, ' +
+        'MISTRAL_API_KEY in .env.local (see .env.example).',
     });
   }
 
-  const active = resolveAiProvider();
-  const override = process.env.AI_PROVIDER?.trim();
-  const details: string[] = [];
-
-  if (hasGemini) details.push(`Gemini key present (model: ${getGeminiModelName()})`);
-  if (hasClaude) details.push(`Anthropic key present (model: ${getClaudeModel()})`);
-  if (override) details.push(`AI_PROVIDER override: ${override}`);
-  details.push(`Active: ${active || 'none'}`);
+  const details = LLM_PROVIDER_CHAIN.map(
+    (entry, index) =>
+      `${index + 1}. ${entry.provider} (${entry.model}) - ${
+        isLlmKeyConfigured(entry) ? 'key set' : `skipped, ${entry.apiKeyEnv} not set`
+      }`
+  );
 
   return createCheck({
     id: 'ai-provider',
     label: 'AI provider',
-    status: active ? 'ok' : 'warning',
-    summary: active
-      ? `AI provider ready (${active}).`
-      : 'AI keys are set but no provider could be selected.',
+    status: 'ok',
+    summary:
+      `LLM fallback chain ready - first active: ${withKeys[0].provider} (${withKeys[0].model}); ` +
+      `${withKeys.length} of ${LLM_PROVIDER_CHAIN.length} chain slots have a key.`,
     details: details.join(' • '),
-    resolution: active
-      ? undefined
-      : 'Check that AI_PROVIDER is either unset, "gemini" or "anthropic", and that the matching key is not a placeholder.',
   });
 }
 
