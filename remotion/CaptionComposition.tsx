@@ -7,11 +7,15 @@ import { HookOverlay } from './HookOverlay';
 
 export interface CaptionCompositionProps {
   /**
-   * ABSOLUTE FILE PATH of the processed clip (never a `file://` URL).
-   * <OffthreadVideo> extracts frames with ffmpeg outside the browser, so a plain
-   * path works during rendering and needs no CORS headers.
+   * http(s) URL of the processed clip, served by the worker's throwaway
+   * loopback media server during rendering (worker/clip-http-server.ts).
    *
-   * Not supported in the in-app <Player> preview (that runs fully in the browser),
+   * Remotion renders in headless Chrome, which cannot read the filesystem:
+   * a raw absolute path (or file:// URL) reaches Remotion's asset downloader,
+   * which only accepts http(s)/data: URLs, and the render fails.
+   *
+   * Not supported in the in-app <Player> preview (that runs fully in the
+   * browser on the user's machine, where the worker's server does not exist),
    * which is why the preview page simply does not pass this prop and gets the
    * gradient placeholder below instead.
    */

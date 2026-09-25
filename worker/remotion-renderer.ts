@@ -4,6 +4,7 @@ import { AppError, toErrorMessage } from '../lib/errors';
 import { getVideoMetadata } from '../lib/ffmpeg';
 import { CaptionPreset, WordTimestamp } from '../lib/types';
 import { normalizeFps } from './ffmpeg-pipeline';
+import { startClipMediaServer } from './clip-http-server';
 
 export interface RenderCaptionsOptions {
   videoPath: string;
@@ -124,6 +125,21 @@ export async function renderCaptionsAndOverlays(
     });
   }
 
+  // Headless Chrome (where Remotion renders the composition) cannot read the
+  // filesystem, so the clip is served over a throwaway loopback HTTP server
+  // for the duration of this render and passed to Remotion as an http URL.
+  // See worker/clip-http-server.ts for the full reasoning.
+  let mediaServer: Awaited<ReturnType<typeof startClipMediaServer>>;
+  try {
+    mediaServer = await startClipMediaServer(videoPath);
+  } catch (error) {
+    throw new AppError('Could not serve the processed clip to Remotion.', {
+      status: 500,
+      details: toErrorMessage(error),
+      resolution: 'The clip file could not be opened for streaming - re-run the render.',
+    });
+  }
+
   try {
     const { renderMedia, selectComposition } = await import('@remotion/renderer');
 
@@ -135,22 +151,25 @@ export async function renderCaptionsAndOverlays(
       `[Remotion Renderer] Source: ${meta.width}x${meta.height} @ ${meta.fps}fps, ${meta.duration.toFixed(2)}s, ` +
       `audio=${meta.hasAudio ? 'yes' : 'no'} -> rendering ${durationInFrames} frames @ ${fps}fps`
     );
+    console.log(`[Remotion Renderer] Serving clip to Remotion via ${mediaServer.url}`);
 
     const bundled = await withTimeout(getRemotionBundle(), getRenderTimeoutMs(), 'bundle');
 
     /**
-     * `videoSrc` is an ABSOLUTE FILE PATH, not a `file://` URL.
+     * `videoSrc` MUST be an http(s) URL - Remotion's asset downloader (and the
+     * OffthreadVideo proxy) only accepts http(s)/data: sources.
      *
-     * The composition renders it with <OffthreadVideo>, which extracts frames with
-     * ffmpeg outside the browser (and needs no CORS), so a plain path works. The old
-     * code passed `file://${videoPath}` into a raw <video> tag: headless Chrome
-     * refuses to load a file:// resource from an http:// origin, which is exactly the
-     * "Not allowed to load local resource" error, and the rendered clip came out with
-     * a black background and no video. On Windows `file://C:\...` was additionally a
-     * malformed URL (the drive letter was parsed as the host).
+     * History: v1 passed `file://${videoPath}` into a raw <video> tag -> "Not
+     * allowed to load local resource" + black frames. v2 passed the raw ABSOLUTE
+     * PATH (a "fix" that seemed to work in some environments) -> on Windows the
+     * path reaches the browser, where it is mangled into a bogus `d:\...` or
+     * `file:///D:/...` URL, and the renderer dies with
+     * "Can only download URLs starting with http:// or https://".
+     * v3 (now): serve the clip from a throwaway 127.0.0.1 server and pass the
+     * http URL. This is the approach Remotion's own docs recommend.
      */
     const inputProps = {
-      videoSrc: videoPath,
+      videoSrc: mediaServer.url,
       videoHasAudio: meta.hasAudio,
       videoWidth: meta.width,
       videoHeight: meta.height,
@@ -262,7 +281,12 @@ export async function renderCaptionsAndOverlays(
     throw new AppError('Remotion caption rendering failed.', {
       details: toErrorMessage(error),
       resolution:
-        'Inspect the Remotion render log above, confirm videoSrc points at an existing processed clip, and retry.',
+        'Inspect the Remotion render log above, confirm the processed clip exists, and retry. ' +
+        'The clip is served to Remotion over a local HTTP server - if the error mentions ' +
+        'downloading URLs, the render was aborted before the clip finished streaming.',
     });
+  } finally {
+    // Always release the port, even on timeout/error paths.
+    await mediaServer.close();
   }
 }

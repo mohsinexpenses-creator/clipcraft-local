@@ -189,16 +189,20 @@ was removed from `package.json`.
 
 ## 8. Troubleshooting
 
-**"Not allowed to load local resource: file:///…"**
-Fixed. The composition now uses `<OffthreadVideo src={absolutePath}>` (frames extracted
-with FFmpeg outside the browser) instead of a bare `<video src="file://…">`, which
-headless Chrome refuses to load from an `http://` origin. If you ever pass a `videoSrc`
-again, pass a plain absolute path — never a `file://` URL.
+**"Not allowed to load local resource: file:///…" / "Can only download URLs starting
+with http:// or https://"**
+Fixed. Remotion renders inside headless Chrome, which **cannot read the filesystem** —
+video sources must be http(s)/data: URLs (or `staticFile()`). The worker now serves the
+processed clip from a throwaway `127.0.0.1` HTTP server for the duration of the render
+(`worker/clip-http-server.ts`) and passes that URL as `videoSrc`. Never pass a raw
+absolute path or `file://` URL as a Remotion video source. The worker logs the served
+URL: `[Remotion Renderer] Serving clip to Remotion via http://127.0.0.1:PORT/clip.mp4`.
 
 **Rendered clip has no video / black frames**
-Same root cause as above. Also check the worker log line
+Check the worker log line
 `[Remotion Renderer] Source: WxH @ Nfps …` — if the source probe failed, the FFmpeg stage
-produced a bad intermediate.
+produced a bad intermediate. If that line looks correct, confirm the "Serving clip" line
+appears right after it and the URL is reachable in a browser tab on the same machine.
 
 **Rendered clip is silent**
 The renderer sets `enforceAudioTrack: true` and the FFmpeg stage muxes a silent
