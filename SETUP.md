@@ -165,6 +165,8 @@ and tells you exactly what to fix.
 3. The worker transcribes with whisper.cpp (or Deepgram) and stores word-level
    timestamps in MongoDB.
 4. "Detect viral segments" asks the LLM for `{start, end, hookText, score}`.
+   Rendering then asks the LLM again to pick the most gripping moment inside the
+   clip (a "suspense hook") - that moment is duplicated to the START of the clip.
 5. Rendering a clip enqueues a BullMQ job → the worker runs:
    smart crop detection → FFmpeg (mirror + crop + colour + hook intro) → Remotion
    (captions + hook/CTA overlays) → `generated-clips/{videoId}/{clipId}.mp4`.
@@ -179,13 +181,15 @@ The smart crop always works out of the box using a **skin-tone heuristic** (crud
 dependency-free). For proper face detection add a TensorFlow.js CPU backend:
 
 ```powershell
-npm i @tensorflow/tfjs-core@^4 @tensorflow/tfjs-backend-cpu@^4
+npm run setup:faceapi
+# same as: npm i @tensorflow/tfjs-core@^4 @tensorflow/tfjs-backend-cpu@^4
 ```
 
 `worker/face-detector.ts` loads `@vladmandic/face-api` + the committed
-`models/face/tiny_face_detector` weights **only if** tfjs is present, and silently falls
-back to the heuristic otherwise. `face-api.js` (the abandoned fork, which pins tfjs 1.x)
-was removed from `package.json`.
+`models/face/tiny_face_detector` weights **only if** tfjs is present, and falls back to
+the heuristic otherwise (the worker log says why: `Falling back to the skin-tone
+heuristic: ...`). `face-api.js` (the abandoned fork, which pins tfjs 1.x) was removed
+from `package.json`.
 
 ---
 

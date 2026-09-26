@@ -124,13 +124,13 @@ async function loadFaceApi(): Promise<{ faceapi: FaceApiModule; tf: TfjsModule }
       const modelsDir = path.join(process.cwd(), FACE_MODELS_DIR);
       await faceapi.nets.tinyFaceDetector.loadFromDisk(modelsDir);
 
-      console.log('[FaceDetector] Real face detection enabled (@vladmandic/face-api + tfjs cpu backend).');
+      log.ok('Real face detection enabled (@vladmandic/face-api + tfjs cpu backend).');
       return { faceapi, tf };
     } catch (error) {
       faceApiUnavailableReason = toErrorMessage(error);
-      console.warn(
-        `[FaceDetector] Falling back to the skin-tone heuristic: ${faceApiUnavailableReason}\n` +
-        '[FaceDetector] To enable real face detection run: npm i @tensorflow/tfjs-core@^4 @tensorflow/tfjs-backend-cpu@^4'
+      log.warn(
+        `Falling back to the skin-tone heuristic: ${faceApiUnavailableReason}. ` +
+        'To enable real face detection run: npm run setup:faceapi'
       );
       return null;
     }

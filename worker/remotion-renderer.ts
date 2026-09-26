@@ -12,6 +12,8 @@ export interface RenderCaptionsOptions {
   outputPath: string;
   hookText: string;
   hookDuration: number;
+  /** Where in the clip (seconds from clip start) the duplicated hook intro was cut from. */
+  hookStart: number;
   ctaText: string;
   ctaDuration: number;
   words: WordTimestamp[];
@@ -111,7 +113,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 export async function renderCaptionsAndOverlays(
   options: RenderCaptionsOptions
 ): Promise<RenderCaptionsResult> {
-  const { videoPath, outputPath, hookText, hookDuration, ctaText, ctaDuration, words, preset, onProgress } =
+  const { videoPath, outputPath, hookText, hookDuration, hookStart, ctaText, ctaDuration, words, preset, onProgress } =
     options;
 
   log.detail(`Captions & overlays for ${color.bold(path.basename(videoPath))}`);
@@ -197,6 +199,7 @@ export async function renderCaptionsAndOverlays(
       sourceFps: meta.fps,
       hookText,
       hookDuration,
+      hookStart: Math.max(0, Number(hookStart) || 0),
       ctaText,
       ctaDuration,
       words,

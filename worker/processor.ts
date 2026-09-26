@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { getCaptionPreset, getClip, getVideo, saveClip } from '../lib/db';
 import { AppError, toErrorMessage } from '../lib/errors';
+import { detectHookMoment } from '../lib/ai';
 import { getVideoMetadata } from '../lib/ffmpeg';
 import { ClipRecord, JobData } from '../lib/types';
 import { detectFaceCropWindow } from './face-detector';
@@ -106,6 +107,31 @@ export async function processClipJob(
 
     const segmentDuration = Math.max(0.1, end - start);
 
+    // Compute the clip's words UP FRONT: captions need them, the hook-moment
+    // detector needs them, and a window without spoken words should fail fast
+    // before we waste an FFmpeg encode on it.
+    const allWords = video.transcript?.words || [];
+    const clipWords = allWords
+      .filter(
+        (word) =>
+          word.end >= start - WORD_SLACK_SECONDS && word.start <= end + WORD_SLACK_SECONDS
+      )
+      .map((word) => ({
+        ...word,
+        // Relative to the segment start; the composition adds hookDuration back on.
+        start: Math.max(0, word.start - start),
+        end: Math.max(0.1, word.end - start),
+      }));
+
+    if (clipWords.length === 0) {
+      throw new AppError('No transcript words were found for this clip window.', {
+        status: 400,
+        details: `window=${start}s-${end}s, transcriptWords=${allWords.length}`,
+        resolution:
+          'Re-run transcription, or pick a segment that overlaps spoken audio - captions need word timings.',
+      });
+    }
+
     // hookDuration/ctaDuration are optional on the job payload; never pass undefined
     // into the FFmpeg/Remotion stages or the timeline maths silently breaks.
     const resolvedHookDuration = Number.isFinite(hookDuration) && (hookDuration ?? 0) >= 0
@@ -118,6 +144,29 @@ export async function processClipJob(
       );
     }
     const safeHookDuration = Math.min(resolvedHookDuration, segmentDuration / 2);
+
+    // Suspense hook: find the most gripping moment INSIDE the clip and duplicate
+    // that moment to the start (the viewer sees the best beat first, then watches
+    // the clip build back up to it). Falls back to the first N seconds when no
+    // LLM provider can answer.
+    const hookMoment = await detectHookMoment({
+      words: clipWords,
+      segmentDuration,
+      hookDuration: safeHookDuration,
+    });
+    const hookStart = hookMoment
+      ? Math.max(0, Math.min(hookMoment.start, Math.max(0, segmentDuration - safeHookDuration)))
+      : 0;
+    if (hookMoment && hookStart > 0.05) {
+      log.ok(
+        `Hook moment: ${hookMoment.start.toFixed(1)}s → ${hookMoment.end.toFixed(1)}s` +
+        (hookMoment.reason ? `  (${hookMoment.reason})` : '')
+      );
+    } else if (hookMoment) {
+      log.detail('Hook moment: first seconds of the clip');
+    } else if (safeHookDuration > 0) {
+      log.warn('Hook moment auto-detection unavailable - duplicating the first N seconds.');
+    }
 
     log.step('Step 1/3 · Smart crop detection');
     const cropResult = await detectFaceCropWindow(
@@ -145,6 +194,7 @@ export async function processClipJob(
       start,
       end,
       hookDuration: safeHookDuration,
+      hookStart,
       filterPresetId: filterPreset,
       cropFilter: cropResult.cropFilter,
       cropWidth: cropResult.cropW,
@@ -165,28 +215,6 @@ export async function processClipJob(
     });
 
     await reportProgress(80);
-
-    const allWords = video.transcript?.words || [];
-    const clipWords = allWords
-      .filter(
-        (word) =>
-          word.end >= start - WORD_SLACK_SECONDS && word.start <= end + WORD_SLACK_SECONDS
-      )
-      .map((word) => ({
-        ...word,
-        // Relative to the segment start; the composition adds hookDuration back on.
-        start: Math.max(0, word.start - start),
-        end: Math.max(0.1, word.end - start),
-      }));
-
-    if (clipWords.length === 0) {
-      throw new AppError('No transcript words were found for this clip window.', {
-        status: 400,
-        details: `window=${start}s-${end}s, transcriptWords=${allWords.length}`,
-        resolution:
-          'Re-run transcription, or pick a segment that overlaps spoken audio - captions need word timings.',
-      });
-    }
 
     const preset = await getCaptionPreset(captionPresetId);
     if (!preset) {
@@ -221,6 +249,7 @@ export async function processClipJob(
       outputPath: finalVideoPath,
       hookText: resolvedHookText,
       hookDuration: safeHookDuration,
+      hookStart,
       ctaText: resolvedCtaText,
       ctaDuration: resolvedCtaDuration,
       words: clipWords,

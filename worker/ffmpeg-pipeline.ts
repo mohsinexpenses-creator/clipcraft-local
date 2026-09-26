@@ -11,6 +11,8 @@ export interface ProcessSegmentOptions {
   start: number;
   end: number;
   hookDuration: number;
+  /** Where in the clip (seconds, relative to the clip start) the hook intro is cut from. 0 = the first N seconds (legacy behaviour). */
+  hookStart: number;
   filterPresetId: string;
   cropFilter: string;
   /** Width/height of the crop window, used to size the output canvas. */
@@ -57,8 +59,12 @@ export function normalizeFps(sourceFps: number): number {
 }
 
 /**
- * Output canvas for the processed clip: same 9:16 shape as the crop, downscaled to
- * fit the composition but never upscaled (a 720p source stays 720x1280).
+ * Output canvas for the processed clip: ALWAYS the full 1080x1920 composition
+ * canvas. The smart crop produces a 9:16 window (full source height, e.g.
+ * 606x1080 from a 16:9 source); we UPSCALE it to exactly 1080x1920 so the
+ * Remotion composition is a 1:1 blit with NO black bars around the video.
+ * (The old "never upscale" behaviour left the clip at 606x1080 centred on a
+ * black 1080x1920 canvas - the user saw a small clip with pillarboxing.)
  */
 export function computeOutputSize(cropWidth: number, cropHeight: number): { width: number; height: number } {
   /**
@@ -74,12 +80,7 @@ export function computeOutputSize(cropWidth: number, cropHeight: number): { widt
     return { width: MAX_OUTPUT_WIDTH, height: MAX_OUTPUT_HEIGHT };
   }
 
-  const w = evenSize(cropWidth);
-  const h = evenSize(cropHeight);
-  const scale = Math.min(1, MAX_OUTPUT_WIDTH / w, MAX_OUTPUT_HEIGHT / h);
-
-  // libx264 needs even dimensions and something it can actually macro-block.
-  return { width: Math.max(16, evenSize(w * scale)), height: Math.max(16, evenSize(h * scale)) };
+  return { width: MAX_OUTPUT_WIDTH, height: MAX_OUTPUT_HEIGHT };
 }
 
 /**
@@ -115,6 +116,7 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
     start,
     end,
     hookDuration,
+    hookStart,
     filterPresetId,
     cropFilter,
     cropWidth,
@@ -255,11 +257,15 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
 
       // Re-encode (not `-c copy`) so the hook intro starts on a keyframe and its
       // encoder parameters are byte-identical to the base clip -> clean concat.
+      // `hookStart` is the (LLM-detected) most gripping moment of the clip; 0
+      // keeps the legacy behaviour of duplicating the first N seconds.
+      // Clamp: the hook window must fit inside the base clip.
+      const hookOffset = Math.max(0, Math.min(Number(hookStart) || 0, actualHookDur));
       const hookExtractArgs = [
         '-y',
         '-hide_banner',
         '-loglevel', 'error',
-        '-ss', '0',
+        '-ss', hookOffset.toFixed(3),
         '-t', actualHookDur.toFixed(3),
         '-i', processedBaseClip,
         '-map', '0:v:0',

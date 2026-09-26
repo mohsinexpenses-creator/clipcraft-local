@@ -28,11 +28,56 @@ export interface CaptionCompositionProps {
   hookText: string;
   /** Length of the duplicated hook intro, in seconds. */
   hookDuration: number;
+  /**
+   * Where in the clip (seconds from the clip start) the duplicated hook intro
+   * was cut from. 0 (or unset) = the intro shows the first N seconds (legacy
+   * behaviour); any other value = the intro replays that moment, and its
+   * transcript words are captioned during the intro as a preview.
+   */
+  hookStart?: number;
   ctaText: string;
   ctaDuration: number;
   /** Word timings relative to the START of the source segment (0 = segment start). */
   words: WordTimestamp[];
   preset: CaptionPreset;
+}
+
+/**
+ * The rendered clip is [hook intro][full segment], so the transcript has to be
+ * remapped onto that timeline:
+ *
+ * - During the intro (0..hookDuration) the video replays the HOOK MOMENT - the
+ *   words around `hookStart` - so caption them as a preview, re-based to start
+ *   at 0. With hookStart=0 the window is simply the start of the clip.
+ * - After the intro, every word of the full segment moves later by exactly
+ *   hookDuration seconds.
+ *
+ * Words overlapping both lists appear twice on purpose: once as the preview,
+ * once when the clip reaches that moment for real.
+ */
+export function buildRenderedWords(
+  words: WordTimestamp[],
+  hookStart: number,
+  hookDuration: number
+): WordTimestamp[] {
+  const shifted: WordTimestamp[] = words.map((w) => ({
+    ...w,
+    start: w.start + hookDuration,
+    end: w.end + hookDuration,
+  }));
+
+  const intro: WordTimestamp[] =
+    hookDuration > 0
+      ? words
+          .filter((w) => w.end > hookStart && w.start < hookStart + hookDuration)
+          .map((w) => ({
+            ...w,
+            start: Math.max(0, w.start - hookStart),
+            end: Math.min(w.end - hookStart, hookDuration),
+          }))
+      : [];
+
+  return [...intro, ...shifted];
 }
 
 /** Group the transcript into short readable caption lines (TikTok/Shorts style). */
@@ -57,10 +102,11 @@ export function buildCaptionChunks(words: WordTimestamp[], wordsPerChunk = 4): C
 export const CaptionComposition: React.FC<CaptionCompositionProps> = ({
   videoSrc,
   videoHasAudio = true,
-  videoWidth,
-  videoHeight,
+  // videoWidth/videoHeight are still passed (useful in logs/debugging) but the
+  // clip now always fills the frame, so layout no longer branches on them.
   hookText,
   hookDuration = 3,
+  hookStart = 0,
   ctaText,
   ctaDuration = 2.5,
   words = [],
@@ -71,47 +117,38 @@ export const CaptionComposition: React.FC<CaptionCompositionProps> = ({
   const totalDurationInSeconds = durationInFrames / fps;
 
   /**
-   * The rendered clip is [hook intro][full segment], so every transcript word has
-   * to move later by exactly hookDuration seconds.
+   * The rendered clip is [hook intro][full segment].
+   *
+   * - After the intro, every transcript word moves later by exactly
+   *   hookDuration seconds.
+   * - During the intro the video replays the HOOK MOMENT (the words around
+   *   `hookStart`), so caption those words as a preview at 0..hookDuration.
+   *   With hookStart=0 the window is simply the start of the clip.
    */
-  const shiftedWords: WordTimestamp[] = words.map((w) => ({
-    ...w,
-    start: w.start + hookDuration,
-    end: w.end + hookDuration,
-  }));
-  const chunks = buildCaptionChunks(shiftedWords);
+  const chunks = buildCaptionChunks(buildRenderedWords(words, hookStart, hookDuration));
 
   const currentTime = frame / fps;
   // Lift the captions while the end CTA card occupies the same bottom area.
   const captionLiftPercent = getCtaBottomLiftPercent(ctaDuration, totalDurationInSeconds, currentTime);
 
-  // Native size, centred: the FFmpeg stage already produced a 9:16 canvas, so this
-  // is a 1:1 blit. Falls back to cover-fit when the dimensions are unknown.
-  const nativeFit =
-    videoWidth && videoHeight ? (
-      <AbsoluteFill style={{ alignItems: 'center', justifyContent: 'center', backgroundColor: '#000' }}>
-        <div style={{ width: videoWidth, height: videoHeight }}>
-          <OffthreadVideo
-            src={videoSrc as string}
-            muted={!videoHasAudio}
-            style={{ width: '100%', height: '100%' }}
-          />
-        </div>
-      </AbsoluteFill>
-    ) : (
-      <AbsoluteFill style={{ backgroundColor: '#000' }}>
-        <OffthreadVideo
-          src={videoSrc as string}
-          muted={!videoHasAudio}
-          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-        />
-      </AbsoluteFill>
-    );
+  // The FFmpeg stage outputs the processed clip at exactly the composition canvas
+  // (1080x1920), so the video FILLS the frame - no black bars, and the hook/CTA/
+  // captions overlay directly on top of the video. objectFit: cover stays as a
+  // safety net for any future aspect drift.
+  const fullFrame = (
+    <AbsoluteFill style={{ backgroundColor: '#000' }}>
+      <OffthreadVideo
+        src={videoSrc as string}
+        muted={!videoHasAudio}
+        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+      />
+    </AbsoluteFill>
+  );
 
   return (
     <AbsoluteFill style={{ backgroundColor: '#0F172A', overflow: 'hidden' }}>
       {videoSrc ? (
-        nativeFit
+        fullFrame
       ) : (
         <AbsoluteFill
           style={{

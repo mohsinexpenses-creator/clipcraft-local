@@ -14,7 +14,8 @@
     "db:logs": "docker compose logs -f",
     "setup:whisper": "node scripts/setup-whisper.mjs",
     "setup:whisper:ps": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-whisper.ps1",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "setup:faceapi": "npm i @tensorflow/tfjs-core@^4 @tensorflow/tfjs-backend-cpu@^4"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",

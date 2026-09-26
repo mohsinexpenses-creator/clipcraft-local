@@ -62,10 +62,12 @@ FULL PROCESSING PIPELINE (per uploaded video)
       "warm", "cinematic" — store these as ffmpeg filter strings in MongoDB)
       Combine steps a–d into a single ffmpeg filter_complex call where possible
       to minimize re-encodes.
-6. Take the first N seconds (configurable, e.g. 3–5s) of the processed clip,
-   duplicate it as a standalone "hook" segment, and concatenate it back onto the
-   front of the same clip (ffmpeg concat demuxer) — so the clip now opens with a
-   repeated preview of its most engaging moment before playing through normally.
+6. Find the most engaging moment inside the clip (the LLM picks it from the
+   clip's word timings - a "suspense hook") and duplicate N seconds of it
+   (configurable, e.g. 3–5s) as a standalone "hook" segment, concatenating it
+   onto the front of the clip (re-encoded, NOT stream-copied) — so the clip
+   opens with the best beat first, then plays through normally and the viewer
+   watches it build back up to that same moment.
 7. Send that clip's transcript text to Claude API with a separate prompt to
    generate a short, punchy on-screen hook text overlay (distinct from the
    viral-segment-detection prompt in step 3).
