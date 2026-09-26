@@ -5,6 +5,8 @@ import Link from 'next/link';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { VideoRecord, ClipRecord, CaptionPreset } from '@/lib/types';
 import { ClipCard } from '@/components/clip-card';
+import { ViralDetectOptions } from '@/components/viral-detect-options';
+import { useViralOptions } from '@/components/use-viral-options';
 import { Button } from '@/components/ui/button';
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -92,6 +94,7 @@ function DashboardContent() {
   const [isDetectingViral, setIsDetectingViral] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [viralOptions, setViralOptions] = useViralOptions();
 
   const loadVideos = useCallback(async (): Promise<VideoRecord[]> => {
     const res = await fetch('/api/videos');
@@ -225,6 +228,8 @@ function DashboardContent() {
     try {
       const res = await fetch(`/api/videos/${selectedVideoId}/detect-viral`, {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ options: viralOptions }),
       });
 
       if (!res.ok) {
@@ -494,6 +499,10 @@ function DashboardContent() {
                   </CardContent>
                 )}
               </Card>
+
+              <div className="animate-fade-up" style={{ animationDelay: '90ms' }}>
+                <ViralDetectOptions value={viralOptions} onChange={setViralOptions} />
+              </div>
 
               <div className="space-y-4">
                 <div className="flex items-center justify-between">

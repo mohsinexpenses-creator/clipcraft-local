@@ -95,7 +95,7 @@ export const ClipCard: React.FC<ClipCardProps> = ({ clip, captionPresets, onRefr
           videoId: clip.videoId,
           start: clip.start,
           end: clip.end,
-          hookDuration,
+          hookDuration: hookText.trim() ? (hookDuration > 0 ? hookDuration : 3) : 0,
           hookText,
           ctaText,
           ctaDuration,
@@ -201,7 +201,7 @@ export const ClipCard: React.FC<ClipCardProps> = ({ clip, captionPresets, onRefr
                 {Math.round(clip.end - clip.start)}s segment
               </p>
               <h3 className="truncate text-base font-semibold tracking-tight">
-                {clip.hookText || 'Short clip segment'}
+                {clip.title || clip.hookText || 'Short clip segment'}
               </h3>
             </div>
             <ClipStatusBadge status={clip.status} />
@@ -211,6 +211,45 @@ export const ClipCard: React.FC<ClipCardProps> = ({ clip, captionPresets, onRefr
             <p className="mt-3 rounded-lg bg-muted/60 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
               <span className="font-medium text-foreground/80">Why it works: </span>
               {clip.viralReason}
+            </p>
+          )}
+
+          {(clip.retentionStrength ||
+            clip.psychologicalTrigger ||
+            clip.safetyRisk ||
+            clip.scores) && (
+            <div className="mt-3 flex flex-wrap items-center gap-1.5">
+              {clip.retentionStrength && (
+                <Badge variant="secondary">🎯 Retention: {clip.retentionStrength}</Badge>
+              )}
+              {clip.psychologicalTrigger && (
+                <Badge variant="secondary">🧠 {clip.psychologicalTrigger}</Badge>
+              )}
+              {clip.safetyRisk && (
+                <Badge
+                  variant={clip.safetyRisk === 'High' ? 'destructive' : 'outline'}
+                  className={clip.safetyRisk === 'Medium' ? 'border-amber-500/50 text-amber-600 dark:text-amber-400' : undefined}
+                >
+                  {clip.safetyRisk === 'Low' ? '✅' : '⚠️'} Safety: {clip.safetyRisk}
+                </Badge>
+              )}
+              {clip.scores && (
+                <span className="text-[11px] text-muted-foreground">
+                  Viral {clip.scores.viral}/10 · Retention {clip.scores.retention}/10 ·
+                  Controversy {clip.scores.controversy}/10 · Shareability {clip.scores.shareability}/10
+                </span>
+              )}
+            </div>
+          )}
+
+          {clip.hashtags && clip.hashtags.length > 0 && (
+            <p className="mt-2 text-xs text-muted-foreground">{clip.hashtags.join(' ')}</p>
+          )}
+
+          {clip.safetyNotes && clip.safetyNotes !== 'No risky wording detected.' && (
+            <p className="mt-2 rounded-lg bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:text-amber-400">
+              <span className="font-medium">Safety notes: </span>
+              {clip.safetyNotes}
             </p>
           )}
 
@@ -242,9 +281,18 @@ export const ClipCard: React.FC<ClipCardProps> = ({ clip, captionPresets, onRefr
                 id={`hook-${clip._id}`}
                 value={hookText}
                 onChange={(e) => setHookText(e.target.value)}
-                placeholder="e.g. WATCH THIS FIRST"
+                placeholder={
+                  hookText.trim()
+                    ? 'e.g. WATCH THIS FIRST'
+                    : 'Hook overlay off — type text to enable it'
+                }
                 disabled={isProcessing}
               />
+              {!hookText.trim() && (
+                <p className="text-xs text-muted-foreground">
+                  This clip renders without a hook intro/overlay until hook text is added.
+                </p>
+              )}
             </div>
 
             <div className="space-y-2 sm:col-span-2">

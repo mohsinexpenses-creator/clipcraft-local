@@ -6,6 +6,9 @@ unchanged on purpose.
 Everything runs on your own PC: Next.js + a separate BullMQ worker + MongoDB/Redis in
 Docker. No Python, no cloud video services (except the optional LLM + Deepgram keys).
 
+For the built-in **viral clip detection prompt** (AI clip options, prompt template
+variables, customization) see [`docs/VIRAL_PROMPT_GUIDE.md`](./docs/VIRAL_PROMPT_GUIDE.md).
+
 ---
 
 ## 1. Prerequisites

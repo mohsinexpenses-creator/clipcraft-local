@@ -22,15 +22,26 @@ import { getPromptTemplate } from './db';
 import { AppError, toErrorMessage } from './errors';
 import { log } from './logger';
 import { completeWithFallback } from './llm';
-import { PromptTemplate, TranscriptData, ViralSegment, WordTimestamp } from './types';
+import {
+  ClipScores,
+  DEFAULT_VIRAL_OPTIONS,
+  PromptTemplate,
+  RetentionStrength,
+  SafetyRisk,
+  TranscriptData,
+  ViralDetectionOptions,
+  ViralSegment,
+  WordTimestamp,
+} from './types';
 
 /**
- * Output budget for viral detection. The segment JSON (timestamps + reason +
- * hookText per segment) easily exceeds 1,500 tokens for a medium-length video,
- * and a response cut off mid-JSON is what caused the "model did not return a
- * JSON array" failures. 4,096 stays within the max-output limits of every
- * provider in the chain (Cerebras free: 8K, Mistral small: 8K, Gemini/Groq/
- * OpenRouter: far higher).
+ * Baseline output budget for viral detection. The real budget now scales with
+ * `clipCount` (each clip object carries the full packaging block - timestamps +
+ * reason + hook/CTA/title/hashtags/scores - so 10 clips need several times what
+ * 3 clips need, and a response cut off mid-JSON is what caused the "model did
+ * not return a JSON array" failures). The computed value is capped at 6,144 to
+ * stay within the max-output limits of every provider in the chain (Cerebras
+ * free: 8K, Mistral small: 8K, Gemini/Groq/OpenRouter: far higher).
  */
 export const DETECT_VIRAL_MAX_TOKENS = 4096;
 
@@ -115,15 +126,69 @@ async function requireTemplate(type: string): Promise<PromptTemplate> {
   return templateDoc;
 }
 
+/**
+ * Effective options for one detection run: user values with fallbacks.
+ * `maxClipDuration` is always >= `minClipDuration`.
+ */
+export function resolveViralOptions(
+  partial?: Partial<ViralDetectionOptions> | null
+): Required<ViralDetectionOptions> {
+  const clipCount = Math.round(
+    Number.isFinite(Number(partial?.clipCount)) && Number(partial?.clipCount) > 0
+      ? Number(partial?.clipCount)
+      : DEFAULT_VIRAL_OPTIONS.clipCount
+  );
+  const minClipDuration = Math.max(
+    1,
+    Number.isFinite(Number(partial?.minClipDuration)) && Number(partial?.minClipDuration) > 0
+      ? Number(partial?.minClipDuration)
+      : DEFAULT_VIRAL_OPTIONS.minClipDuration
+  );
+  const maxClipDuration = Math.max(
+    minClipDuration,
+    Number.isFinite(Number(partial?.maxClipDuration)) && Number(partial?.maxClipDuration) > 0
+      ? Number(partial?.maxClipDuration)
+      : DEFAULT_VIRAL_OPTIONS.maxClipDuration
+  );
+  return {
+    clipCount,
+    minClipDuration,
+    maxClipDuration,
+    includeHookText: partial?.includeHookText ?? DEFAULT_VIRAL_OPTIONS.includeHookText,
+  };
+}
+
+/** Fill every supported {{placeholder}} (all occurrences) in a template. */
+function fillTemplate(template: string, values: Record<string, string | number>): string {
+  let out = template;
+  for (const [key, value] of Object.entries(values)) {
+    out = out.split(`{{${key}}}`).join(String(value));
+  }
+  return out;
+}
+
 export async function detectViralSegments(
   transcript: TranscriptData,
-  videoDuration: number
+  videoDuration: number,
+  options?: Partial<ViralDetectionOptions> | null
 ): Promise<ViralSegment[]> {
+  const resolved = resolveViralOptions(options);
+
   if (!transcript.segments.length) {
     throw new AppError('Cannot run viral detection without transcript segments.', {
       status: 400,
       resolution: 'Re-run transcription first and make sure the transcript contains timestamped segments.',
     });
+  }
+
+  if (videoDuration < resolved.minClipDuration) {
+    throw new AppError(
+      `The video (${Math.round(videoDuration)}s) is shorter than the minimum clip length (${resolved.minClipDuration}s).`,
+      {
+        status: 400,
+        resolution: 'Lower the minimum clip length in the AI clip options, or upload a longer video.',
+      }
+    );
   }
 
   const templateDoc = await requireTemplate('viral_detection');
@@ -139,7 +204,18 @@ export async function detectViralSegments(
     .map((segment) => `[${segment.start.toFixed(1)}s - ${segment.end.toFixed(1)}s]: ${segment.text}`)
     .join('\n');
 
-  const userPrompt = templateDoc.template.replace('{{transcript}}', formattedTranscript);
+  const userPrompt = fillTemplate(templateDoc.template, {
+    transcript: formattedTranscript,
+    clipCount: resolved.clipCount,
+    minClipDuration: resolved.minClipDuration,
+    maxClipDuration: resolved.maxClipDuration,
+  });
+
+  // Scale the output budget with the number of clips: each clip object carries
+  // the full packaging block (title/hook/CTA/hashtags/scores), so a 10-clip run
+  // needs several times what a 3-clip run needs. Capped at 6K to stay inside
+  // the free-tier output limits of every provider in the chain.
+  const maxTokens = Math.min(6144, 1200 + resolved.clipCount * 320);
 
   let contentText: string;
   try {
@@ -147,7 +223,7 @@ export async function detectViralSegments(
       task: 'viral segment detection',
       system: templateDoc.systemPrompt,
       prompt: userPrompt,
-      maxTokens: DETECT_VIRAL_MAX_TOKENS,
+      maxTokens,
       temperature: 0.5,
     });
     contentText = result.text;
@@ -172,7 +248,7 @@ export async function detectViralSegments(
         status: 502,
         details: contentText,
         resolution: looksTruncated
-          ? 'Retry the analysis - on repeated failures raise DETECT_VIRAL_MAX_TOKENS in lib/ai.ts or shorten the transcript window.'
+          ? 'Retry the analysis - on repeated failures lower the number of clips in the AI clip options or shorten the transcript window.'
           : 'Tighten the viral detection prompt so the model returns only strict JSON.',
       }
     );
@@ -185,7 +261,79 @@ export async function detectViralSegments(
     });
   }
 
-  return parsed.map((item, index) => sanitizeSegment(item, index, videoDuration));
+  const sanitized = parsed.map((item, index) => sanitizeSegment(item, index, videoDuration));
+  const valid = enforceViralConstraints(sanitized, resolved);
+
+  if (!valid.length) {
+    throw new AppError(
+      'No viral segment stayed inside the configured clip length range.',
+      {
+        status: 502,
+        details: `clip length range: ${resolved.minClipDuration}s-${resolved.maxClipDuration}s, video: ${Math.round(videoDuration)}s`,
+        resolution:
+          'Widen the min/max clip length in the AI clip options, or adjust the viral detection prompt so segments fit the requested range.',
+      }
+    );
+  }
+
+  return valid;
+}
+
+/**
+ * Post-parse rule enforcement, mirroring the prompt's hard constraints:
+ *  - clip length stays within [minClipDuration, maxClipDuration] (over-long
+ *    clips are trimmed to the max, under-minimum clips are dropped),
+ *  - clips are ranked by viral potential (highest score first),
+ *  - no two clips overlap,
+ *  - at most `clipCount` clips survive.
+ */
+function enforceViralConstraints(
+  segments: ViralSegment[],
+  options: Required<ViralDetectionOptions>
+): ViralSegment[] {
+  const withinBounds: ViralSegment[] = [];
+
+  for (const segment of segments) {
+    let end = segment.end;
+    const duration = end - segment.start;
+
+    if (duration < options.minClipDuration) {
+      log.warn(
+        `Dropping viral segment ${segment.start.toFixed(1)}s-${end.toFixed(1)}s ` +
+          `(${duration.toFixed(1)}s is below the ${options.minClipDuration}s minimum)`
+      );
+      continue;
+    }
+
+    if (duration > options.maxClipDuration) {
+      end = segment.start + options.maxClipDuration;
+      log.detail(
+        `Trimming viral segment ${segment.start.toFixed(1)}s-${segment.end.toFixed(1)}s ` +
+          `to the ${options.maxClipDuration}s maximum`
+      );
+    }
+
+    withinBounds.push({ ...segment, end });
+  }
+
+  // Rank by viral potential first, then greedily keep non-overlapping clips so
+  // the "no overlapping timestamps" rule survives imperfect model output.
+  const ranked = [...withinBounds].sort((a, b) => b.score - a.score);
+  const kept: ViralSegment[] = [];
+
+  for (const segment of ranked) {
+    const overlaps = kept.some((other) => segment.start < other.end && segment.end > other.start);
+    if (overlaps) {
+      log.warn(
+        `Dropping overlapping viral segment ${segment.start.toFixed(1)}s-${segment.end.toFixed(1)}s ` +
+          `(conflicts with a higher-ranked clip)`
+      );
+      continue;
+    }
+    kept.push(segment);
+  }
+
+  return kept.slice(0, options.clipCount);
 }
 
 export async function generateHookText(clipTranscriptText: string): Promise<string> {
@@ -389,6 +537,57 @@ async function generateShortOverlayText(options: {
   return cleaned;
 }
 
+function toFiniteNumber(value: unknown): number | undefined {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+function toCleanString(value: unknown, maxLength = 300): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const cleaned = value.trim();
+  return cleaned ? cleaned.slice(0, maxLength) : undefined;
+}
+
+function toStringArray(value: unknown, maxItems = 5): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const items = value
+    .filter((entry): entry is string => typeof entry === 'string')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .slice(0, maxItems);
+  return items.length ? items : undefined;
+}
+
+function toEnum<T extends string>(value: unknown, allowed: readonly T[]): T | undefined {
+  const cleaned = typeof value === 'string' ? value.trim() : '';
+  return (allowed as readonly string[]).includes(cleaned) ? (cleaned as T) : undefined;
+}
+
+const RETENTION_STRENGTHS = ['Weak', 'Medium', 'Strong', 'Extreme'] as const;
+const SAFETY_RISKS = ['Low', 'Medium', 'High'] as const;
+
+function toClipScores(value: unknown): ClipScores | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const raw = value as Record<string, unknown>;
+  const clamp = (input: unknown) => {
+    const n = toFiniteNumber(input);
+    return n === undefined ? undefined : Math.min(10, Math.max(1, n));
+  };
+  const viral = clamp(raw.viral);
+  const retention = clamp(raw.retention);
+  const controversy = clamp(raw.controversy);
+  const shareability = clamp(raw.shareability);
+  if (
+    viral === undefined ||
+    retention === undefined ||
+    controversy === undefined ||
+    shareability === undefined
+  ) {
+    return undefined;
+  }
+  return { viral, retention, controversy, shareability };
+}
+
 function sanitizeSegment(item: unknown, index: number, videoDuration: number): ViralSegment {
   const segment = (item || {}) as Record<string, unknown>;
   const start = Number(segment.start);
@@ -413,11 +612,44 @@ function sanitizeSegment(item: unknown, index: number, videoDuration: number): V
     });
   }
 
+  // Timestamps must stay inside the real video window so no model invention
+  // can ever create a clip outside the source.
+  const clampedStart = Math.max(0, start);
+  const clampedEnd = Math.min(videoDuration, end);
+
+  if (clampedEnd - clampedStart < 1) {
+    throw new AppError(
+      `The model returned viral segment #${index + 1} outside the video bounds (${start}-${end}s vs ${videoDuration}s).`,
+      {
+        status: 502,
+        details: JSON.stringify(item),
+        resolution:
+          'The prompt must use only timestamps supported by the transcript - check the viral detection prompt rules.',
+      }
+    );
+  }
+
+  const hookLineStart = toFiniteNumber(segment.hookLineStart);
+  const hookLineEnd = toFiniteNumber(segment.hookLineEnd);
+
   return {
-    start: Math.max(0, start),
-    end: Math.min(videoDuration, end),
+    start: clampedStart,
+    end: clampedEnd,
     score: Number.isFinite(score) ? Math.min(10, Math.max(1, score)) : 8,
     reason,
     hookText,
+    title: toCleanString(segment.title, 160),
+    ctaText: toCleanString(segment.ctaText, 120),
+    hookLine: toCleanString(segment.hookLine, 220),
+    hookLineStart:
+      hookLineStart !== undefined ? Math.min(Math.max(0, hookLineStart), videoDuration) : undefined,
+    hookLineEnd:
+      hookLineEnd !== undefined ? Math.min(Math.max(0, hookLineEnd), videoDuration) : undefined,
+    hashtags: toStringArray(segment.hashtags, 5),
+    retentionStrength: toEnum<RetentionStrength>(segment.retentionStrength, RETENTION_STRENGTHS),
+    psychologicalTrigger: toCleanString(segment.psychologicalTrigger, 40),
+    safetyRisk: toEnum<SafetyRisk>(segment.safetyRisk, SAFETY_RISKS),
+    safetyNotes: toCleanString(segment.safetyNotes, 400),
+    scores: toClipScores(segment.scores),
   };
 }

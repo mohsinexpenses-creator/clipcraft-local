@@ -107,26 +107,57 @@ export const DEFAULT_PROMPT_TEMPLATES: PromptTemplate[] = [
     _id: 'prompt-viral-detection',
     type: 'viral_detection',
     name: 'Viral Short Segments Detection',
-    description: 'Analyzes full transcript to detect top engaging candidate clips',
-    systemPrompt: 'You are an expert social media video editor specializing in YouTube Shorts, TikTok, and Instagram Reels. Your task is to analyze video transcripts and identify short, highly engaging, self-contained segments that have high potential to go viral.',
-    template: `Analyze the following video transcript with timestamps. Identify 3 to 6 of the most engaging, entertaining, educational, or surprising short segments (between 15 and 60 seconds long).
+    description:
+      'Expert social-strategy prompt: ranks transcript moments by viral potential and returns full clip packaging (hook, CTA, title, hashtags, safety, scores) as JSON',
+    systemPrompt:
+      'You are an expert Social Media Strategist and professional Short-Form Content Clipper for platforms like TikTok, Instagram Reels, and YouTube Shorts. You deeply analyze entire video conversations and extract the TOP most viral moments that can be turned into short-form clips. You always follow every strict rule exactly, you never invent timestamps, and you always return strict, valid JSON.',
+    template: `Analyze the entire transcript below and extract the TOP {{clipCount}} most viral moments that can be turned into short-form clips.
 
-For each segment:
-1. Select precise start and end times in seconds.
-2. Provide a viral score from 1.0 to 10.0.
-3. Give a brief reason why this segment will grab attention.
-4. Suggest a short, catchy hook text (max 8 words) for the clip intro.
+STRICT RULES (MUST FOLLOW):
+- Every selected clip MUST be between {{minClipDuration}} and {{maxClipDuration}} seconds long. NEVER shorter than {{minClipDuration}} seconds. NEVER longer than {{maxClipDuration}} seconds.
+- Use ONLY timestamps directly supported by the transcript. Do not invent or estimate timestamps. "start" and "end" must fall inside the transcript's own timestamps.
+- Start clips as close as possible to the emotional trigger or curiosity point. Remove unnecessary setup unless it increases retention.
+- Prioritize clips that create immediate emotional tension within the first 1-3 seconds.
+- DO NOT order clips by the order they appear in the transcript. First analyze all possible viral moments, then rank them by highest viral potential. The array MUST be sorted with the MOST viral clip first.
+- Clips must NOT overlap. Every clip must have completely different timings.
 
-Return ONLY a strict JSON array of objects with the following schema:
+When selecting clips, focus on:
+- High Emotion: anger, excitement, intense laughter, tension, or sadness.
+- Controversy / Hot Takes: strong opinions or statements that can trigger debate in the comments.
+- Storytelling: engaging stories with a strong setup and payoff.
+- High Value: powerful advice, insights, lessons, or mindset shifts.
+
+For every clip, perform this full analysis and fold it into the JSON fields:
+1. Hook Line Analysis - identify the single strongest spoken line that can be used as a cold-open hook: the exact line (hookLine) plus its exact transcript timestamp (hookLineStart, hookLineEnd). Also write a punchy on-screen hook text (hookText, MAX 8 WORDS) that makes viewers stop scrolling.
+2. Retention Analysis - what creates curiosity in the first 3 seconds, where the payoff happens, and what open loop keeps viewers watching till the end. Summarize this into "reason" and rate retentionStrength (Weak / Medium / Strong / Extreme).
+3. Psychological Trigger Analysis - the dominant trigger for the clip: one of Curiosity, Anger, Inspiration, Shock, Validation, Fear, Controversy, Humor.
+4. TikTok / Shorts Safety & Eligibility Analysis - check the spoken words for policy-sensitive wording, monetization risk, reused-content risk, and algorithm suppression risk. Set safetyRisk (Low / Medium / High). In safetyNotes write the EXACT risky words or phrases clearly (never hidden references like "f-word" - write the actual word) followed by a safer replacement after "->". If the clip is clean, set safetyNotes to "No risky wording detected."
+5. Viral Packaging - provide: hookText (Hook Text On Video), title (a curiosity-driven, high-retention TikTok/Reels/Shorts title), ctaText (end-screen CTA that encourages comments or arguments - slightly controversial is preferred if it stays platform-safe, MAX 10 WORDS), and hashtags (3-5 highly relevant viral hashtags, each starting with #).
+6. Viral Scoring System - give "score" as the overall viral potential (out of 10) and fill "scores" with viral, retention, controversy, and shareability, each out of 10.
+
+Return ONLY a strict JSON array (no markdown fences, no commentary) with EXACTLY this schema per clip:
 [
   {
-    "start": 12.5,
-    "end": 42.0,
-    "score": 9.2,
-    "reason": "Dramatic reveal about productivity secrets",
-    "hookText": "THE 1 SECRET YOU WERE NEVER TOLD"
+    "start": 120.5,
+    "end": 182.0,
+    "title": "curiosity-driven short-form title",
+    "score": 9.4,
+    "reason": "Why this will go viral: the psychology of why viewers will keep watching, comment, and share (2-3 sentences)",
+    "hookText": "ON-SCREEN HOOK TEXT (MAX 8 WORDS)",
+    "hookLine": "the exact spoken cold-open line",
+    "hookLineStart": 122.1,
+    "hookLineEnd": 125.8,
+    "ctaText": "END SCREEN CTA (MAX 10 WORDS)",
+    "hashtags": ["#tag1", "#tag2", "#tag3"],
+    "retentionStrength": "Strong",
+    "psychologicalTrigger": "Curiosity",
+    "safetyRisk": "Low",
+    "safetyNotes": "No risky wording detected.",
+    "scores": { "viral": 9, "retention": 9, "controversy": 6, "shareability": 8 }
   }
 ]
+
+Relevant emojis are welcome inside string fields (title, hookText, ctaText) where they improve stop-scroll power.
 
 Transcript:
 {{transcript}}`,

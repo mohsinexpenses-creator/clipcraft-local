@@ -224,11 +224,18 @@ export async function processClipJob(
       });
     }
 
-    const resolvedHookText =
-      hookText?.trim() ||
-      clip.hookText?.trim() ||
-      deriveOverlayText(clipWords, 8, 'WATCH THIS');
-    if (!hookText?.trim() && !clip.hookText?.trim()) {
+    // hookDuration 0 means the hook intro/overlay was turned off for this clip
+    // (detection ran with the hook-text switch off) - don't derive text that
+    // would only be ignored by the overlay.
+    const hookOverlayEnabled = safeHookDuration > 0;
+    const resolvedHookText = !hookOverlayEnabled
+      ? ''
+      : hookText?.trim() ||
+        clip.hookText?.trim() ||
+        deriveOverlayText(clipWords, 8, 'WATCH THIS');
+    if (!hookOverlayEnabled) {
+      log.detail('Hook overlay disabled for this clip (hookDuration=0) - rendering without hook text.');
+    } else if (!hookText?.trim() && !clip.hookText?.trim()) {
       log.warn(`No hook text supplied - derived "${resolvedHookText}" from the transcript.`);
     }
 

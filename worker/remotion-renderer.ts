@@ -120,10 +120,15 @@ export async function renderCaptionsAndOverlays(
   if (onProgress) onProgress(82);
 
   if (!hookText.trim()) {
-    throw new AppError('Caption rendering cannot start without hook text.', {
-      status: 400,
-      resolution: 'Generate hook text again or enter a non-empty hook text before rendering.',
-    });
+    if (hookDuration > 0) {
+      throw new AppError('Caption rendering cannot start without hook text.', {
+        status: 400,
+        resolution:
+          'Enter a non-empty hook text, or set the hook duration to 0 to render the clip without a hook overlay.',
+      });
+    }
+    // hookDuration 0 + empty text = the hook overlay is intentionally off.
+    log.detail('Rendering without hook text (hook overlay disabled).');
   }
 
   if (words.length === 0) {

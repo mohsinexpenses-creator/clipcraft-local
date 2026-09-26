@@ -174,6 +174,36 @@ export async function savePromptTemplate(template: PromptTemplate): Promise<Prom
   return template;
 }
 
+/**
+ * Overwrite the built-in prompt templates with the shipped defaults.
+ *
+ * Seeding uses `$setOnInsert` so user edits survive restarts - this function is
+ * the explicit "restore the defaults" escape hatch (e.g. to pick up a new
+ * built-in viral prompt after an app update). Custom templates with other _ids
+ * are untouched. The `_id` stays in the filter only - never in `$set` - so
+ * MongoDB's immutable `_id` rule cannot trip.
+ */
+export async function resetPromptTemplates(): Promise<PromptTemplate[]> {
+  const mongodb = await getDb();
+  const collection = mongodb.collection<PromptTemplate>('promptTemplates');
+
+  await Promise.all(
+    DEFAULT_PROMPT_TEMPLATES.map((template) => {
+      const { _id, ...rest } = template;
+      return collection.updateOne(
+        { _id },
+        { $set: { ...rest, updatedAt: new Date().toISOString() } },
+        { upsert: true }
+      );
+    })
+  );
+
+  return DEFAULT_PROMPT_TEMPLATES.map((template) => ({
+    ...template,
+    updatedAt: new Date().toISOString(),
+  }));
+}
+
 export async function listCaptionPresets(): Promise<CaptionPreset[]> {
   const mongodb = await getDb();
   return (await mongodb.collection<CaptionPreset>('captionPresets').find().toArray()) as CaptionPreset[];

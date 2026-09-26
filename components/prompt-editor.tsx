@@ -61,8 +61,10 @@ export const PromptEditor: React.FC<PromptEditorProps> = ({ initialTemplates, on
 
   if (!activeTemplate) return null;
 
-  const variableHint =
-    activeTemplate.type === 'viral_detection' ? '{{transcript}}' : '{{clipTranscript}}';
+  const variableHints =
+    activeTemplate.type === 'viral_detection'
+      ? ['{{transcript}}', '{{clipCount}}', '{{minClipDuration}}', '{{maxClipDuration}}']
+      : ['{{clipTranscript}}'];
 
   return (
     <div className="space-y-4">
@@ -106,11 +108,15 @@ export const PromptEditor: React.FC<PromptEditorProps> = ({ initialTemplates, on
           </div>
 
           <div className="space-y-2">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <Label htmlFor="user-template">Prompt template</Label>
-              <Badge variant="secondary" className="font-mono">
-                {variableHint}
-              </Badge>
+              <div className="flex flex-wrap gap-1.5">
+                {variableHints.map((hint) => (
+                  <Badge key={hint} variant="secondary" className="font-mono">
+                    {hint}
+                  </Badge>
+                ))}
+              </div>
             </div>
             <Textarea
               id="user-template"
@@ -120,7 +126,8 @@ export const PromptEditor: React.FC<PromptEditorProps> = ({ initialTemplates, on
               className="font-mono text-xs leading-relaxed"
             />
             <p className="text-xs text-muted-foreground">
-              The variable above is replaced with the video transcript when the AI runs.
+              The variables above are replaced with the transcript and the AI clip options when the
+              AI runs. Changes apply to the next AI analysis run.
             </p>
           </div>
         </CardContent>
