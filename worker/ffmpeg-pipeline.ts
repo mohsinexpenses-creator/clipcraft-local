@@ -3,6 +3,7 @@ import path from 'path';
 import { AppError, toErrorMessage } from '../lib/errors';
 import { DEFAULT_FILTER_PRESETS } from '../lib/presets';
 import { getVideoMetadata, runFfmpeg } from '../lib/ffmpeg';
+import { log } from '../lib/logger';
 
 export interface ProcessSegmentOptions {
   sourceVideoPath: string;
@@ -161,8 +162,8 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
   const hookIntroClip = path.join(tempDir, `${baseName}_hook_intro.mp4`);
   const concatListPath = path.join(tempDir, `${baseName}_concat.txt`);
 
-  // Shared encoder settings. `+global_header` is required so the concat demuxer can
-  // stream-copy the two files without complaining about extradata.
+  // Shared encoder settings. `+global_header` keeps SPS/PPS in the avcC box
+  // (standard for MP4, needed by the compositor's strict MP4 parser).
   const videoArgs = [
     '-c:v', 'libx264',
     '-preset', 'fast',
@@ -215,8 +216,8 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
     filterParts.push(`scale=${outWidth}:${outHeight}:flags=lanczos`);
     filterParts.push('format=yuv420p');
 
-    console.log(
-      `[FFmpeg Pipeline] Step 1: base clip ${start}s -> ${end}s ` +
+    log.detail(
+      `Pass 1/3 · base clip ${start}s → ${end}s ` +
       `(dur=${segmentDuration.toFixed(2)}s, fps=${fps}, out=${outWidth}x${outHeight}, audio=${sourceHasAudio ? 'source' : 'silent'})`
     );
     if (onProgress) onProgress(10);
@@ -249,7 +250,7 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
     const actualHookDur = Math.min(Math.max(Number(hookDuration) || 0, 0), segmentDuration);
 
     if (actualHookDur > 0) {
-      console.log(`[FFmpeg Pipeline] Step 2: extracting ${actualHookDur.toFixed(2)}s duplicated hook intro...`);
+      log.detail(`Pass 2/3 · extracting ${actualHookDur.toFixed(2)}s duplicated hook intro`);
       if (onProgress) onProgress(55);
 
       // Re-encode (not `-c copy`) so the hook intro starts on a keyframe and its
@@ -271,7 +272,7 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
       await runFfmpeg(hookExtractArgs, { label: 'hook-intro' });
       assertUsableFile(hookIntroClip, 'hook intro extraction');
 
-      console.log('[FFmpeg Pipeline] Step 3: concatenating hook intro + base clip...');
+      log.detail('Pass 3/3 · concatenating hook intro + base clip (re-encode)');
       if (onProgress) onProgress(70);
 
       fs.writeFileSync(
@@ -280,6 +281,12 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
         'utf-8'
       );
 
+      // RE-ENCODE, do not stream-copy: stitching two independently encoded MP4s
+      // with `-c copy` produces a file whose second segment's sample table /
+      // timestamps are only good enough for ffmpeg itself. Remotion's compositor
+      // (its own strict MP4 parser) then fails with "No frame found at position N"
+      // for every frame after the hook segment. A fresh CFR encode guarantees one
+      // clean, contiguous frame timeline. Cost: a few extra seconds.
       const concatArgs = [
         '-y',
         '-hide_banner',
@@ -287,14 +294,14 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
         '-f', 'concat',
         '-safe', '0',
         '-i', concatListPath,
-        '-c', 'copy',
-        '-movflags', '+faststart',
+        ...videoArgs,
+        ...audioArgs,
         outputPath,
       ];
 
       await runFfmpeg(concatArgs, { label: 'concat' });
     } else {
-      console.log('[FFmpeg Pipeline] Step 2: hookDuration=0, using the base clip as the output.');
+      log.detail('Pass 2/3 · skipped (hookDuration=0) - using the base clip as the output');
       if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
       fs.copyFileSync(processedBaseClip, outputPath);
     }
@@ -303,9 +310,9 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
 
     // Fail loudly here instead of handing Remotion a broken file.
     const meta = await getVideoMetadata(outputPath);
-    console.log(
-      `[FFmpeg Pipeline] Processed clip ready: ${meta.width}x${meta.height} @ ${meta.fps}fps, ` +
-      `${meta.duration.toFixed(2)}s, audio=${meta.hasAudio ? 'yes' : 'no'} -> ${outputPath}`
+    log.ok(
+      `Processed clip ready: ${meta.width}x${meta.height} @ ${meta.fps}fps, ` +
+      `${meta.duration.toFixed(2)}s, audio=${meta.hasAudio ? 'yes' : 'no'}`
     );
 
     if (onProgress) onProgress(80);

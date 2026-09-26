@@ -5,6 +5,7 @@ import { getVideoMetadata } from '../lib/ffmpeg';
 import { CaptionPreset, WordTimestamp } from '../lib/types';
 import { normalizeFps } from './ffmpeg-pipeline';
 import { startClipMediaServer } from './clip-http-server';
+import { color, log } from '../lib/logger';
 
 export interface RenderCaptionsOptions {
   videoPath: string;
@@ -43,9 +44,9 @@ function getRemotionBundle(): Promise<string> {
     const { bundle } = await import('@remotion/bundler');
     const entryPoint = path.join(process.cwd(), 'remotion', 'index.tsx');
 
-    console.log(`[Remotion Renderer] Bundling ${entryPoint} (first clip only)...`);
+    log.detail('Bundling the Remotion project (first clip only)...');
     const bundled = await bundle({ entryPoint });
-    console.log(`[Remotion Renderer] Bundle ready: ${bundled}`);
+    log.ok(`Bundle ready: ${bundled}`);
     return bundled;
   })().catch((error) => {
     // Do not cache a failed bundle - let the next clip try again.
@@ -60,6 +61,26 @@ function getRenderConcurrency(): number | undefined {
   const raw = Number(process.env.REMOTION_CONCURRENCY?.trim());
   if (Number.isFinite(raw) && raw > 0) return Math.floor(raw);
   return undefined; // let Remotion pick half the CPU threads
+}
+
+/**
+ * Optional knobs for Remotion's offthread video cache/threads, exposed as env vars.
+ *
+ * "Compositor error: No frame found at position N" can also mean the offthread
+ * video frame cache is too small for the clip (frames extracted are evicted
+ * before they are consumed) - the Remotion docs name this as the most likely
+ * cause. When unset, Remotion's defaults apply.
+ */
+function getOffthreadCacheBytes(): number | undefined {
+  const raw = Number(process.env.OFFTHREAD_VIDEO_CACHE_MB?.trim());
+  if (Number.isFinite(raw) && raw > 0) return Math.floor(raw) * 1024 * 1024;
+  return undefined;
+}
+
+function getOffthreadThreads(): number | undefined {
+  const raw = Number(process.env.OFFTHREAD_VIDEO_THREADS?.trim());
+  if (Number.isFinite(raw) && raw > 0) return Math.floor(raw);
+  return undefined;
 }
 
 function getRenderTimeoutMs(): number {
@@ -93,7 +114,7 @@ export async function renderCaptionsAndOverlays(
   const { videoPath, outputPath, hookText, hookDuration, ctaText, ctaDuration, words, preset, onProgress } =
     options;
 
-  console.log(`[Remotion Renderer] Rendering captions & overlays for ${videoPath}...`);
+  log.detail(`Captions & overlays for ${color.bold(path.basename(videoPath))}`);
   if (onProgress) onProgress(82);
 
   if (!hookText.trim()) {
@@ -147,11 +168,11 @@ export async function renderCaptionsAndOverlays(
     const fps = normalizeFps(meta.fps);
     const durationInFrames = Math.max(1, Math.round(meta.duration * fps));
 
-    console.log(
-      `[Remotion Renderer] Source: ${meta.width}x${meta.height} @ ${meta.fps}fps, ${meta.duration.toFixed(2)}s, ` +
-      `audio=${meta.hasAudio ? 'yes' : 'no'} -> rendering ${durationInFrames} frames @ ${fps}fps`
+    log.detail(
+      `Source: ${meta.width}x${meta.height} @ ${meta.fps}fps, ${meta.duration.toFixed(2)}s, ` +
+      `audio=${meta.hasAudio ? 'yes' : 'no'} → rendering ${durationInFrames} frames @ ${fps}fps`
     );
-    console.log(`[Remotion Renderer] Serving clip to Remotion via ${mediaServer.url}`);
+    log.detail(`Serving clip to Remotion via ${mediaServer.url}`);
 
     const bundled = await withTimeout(getRemotionBundle(), getRenderTimeoutMs(), 'bundle');
 
@@ -200,6 +221,14 @@ export async function renderCaptionsAndOverlays(
     }
 
     const renderConcurrency = getRenderConcurrency();
+    const offthreadCacheBytes = getOffthreadCacheBytes();
+    const offthreadThreads = getOffthreadThreads();
+    if (offthreadCacheBytes || offthreadThreads) {
+      log.detail(
+        `Offthread video cache=${offthreadCacheBytes ? (offthreadCacheBytes / 1024 / 1024).toFixed(0) + ' MB' : 'default'}, ` +
+        `threads=${offthreadThreads ?? 'default'}`
+      );
+    }
 
     await withTimeout(
       renderMedia({
@@ -226,6 +255,8 @@ export async function renderCaptionsAndOverlays(
          */
         enforceAudioTrack: true,
         ...(renderConcurrency ? { concurrency: renderConcurrency } : {}),
+        ...(offthreadCacheBytes ? { offthreadVideoCacheSizeInBytes: offthreadCacheBytes } : {}),
+        ...(offthreadThreads ? { offthreadVideoThreads: offthreadThreads } : {}),
         logLevel:
           (process.env.REMOTION_LOG_LEVEL?.trim() as 'info' | 'verbose' | 'warn' | 'error') || 'info',
         onProgress: ({ progress }: { progress: number }) => {
@@ -247,24 +278,21 @@ export async function renderCaptionsAndOverlays(
     if (fileSizeBytes < 10 * 1024) {
       throw new AppError('Remotion produced an unusably small video file.', {
         details: `${outputPath} (${fileSizeBytes} bytes)`,
-        resolution: 'The composition probably rendered empty frames - check videoSrc and the Remotion log.',
+        resolution: 'The composition probably rendered empty frames - check the Remotion log above.',
       });
     }
 
     // Sanity-check the finished file so "no video/no audio" can never silently ship again.
     const outputMeta = await getVideoMetadata(outputPath);
     if (!outputMeta.hasAudio) {
-      console.warn(
-        '[Remotion Renderer] WARNING: the rendered clip has no audio stream. ' +
-        'Check that the processed clip has audio and that enforceAudioTrack is still set.'
-      );
+      log.warn('Rendered clip has no audio stream - check that the processed clip has audio and enforceAudioTrack is still set.');
     }
 
     if (onProgress) onProgress(100);
-    console.log(
-      `[Remotion Renderer] Rendered ${outputMeta.width}x${outputMeta.height} @ ${outputMeta.fps}fps, ` +
-      `${outputMeta.duration.toFixed(2)}s, audio=${outputMeta.hasAudio ? 'yes' : 'NO'}, ` +
-      `${(fileSizeBytes / 1024 / 1024).toFixed(2)} MB -> ${outputPath}`
+    log.ok(
+      `Rendered ${outputMeta.width}x${outputMeta.height} @ ${outputMeta.fps}fps, ` +
+      `${outputMeta.duration.toFixed(2)}s, audio=${outputMeta.hasAudio ? 'yes' : color.red('NO')}, ` +
+      `${(fileSizeBytes / 1024 / 1024).toFixed(2)} MB`
     );
 
     return {

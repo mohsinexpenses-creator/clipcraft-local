@@ -5,6 +5,7 @@ import { CLIP_QUEUE_NAME, TRANSCRIPTION_QUEUE_NAME } from '../lib/queue';
 import { JobData, TranscriptionJobData } from '../lib/types';
 import { transcribeVideo } from '../lib/whisper';
 import { processClipJob } from './processor';
+import { color, log } from '../lib/logger';
 
 // NOTE: .env.local is loaded by lib/errors.ts (loadEnvConfig) which this file imports
 // transitively - that only works when the worker is started from the repository root.
@@ -39,7 +40,7 @@ async function transcribeVideoJob(data: TranscriptionJobData): Promise<void> {
     throw new Error(`Video ${data.videoId} no longer exists in MongoDB - nothing to transcribe.`);
   }
 
-  console.log(`[Worker] Transcribing ${data.videoId} (${video.originalName})...`);
+  log.section(`Transcribe ${color.bold(data.videoId)}` + color.gray(`  ·  ${video.originalName}`));
   video.status = 'transcribing';
   video.error = undefined;
   await saveVideo(video);
@@ -50,8 +51,8 @@ async function transcribeVideoJob(data: TranscriptionJobData): Promise<void> {
     video.status = 'transcribed';
     video.error = undefined;
     await saveVideo(video);
-    console.log(
-      `[Worker] Transcription done for ${data.videoId}: ${transcript.segments.length} segments, ${transcript.words.length} words.`
+    log.ok(
+      `Transcription done: ${transcript.segments.length} segments, ${transcript.words.length} words.`
     );
   } catch (error) {
     video.status = 'failed';
@@ -69,14 +70,14 @@ async function startWorker() {
   // Two in parallel is the easiest way to OOM a normal PC.
   const clipConcurrency = readConcurrency('WORKER_CONCURRENCY', 1);
 
-  console.log('[BullMQ Worker] Starting ClipCraft worker...');
-  console.log(`[BullMQ Worker] Redis: ${redisUrl}`);
-  console.log(`[BullMQ Worker] Clip concurrency: ${clipConcurrency}`);
+  log.section('ClipCraft worker starting');
+  log.detail(`Redis: ${redisUrl}`);
+  log.detail(`Clip concurrency: ${clipConcurrency}`);
 
   const clipWorker = new Worker<JobData>(
     CLIP_QUEUE_NAME,
     async (job: Job<JobData>) => {
-      console.log(`[BullMQ Worker] Received render job ${job.id} for clip ${job.data.clipId}`);
+      log.detail(`Received render job ${job.id}`);
 
       await processClipJob(job.data, async (progress) => {
         // Awaited: an unhandled rejection here used to be able to crash the worker.
@@ -98,7 +99,7 @@ async function startWorker() {
   const transcriptionWorker = new Worker<TranscriptionJobData>(
     TRANSCRIPTION_QUEUE_NAME,
     async (job: Job<TranscriptionJobData>) => {
-      console.log(`[BullMQ Worker] Received transcription job ${job.id} for video ${job.data.videoId}`);
+      log.detail(`Received transcription job ${job.id}`);
       await transcribeVideoJob(job.data);
       return { status: 'done', videoId: job.data.videoId };
     },
@@ -115,19 +116,19 @@ async function startWorker() {
   // does not type-check across the two different job payload types).
   function attachLogging<T>(worker: Worker<T>, label: string): void {
     worker.on('completed', (job) => {
-      console.log(`[BullMQ Worker] ${label} job ${job.id} completed.`);
+      log.ok(`${label} job ${job.id} completed.`);
     });
 
     worker.on('failed', (job, error) => {
-      console.error(`[BullMQ Worker] ${label} job ${job?.id} failed:`, toErrorMessage(error));
+      log.error(`${label} job ${job?.id} failed: ${toErrorMessage(error)}`);
     });
 
     worker.on('stalled', (jobId) => {
-      console.warn(`[BullMQ Worker] ${label} job ${jobId} stalled (it will be retried).`);
+      log.warn(`${label} job ${jobId} stalled (it will be retried).`);
     });
 
     worker.on('error', (error) => {
-      console.error(`[BullMQ Worker] ${label} worker error:`, toErrorMessage(error));
+      log.error(`${label} worker error: ${toErrorMessage(error)}`);
     });
   }
 
@@ -135,9 +136,7 @@ async function startWorker() {
   attachLogging(transcriptionWorker, 'transcription');
 
   await Promise.all([clipWorker.waitUntilReady(), transcriptionWorker.waitUntilReady()]);
-  console.log(
-    `[BullMQ Worker] Listening on "${CLIP_QUEUE_NAME}" and "${TRANSCRIPTION_QUEUE_NAME}". Press Ctrl+C to stop.`
-  );
+  log.ok(`Listening on "${CLIP_QUEUE_NAME}" and "${TRANSCRIPTION_QUEUE_NAME}". Press Ctrl+C to stop.`);
 
   // Graceful shutdown: finish the current job instead of leaving a clip stuck in
   // `processing` forever after a Ctrl+C.
@@ -146,19 +145,19 @@ async function startWorker() {
     if (shuttingDown) return;
     shuttingDown = true;
 
-    console.log(`\n[BullMQ Worker] ${signal} received - closing workers after the current job...`);
+    log.warn(`${signal} received - closing workers after the current job...`);
     const timer = setTimeout(() => {
-      console.error('[BullMQ Worker] Forced exit after 30s.');
+      log.error('Forced exit after 30s.');
       process.exit(1);
     }, 30_000);
     timer.unref?.();
 
     try {
       await Promise.all([clipWorker.close(), transcriptionWorker.close()]);
-      console.log('[BullMQ Worker] Closed cleanly.');
+      log.ok('Closed cleanly.');
       process.exit(0);
     } catch (error) {
-      console.error('[BullMQ Worker] Error while closing:', toErrorMessage(error));
+      log.error(`Error while closing: ${toErrorMessage(error)}`);
       process.exit(1);
     }
   };
@@ -176,6 +175,6 @@ async function startWorker() {
  * A top-level catch keeps the same "exit(1) on startup failure" behaviour safely.
  */
 startWorker().catch((error) => {
-  console.error('[BullMQ Worker] Startup error:', toErrorMessage(error));
+  log.error(`Startup error: ${toErrorMessage(error)}`);
   process.exit(1);
 });

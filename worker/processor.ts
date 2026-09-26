@@ -5,6 +5,7 @@ import { AppError, toErrorMessage } from '../lib/errors';
 import { getVideoMetadata } from '../lib/ffmpeg';
 import { ClipRecord, JobData } from '../lib/types';
 import { detectFaceCropWindow } from './face-detector';
+import { color, log } from '../lib/logger';
 import { normalizeFps, processVideoSegment } from './ffmpeg-pipeline';
 import { renderCaptionsAndOverlays } from './remotion-renderer';
 
@@ -44,8 +45,9 @@ export async function processClipJob(
     captionPresetId,
   } = jobData;
 
-  console.log(
-    `[Job Processor] Starting clipId=${clipId}, videoId=${videoId} (${start}s -> ${end}s)...`
+  log.section(
+    `Render ${color.bold(clipId)}` +
+      color.gray(`  ·  video ${videoId}  ·  ${start}s → ${end}s`)
   );
 
   const reportProgress = async (value: number): Promise<void> => {
@@ -97,8 +99,8 @@ export async function processClipJob(
      */
     const sourceMeta = await getVideoMetadata(video.filePath);
     const renderFps = normalizeFps(sourceMeta.fps);
-    console.log(
-      `[Job Processor] Source ${sourceMeta.width}x${sourceMeta.height} @ ${sourceMeta.fps}fps ` +
+    log.detail(
+      `Source ${sourceMeta.width}x${sourceMeta.height} @ ${sourceMeta.fps}fps ` +
       `(render @ ${renderFps}fps), audio=${sourceMeta.hasAudio ? 'yes' : 'no'}, ${sourceMeta.duration.toFixed(1)}s`
     );
 
@@ -110,14 +112,14 @@ export async function processClipJob(
       ? (hookDuration as number)
       : 3;
     if (resolvedHookDuration > segmentDuration) {
-      console.warn(
-        `[Job Processor] hookDuration (${resolvedHookDuration}s) exceeds the clip length ` +
+      log.warn(
+        `hookDuration (${resolvedHookDuration}s) exceeds the clip length ` +
         `(${segmentDuration.toFixed(1)}s) - clamping it to half the clip.`
       );
     }
     const safeHookDuration = Math.min(resolvedHookDuration, segmentDuration / 2);
 
-    console.log('[Job Processor] Step 1/3: smart crop detection...');
+    log.step('Step 1/3 · Smart crop detection');
     const cropResult = await detectFaceCropWindow(
       video.filePath,
       start,
@@ -136,7 +138,7 @@ export async function processClipJob(
     await saveClip(clip);
     await reportProgress(20);
 
-    console.log('[Job Processor] Step 2/3: FFmpeg mirror + crop + colour + hook intro...');
+    log.step('Step 2/3 · FFmpeg mirror + crop + colour + hook intro');
     await processVideoSegment({
       sourceVideoPath: video.filePath,
       outputPath: intermediateVideoPath,
@@ -156,7 +158,7 @@ export async function processClipJob(
         // Deliberately not awaited: this fires many times per second and the DB write
         // must never slow the encode down. Errors are logged, not thrown.
         void saveClip(clip).catch((error) =>
-          console.warn('[Job Processor] progress save failed:', toErrorMessage(error))
+          log.warn('progress save failed: ' + toErrorMessage(error))
         );
         void reportProgress(scaled);
       },
@@ -199,17 +201,13 @@ export async function processClipJob(
       clip.hookText?.trim() ||
       deriveOverlayText(clipWords, 8, 'WATCH THIS');
     if (!hookText?.trim() && !clip.hookText?.trim()) {
-      console.warn(
-        `[Job Processor] No hook text supplied - derived "${resolvedHookText}" from the transcript.`
-      );
+      log.warn(`No hook text supplied - derived "${resolvedHookText}" from the transcript.`);
     }
 
     const resolvedCtaText =
       ctaText?.trim() || clip.ctaText?.trim() || deriveOverlayText(clipWords.slice(-10), 8, 'FOLLOW FOR MORE');
     if (!ctaText?.trim() && !clip.ctaText?.trim()) {
-      console.warn(
-        `[Job Processor] No CTA text supplied - derived "${resolvedCtaText}" from the transcript.`
-      );
+      log.warn(`No CTA text supplied - derived "${resolvedCtaText}" from the transcript.`);
     }
 
     const resolvedCtaDuration =
@@ -217,9 +215,7 @@ export async function processClipJob(
         ? (ctaDuration as number)
         : (clip.ctaDuration ?? 2.5);
 
-    console.log(
-      `[Job Processor] Step 3/3: Remotion captions & overlays (${clipWords.length} words, preset "${preset.name}")...`
-    );
+    log.step(`Step 3/3 · Remotion captions & overlays  ${color.gray(`(${clipWords.length} words, preset "${preset.name}")`)}`);
     const renderResult = await renderCaptionsAndOverlays({
       videoPath: intermediateVideoPath,
       outputPath: finalVideoPath,
@@ -232,7 +228,7 @@ export async function processClipJob(
       onProgress: (progress) => {
         clip.progress = Math.max(clip.progress ?? 0, Math.round(progress));
         void saveClip(clip).catch((error) =>
-          console.warn('[Job Processor] progress save failed:', toErrorMessage(error))
+          log.warn('progress save failed: ' + toErrorMessage(error))
         );
         void reportProgress(progress);
       },
@@ -257,18 +253,19 @@ export async function processClipJob(
     await saveClip(clip);
     await reportProgress(100);
 
-    console.log(
-      `[Job Processor] Finished clip ${clipId}: ${renderResult.width}x${renderResult.height} @ ` +
+    log.ok(
+      `Rendered ${color.bold(clipId)}: ${renderResult.width}x${renderResult.height} @ ` +
       `${renderResult.fps}fps, ${renderResult.durationSeconds.toFixed(2)}s, ` +
-      `${(renderResult.fileSizeBytes / 1024 / 1024).toFixed(2)} MB -> ${finalVideoPath}`
+      `${(renderResult.fileSizeBytes / 1024 / 1024).toFixed(2)} MB`
     );
+    log.detail(`→ ${finalVideoPath}`);
     return clip;
   } catch (error) {
-    console.error(`[Job Processor] Job failed for clip ${clipId}:`, error);
+    log.error(`Render failed for ${color.bold(clipId)}: ${toErrorMessage(error)}`);
     clip.status = 'failed';
     clip.error = toErrorMessage(error);
     await saveClip(clip).catch((saveError) =>
-      console.error('[Job Processor] Could not persist the failure state:', saveError)
+      log.error('Could not persist the failure state: ' + toErrorMessage(saveError))
     );
     throw error;
   }

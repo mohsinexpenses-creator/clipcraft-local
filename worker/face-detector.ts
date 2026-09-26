@@ -4,6 +4,7 @@ import path from 'path';
 import { Jimp } from 'jimp';
 import { AppError, toErrorMessage } from '../lib/errors';
 import { runFfmpeg } from '../lib/ffmpeg';
+import { log } from '../lib/logger';
 
 /**
  * `createRequire` that works in both ways this code can run:
@@ -421,8 +422,8 @@ export async function detectFaceCropWindow(
     // Keep the vertical centre; for a landscape source this is normally 0 anyway.
     const cropY = evenSize(Math.max(0, Math.floor((videoHeight - cropH) / 2)), 0);
 
-    console.log(
-      `[FaceDetector] crop=${cropW}:${cropH}:${cropX}:${cropY} (method=${method}, ` +
+    log.ok(
+      `crop=${cropW}:${cropH}:${cropX}:${cropY} (method=${method}, ` +
       `frames=${centres.length}/${frameFiles.length}, center=${avgCenterX.toFixed(1)}px` +
       `${confidence !== undefined ? `, confidence=${confidence.toFixed(2)}` : ''})`
     );

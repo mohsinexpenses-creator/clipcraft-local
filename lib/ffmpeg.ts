@@ -2,6 +2,7 @@ import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
 import { AppError, toErrorMessage } from "./errors";
+import { log } from "./logger";
 
 /**
  * Static import (replaces the old `eval('require')('ffmpeg-static')` hack, which
@@ -12,15 +13,32 @@ import { AppError, toErrorMessage } from "./errors";
  */
 import ffmpegStaticPath from "ffmpeg-static";
 
+/**
+ * Warning shown at most ONCE per process. The old code re-printed it before
+ * every single ffmpeg invocation, which turned the worker log into a wall of
+ * the same yellow line even when a perfectly good ffmpeg was being used.
+ */
+let ffmpegWarnedOnce = false;
+function warnFfmpegOnce(message: string): void {
+  if (ffmpegWarnedOnce) return;
+  ffmpegWarnedOnce = true;
+  log.warn(message);
+}
+
 export function getFfmpegPath(): string {
+  const isWin = process.platform === "win32";
+  const exeExt = isWin ? ".exe" : "";
+
+  // 1) Explicit user override (no warnings - this is what the user asked for).
   const configured = process.env.FFMPEG_PATH?.trim();
   if (configured && configured.toLowerCase() !== "your_ffmpeg_path") {
     if (fs.existsSync(configured)) return configured;
-    console.warn(
-      `[FFmpeg] FFMPEG_PATH="${configured}" does not exist - falling back to bundled/PATH ffmpeg.`,
+    warnFfmpegOnce(
+      `FFMPEG_PATH="${configured}" does not exist - falling back to bundled/PATH ffmpeg.`,
     );
   }
 
+  // 2) The binary bundled with ffmpeg-static.
   try {
     if (
       typeof ffmpegStaticPath === "string" &&
@@ -29,17 +47,11 @@ export function getFfmpegPath(): string {
     ) {
       return ffmpegStaticPath;
     }
-    console.warn(
-      "[FFmpeg] ffmpeg-static is installed but its binary is missing (its postinstall downloads from GitHub). " +
-        "Install ffmpeg and set FFMPEG_PATH in .env.local, or re-run `npm install` with network access.",
-    );
   } catch {
     // Fall through to the other candidates.
   }
 
-  const isWin = process.platform === "win32";
-  const exeExt = isWin ? ".exe" : "";
-
+  // 3) Well-known local locations.
   const candidates = [
     path.join(process.cwd(), "bin", "ffmpeg", `ffmpeg.exe`),
     path.join(
@@ -76,7 +88,13 @@ export function getFfmpegPath(): string {
     if (fs.existsSync(candidate)) return candidate;
   }
 
-  // Last resort: whatever is on PATH (Windows: `winget install Gyan.FFmpeg`).
+  // 4) Last resort: whatever is on PATH (Windows: `winget install Gyan.FFmpeg`).
+  //    Only when NO binary could be found anywhere do we warn (once).
+  warnFfmpegOnce(
+    "No usable FFmpeg binary found - ffmpeg-static's postinstall downloads it from GitHub, which can fail behind proxies. " +
+      "Install ffmpeg (`winget install Gyan.FFmpeg`), set FFMPEG_PATH in .env.local, or re-run `npm install` with network access. " +
+      "Trying bare `ffmpeg` on PATH.",
+  );
   return isWin ? "ffmpeg.exe" : "ffmpeg";
 }
 
@@ -104,8 +122,8 @@ export function runFfmpeg(
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const ffmpegBin = getFfmpegPath();
-    const label = options?.label ? ` (${options.label})` : "";
-    console.log(`[FFmpeg]${label} Spawning: ${ffmpegBin} ${args.join(" ")}`);
+    const label = options?.label ? ` ${options.label}` : "";
+    log.detail(`⚙ ffmpeg${label}: ${ffmpegBin} ${args.join(" ")}`);
 
     const child = spawn(ffmpegBin, args, { windowsHide: true });
     let stdout = "";

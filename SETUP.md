@@ -75,6 +75,8 @@ GROQ_API_KEY=your-key              # or CEREBRAS_API_KEY / OPENROUTER_API_KEY / 
 | `REMOTION_CONCURRENCY` | auto (half the cores) | Chrome render threads. |
 | `REMOTION_LOG_LEVEL` | `info` | `verbose` when debugging a render. |
 | `REMOTION_TIMEOUT_MINUTES` | `60` | Per-render ceiling. |
+| `OFFTHREAD_VIDEO_CACHE_MB` | Remotion default | Raise this (e.g. `2048`) only if a render fails with "No frame found at position" on a machine with plenty of RAM - it sizes the offthread video frame cache. |
+| `OFFTHREAD_VIDEO_THREADS` | Remotion default | Number of compositor frame-extraction threads. |
 | `ENABLE_YT_IMPORT` | `0` | Set to `1` to re-enable the fragile YouTube download path. |
 | `UPLOAD_DIR` | `uploads` | Where source videos + in-progress upload sessions are stored. |
 | `MAX_UPLOAD_MB` | `0` (unlimited) | Optional guard rail for a single upload. Long podcasts need no limit, so leave it at 0. |
@@ -188,6 +190,14 @@ was removed from `package.json`.
 ---
 
 ## 8. Troubleshooting
+
+**"Compositor error: No frame found at position N"**
+Two known causes, both handled: (1) the hook+base clip used to be stitched with
+FFmpeg `-c copy`, which left the second segment's timestamps unusable for
+Remotion's compositor - the concat step now re-encodes, producing one clean CFR
+file; (2) a too-small offthread video frame cache on low-memory machines - raise
+`OFFTHREAD_VIDEO_CACHE_MB` (see env table). If it still happens, post the processed
+clip and `npx remotion versions` output at https://remotion.dev/report.
 
 **"Not allowed to load local resource: file:///…" / "Can only download URLs starting
 with http:// or https://"**

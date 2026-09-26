@@ -3,6 +3,7 @@ import { Db, MongoClient } from 'mongodb';
 import { CaptionPreset, ClipRecord, PromptTemplate, VideoRecord } from './types';
 import { DEFAULT_CAPTION_PRESETS, DEFAULT_PROMPT_TEMPLATES } from './presets';
 import { AppError, ensureEnvVar, toErrorMessage } from './errors';
+import { log } from './logger';
 
 const DB_NAME = 'clipcraft';
 
@@ -51,7 +52,7 @@ export async function getDb(): Promise<Db> {
       await client.connect();
       const database = client.db(DB_NAME);
       await initializeSeeds(database);
-      console.log('[DB] Connected to MongoDB at:', mongoUri);
+      log.ok(`Connected to MongoDB at ${mongoUri}`);
       return database;
     } catch (error) {
       dbPromise = null;
