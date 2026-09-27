@@ -47,17 +47,24 @@ export interface ViralDetectionOptions {
   clipCount: number;
   /** Hard minimum clip length in seconds (clips shorter than this are dropped). */
   minClipDuration: number;
-  /** Hard maximum clip length in seconds (longer clips are trimmed to this). */
+  /**
+   * Hard maximum clip length in seconds (longer clips are trimmed to this).
+   * Fixed internally at 600s (10 min) and NOT exposed in the UI - users only
+   * configure the minimum.
+   */
   maxClipDuration: number;
   /** When false, no on-screen hook text is generated or rendered. */
   includeHookText: boolean;
+  /** When false, no on-screen CTA card is generated or rendered. */
+  includeCta: boolean;
 }
 
 export const DEFAULT_VIRAL_OPTIONS: ViralDetectionOptions = {
   clipCount: 10,
   minClipDuration: 60,
-  maxClipDuration: 90,
+  maxClipDuration: 600,
   includeHookText: true,
+  includeCta: true,
 };
 
 /** Per-dimension engagement scores produced by the viral prompt (each /10). */

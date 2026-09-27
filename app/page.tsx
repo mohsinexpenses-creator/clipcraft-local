@@ -94,6 +94,7 @@ function DashboardContent() {
   const [isDetectingViral, setIsDetectingViral] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [copiedTranscript, setCopiedTranscript] = useState(false);
   const [viralOptions, setViralOptions] = useViralOptions();
 
   const loadVideos = useCallback(async (): Promise<VideoRecord[]> => {
@@ -488,13 +489,49 @@ function DashboardContent() {
                 {selectedVideo.transcript && (
                   <CardContent className="pt-0">
                     <div className="rounded-lg bg-muted/60 p-4">
-                      <p className="mb-1 text-xs font-medium text-muted-foreground">
-                        Transcript overview · {selectedVideo.transcript.segments?.length || 0}{' '}
-                        segments · {formatTranscriptionEngine(selectedVideo)}
-                      </p>
-                      <p className="line-clamp-2 text-sm leading-relaxed text-foreground/80">
+                      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-xs font-medium text-muted-foreground">
+                          Transcript · {selectedVideo.transcript.segments?.length || 0}{' '}
+                          segments · {formatTranscriptionEngine(selectedVideo)}
+                        </p>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 text-xs"
+                          onClick={async () => {
+                            const full = selectedVideo.transcript!.segments
+                              .map(
+                                (seg) =>
+                                  `[${formatTime(seg.start)} – ${formatTime(seg.end)}] ${seg.text}`
+                              )
+                              .join('\n');
+                            try {
+                              await navigator.clipboard.writeText(full);
+                              setCopiedTranscript(true);
+                              setTimeout(() => setCopiedTranscript(false), 1500);
+                            } catch {
+                              // Clipboard blocked (permissions/HTTP) - ignore, the
+                              // textarea itself is selectable.
+                            }
+                          }}
+                        >
+                          {copiedTranscript ? 'Copied!' : 'Copy with timestamps'}
+                        </Button>
+                      </div>
+                      <p className="mb-2 line-clamp-2 text-sm leading-relaxed text-foreground/80">
                         “{selectedVideo.transcript.text || 'No transcript text extracted yet.'}”
                       </p>
+                      <textarea
+                        readOnly
+                        aria-label="Full transcript with timestamps"
+                        className="h-72 w-full resize-y rounded-md border border-border bg-background p-3 font-mono text-xs leading-relaxed text-foreground shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                        value={(selectedVideo.transcript.segments || [])
+                          .map(
+                            (seg) =>
+                              `[${formatTime(seg.start)} – ${formatTime(seg.end)}] ${seg.text}`
+                          )
+                          .join('\n')}
+                      />
                     </div>
                   </CardContent>
                 )}

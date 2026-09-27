@@ -155,6 +155,7 @@ export function resolveViralOptions(
     minClipDuration,
     maxClipDuration,
     includeHookText: partial?.includeHookText ?? DEFAULT_VIRAL_OPTIONS.includeHookText,
+    includeCta: partial?.includeCta ?? DEFAULT_VIRAL_OPTIONS.includeCta,
   };
 }
 
@@ -212,10 +213,12 @@ export async function detectViralSegments(
   });
 
   // Scale the output budget with the number of clips: each clip object carries
-  // the full packaging block (title/hook/CTA/hashtags/scores), so a 10-clip run
-  // needs several times what a 3-clip run needs. Capped at 6K to stay inside
-  // the free-tier output limits of every provider in the chain.
-  const maxTokens = Math.min(6144, 1200 + resolved.clipCount * 320);
+  // the full packaging block (title/hook/CTA/hashtags/scores) at ~500-800
+  // tokens, so a 10-clip run needs 8K+. The old 6K cap truncated the JSON
+  // mid-array on 10-clip runs. Note Gemini 3.x also spends part of this budget
+  // on "thinking" tokens, so the budget must stay generous; the cap (16K) is
+  // far below Gemini Flash's own 65K maxOutputTokens.
+  const maxTokens = Math.min(16384, 1500 + resolved.clipCount * 1200);
 
   let contentText: string;
   try {

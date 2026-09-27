@@ -241,16 +241,24 @@ export async function processClipJob(
       log.warn(`No hook text supplied - derived "${resolvedHookText}" from the transcript.`);
     }
 
-    const resolvedCtaText =
-      ctaText?.trim() || clip.ctaText?.trim() || deriveOverlayText(clipWords.slice(-10), 8, 'FOLLOW FOR MORE');
-    if (!ctaText?.trim() && !clip.ctaText?.trim()) {
+    // ctaDuration 0 means the CTA card was turned off for this clip (detection
+    // ran with the CTA switch off) - don't derive text that would only be
+    // ignored by the overlay. An explicit job-payload ctaDuration > 0 re-enables
+    // it for a re-render.
+    const rawCtaDuration = Number.isFinite(ctaDuration)
+      ? (ctaDuration as number)
+      : (clip.ctaDuration ?? 2.5);
+    const ctaOverlayEnabled = rawCtaDuration > 0;
+    const resolvedCtaText = !ctaOverlayEnabled
+      ? ''
+      : ctaText?.trim() || clip.ctaText?.trim() || deriveOverlayText(clipWords.slice(-10), 8, 'FOLLOW FOR MORE');
+    if (!ctaOverlayEnabled) {
+      log.detail('CTA overlay disabled for this clip (ctaDuration=0) - rendering without CTA text.');
+    } else if (!ctaText?.trim() && !clip.ctaText?.trim()) {
       log.warn(`No CTA text supplied - derived "${resolvedCtaText}" from the transcript.`);
     }
 
-    const resolvedCtaDuration =
-      Number.isFinite(ctaDuration) && (ctaDuration ?? 0) > 0
-        ? (ctaDuration as number)
-        : (clip.ctaDuration ?? 2.5);
+    const resolvedCtaDuration = ctaOverlayEnabled ? rawCtaDuration : 0;
 
     log.step(`Step 3/3 · Remotion captions & overlays  ${color.gray(`(${clipWords.length} words, preset "${preset.name}")`)}`);
     const renderResult = await renderCaptionsAndOverlays({

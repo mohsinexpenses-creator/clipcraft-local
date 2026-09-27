@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useState } from 'react';
 import { ViralDetectionOptions } from '@/lib/types';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -13,20 +13,95 @@ interface ViralDetectOptionsProps {
   onChange: (next: ViralDetectionOptions) => void;
 }
 
+interface NumberFieldProps {
+  id: string;
+  value: number;
+  onCommit: (next: number) => void;
+  min: number;
+  max: number;
+  step?: number;
+}
+
+/**
+ * Number input that tolerates free editing: while focused, the field holds a
+ * local draft string, so clearing it or typing an intermediate value (e.g.
+ * deleting "60" to type "180") never fights the min/max clamping. The value
+ * is committed - and only then clamped into [min, max] - on blur or Enter.
+ * (The old controlled-clamp-on-every-keystroke pattern snapshotted empty
+ * input back to the minimum, which made the field impossible to edit.)
+ *
+ * External updates flow in via a `key` remount: when not editing, the inner
+ * component re-mounts with a fresh draft = String(value). No useEffect needed.
+ */
+const NumberField: React.FC<NumberFieldProps> = (props) => {
+  const [editing, setEditing] = useState(false);
+  return (
+    <NumberFieldInner
+      key={editing ? 'editing' : `value-${props.value}`}
+      {...props}
+      editing={editing}
+      setEditing={setEditing}
+    />
+  );
+};
+
+interface NumberFieldInnerProps extends NumberFieldProps {
+  editing: boolean;
+  setEditing: (next: boolean) => void;
+}
+
+const NumberFieldInner: React.FC<NumberFieldInnerProps> = ({
+  id,
+  value,
+  onCommit,
+  min,
+  max,
+  step = 1,
+  setEditing,
+}) => {
+  const [draft, setDraft] = useState(String(value));
+
+  const commit = () => {
+    setEditing(false);
+    const trimmed = draft.trim();
+    const n = Number(trimmed);
+    if (trimmed === '' || !Number.isFinite(n)) {
+      // Revert to the last committed value instead of forcing a random one.
+      setDraft(String(value));
+      return;
+    }
+    const clamped = Math.min(max, Math.max(min, n));
+    setDraft(String(clamped));
+    if (clamped !== value) onCommit(clamped);
+  };
+
+  return (
+    <Input
+      id={id}
+      type="number"
+      min={min}
+      max={max}
+      step={step}
+      value={draft}
+      onFocus={() => setEditing(true)}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+      }}
+    />
+  );
+};
+
 /**
  * The "ask before generating" panel for viral detection: how many clips to
- * generate, the clip length range, and whether hook text is needed at all.
- * The values are injected into the viral prompt ({{clipCount}},
- * {{minClipDuration}}, {{maxClipDuration}}) and enforced after parsing.
+ * generate, the MINIMUM clip length (the maximum is fixed internally), and
+ * the hook-text / CTA switches. The values are injected into the viral prompt
+ * ({{clipCount}}, {{minClipDuration}}, {{maxClipDuration}}) and enforced after
+ * parsing.
  */
 export const ViralDetectOptions: React.FC<ViralDetectOptionsProps> = ({ value, onChange }) => {
   const patch = (partial: Partial<ViralDetectionOptions>) => onChange({ ...value, ...partial });
-
-  const parseClamped = (raw: string, fallback: number, min: number, max: number) => {
-    const n = Number(raw);
-    if (!Number.isFinite(n)) return fallback;
-    return Math.min(max, Math.max(min, n));
-  };
 
   return (
     <Card className="gap-4">
@@ -42,19 +117,15 @@ export const ViralDetectOptions: React.FC<ViralDetectOptionsProps> = ({ value, o
       </CardHeader>
 
       <CardContent>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="space-y-2">
             <Label htmlFor="viral-clip-count">Number of clips</Label>
-            <Input
+            <NumberField
               id="viral-clip-count"
-              type="number"
+              value={value.clipCount}
+              onCommit={(clipCount) => patch({ clipCount })}
               min={1}
               max={25}
-              step={1}
-              value={value.clipCount}
-              onChange={(e) =>
-                patch({ clipCount: parseClamped(e.target.value, 10, 1, 25) })
-              }
             />
             <p className="text-xs text-muted-foreground">
               Top viral moments to generate (1–25, default 10)
@@ -63,52 +134,20 @@ export const ViralDetectOptions: React.FC<ViralDetectOptionsProps> = ({ value, o
 
           <div className="space-y-2">
             <Label htmlFor="viral-min-length">Min clip length (seconds)</Label>
-            <Input
+            <NumberField
               id="viral-min-length"
-              type="number"
+              value={value.minClipDuration}
+              onCommit={(minClipDuration) => patch({ minClipDuration })}
               min={5}
               max={600}
-              step={1}
-              value={value.minClipDuration}
-              onChange={(e) =>
-                patch({
-                  minClipDuration: parseClamped(e.target.value, 60, 5, 600),
-                  maxClipDuration: Math.max(
-                    value.maxClipDuration,
-                    parseClamped(e.target.value, 60, 5, 600)
-                  ),
-                })
-              }
             />
             <p className="text-xs text-muted-foreground">
-              Clips shorter than this are never created (default 60s)
+              Clips shorter than this are never created (default 60s). The maximum is fixed at
+              600s (10 min).
             </p>
           </div>
 
-          <div className="space-y-2">
-            <Label htmlFor="viral-max-length">Max clip length (seconds)</Label>
-            <Input
-              id="viral-max-length"
-              type="number"
-              min={5}
-              max={1200}
-              step={1}
-              value={value.maxClipDuration}
-              onChange={(e) =>
-                patch({
-                  maxClipDuration: Math.max(
-                    value.minClipDuration,
-                    parseClamped(e.target.value, 90, 5, 1200)
-                  ),
-                })
-              }
-            />
-            <p className="text-xs text-muted-foreground">
-              Longer clips are trimmed to this (default 90s)
-            </p>
-          </div>
-
-          <div className="flex items-center justify-between rounded-lg border p-3 sm:col-span-3">
+          <div className="flex items-center justify-between rounded-lg border p-3">
             <div className="space-y-0.5">
               <Label htmlFor="viral-hook-toggle">Hook text</Label>
               <p className="text-xs text-muted-foreground">
@@ -120,6 +159,21 @@ export const ViralDetectOptions: React.FC<ViralDetectOptionsProps> = ({ value, o
               id="viral-hook-toggle"
               checked={value.includeHookText}
               onCheckedChange={(checked) => patch({ includeHookText: checked })}
+            />
+          </div>
+
+          <div className="flex items-center justify-between rounded-lg border p-3">
+            <div className="space-y-0.5">
+              <Label htmlFor="viral-cta-toggle">CTA text</Label>
+              <p className="text-xs text-muted-foreground">
+                Generate the on-screen end CTA card for every clip. Turn off to render clips
+                without a CTA.
+              </p>
+            </div>
+            <Switch
+              id="viral-cta-toggle"
+              checked={value.includeCta}
+              onCheckedChange={(checked) => patch({ includeCta: checked })}
             />
           </div>
         </div>

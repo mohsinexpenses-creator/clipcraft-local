@@ -35,9 +35,12 @@ TECH STACK
   word-level timestamps. No Python whisper.
 - face-api.js (or @vladmandic/face-api, tfjs-node backend) — face detection for
   smart crop, running fully locally, no paid vision API
-- Claude API (Anthropic) — used for two LLM tasks: (1) analyzing the full transcript
-  to identify potentially viral segments with start/end timestamps, and (2)
-  generating a short punchy on-screen hook text (max ~8 words) per selected clip
+- Google AI Studio API (Gemini Flash) — LLM analysis: (1) analyzing the full
+  transcript to identify potentially viral segments with start/end timestamps,
+  (2) picking the most gripping moment inside a clip for the suspense hook intro,
+  and (3) generating short on-screen hook/CTA text. The provider chain
+  (`LLM_PROVIDER_CHAIN` in `lib/llm.ts`) is a config array - currently two Gemini
+  Flash slots (separate daily pools) - and other providers can be appended to it
 - Remotion + @remotion/player — renders animated, styled captions and gives a live
   in-app preview of caption styles before final render
 
