@@ -613,7 +613,7 @@ function DashboardContent() {
                       </div>
                       <textarea
                         readOnly
-                        rows={10}
+                        rows={5}
                         aria-label="Full transcript with timestamps"
                         className="h-72 w-full resize-y rounded-md border border-border bg-background p-3 font-mono text-xs leading-relaxed text-foreground shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
                         value={(selectedVideo.transcript.segments || [])

@@ -89,9 +89,9 @@ export const ClipCard: React.FC<ClipCardProps> = ({
   const [ctaText, setCtaText] = useState(clip.ctaText || "");
   const [hookDuration] = useState(clip.hookDuration ?? 3);
   const [ctaDuration] = useState(clip.ctaDuration ?? 2.5);
-  const [clipLayout, setClipLayout] = useState<"speaker-focus" | "split-screen">(
-    clip.layout === "split-screen" ? "split-screen" : "speaker-focus",
-  );
+  const [clipLayout, setClipLayout] = useState<
+    "speaker-focus" | "split-screen"
+  >(clip.layout === "split-screen" ? "split-screen" : "speaker-focus");
   const [isTriggering, setIsTriggering] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -169,9 +169,9 @@ export const ClipCard: React.FC<ClipCardProps> = ({
 
   return (
     <div className="animate-fade-up rounded-xl border bg-card p-5 text-card-foreground shadow-xs transition-colors hover:border-ring/60">
-      <div className="flex flex-col gap-6 md:flex-row">
+      <div className="flex flex-col items-start gap-6 md:flex-row">
         {/* 9:16 preview */}
-        <div className="relative aspect-[9/16] w-full shrink-0 overflow-hidden rounded-lg border bg-muted md:w-56">
+        <div className="relative aspect-9/16 w-full shrink-0 overflow-hidden rounded-lg border bg-muted md:w-56">
           {clip.status === "done" && mediaUrl ? (
             <video
               src={mediaUrl}
@@ -303,13 +303,6 @@ export const ClipCard: React.FC<ClipCardProps> = ({
               </p>
             )}
 
-          {clip.ctaText && (
-            <p className="mt-3 rounded-lg border border-dashed px-3 py-2 text-xs leading-relaxed text-muted-foreground">
-              <span className="font-medium text-foreground/80">End CTA: </span>
-              {clip.ctaText}
-            </p>
-          )}
-
           {clip.error && (
             <p className="mt-3 rounded-lg bg-destructive/5 px-3 py-2 text-xs leading-relaxed text-destructive">
               {clip.error}
@@ -400,7 +393,9 @@ export const ClipCard: React.FC<ClipCardProps> = ({
             </div>
 
             <div className="space-y-2">
-              <Label id={`caption-engine-label-${clip._id}`}>Caption engine</Label>
+              <Label id={`caption-engine-label-${clip._id}`}>
+                Caption engine
+              </Label>
               <Select
                 value={captionEngine}
                 onValueChange={(v) =>
@@ -408,7 +403,9 @@ export const ClipCard: React.FC<ClipCardProps> = ({
                 }
                 disabled={isProcessing}
               >
-                <SelectTrigger aria-labelledby={`caption-engine-label-${clip._id}`}>
+                <SelectTrigger
+                  aria-labelledby={`caption-engine-label-${clip._id}`}
+                >
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -422,17 +419,21 @@ export const ClipCard: React.FC<ClipCardProps> = ({
               </Select>
               <p className="text-xs text-muted-foreground">
                 Premium renders every frame in the browser (spring animations,
-                slow on long clips). Fast burns animated captions with FFmpeg
-                in one native pass.
+                slow on long clips). Fast burns animated captions with FFmpeg in
+                one native pass.
               </p>
             </div>
 
             <div className="space-y-2 sm:col-span-2">
-              <Label id={`layout-label-${clip._id}`}>Layout (9:16 output)</Label>
+              <Label id={`layout-label-${clip._id}`}>
+                Layout (9:16 output)
+              </Label>
               <Select
                 value={clipLayout}
                 onValueChange={(v) =>
-                  setClipLayout(v === "split-screen" ? "split-screen" : "speaker-focus")
+                  setClipLayout(
+                    v === "split-screen" ? "split-screen" : "speaker-focus",
+                  )
                 }
                 disabled={isProcessing}
               >

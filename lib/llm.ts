@@ -78,25 +78,42 @@ export interface LlmProviderEntry {
  * model. Add entries below to re-introduce providers.
  */
 export const LLM_PROVIDER_CHAIN: LlmProviderEntry[] = [
+  // {
+  //   id: "gemini-studio-3-5-lite",
+  //   provider: "Google AI Studio",
+  //   model: "gemini-3.5-flash-lite",
+  //   apiKeyEnv: "GEMINI_API_KEY",
+  //   kind: "gemini-native",
+  //   retries: 1,
+  // },
   {
-    // Confirmed live on AI Studio in 2026-09 (503 = high-demand spike, not a
-    // bad id). Gemini free tier: Flash models only since 2026-04-01, 1M
-    // context, ~1,500 RPD. Strong multilingual support (Urdu/Hindi content).
-    id: "gemini-studio-3-6",
+    id: "gemini-studio-3-1-lite",
     provider: "Google AI Studio",
-    model: "gemini-3.6-flash",
+    model: "gemini-3.1-flash-lite",
     apiKeyEnv: "GEMINI_API_KEY",
     kind: "gemini-native",
     retries: 1,
   },
   {
-    // gemini-2.5-flash 404s as of late Sep 2026: "no longer available to new
-    // users. Please update your code to use models/gemini-3.8-flash" (Google's
-    // own error text). 1M context, ~1,500 RPD - a SEPARATE daily pool from
-    // gemini-3.6-flash, so the two slots double the free Google budget.
+    id: "gemini-studio-2-5-lite",
+    provider: "Google AI Studio",
+    model: "gemini-2.5-flash-lite",
+    apiKeyEnv: "GEMINI_API_KEY",
+    kind: "gemini-native",
+    retries: 1,
+  },
+  {
     id: "gemini-studio-3-8",
     provider: "Google AI Studio",
     model: "gemini-3.8-flash",
+    apiKeyEnv: "GEMINI_API_KEY",
+    kind: "gemini-native",
+    retries: 1,
+  },
+  {
+    id: "gemini-studio-3-6",
+    provider: "Google AI Studio",
+    model: "gemini-3.6-flash",
     apiKeyEnv: "GEMINI_API_KEY",
     kind: "gemini-native",
     retries: 1,
