@@ -112,6 +112,8 @@ export interface RunFfmpegOptions {
   timeoutMs?: number;
   /** Label used in logs/errors, e.g. "trim+crop". */
   label?: string;
+  /** Working directory for the process (used to feed libass a plain file name). */
+  cwd?: string;
 }
 
 const DEFAULT_FFMPEG_TIMEOUT_MS = 30 * 60 * 1000;
@@ -125,7 +127,10 @@ export function runFfmpeg(
     const label = options?.label ? ` ${options.label}` : "";
     log.detail(`⚙ ffmpeg${label}: ${ffmpegBin} ${args.join(" ")}`);
 
-    const child = spawn(ffmpegBin, args, { windowsHide: true });
+    const child = spawn(ffmpegBin, args, {
+    windowsHide: true,
+    ...(options?.cwd ? { cwd: options.cwd } : {}),
+  });
     let stdout = "";
     let stderr = "";
     let timedOut = false;

@@ -89,6 +89,19 @@ FULL PROCESSING PIPELINE (per uploaded video)
      (font, size, weight, color, highlight color, stroke, position, animation
      style e.g. karaoke-fill/word-pop/fade-in) stored in a MongoDB
      "captionPresets" collection, so new styles can be added without code changes
+   - The user can choose the CAPTION ENGINE per clip (clip card → "Caption
+     engine"), stored on the clip as `captionEngine`:
+     - `remotion` (default, "Premium") — every frame is rendered through
+       headless Chrome: smoothest spring animations, but slow on long clips
+       (tens of minutes for a 3-minute clip).
+     - `native` ("Fast") — captions are generated as an ASS file
+       (worker/captions-ass.ts: word karaoke fill, line pop/fade entrances,
+       CTA lift) and burned in a single FFmpeg pass at ~real-time speed; the
+       hook text and CTA card keep their Remotion design but are rendered as
+       short transparent PNG sequences (worker/native-captions.ts +
+       remotion/OverlayCompositions.tsx) and composited by the same FFmpeg
+       pass. Trade-off: captions use eased animations instead of spring
+       physics.
 9. Save the final rendered clip to local disk (e.g.
    /generated-clips/{videoId}/{clipId}.mp4) and write/update a record in a
    MongoDB "clips" collection tracking: source video, timestamps, crop data,

@@ -2,6 +2,7 @@ import React from 'react';
 import { Composition, registerRoot } from 'remotion';
 import { DEFAULT_CAPTION_PRESETS } from '../lib/presets';
 import { CaptionComposition, CaptionCompositionProps } from './CaptionComposition';
+import { CtaOverlayComposition, HookOverlayComposition } from './OverlayCompositions';
 
 /**
  * fps / durationInFrames here are STUDIO/PREVIEW defaults only.
@@ -51,6 +52,29 @@ export const RemotionRoot: React.FC = () => {
             ],
           } satisfies CaptionCompositionProps
         }
+      />
+      {/*
+        Transparent overlay compositions for the native caption engine
+        (worker/native-captions.ts renders them as short PNG sequences and
+        FFmpeg composites them onto the caption-burned clip).
+      */}
+      <Composition
+        id="HookOverlayComposition"
+        component={HookOverlayComposition as unknown as React.ComponentType<Record<string, unknown>>}
+        durationInFrames={Math.round(3 * PREVIEW_FPS)}
+        fps={PREVIEW_FPS}
+        width={1080}
+        height={1920}
+        defaultProps={{ hookText: 'THE 1 SECRET YOU WERE NEVER TOLD', hookDuration: 3 }}
+      />
+      <Composition
+        id="CtaOverlayComposition"
+        component={CtaOverlayComposition as unknown as React.ComponentType<Record<string, unknown>>}
+        durationInFrames={Math.round(2.5 * PREVIEW_FPS)}
+        fps={PREVIEW_FPS}
+        width={1080}
+        height={1920}
+        defaultProps={{ ctaText: 'FOLLOW FOR MORE CLIPS LIKE THIS', ctaDuration: 2.5 }}
       />
     </>
   );

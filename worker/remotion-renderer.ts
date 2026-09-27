@@ -39,7 +39,7 @@ const COMPOSITION_ID = 'CaptionComposition';
  */
 let cachedBundlePromise: Promise<string> | null = null;
 
-function getRemotionBundle(): Promise<string> {
+export function getRemotionBundle(): Promise<string> {
   if (cachedBundlePromise) return cachedBundlePromise;
 
   cachedBundlePromise = (async () => {

@@ -82,6 +82,9 @@ export const ClipCard: React.FC<ClipCardProps> = ({
   const [captionPresetId, setCaptionPresetId] = useState(
     clip.captionPresetId || "preset-bold-yellow",
   );
+  const [captionEngine, setCaptionEngine] = useState<"remotion" | "native">(
+    clip.captionEngine === "native" ? "native" : "remotion",
+  );
   const [hookText, setHookText] = useState(clip.hookText || "");
   const [ctaText, setCtaText] = useState(clip.ctaText || "");
   const [hookDuration] = useState(clip.hookDuration ?? 3);
@@ -114,6 +117,7 @@ export const ClipCard: React.FC<ClipCardProps> = ({
           ctaDuration,
           filterPreset,
           captionPresetId,
+          captionEngine,
           layout: clipLayout,
         }),
       });
@@ -393,6 +397,34 @@ export const ClipCard: React.FC<ClipCardProps> = ({
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label id={`caption-engine-label-${clip._id}`}>Caption engine</Label>
+              <Select
+                value={captionEngine}
+                onValueChange={(v) =>
+                  setCaptionEngine(v === "native" ? "native" : "remotion")
+                }
+                disabled={isProcessing}
+              >
+                <SelectTrigger aria-labelledby={`caption-engine-label-${clip._id}`}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="remotion">
+                    Premium (Remotion) · smoothest
+                  </SelectItem>
+                  <SelectItem value="native">
+                    Fast (native) · much quicker
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Premium renders every frame in the browser (spring animations,
+                slow on long clips). Fast burns animated captions with FFmpeg
+                in one native pass.
+              </p>
             </div>
 
             <div className="space-y-2 sm:col-span-2">

@@ -4,13 +4,14 @@ import { getCaptionPreset, getClip, getVideo, saveClip } from '../lib/db';
 import { AppError, toErrorMessage } from '../lib/errors';
 import { detectHookMoment } from '../lib/ai';
 import { getVideoMetadata } from '../lib/ffmpeg';
-import { ClipLayout, ClipRecord, JobData } from '../lib/types';
+import { CaptionEngine, ClipLayout, ClipRecord, JobData } from '../lib/types';
 import { detectFaceTrack } from './face-detector';
 import { detectSpeakerTimeline } from './asd';
 import { LayoutPlan, buildLayoutPlan, buildSinglePlan } from './layout';
 import { color, log } from '../lib/logger';
 import { normalizeFps, processVideoSegment } from './ffmpeg-pipeline';
-import { renderCaptionsAndOverlays } from './remotion-renderer';
+import { renderNativeCaptions } from './native-captions';
+import { renderCaptionsAndOverlays, type RenderCaptionsResult } from './remotion-renderer';
 
 /** How far either side of the window we still accept transcript words. */
 const WORD_SLACK_SECONDS = 0.5;
@@ -46,6 +47,7 @@ export async function processClipJob(
     ctaDuration,
     filterPreset,
     captionPresetId,
+    captionEngine,
   } = jobData;
 
   log.section(
@@ -265,6 +267,12 @@ export async function processClipJob(
       });
     }
 
+    // Caption engine: explicit job payload wins, then the persisted clip
+    // choice, then the (slow but smoothest) Remotion default.
+    const engine: CaptionEngine = (captionEngine ?? clip.captionEngine ?? 'remotion') === 'native'
+      ? 'native'
+      : 'remotion';
+
     // hookDuration 0 means the hook intro/overlay was turned off for this clip
     // (detection ran with the hook-text switch off) - don't derive text that
     // would only be ignored by the overlay.
@@ -299,25 +307,44 @@ export async function processClipJob(
 
     const resolvedCtaDuration = ctaOverlayEnabled ? rawCtaDuration : 0;
 
-    log.step(`Step 3/3 · Remotion captions & overlays  ${color.gray(`(${clipWords.length} words, preset "${preset.name}")`)}`);
-    const renderResult = await renderCaptionsAndOverlays({
-      videoPath: intermediateVideoPath,
-      outputPath: finalVideoPath,
-      hookText: resolvedHookText,
-      hookDuration: safeHookDuration,
-      hookStart,
-      ctaText: resolvedCtaText,
-      ctaDuration: resolvedCtaDuration,
-      words: clipWords,
-      preset,
-      onProgress: (progress) => {
-        clip.progress = Math.max(clip.progress ?? 0, Math.round(progress));
-        void saveClip(clip).catch((error) =>
-          log.warn('progress save failed: ' + toErrorMessage(error))
-        );
-        void reportProgress(progress);
-      },
-    });
+    log.step(
+      `Step 3/3 · Captions & overlays  ${color.gray(`(${engine === 'native' ? 'native FFmpeg ASS burn' : 'Remotion'}, ` +
+      `${clipWords.length} words, preset "${preset.name}")`)}`
+    );
+    const progressSink = (progress: number): void => {
+      clip.progress = Math.max(clip.progress ?? 0, Math.round(progress));
+      void saveClip(clip).catch((error) =>
+        log.warn('progress save failed: ' + toErrorMessage(error))
+      );
+      void reportProgress(progress);
+    };
+
+    const renderResult: RenderCaptionsResult =
+      engine === 'native'
+        ? await renderNativeCaptions({
+            videoPath: intermediateVideoPath,
+            outputPath: finalVideoPath,
+            hookText: resolvedHookText,
+            hookDuration: safeHookDuration,
+            hookStart,
+            ctaText: resolvedCtaText,
+            ctaDuration: resolvedCtaDuration,
+            words: clipWords,
+            preset,
+            onProgress: progressSink,
+          })
+        : await renderCaptionsAndOverlays({
+            videoPath: intermediateVideoPath,
+            outputPath: finalVideoPath,
+            hookText: resolvedHookText,
+            hookDuration: safeHookDuration,
+            hookStart,
+            ctaText: resolvedCtaText,
+            ctaDuration: resolvedCtaDuration,
+            words: clipWords,
+            preset,
+            onProgress: progressSink,
+          });
 
     try {
       if (fs.existsSync(intermediateVideoPath)) fs.unlinkSync(intermediateVideoPath);
@@ -331,6 +358,7 @@ export async function processClipJob(
     clip.ctaText = resolvedCtaText;
     clip.ctaDuration = resolvedCtaDuration;
     clip.captionPreset = preset;
+    clip.captionEngine = engine;
     clip.outputPath = `/generated-clips/${videoId}/${clipId}.mp4`;
     clip.outputFileSize = renderResult.fileSizeBytes;
     clip.outputFps = renderResult.fps;

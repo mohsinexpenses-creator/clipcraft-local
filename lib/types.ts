@@ -116,6 +116,16 @@ export interface CropWindow {
  */
 export type ClipLayout = 'speaker-focus' | 'split-screen';
 
+/**
+ * How the caption pass is produced:
+ * - `remotion`: every frame rendered through headless Chrome (smoothest spring
+ *   animations, but slow on long clips).
+ * - `native`: captions burned with FFmpeg (ASS) in a single fast pass; hook/CTA
+ *   cards are still designed in Remotion but rendered as tiny transparent
+ *   frame sequences.
+ */
+export type CaptionEngine = 'remotion' | 'native';
+
 export interface FilterPreset {
   id: string;
   name: string;
@@ -170,6 +180,8 @@ export interface ClipRecord {
    * - `split-screen`: everyone relevant is shown in an adaptive grid (2/3/4).
    */
   layout?: ClipLayout;
+  /** Caption pass: `remotion` (default, smoothest) or `native` (FFmpeg ASS burn, ~10x faster). */
+  captionEngine?: CaptionEngine;
   cropData?: CropWindow;
   viralScore: number;
   viralReason?: string;
@@ -206,6 +218,8 @@ export interface JobData {
   captionPresetId: string;
   /** Framing mode for the 9:16 output (default `speaker-focus`). */
   layout?: ClipLayout;
+  /** Caption pass: `remotion` (default) or `native` (fast FFmpeg ASS burn). */
+  captionEngine?: CaptionEngine;
 }
 
 /**
