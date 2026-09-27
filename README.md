@@ -55,9 +55,11 @@ FULL PROCESSING PIPELINE (per uploaded video)
 5. Worker picks up each job and, in as few ffmpeg passes as possible:
    a. Trims the segment (-ss / -to)
    b. Mirrors it horizontally (hflip)
-   c. Runs face detection (face-api.js) on sampled frames of the mirrored clip,
-      smooths the detected face-center trajectory (e.g. moving average) to avoid
-      jitter, and computes a 9:16 crop window from it (smart crop)
+   c. Runs face detection (face-api.js) on sampled frames of the mirrored clip and
+      builds a speaker face track: when several people are visible it follows the
+      largest face (the speaker), and when the shot cuts to another person the 9:16
+      crop window pans over to them smoothly (EMA + slew limit, evaluated by ffmpeg
+      as a per-frame crop expression)
    d. Applies a color filter preset (ffmpeg eq/saturation, e.g. "vibrant",
       "warm", "cinematic" — store these as ffmpeg filter strings in MongoDB)
       Combine steps a–d into a single ffmpeg filter_complex call where possible
@@ -67,7 +69,10 @@ FULL PROCESSING PIPELINE (per uploaded video)
    (configurable, e.g. 3–5s) as a standalone "hook" segment, concatenating it
    onto the front of the clip (re-encoded, NOT stream-copied) — so the clip
    opens with the best beat first, then plays through normally and the viewer
-   watches it build back up to that same moment.
+   watches it build back up to that same moment. The join uses a short
+   dip-to-black transition (video fade out/in + audio afade) instead of a hard
+   cut, and keeps the total duration exactly hook + base so the caption
+   timeline stays in sync.
 7. Send that clip's transcript text to Claude API with a separate prompt to
    generate a short, punchy on-screen hook text overlay (distinct from the
    viral-segment-detection prompt in step 3).

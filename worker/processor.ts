@@ -5,7 +5,7 @@ import { AppError, toErrorMessage } from '../lib/errors';
 import { detectHookMoment } from '../lib/ai';
 import { getVideoMetadata } from '../lib/ffmpeg';
 import { ClipRecord, JobData } from '../lib/types';
-import { detectFaceCropWindow } from './face-detector';
+import { detectFaceTrack } from './face-detector';
 import { color, log } from '../lib/logger';
 import { normalizeFps, processVideoSegment } from './ffmpeg-pipeline';
 import { renderCaptionsAndOverlays } from './remotion-renderer';
@@ -168,8 +168,8 @@ export async function processClipJob(
       log.warn('Hook moment auto-detection unavailable - duplicating the first N seconds.');
     }
 
-    log.step('Step 1/3 · Smart crop detection');
-    const cropResult = await detectFaceCropWindow(
+    log.step('Step 1/3 · Smart crop (speaker face tracking)');
+    const cropResult = await detectFaceTrack(
       video.filePath,
       start,
       segmentDuration,
@@ -178,7 +178,7 @@ export async function processClipJob(
     );
 
     clip.cropData = {
-      x: cropResult.cropX,
+      x: cropResult.staticCropX,
       y: cropResult.cropY,
       width: cropResult.cropW,
       height: cropResult.cropH,
@@ -196,9 +196,11 @@ export async function processClipJob(
       hookDuration: safeHookDuration,
       hookStart,
       filterPresetId: filterPreset,
-      cropFilter: cropResult.cropFilter,
+      cropY: cropResult.cropY,
       cropWidth: cropResult.cropW,
       cropHeight: cropResult.cropH,
+      cropTrackPoints: cropResult.points,
+      sourceWidth: sourceMeta.width,
       targetFps: renderFps,
       sourceHasAudio: sourceMeta.hasAudio,
       onProgress: (progress) => {

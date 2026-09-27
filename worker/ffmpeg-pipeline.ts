@@ -3,6 +3,7 @@ import path from 'path';
 import { AppError, toErrorMessage } from '../lib/errors';
 import { DEFAULT_FILTER_PRESETS } from '../lib/presets';
 import { getVideoMetadata, runFfmpeg } from '../lib/ffmpeg';
+import { FaceTrackPoint } from './face-detector';
 import { log } from '../lib/logger';
 
 export interface ProcessSegmentOptions {
@@ -14,10 +15,19 @@ export interface ProcessSegmentOptions {
   /** Where in the clip (seconds, relative to the clip start) the hook intro is cut from. 0 = the first N seconds (legacy behaviour). */
   hookStart: number;
   filterPresetId: string;
-  cropFilter: string;
+  /** Top-left Y of the (9:16) crop window in source pixels. */
+  cropY: number;
   /** Width/height of the crop window, used to size the output canvas. */
   cropWidth: number;
   cropHeight: number;
+  /**
+   * Smoothed face centres over time (seconds relative to the clip start,
+   * mirrored source pixels). Empty = static centred crop. Becomes a
+   * time-varying crop filter so the frame follows the speaker.
+   */
+  cropTrackPoints: FaceTrackPoint[];
+  /** Mirrored source width (for clamping the pan to the frame). */
+  sourceWidth: number;
   /** fps the Remotion composition will use; the intermediate is normalised to it. */
   targetFps: number;
   /** False when the source has no audio stream -> a silent track is muxed in. */
@@ -84,12 +94,42 @@ export function computeOutputSize(cropWidth: number, cropHeight: number): { widt
 }
 
 /**
- * The concat demuxer treats `'` specially, and Windows paths contain backslashes it
- * also interprets. Forward slashes + single-quote escaping covers both.
+ * Build the ffmpeg `crop` filter's X expression from the face track: a
+ * piecewise-linear pan between keyframes, evaluated by ffmpeg PER FRAME.
+ * The result is clamped so the window never leaves the frame.
+ *
+ * Syntax notes: only `if/gte/lte` + arithmetic (universally supported by the
+ * ffmpeg expression evaluator, no exotic functions). The caller wraps the
+ * returned string in single quotes because it contains commas.
  */
-function concatListEntry(filePath: string): string {
-  const normalized = filePath.replace(/\\/g, '/');
-  return `file '${normalized.replace(/'/g, "'\\''")}'`;
+export function buildCropXExpression(
+  points: FaceTrackPoint[],
+  videoWidth: number,
+  cropW: number
+): string {
+  const maxX = Math.max(0, videoWidth - cropW);
+  const clamp = (expr: string): string => (maxX === 0 ? '0' : `min(max(${expr},0),${maxX})`);
+  const xFor = (centre: number): number => Math.max(0, Math.min(centre - cropW / 2, maxX));
+
+  if (points.length === 0) return String(xFor(videoWidth / 2));
+  if (points.length === 1) return clamp(xFor(points[0].x).toFixed(1));
+
+  let expr = xFor(points[points.length - 1].x).toFixed(1);
+  for (let i = points.length - 1; i >= 1; i -= 1) {
+    const a = points[i - 1];
+    const b = points[i];
+    const segLen = Math.max(1e-3, b.t - a.t);
+    const xa = xFor(a.x).toFixed(1);
+    const xb = xFor(b.x).toFixed(1);
+    const interp = `(${xa}+(${xb}-${xa})*(t-${a.t.toFixed(3)})/${segLen.toFixed(3)})`;
+    expr = `if(gte(t,${a.t.toFixed(3)})*lte(t,${b.t.toFixed(3)}),${interp},${expr})`;
+  }
+  // Hold the first value before the first keyframe (and the last value after
+  // the last one - the fallback chain above already does that).
+  if (points[0].t > 0) {
+    expr = `if(gte(t,${points[0].t.toFixed(3)}),${expr},${xFor(points[0].x).toFixed(1)})`;
+  }
+  return clamp(expr);
 }
 
 function assertUsableFile(filePath: string, step: string): void {
@@ -118,9 +158,11 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
     hookDuration,
     hookStart,
     filterPresetId,
-    cropFilter,
+    cropY,
     cropWidth,
     cropHeight,
+    cropTrackPoints,
+    sourceWidth,
     targetFps,
     sourceHasAudio,
     onProgress,
@@ -147,12 +189,12 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
   const fps = normalizeFps(targetFps);
   const { width: outWidth, height: outHeight } = computeOutputSize(cropWidth, cropHeight);
 
-  if (outWidth < 16 || outHeight < 16 || !cropFilter.trim()) {
+  if (outWidth < 16 || outHeight < 16) {
     throw new AppError('Cannot build the FFmpeg filter chain without a valid crop window.', {
       status: 400,
-      details: `crop=${cropWidth}x${cropHeight}, output=${outWidth}x${outHeight}, cropFilter="${cropFilter}"`,
+      details: `crop=${cropWidth}x${cropHeight}, output=${outWidth}x${outHeight}`,
       resolution:
-        'The smart crop returned an unusable window - re-run the render, and check the [FaceDetector] line in the worker log.',
+        'The smart crop returned an unusable window - re-run the render, and check the face track line in the worker log.',
     });
   }
 
@@ -162,7 +204,6 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
   const baseName = path.basename(outputPath, '.mp4');
   const processedBaseClip = path.join(tempDir, `${baseName}_base.mp4`);
   const hookIntroClip = path.join(tempDir, `${baseName}_hook_intro.mp4`);
-  const concatListPath = path.join(tempDir, `${baseName}_concat.txt`);
 
   // Shared encoder settings. `+global_header` keeps SPS/PPS in the avcC box
   // (standard for MP4, needed by the compositor's strict MP4 parser).
@@ -213,7 +254,12 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
      * The trailing `scale` guarantees an exact, even output size so the Remotion
      * composition never sees black bars or a resolution mismatch.
      */
-    const filterParts = ['hflip', cropFilter];
+    // The crop X is a per-frame expression driven by the face track (static
+    // string when no track points exist). Single quotes keep the commas inside
+    // min()/if() from being read as filter separators. The crop filter works on
+    // the full mirrored frame (sourceWidth), window = cropWidth x cropHeight.
+    const cropXExpr = buildCropXExpression(cropTrackPoints, sourceWidth, cropWidth);
+    const filterParts = ['hflip', `crop=${cropWidth}:${cropHeight}:'${cropXExpr}':${cropY}`];
     if (colorFilterStr) filterParts.push(colorFilterStr);
     filterParts.push(`scale=${outWidth}:${outHeight}:flags=lanczos`);
     filterParts.push('format=yuv420p');
@@ -278,28 +324,40 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
       await runFfmpeg(hookExtractArgs, { label: 'hook-intro' });
       assertUsableFile(hookIntroClip, 'hook intro extraction');
 
-      log.detail('Pass 3/3 · concatenating hook intro + base clip (re-encode)');
+      log.detail(
+        `Pass 3/3 · concatenating hook + base with a dip-to-black transition (re-encode)`
+      );
       if (onProgress) onProgress(70);
 
-      fs.writeFileSync(
-        concatListPath,
-        `${concatListEntry(hookIntroClip)}\n${concatListEntry(processedBaseClip)}\n`,
-        'utf-8'
-      );
-
       // RE-ENCODE, do not stream-copy: stitching two independently encoded MP4s
-      // with `-c copy` produces a file whose second segment's sample table /
-      // timestamps are only good enough for ffmpeg itself. Remotion's compositor
-      // (its own strict MP4 parser) then fails with "No frame found at position N"
-      // for every frame after the hook segment. A fresh CFR encode guarantees one
-      // clean, contiguous frame timeline. Cost: a few extra seconds.
+      // with `-c copy` produced a file whose second segment timestamps Remotion's
+      // compositor could not read ("No frame found at position N").
+      //
+      // The join also gets a short dip-to-black (video fade out/in + audio
+      // afade) so the leap from the hook moment back to the start of the clip
+      // reads as an intentional beat instead of a hard cut. A dip - not a
+      // crossfade - keeps the total duration EXACTLY hook + base, so the
+      // caption timeline (which assumes that sum) stays in sync.
+      const fadeDur = Math.min(0.4, actualHookDur / 2);
+      const fadeSt = Math.max(0, actualHookDur - fadeDur);
+
       const concatArgs = [
         '-y',
         '-hide_banner',
         '-loglevel', 'error',
-        '-f', 'concat',
-        '-safe', '0',
-        '-i', concatListPath,
+        '-i', hookIntroClip,
+        '-i', processedBaseClip,
+        '-filter_complex',
+        [
+          `[0:v]fade=t=out:st=${fadeSt.toFixed(3)}:d=${fadeDur.toFixed(3)},format=yuv420p[v0]`,
+          `[1:v]fade=t=in:st=0:d=${fadeDur.toFixed(3)}[v1]`,
+          '[v0][v1]concat=n=2:v=1:a=0[v]',
+          `[0:a]afade=t=out:st=${fadeSt.toFixed(3)}:d=${fadeDur.toFixed(3)}[a0]`,
+          `[1:a]afade=t=in:st=0:d=${fadeDur.toFixed(3)}[a1]`,
+          '[a0][a1]concat=n=2:v=0:a=1[a]',
+        ].join(';'),
+        '-map', '[v]',
+        '-map', '[a]',
         ...videoArgs,
         ...audioArgs,
         outputPath,
@@ -332,7 +390,7 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
         'Inspect the FFmpeg command in the worker log, verify the source clip exists and the crop window is inside the frame, and retry.',
     });
   } finally {
-    for (const temp of [processedBaseClip, hookIntroClip, concatListPath]) {
+    for (const temp of [processedBaseClip, hookIntroClip]) {
       try {
         if (fs.existsSync(temp)) fs.unlinkSync(temp);
       } catch {

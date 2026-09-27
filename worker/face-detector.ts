@@ -36,10 +36,31 @@ export interface CropWindowResult {
   confidence?: number;
 }
 
+/** One smoothed keyframe of the face track; t in seconds RELATIVE to the segment start. */
+export interface FaceTrackPoint {
+  t: number;
+  /** Face centre X in MIRRORED source pixels (the crop filter works in mirrored space). */
+  x: number;
+  /** Face centre Y in mirrored source pixels. */
+  y: number;
+}
+
+export interface FaceTrackResult extends Omit<CropWindowResult, 'cropX' | 'cropFilter'> {
+  /** Smoothed per-time face centres; empty = static centred crop. */
+  points: FaceTrackPoint[];
+  /** Average centre (for the DB record / logs). */
+  staticCropX: number;
+  /** How many faces were visible in the busiest sampled frame. */
+  maxFacesSeen: number;
+  /** How many sampled frames yielded a detection. */
+  framesUsed: number;
+  framesTotal: number;
+}
+
 const FACE_MODELS_DIR = path.join('models', 'face');
 const FACE_MODEL_MANIFEST = 'tiny_face_detector_model-weights_manifest.json';
 const TARGET_ASPECT = 9 / 16;
-const MAX_SAMPLED_FRAMES = 40;
+const MAX_SAMPLED_FRAMES = 100;
 
 type FaceApiModule = {
   nets: {
@@ -154,14 +175,25 @@ async function readFrame(framePath: string): Promise<FrameSample | null> {
   }
 }
 
+export interface FaceDetection {
+  /** Face centre in the frame's own pixel space. */
+  centerX: number;
+  centerY: number;
+  /** Detected face box width (the person nearest the camera has the largest). */
+  faceWidth: number;
+  score: number;
+  /** The sampled frame's width in pixels (for scaling back to source). */
+  frameWidth: number;
+}
+
 /**
- * Neural detection on one frame. Returns the horizontal face centre in the
- * frame's own pixel space, or null.
+ * Neural detection on one frame: returns EVERY detected face (a two-person
+ * conversation shows two faces) in the frame's own pixel space.
  */
 async function detectWithFaceApi(
   runtime: { faceapi: FaceApiModule; tf: TfjsModule },
   framePath: string
-): Promise<{ centerX: number; score: number; width: number } | null> {
+): Promise<FaceDetection[]> {
   const { faceapi, tf } = runtime;
 
   try {
@@ -186,17 +218,18 @@ async function detectWithFaceApi(
     const disposable = tensor as { dispose?: () => void };
     disposable.dispose?.();
 
-    if (!detections || detections.length === 0) return null;
+    if (!detections || detections.length === 0) return [];
 
-    const best = detections.reduce((a, b) => (b.score > a.score ? b : a));
-    return {
-      centerX: best.box.x + best.box.width / 2,
-      score: best.score,
-      width,
-    };
+    return detections.map((d) => ({
+      centerX: d.box.x + d.box.width / 2,
+      centerY: d.box.y + d.box.height / 2,
+      faceWidth: d.box.width,
+      score: d.score,
+      frameWidth: width,
+    }));
   } catch (error) {
-    console.warn(`[FaceDetector] face-api failed on ${path.basename(framePath)}: ${toErrorMessage(error)}`);
-    return null;
+    log.warn(`face-api failed on ${path.basename(framePath)}: ${toErrorMessage(error)}`);
+    return [];
   }
 }
 
@@ -206,7 +239,7 @@ async function detectWithFaceApi(
  */
 async function detectWithSkinHeuristic(
   framePath: string
-): Promise<{ centerX: number; score: number; width: number } | null> {
+): Promise<FaceDetection[]> {
   try {
     const image = await Jimp.read(framePath);
     const width = image.bitmap.width;
@@ -238,7 +271,7 @@ async function detectWithSkinHeuristic(
     }
 
     const minPixels = Math.max(50, Math.floor(width * height * 0.002));
-    if (skinPixels < minPixels) return null;
+    if (skinPixels < minPixels) return [];
 
     // Weighted centroid over columns, ignoring columns that are clearly noise.
     const threshold = Math.max(...counts) * 0.15;
@@ -249,68 +282,170 @@ async function detectWithSkinHeuristic(
       weightedSum += counts[i] * ((i + 0.5) / columns) * width;
       weightTotal += counts[i];
     }
-    if (weightTotal === 0) return null;
+    if (weightTotal === 0) return [];
 
     // Confidence is how concentrated the skin mass is (a single face -> high).
     const concentration = Math.max(...counts) / Math.max(1, skinPixels / columns);
-    return {
-      centerX: weightedSum / weightTotal,
-      score: Math.min(1, 0.3 + concentration * 0.35),
-      width,
-    };
+    return [
+      {
+        centerX: weightedSum / weightTotal,
+        centerY: height / 2,
+        faceWidth: width * 0.2,
+        score: Math.min(1, 0.3 + concentration * 0.35),
+        frameWidth: width,
+      },
+    ];
   } catch {
-    return null;
+    return [];
   }
-}
-
-function median(values: number[]): number {
-  if (values.length === 0) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
-}
-
-/** Drop readings that are wildly far from the median (a hand or a warm prop). */
-function rejectOutliers(values: number[]): number[] {
-  if (values.length < 5) return values;
-
-  const med = median(values);
-  const deviations = values.map((v) => Math.abs(v - med));
-  const mad = median(deviations) || 1;
-  const tolerance = Math.max(60, mad * 3);
-
-  const kept = values.filter((v) => Math.abs(v - med) <= tolerance);
-  return kept.length >= Math.ceil(values.length * 0.4) ? kept : values;
-}
-
-function applyMovingAverage(values: number[], windowSize: number): number[] {
-  if (values.length === 0) return [];
-
-  const result: number[] = [];
-  for (let i = 0; i < values.length; i += 1) {
-    const start = Math.max(0, i - Math.floor(windowSize / 2));
-    const end = Math.min(values.length, i + Math.floor(windowSize / 2) + 1);
-    const window = values.slice(start, end);
-    result.push(window.reduce((sum, value) => sum + value, 0) / window.length);
-  }
-  return result;
 }
 
 /**
- * Compute the 9:16 smart-crop window for a segment.
+ * Pick WHICH face to follow when several are visible (a conversation shot).
+ *
+ * Heuristic for "the speaker": the person nearest the camera has the largest
+ * face box, and the shot normally cuts to whoever is talking. Size therefore
+ * dominates, with a continuity bias so the tracker doesn't flicker between two
+ * visible people while the same person keeps talking. When the shot cuts to the
+ * other person they become the largest face and the tracker (plus the slew
+ * limit in smoothTrack) pans over to them smoothly.
+ */
+export function selectSpeakerFace(
+  faces: FaceDetection[],
+  prevCenterX: number | null,
+  frameWidth: number
+): FaceDetection | null {
+  if (faces.length === 0) return null;
+  if (faces.length === 1) return faces[0];
+
+  let best: FaceDetection | null = null;
+  let bestScore = -1;
+  for (const face of faces) {
+    const proximity =
+      prevCenterX === null
+        ? 1
+        : Math.max(0, 1 - Math.abs(face.centerX - prevCenterX) / (frameWidth * 0.5));
+    // faceWidth^1.5 makes size dominate; proximity (0..1) breaks ties softly.
+    const score = Math.pow(face.faceWidth, 1.5) * (0.6 + 0.4 * proximity);
+    if (score > bestScore) {
+      bestScore = score;
+      best = face;
+    }
+  }
+  return best;
+}
+
+/**
+ * Remove keyframes that add no curve: the crop expression interpolates X as a
+ * function of TIME, after clamping - so "collinear" here means: does b.x sit
+ * within `tolerancePx` of the straight time-linear interpolation between its
+ * neighbours' CLAMPED x values? A smooth pan therefore collapses to a handful
+ * of keyframes; only real direction changes (speaker switches) and the clamp
+ * kinks survive. Keeps first/last and applies a hard cap for safety.
+ */
+export function decimateTrack(
+  points: FaceTrackPoint[],
+  clampX?: (x: number) => number,
+  tolerancePx = 0.5,
+  maxPoints = 48
+): FaceTrackPoint[] {
+  if (points.length <= 3 || points.length <= maxPoints) return points;
+  const cx = clampX ?? ((x: number) => x);
+
+  const kept: FaceTrackPoint[] = [points[0]];
+  for (let i = 1; i < points.length - 1; i += 1) {
+    const a = kept[kept.length - 1];
+    const b = points[i];
+    const c = points[i + 1];
+    const xa = cx(a.x);
+    const xb = cx(b.x);
+    const xc = cx(c.x);
+    const frac = (b.t - a.t) / Math.max(1e-6, c.t - a.t);
+    const deviation = Math.abs(xb - (xa + (xc - xa) * frac));
+    if (deviation > tolerancePx) kept.push(b);
+  }
+  kept.push(points[points.length - 1]);
+
+  if (kept.length <= maxPoints) return kept;
+  // Still too many (rapid oscillation): keep the first/last plus evenly spaced.
+  const stride = Math.ceil((kept.length - 2) / (maxPoints - 2));
+  const capped: FaceTrackPoint[] = [kept[0]];
+  for (let i = 1; i < kept.length - 1; i += 1) {
+    if (i % stride === 0) capped.push(kept[i]);
+  }
+  capped.push(kept[kept.length - 1]);
+  return capped;
+}
+
+/**
+ * Turn raw per-sample face centres into a smooth pan:
+ *   1. exponential moving average (kills per-frame jitter),
+ *   2. slew limit (a "camera pan" never teleports - it moves at most
+ *      MAX_PAN_PX_PER_SEC, so a cut to another person glides over ~1s).
+ */
+export const MAX_PAN_PX_PER_SEC = 900;
+const EMA_ALPHA = 0.45;
+
+export function smoothTrack(
+  raw: FaceTrackPoint[],
+  videoWidth: number
+): FaceTrackPoint[] {
+  if (raw.length === 0) return [];
+  if (raw.length === 1) return raw;
+
+  const out: FaceTrackPoint[] = [];
+  let sx = raw[0].x;
+  let sy = raw[0].y;
+
+  for (let i = 0; i < raw.length; i += 1) {
+    const p = raw[i];
+    if (i === 0) {
+      out.push(p);
+      continue;
+    }
+    const dt = Math.max(1 / 30, p.t - raw[i - 1].t);
+
+    // 1) EMA
+    sx = EMA_ALPHA * sx + (1 - EMA_ALPHA) * p.x;
+    sy = EMA_ALPHA * sy + (1 - EMA_ALPHA) * p.y;
+
+    // 2) slew limit (max pan speed * time since last sample)
+    const maxStep = Math.min(videoWidth, MAX_PAN_PX_PER_SEC * dt);
+    const stepX = Math.max(-maxStep, Math.min(maxStep, sx - out[i - 1].x));
+    const stepY = Math.max(-maxStep, Math.min(maxStep, sy - out[i - 1].y));
+    sx = out[i - 1].x + stepX;
+    sy = out[i - 1].y + stepY;
+
+    out.push({ t: p.t, x: sx, y: sy });
+  }
+  return out;
+}
+
+/**
+ * Compute the 9:16 smart-crop for a segment as a FACE TRACK: a smooth X-pan over
+ * time that keeps the SPEAKER in frame.
+ *
+ * - Several people can be in the shot; `selectSpeakerFace` follows the largest
+ *   face (nearest the camera, usually the one talking) with a continuity bias,
+ *   so when the shot cuts to another person the pan glides over to them.
+ * - `smoothTrack` (EMA + slew limit) turns the per-sample centres into a
+ *   camera-like pan instead of a jittery teleport.
+ * - The ffmpeg pipeline turns the returned points into a time-varying
+ *   `crop` filter expression, evaluated per frame.
  *
  * IMPORTANT: the ffmpeg chain is `hflip,crop=...`, i.e. the picture is mirrored
- * BEFORE it is cropped. The frames sampled here therefore have `hflip` applied too,
- * so the returned cropX is already in mirrored space. Sampling un-mirrored frames
- * (the old behaviour) put the crop window on the opposite side of the speaker.
+ * BEFORE it is cropped. The frames sampled here therefore have `hflip` applied
+ * too, so the returned X values are already in mirrored space. Sampling
+ * un-mirrored frames (the old behaviour) put the crop window on the opposite
+ * side of the speaker.
  */
-export async function detectFaceCropWindow(
+export async function detectFaceTrack(
   videoPath: string,
   start: number,
   duration: number,
   videoWidth: number,
   videoHeight: number
-): Promise<CropWindowResult> {
+): Promise<FaceTrackResult> {
   if (!Number.isFinite(videoWidth) || !Number.isFinite(videoHeight) || videoWidth <= 0 || videoHeight <= 0) {
     throw new AppError('Cannot compute a smart crop without a valid source resolution.', {
       status: 400,
@@ -375,65 +510,100 @@ export async function detectFaceCropWindow(
     }
 
     const runtime = await loadFaceApi();
-    const centres: number[] = [];
+    const rawPoints: FaceTrackPoint[] = [];
     const scores: number[] = [];
     let method: CropWindowResult['method'] = runtime ? 'face-api' : 'skin-heuristic';
+    let maxFacesSeen = 0;
+    let prevCenterX: number | null = null;
 
-    for (const frameFile of frameFiles) {
-      const framePath = path.join(tempFramesDir, frameFile);
+    for (let i = 0; i < frameFiles.length; i += 1) {
+      const framePath = path.join(tempFramesDir, frameFiles[i]);
       const sample = await readFrame(framePath);
       if (!sample) continue;
 
-      let detection = runtime ? await detectWithFaceApi(runtime, framePath) : null;
-      if (!detection) {
-        detection = await detectWithSkinHeuristic(framePath);
-        if (detection && runtime) method = 'skin-heuristic';
+      let faces = runtime ? await detectWithFaceApi(runtime, framePath) : [];
+      if (faces.length === 0) {
+        faces = await detectWithSkinHeuristic(framePath);
+        if (faces.length > 0 && runtime) method = 'skin-heuristic';
       }
-      if (!detection) continue;
+      if (faces.length === 0) continue;
 
-      // Scale from the sampled 640px-wide frame back to source pixels.
-      const scaleFactor = videoWidth / Math.max(1, detection.width);
-      centres.push(detection.centerX * scaleFactor);
-      scores.push(detection.score);
+      maxFacesSeen = Math.max(maxFacesSeen, faces.length);
+
+      // Scale from the sampled 640px-wide frame back to source pixels BEFORE
+      // selection, so size/continuity are compared in source space.
+      const scaled: FaceDetection[] = faces.map((f) => {
+        const scaleFactor = videoWidth / Math.max(1, f.frameWidth);
+        return {
+          ...f,
+          centerX: f.centerX * scaleFactor,
+          centerY: f.centerY * scaleFactor,
+          faceWidth: f.faceWidth * scaleFactor,
+        };
+      });
+
+      const speaker = selectSpeakerFace(scaled, prevCenterX, videoWidth);
+      if (!speaker) continue;
+
+      // The fps filter emits frames at 0, 1/sampleFps, 2/sampleFps, ...
+      rawPoints.push({
+        t: i / sampleFps,
+        x: speaker.centerX,
+        y: speaker.centerY,
+      });
+      scores.push(speaker.score);
+      prevCenterX = speaker.centerX;
     }
 
-    let avgCenterX: number;
-    let confidence: number | undefined;
-
-    if (centres.length === 0) {
-      /**
-       * No detection at all: fall back to a centred crop instead of failing the job.
-       * (Previously this threw, so any landscape/b-roll segment could never render.)
-       */
-      console.warn(
-        '[FaceDetector] No subject detected in the sampled frames - using a centred 9:16 crop.'
-      );
-      method = 'center-fallback';
-      avgCenterX = videoWidth / 2;
-    } else {
-      const cleaned = rejectOutliers(centres);
-      const smoothed = applyMovingAverage(cleaned, 3);
-      avgCenterX = smoothed.reduce((sum, value) => sum + value, 0) / smoothed.length;
-      confidence = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : undefined;
-    }
-
-    let cropX = Math.round(avgCenterX - cropW / 2);
-    cropX = evenSize(Math.max(0, Math.min(videoWidth - cropW, cropX)), 0);
     // Keep the vertical centre; for a landscape source this is normally 0 anyway.
     const cropY = evenSize(Math.max(0, Math.floor((videoHeight - cropH) / 2)), 0);
 
+    // Decimate in the SAME space the ffmpeg expression lives in (clamped X):
+    // a keyframe is only redundant if the clamped interpolation is flat.
+    const clampX = (x: number): number =>
+      Math.max(0, Math.min(Math.round(x - cropW / 2), videoWidth - cropW));
+    let points = decimateTrack(smoothTrack(rawPoints, videoWidth), clampX);
+    let staticCropX = evenSize(Math.max(0, Math.min(videoWidth - cropW, Math.round(videoWidth / 2 - cropW / 2))), 0);
+    let confidence: number | undefined;
+
+    if (rawPoints.length === 0) {
+      /**
+       * No detection at all: fall back to a static centred crop instead of
+       * failing the job. (Previously this threw, so any landscape/b-roll
+       * segment could never render.)
+       */
+      log.warn('No subject detected in the sampled frames - using a static centred 9:16 crop.');
+      method = 'center-fallback';
+      points = [];
+    } else {
+      confidence = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : undefined;
+      staticCropX = evenSize(
+        Math.max(0, Math.min(videoWidth - cropW, Math.round(points[points.length - 1].x - cropW / 2))),
+        0
+      );
+      if (maxFacesSeen > 1) {
+        log.detail(`Multiple people detected (max ${maxFacesSeen} in one frame) - following the speaker.`);
+      }
+    }
+
+    const firstX = points.length > 0 ? Math.round(points[0].x) : Math.round(videoWidth / 2);
+    const lastX = points.length > 0 ? Math.round(points[points.length - 1].x) : Math.round(videoWidth / 2);
     log.ok(
-      `crop=${cropW}:${cropH}:${cropX}:${cropY} (method=${method}, ` +
-      `frames=${centres.length}/${frameFiles.length}, center=${avgCenterX.toFixed(1)}px` +
+      `face track: ${points.length ? `pan ${firstX}→${lastX}px` : 'static crop'} across ${points.length} keyframes ` +
+      `(method=${method}, frames=${rawPoints.length}/${frameFiles.length}` +
+      `${maxFacesSeen > 0 ? `, people=${maxFacesSeen}` : ''}` +
       `${confidence !== undefined ? `, confidence=${confidence.toFixed(2)}` : ''})`
     );
 
     return {
       cropW,
       cropH,
-      cropX,
       cropY,
-      cropFilter: `crop=${cropW}:${cropH}:${cropX}:${cropY}`,
+      staticCropX,
+      points,
+      maxFacesSeen,
+      framesUsed: rawPoints.length,
+      framesTotal: frameFiles.length,
       method,
       confidence,
     };

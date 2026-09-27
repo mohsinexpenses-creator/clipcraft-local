@@ -171,8 +171,10 @@ and tells you exactly what to fix.
    Rendering then asks the LLM again to pick the most gripping moment inside the
    clip (a "suspense hook") - that moment is duplicated to the START of the clip.
 5. Rendering a clip enqueues a BullMQ job → the worker runs:
-   smart crop detection → FFmpeg (mirror + crop + colour + hook intro) → Remotion
-   (captions + hook/CTA overlays) → `generated-clips/{videoId}/{clipId}.mp4`.
+   speaker face tracking (the 9:16 crop window pans to follow the talking person)
+   → FFmpeg (mirror + animated crop + colour + hook intro with a dip-to-black
+   transition) → Remotion (captions + hook/CTA overlays)
+   → `generated-clips/{videoId}/{clipId}.mp4`.
 6. The dashboard plays the clip through `/api/media/...` (a normal HTTP origin, with
    HTTP Range support so seeking works).
 
@@ -364,8 +366,8 @@ lib/ai.ts                prompt templates + JSON parsing on top of the fallback 
 lib/startup-validation.ts the checks behind /startup-validation
 worker/index.ts          both BullMQ workers, graceful shutdown
 worker/processor.ts      per-clip orchestration
-worker/face-detector.ts  mirrored-frame sampling + crop window
-worker/ffmpeg-pipeline.ts hflip → crop → colour → scale → hook concat
+worker/face-detector.ts  mirrored-frame sampling + speaker face track
+worker/ffmpeg-pipeline.ts hflip → animated crop → colour → scale → hook concat (dip-to-black)
 worker/remotion-renderer.ts bundle (cached) → selectComposition → renderMedia
 remotion/                CaptionComposition + AnimatedWord + Hook/CTA overlays
 scripts/setup-whisper.*  binary + ggml model downloader (.mjs and .ps1)
