@@ -25,6 +25,8 @@
     "@remotion/cli": "^4.0.526",
     "@remotion/player": "^4.0.526",
     "@remotion/renderer": "^4.0.528",
+    "@tensorflow/tfjs-backend-cpu": "^4.22.0",
+    "@tensorflow/tfjs-core": "^4.22.0",
     "@vladmandic/face-api": "^1.7.15",
     "bullmq": "^6.3.8",
     "class-variance-authority": "^0.7.1",
