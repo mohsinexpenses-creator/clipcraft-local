@@ -86,6 +86,9 @@ export const ClipCard: React.FC<ClipCardProps> = ({
   const [ctaText, setCtaText] = useState(clip.ctaText || "");
   const [hookDuration] = useState(clip.hookDuration ?? 3);
   const [ctaDuration] = useState(clip.ctaDuration ?? 2.5);
+  const [clipLayout, setClipLayout] = useState<"speaker-focus" | "split-screen">(
+    clip.layout === "split-screen" ? "split-screen" : "speaker-focus",
+  );
   const [isTriggering, setIsTriggering] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -111,6 +114,7 @@ export const ClipCard: React.FC<ClipCardProps> = ({
           ctaDuration,
           filterPreset,
           captionPresetId,
+          layout: clipLayout,
         }),
       });
 
@@ -389,6 +393,34 @@ export const ClipCard: React.FC<ClipCardProps> = ({
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+
+            <div className="space-y-2 sm:col-span-2">
+              <Label id={`layout-label-${clip._id}`}>Layout (9:16 output)</Label>
+              <Select
+                value={clipLayout}
+                onValueChange={(v) =>
+                  setClipLayout(v === "split-screen" ? "split-screen" : "speaker-focus")
+                }
+                disabled={isProcessing}
+              >
+                <SelectTrigger aria-labelledby={`layout-label-${clip._id}`}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="speaker-focus">
+                    Speaker focus · follow the talker
+                  </SelectItem>
+                  <SelectItem value="split-screen">
+                    Multi-person split · show everyone
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Speaker focus crops 9:16 around whoever is talking (smooth pan).
+                Multi-person splits the frame between everyone detected (2×2, up
+                to 4) with the active speaker highlighted.
+              </p>
             </div>
           </div>
 

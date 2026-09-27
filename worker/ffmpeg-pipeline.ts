@@ -3,8 +3,14 @@ import path from 'path';
 import { AppError, toErrorMessage } from '../lib/errors';
 import { DEFAULT_FILTER_PRESETS } from '../lib/presets';
 import { getVideoMetadata, runFfmpeg } from '../lib/ffmpeg';
-import { FaceTrackPoint } from './face-detector';
 import { log } from '../lib/logger';
+import {
+  LayoutPlan,
+  OUTPUT_HEIGHT,
+  OUTPUT_WIDTH,
+  buildSingleFilterParts,
+  buildSplitFilterComplex,
+} from './layout';
 
 export interface ProcessSegmentOptions {
   sourceVideoPath: string;
@@ -15,19 +21,15 @@ export interface ProcessSegmentOptions {
   /** Where in the clip (seconds, relative to the clip start) the hook intro is cut from. 0 = the first N seconds (legacy behaviour). */
   hookStart: number;
   filterPresetId: string;
-  /** Top-left Y of the (9:16) crop window in source pixels. */
-  cropY: number;
-  /** Width/height of the crop window, used to size the output canvas. */
-  cropWidth: number;
-  cropHeight: number;
   /**
-   * Smoothed face centres over time (seconds relative to the clip start,
-   * mirrored source pixels). Empty = static centred crop. Becomes a
-   * time-varying crop filter so the frame follows the speaker.
+   * The rendering plan built from the ASD result: either a single time-varying
+   * 9:16 window following the active speaker, or an adaptive 2/3/4-person
+   * split-screen grid. Drives the pass-1 filter chain.
    */
-  cropTrackPoints: FaceTrackPoint[];
-  /** Mirrored source width (for clamping the pan to the frame). */
+  plan: LayoutPlan;
+  /** Mirrored source size (expression clamping bounds). */
   sourceWidth: number;
+  sourceHeight: number;
   /** fps the Remotion composition will use; the intermediate is normalised to it. */
   targetFps: number;
   /** False when the source has no audio stream -> a silent track is muxed in. */
@@ -93,45 +95,6 @@ export function computeOutputSize(cropWidth: number, cropHeight: number): { widt
   return { width: MAX_OUTPUT_WIDTH, height: MAX_OUTPUT_HEIGHT };
 }
 
-/**
- * Build the ffmpeg `crop` filter's X expression from the face track: a
- * piecewise-linear pan between keyframes, evaluated by ffmpeg PER FRAME.
- * The result is clamped so the window never leaves the frame.
- *
- * Syntax notes: only `if/gte/lte` + arithmetic (universally supported by the
- * ffmpeg expression evaluator, no exotic functions). The caller wraps the
- * returned string in single quotes because it contains commas.
- */
-export function buildCropXExpression(
-  points: FaceTrackPoint[],
-  videoWidth: number,
-  cropW: number
-): string {
-  const maxX = Math.max(0, videoWidth - cropW);
-  const clamp = (expr: string): string => (maxX === 0 ? '0' : `min(max(${expr},0),${maxX})`);
-  const xFor = (centre: number): number => Math.max(0, Math.min(centre - cropW / 2, maxX));
-
-  if (points.length === 0) return String(xFor(videoWidth / 2));
-  if (points.length === 1) return clamp(xFor(points[0].x).toFixed(1));
-
-  let expr = xFor(points[points.length - 1].x).toFixed(1);
-  for (let i = points.length - 1; i >= 1; i -= 1) {
-    const a = points[i - 1];
-    const b = points[i];
-    const segLen = Math.max(1e-3, b.t - a.t);
-    const xa = xFor(a.x).toFixed(1);
-    const xb = xFor(b.x).toFixed(1);
-    const interp = `(${xa}+(${xb}-${xa})*(t-${a.t.toFixed(3)})/${segLen.toFixed(3)})`;
-    expr = `if(gte(t,${a.t.toFixed(3)})*lte(t,${b.t.toFixed(3)}),${interp},${expr})`;
-  }
-  // Hold the first value before the first keyframe (and the last value after
-  // the last one - the fallback chain above already does that).
-  if (points[0].t > 0) {
-    expr = `if(gte(t,${points[0].t.toFixed(3)}),${expr},${xFor(points[0].x).toFixed(1)})`;
-  }
-  return clamp(expr);
-}
-
 function assertUsableFile(filePath: string, step: string): void {
   if (!fs.existsSync(filePath)) {
     throw new AppError(`FFmpeg finished "${step}" without creating ${filePath}.`, {
@@ -158,11 +121,9 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
     hookDuration,
     hookStart,
     filterPresetId,
-    cropY,
-    cropWidth,
-    cropHeight,
-    cropTrackPoints,
+    plan,
     sourceWidth,
+    sourceHeight,
     targetFps,
     sourceHasAudio,
     onProgress,
@@ -187,16 +148,10 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
 
   const segmentDuration = end - start;
   const fps = normalizeFps(targetFps);
-  const { width: outWidth, height: outHeight } = computeOutputSize(cropWidth, cropHeight);
-
-  if (outWidth < 16 || outHeight < 16) {
-    throw new AppError('Cannot build the FFmpeg filter chain without a valid crop window.', {
-      status: 400,
-      details: `crop=${cropWidth}x${cropHeight}, output=${outWidth}x${outHeight}`,
-      resolution:
-        'The smart crop returned an unusable window - re-run the render, and check the face track line in the worker log.',
-    });
-  }
+  // The output canvas is ALWAYS the full 1080x1920 composition canvas - both
+  // layout modes tile it exactly, so Remotion does a 1:1 blit with no bars.
+  const outWidth = OUTPUT_WIDTH;
+  const outHeight = OUTPUT_HEIGHT;
 
   const tempDir = path.dirname(outputPath);
   if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
@@ -246,44 +201,56 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
 
     /**
      * Order matters: `hflip` runs BEFORE `crop`, so the crop coordinates must be
-     * expressed in MIRRORED space. worker/face-detector.ts now samples frames with
-     * `hflip` already applied, which is what makes `cropFilter` line up with the
-     * subject. (Previously the detector measured un-mirrored frames, so the crop
-     * window landed on the opposite side of the speaker.)
+     * expressed in MIRRORED space. worker/face-detector.ts samples frames with
+     * `hflip` already applied, which is what makes the crop expressions line up
+     * with the tracked people.
      *
-     * The trailing `scale` guarantees an exact, even output size so the Remotion
-     * composition never sees black bars or a resolution mismatch.
+     * The plan decides the geometry:
+     *  - single  -> one time-varying 9:16 window following the active speaker
+     *  - split   -> a 2/3/4-person grid, each cell tracking its own person
      */
-    // The crop X is a per-frame expression driven by the face track (static
-    // string when no track points exist). Single quotes keep the commas inside
-    // min()/if() from being read as filter separators. The crop filter works on
-    // the full mirrored frame (sourceWidth), window = cropWidth x cropHeight.
-    const cropXExpr = buildCropXExpression(cropTrackPoints, sourceWidth, cropWidth);
-    const filterParts = ['hflip', `crop=${cropWidth}:${cropHeight}:'${cropXExpr}':${cropY}`];
-    if (colorFilterStr) filterParts.push(colorFilterStr);
-    filterParts.push(`scale=${outWidth}:${outHeight}:flags=lanczos`);
-    filterParts.push('format=yuv420p');
-
     log.detail(
       `Pass 1/3 · base clip ${start}s → ${end}s ` +
-      `(dur=${segmentDuration.toFixed(2)}s, fps=${fps}, out=${outWidth}x${outHeight}, audio=${sourceHasAudio ? 'source' : 'silent'})`
+      `(dur=${segmentDuration.toFixed(2)}s, fps=${fps}, out=${outWidth}x${outHeight}, ` +
+      `layout=${plan.mode}${plan.mode === 'split' ? ` (${plan.cells.length} cells)` : ''}, ` +
+      `audio=${sourceHasAudio ? 'source' : 'silent'})`
     );
     if (onProgress) onProgress(10);
 
-    const pass1Args = [
-      '-y',
-      '-hide_banner',
-      '-loglevel', 'error',
-      '-stats',
-      ...inputArgs,
-      '-vf', filterParts.join(','),
-      '-map', '0:v:0',
-      '-map', `${audioInputIndex}:a:0`,
-      ...videoArgs,
-      ...audioArgs,
-      ...(sourceHasAudio ? [] : ['-shortest']),
-      processedBaseClip,
-    ];
+    let pass1Args: string[];
+    if (plan.mode === 'single') {
+      const filterParts = buildSingleFilterParts(plan, sourceWidth, sourceHeight, outWidth, outHeight, colorFilterStr);
+      pass1Args = [
+        '-y',
+        '-hide_banner',
+        '-loglevel', 'error',
+        '-stats',
+        ...inputArgs,
+        '-vf', filterParts.join(','),
+        '-map', '0:v:0',
+        '-map', `${audioInputIndex}:a:0`,
+        ...videoArgs,
+        ...audioArgs,
+        ...(sourceHasAudio ? [] : ['-shortest']),
+        processedBaseClip,
+      ];
+    } else {
+      const graph = buildSplitFilterComplex(plan, sourceWidth, sourceHeight, fps, segmentDuration, colorFilterStr);
+      pass1Args = [
+        '-y',
+        '-hide_banner',
+        '-loglevel', 'error',
+        '-stats',
+        ...inputArgs,
+        '-filter_complex', graph,
+        '-map', '[vout]',
+        '-map', `${audioInputIndex}:a:0`,
+        ...videoArgs,
+        ...audioArgs,
+        ...(sourceHasAudio ? [] : ['-shortest']),
+        processedBaseClip,
+      ];
+    }
 
     await runFfmpeg(pass1Args, {
       label: 'trim+mirror+crop+color',

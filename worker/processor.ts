@@ -4,8 +4,10 @@ import { getCaptionPreset, getClip, getVideo, saveClip } from '../lib/db';
 import { AppError, toErrorMessage } from '../lib/errors';
 import { detectHookMoment } from '../lib/ai';
 import { getVideoMetadata } from '../lib/ffmpeg';
-import { ClipRecord, JobData } from '../lib/types';
+import { ClipLayout, ClipRecord, JobData } from '../lib/types';
 import { detectFaceTrack } from './face-detector';
+import { detectSpeakerTimeline } from './asd';
+import { LayoutPlan, buildLayoutPlan, buildSinglePlan } from './layout';
 import { color, log } from '../lib/logger';
 import { normalizeFps, processVideoSegment } from './ffmpeg-pipeline';
 import { renderCaptionsAndOverlays } from './remotion-renderer';
@@ -168,26 +170,65 @@ export async function processClipJob(
       log.warn('Hook moment auto-detection unavailable - duplicating the first N seconds.');
     }
 
-    log.step('Step 1/3 · Smart crop (speaker face tracking)');
-    const cropResult = await detectFaceTrack(
-      video.filePath,
-      start,
-      segmentDuration,
-      sourceMeta.width,
-      sourceMeta.height
-    );
+    log.step('Step 1/3 · Face tracking + active speaker detection');
+    const layout: ClipLayout = jobData.layout === 'split-screen' ? 'split-screen' : 'speaker-focus';
+    clip.layout = layout;
 
-    clip.cropData = {
-      x: cropResult.staticCropX,
-      y: cropResult.cropY,
-      width: cropResult.cropW,
-      height: cropResult.cropH,
-    };
+    let plan: LayoutPlan;
+    try {
+      const asd = await detectSpeakerTimeline(
+        video.filePath,
+        start,
+        segmentDuration,
+        sourceMeta.width,
+        sourceMeta.height,
+        { hasAudio: sourceMeta.hasAudio }
+      );
+      plan = buildLayoutPlan(asd, layout, sourceMeta.width, sourceMeta.height);
+      if (asd.tracks.length === 0) {
+        log.warn('No faces detected in the clip - using a static centred 9:16 crop.');
+      }
+    } catch (error) {
+      // Defensive: if ASD cannot run at all (no ffmpeg frames, bad audio...),
+      // fall back to the legacy single-track smart crop so the render still works.
+      log.warn(`Speaker detection failed (${toErrorMessage(error)}) - using the legacy face track.`);
+      const legacy = await detectFaceTrack(
+        video.filePath,
+        start,
+        segmentDuration,
+        sourceMeta.width,
+        sourceMeta.height
+      );
+      plan = {
+        ...buildSinglePlan(
+          { tracks: [], speakerSegments: [], speakerCount: 0, method: 'skin+audio', hasLandmarks: false, hasAudio: false, maxFacesSeen: 0, framesUsed: 0, framesTotal: 0, sampleFps: 0, voicedRatio: 0 },
+          sourceMeta.width,
+          sourceMeta.height,
+          0.5
+        ),
+        // Legacy behaviour: X pans along the tracked face, Y stays centred.
+        points: legacy.points.map((pt) => ({ t: pt.t, x: pt.x, y: sourceMeta.height / 2 })),
+        cropW: legacy.cropW,
+        cropH: legacy.cropH,
+        faceAnchorY: 0.5,
+      };
+    }
+
+    if (plan.mode === 'single') {
+      clip.cropData = {
+        x: 0,
+        y: 0,
+        width: plan.cropW,
+        height: plan.cropH,
+      };
+    }
     clip.progress = 20;
     await saveClip(clip);
     await reportProgress(20);
 
-    log.step('Step 2/3 · FFmpeg mirror + crop + colour + hook intro');
+    log.step(
+      `Step 2/3 · FFmpeg mirror + ${plan.mode === 'split' ? `split-screen (${plan.cells.length})` : 'speaker crop'} + colour + hook intro`
+    );
     await processVideoSegment({
       sourceVideoPath: video.filePath,
       outputPath: intermediateVideoPath,
@@ -196,11 +237,9 @@ export async function processClipJob(
       hookDuration: safeHookDuration,
       hookStart,
       filterPresetId: filterPreset,
-      cropY: cropResult.cropY,
-      cropWidth: cropResult.cropW,
-      cropHeight: cropResult.cropH,
-      cropTrackPoints: cropResult.points,
+      plan,
       sourceWidth: sourceMeta.width,
+      sourceHeight: sourceMeta.height,
       targetFps: renderFps,
       sourceHasAudio: sourceMeta.hasAudio,
       onProgress: (progress) => {

@@ -59,6 +59,8 @@ export interface FaceTrackResult extends Omit<CropWindowResult, 'cropX' | 'cropF
 
 const FACE_MODELS_DIR = path.join('models', 'face');
 const FACE_MODEL_MANIFEST = 'tiny_face_detector_model-weights_manifest.json';
+/** Committed 68-landmark weights (mouth-open cue for active speaker detection). */
+const LANDMARK_MODELS_DIR = path.join('models', 'face-landmarks');
 const TARGET_ASPECT = 9 / 16;
 const MAX_SAMPLED_FRAMES = 100;
 
@@ -67,10 +69,25 @@ type FaceApiModule = {
     tinyFaceDetector: {
       loadFromDisk: (dir: string) => Promise<void>;
       isLoaded: boolean;
+      isNetLoaded?: boolean;
+    };
+    faceLandmark68Net?: {
+      loadFromDisk: (dir: string) => Promise<void>;
+      isLoaded?: boolean;
+      isNetLoaded?: boolean;
     };
   };
   TinyFaceDetectorOptions: new (options: { inputSize: number; scoreThreshold: number }) => unknown;
-  detectAllFaces: (input: unknown, options: unknown) => Promise<Array<{ box: { x: number; y: number; width: number; height: number }; score: number }>>;
+  detectAllFaces: (
+    input: unknown,
+    options: unknown
+  ) => Promise<
+    Array<{
+      box: { x: number; y: number; width: number; height: number };
+      score: number;
+      landmarks?: { positions: Array<[number, number]> };
+    }>
+  >;
 };
 
 type TfjsModule = {
@@ -82,7 +99,7 @@ type TfjsModule = {
 let faceApiPromise: Promise<{ faceapi: FaceApiModule; tf: TfjsModule } | null> | null = null;
 let faceApiUnavailableReason: string | null = null;
 
-function evenSize(value: number, minimum = 2): number {
+export function evenSize(value: number, minimum = 2): number {
   return Math.max(minimum, Math.floor(value / 2) * 2);
 }
 
@@ -115,7 +132,7 @@ function faceModelsPresent(): boolean {
  *   npm i @tensorflow/tfjs-core@^4 @tensorflow/tfjs-backend-cpu@^4
  * (models are already committed under models/face/)
  */
-async function loadFaceApi(): Promise<{ faceapi: FaceApiModule; tf: TfjsModule } | null> {
+export async function loadFaceApi(): Promise<{ faceapi: FaceApiModule; tf: TfjsModule } | null> {
   if (faceApiPromise) return faceApiPromise;
 
   faceApiPromise = (async () => {
@@ -184,6 +201,12 @@ export interface FaceDetection {
   score: number;
   /** The sampled frame's width in pixels (for scaling back to source). */
   frameWidth: number;
+  /**
+   * Normalised mouth openness (inner-lip height / face-box height), 0..~0.35.
+   * Present when the 68-landmark net ran; the ASD fusion treats null as
+   * "no visual articulation cue" and falls back to prominence + audio.
+   */
+  mouthOpen?: number | null;
 }
 
 /**
@@ -234,10 +257,205 @@ async function detectWithFaceApi(
 }
 
 /**
+ * Load the 68-landmark net once (optional). Returns true when it is ready.
+ * The weights are committed under models/face-landmarks/; when they are missing
+ * (or the package is not installed) the ASD simply runs without the mouth cue.
+ */
+let landmarkPromise: Promise<boolean> | null = null;
+export function loadLandmarkNet(
+  runtime: { faceapi: FaceApiModule; tf: TfjsModule }
+): Promise<boolean> {
+  if (!landmarkPromise) {
+    landmarkPromise = (async () => {
+      try {
+        const dir = path.join(process.cwd(), LANDMARK_MODELS_DIR);
+        if (!fs.existsSync(path.join(dir, 'face_landmark_68_model-weights_manifest.json'))) {
+          return false;
+        }
+        const net = runtime.faceapi.nets.faceLandmark68Net;
+        if (!net || net.isNetLoaded === true || net.isLoaded === true) return true;
+        await net.loadFromDisk(dir);
+        return true;
+      } catch (error) {
+        log.warn(`68-landmark model unavailable (${toErrorMessage(error)}) - running without the mouth-open cue.`);
+        return false;
+      }
+    })();
+  }
+  return landmarkPromise;
+}
+
+/**
+ * Detect ALL faces in a frame, optionally with 68 landmarks, returning a
+ * normalised mouth-openness per face. This is the workhorse for ASD:
+ *   - the face box drives tracking + prominence,
+ *   - the inner-lip height (68 landmarks 60..67) drives the articulation cue.
+ */
+export async function detectFacesWithMouth(
+  runtime: { faceapi: FaceApiModule; tf: TfjsModule } | null,
+  framePath: string,
+  useLandmarks: boolean
+): Promise<FaceDetection[]> {
+  if (!runtime) return [];
+
+  const { faceapi, tf } = runtime;
+  try {
+    const image = await Jimp.read(framePath);
+    const { width, height, data } = image.bitmap;
+
+    const rgb = new Uint8Array(width * height * 3);
+    for (let i = 0, j = 0; i < data.length; i += 4, j += 3) {
+      rgb[j] = data[i];
+      rgb[j + 1] = data[i + 1];
+      rgb[j + 2] = data[i + 2];
+    }
+
+    const tensor = tf.tensor3d(rgb, [height, width, 3]);
+    let detections: Array<{
+      box: { x: number; y: number; width: number; height: number };
+      score: number;
+      landmarks?: { positions: Array<[number, number]> };
+    }>;
+
+    if (useLandmarks) {
+      // `withFaceLandmarks()` is a per-detection method on face-api; running it
+      // over every detection adds the 68 landmarks to each of them.
+      const base = await faceapi.detectAllFaces(
+        tensor,
+        new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.4 })
+      );
+      detections = await Promise.all(
+        base.map((d) => {
+          const instance = d as { withFaceLandmarks?: () => Promise<typeof d> };
+          return instance.withFaceLandmarks ? instance.withFaceLandmarks() : Promise.resolve(d);
+        })
+      );
+    } else {
+      detections = await faceapi.detectAllFaces(
+        tensor,
+        new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.4 })
+      );
+    }
+
+    const disposable = tensor as { dispose?: () => void };
+    disposable.dispose?.();
+
+    if (!detections || detections.length === 0) return [];
+
+    return detections
+      .map((d) => {
+        let mouthOpen: number | null = null;
+        const positions = d.landmarks?.positions;
+        if (useLandmarks && positions && positions.length >= 68) {
+          // Inner-lip ring (indices 60..67): its vertical extent is how open
+          // the mouth is. Normalised by the face-box height so it is
+          // scale-invariant across zoom levels.
+          let minY = Number.POSITIVE_INFINITY;
+          let maxY = Number.NEGATIVE_INFINITY;
+          for (let i = 60; i <= 67; i += 1) {
+            const y = positions[i][1];
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+          }
+          mouthOpen = Math.max(0, Math.min(0.35, (maxY - minY) / Math.max(1, d.box.height)));
+        }
+        return {
+          centerX: d.box.x + d.box.width / 2,
+          centerY: d.box.y + d.box.height / 2,
+          faceWidth: d.box.width,
+          score: d.score,
+          frameWidth: width,
+          mouthOpen,
+        };
+      })
+      .filter((f) => f.faceWidth > 8);
+  } catch (error) {
+    log.warn(`face-api failed on ${path.basename(framePath)}: ${toErrorMessage(error)}`);
+    return [];
+  }
+}
+
+/**
+ * Extract a bounded set of JPEG frames from a clip window. The `hflip` is
+ * applied FIRST so the sampled frames are exactly what the (mirrored) crop
+ * filter will see. Returns the absolute frame paths in time order.
+ */
+export interface SampledFrames {
+  frames: string[];
+  /** The fps actually used (frames are at 0, 1/fps, 2/fps, ...). */
+  fps: number;
+}
+
+export async function sampleSegmentFrames(
+  videoPath: string,
+  start: number,
+  duration: number,
+  targetFps: number,
+  maxFrames: number,
+  tmpPrefix = 'frames'
+): Promise<SampledFrames> {
+  const safeDuration = Math.max(0.5, duration);
+  const fps = Math.max(0.5, Math.min(targetFps, maxFrames / safeDuration));
+
+  const tempFramesDir = path.join(
+    process.cwd(),
+    '.tmp',
+    `${tmpPrefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+  );
+  fs.mkdirSync(tempFramesDir, { recursive: true });
+
+  try {
+    const frameArgs = [
+      '-y',
+      '-hide_banner',
+      '-loglevel', 'error',
+      '-ss', start.toFixed(3),
+      '-t', safeDuration.toFixed(3),
+      '-i', videoPath,
+      // hflip FIRST: sample exactly what the crop filter will see.
+      // fps=<fps> limits the decode work - without it ffmpeg decodes every
+      // frame of the segment and only -frames:v caps the output (slow).
+      '-vf', `hflip,scale=640:-2,fps=${fps.toFixed(3)}`,
+      '-frames:v', String(maxFrames),
+      path.join(tempFramesDir, 'frame_%03d.jpg'),
+    ];
+
+    await runFfmpeg(frameArgs, { label: 'sample-frames' });
+
+    const frames = fs
+      .readdirSync(tempFramesDir)
+      .filter((file) => file.toLowerCase().endsWith('.jpg'))
+      .sort()
+      .map((file) => path.join(tempFramesDir, file));
+
+    if (frames.length === 0) {
+      throw new AppError('Frame sampling produced no frames.', {
+        details: `start=${start}, duration=${safeDuration}`,
+        resolution: 'Check the clip timestamps and verify FFmpeg can decode the source video.',
+      });
+    }
+
+    return { frames, fps };
+  } finally {
+    // Caller may still need the frames; cleanup is done by the caller via
+    // the returned directory. We only ensure the dir is removed on failure.
+  }
+}
+
+/** Remove a sampled-frames directory (caller passes the dir it sampled into). */
+export function cleanupSampledFrames(tempFramesDir: string): void {
+  try {
+    if (fs.existsSync(tempFramesDir)) fs.rmSync(tempFramesDir, { recursive: true, force: true });
+  } catch {
+    // Ignore cleanup errors.
+  }
+}
+
+/**
  * Fallback detector: centroid of skin-coloured pixels. Crude (it also reacts to
  * wood, warm backgrounds and hands) but it needs no ML runtime at all.
  */
-async function detectWithSkinHeuristic(
+export async function detectWithSkinHeuristic(
   framePath: string
 ): Promise<FaceDetection[]> {
   try {

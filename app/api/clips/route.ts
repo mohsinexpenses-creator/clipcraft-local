@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { getClip, listClips, saveClip } from '@/lib/db';
 import { AppError, toErrorMessage, toErrorStatus } from '@/lib/errors';
 import { enqueueClipJob } from '@/lib/queue';
-import { JobData } from '@/lib/types';
+import { ClipLayout, JobData } from '@/lib/types';
 
 export async function GET(request: Request) {
   try {
@@ -36,6 +36,7 @@ export async function POST(request: Request) {
     const filterPreset = typeof body.filterPreset === 'string' ? body.filterPreset : 'vibrant';
     const captionPresetId =
       typeof body.captionPresetId === 'string' ? body.captionPresetId : 'preset-bold-yellow';
+    const layout: ClipLayout = body.layout === 'split-screen' ? 'split-screen' : 'speaker-focus';
 
     if (!clipId || !videoId) {
       return NextResponse.json({ error: 'Missing clipId or videoId' }, { status: 400 });
@@ -83,6 +84,7 @@ export async function POST(request: Request) {
     if (ctaText !== undefined) existingClip.ctaText = ctaText;
     existingClip.filterPreset = filterPreset;
     existingClip.captionPresetId = captionPresetId;
+    existingClip.layout = layout;
 
     existingClip.status = 'pending';
     existingClip.progress = 0;
@@ -100,6 +102,7 @@ export async function POST(request: Request) {
       ctaDuration: existingClip.ctaDuration,
       filterPreset: existingClip.filterPreset,
       captionPresetId: existingClip.captionPresetId,
+      layout: existingClip.layout,
     };
 
     await enqueueClipJob(jobData);

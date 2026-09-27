@@ -109,6 +109,13 @@ export interface CropWindow {
   height: number;
 }
 
+/**
+ * How the 9:16 output frames a multi-person clip.
+ * - `speaker-focus`: a single window that smoothly pans to whoever is talking.
+ * - `split-screen`: an adaptive 2/3/4-person grid that keeps everyone visible.
+ */
+export type ClipLayout = 'speaker-focus' | 'split-screen';
+
 export interface FilterPreset {
   id: string;
   name: string;
@@ -157,6 +164,12 @@ export interface ClipRecord {
   filterPreset: string; // filter preset id
   captionPresetId: string;
   captionPreset?: CaptionPreset;
+  /**
+   * Output framing mode:
+   * - `speaker-focus`: the 9:16 window follows the active speaker.
+   * - `split-screen`: everyone relevant is shown in an adaptive grid (2/3/4).
+   */
+  layout?: ClipLayout;
   cropData?: CropWindow;
   viralScore: number;
   viralReason?: string;
@@ -191,6 +204,8 @@ export interface JobData {
   ctaDuration?: number;
   filterPreset: string;
   captionPresetId: string;
+  /** Framing mode for the 9:16 output (default `speaker-focus`). */
+  layout?: ClipLayout;
 }
 
 /**
