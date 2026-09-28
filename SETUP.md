@@ -18,7 +18,7 @@ variables, customization) see [`docs/VIRAL_PROMPT_GUIDE.md`](./docs/VIRAL_PROMPT
 | Node.js 20+ (LTS) | Next.js 16 + the worker | `node -v` |
 | Docker Desktop | MongoDB + Redis containers | `docker compose version` |
 | **Microsoft Visual C++ Redistributable (x64)** | `whisper-cli.exe` is a native build and needs `vcruntime140.dll` / `msvcp140.dll` | Install once: <https://aka.ms/vs/17/release/vc_redist.x64.exe> |
-| At least one LLM API key (Groq / Cerebras / OpenRouter / Google / Mistral) | Viral-segment detection + hook/CTA text (auto fallback chain) | any one |
+| Google AI Studio API key (`GEMINI_API_KEY`) | Viral-segment detection + hook/CTA text (2-slot fallback chain) | required |
 
 FFmpeg is **not** a manual install — `ffmpeg-static` downloads a binary during
 `npm install` and `lib/ffmpeg.ts` resolves it automatically.
@@ -51,7 +51,7 @@ Then edit `.env.local`. Minimum for a first run:
 ```ini
 MONGODB_URI=mongodb://127.0.0.1:27017
 REDIS_URL=redis://127.0.0.1:6379
-GROQ_API_KEY=your-key              # or CEREBRAS_API_KEY / OPENROUTER_API_KEY / GEMINI_API_KEY / MISTRAL_API_KEY
+GEMINI_API_KEY=your-key
 ```
 
 ### All variables
@@ -60,13 +60,18 @@ GROQ_API_KEY=your-key              # or CEREBRAS_API_KEY / OPENROUTER_API_KEY / 
 |---|---|---|
 | `MONGODB_URI` | — | Use `127.0.0.1`, **not** `localhost`, if Docker/WSL2 resolves it to `::1`. |
 | `REDIS_URL` | — | Same note as above. |
-| `GROQ_API_KEY` | off | Groq — `qwen/qwen3.8-27b`, `openai/gpt-oss-120b`, `openai/gpt-oss-20b` (3 slots). Llama models left Groq's free plan in 2026. |
-| `GEMINI_API_KEY` | off | Google AI Studio — `gemini-3.6-flash` + `gemini-3.8-flash` (2 slots, separate daily pools, 1M context). |
-| `OPENROUTER_API_KEY` | off | OpenRouter — `qwen/qwen3.8-27b:free`, `openai/gpt-oss-120b:free`, `meta-llama/llama-3.3-70b-instruct:free` (3 slots, 50 RPD each free). |
-| `CEREBRAS_API_KEY` | off | Cerebras — `gpt-oss-120b` (1 slot, 1M tokens/day). |
-| `MISTRAL_API_KEY` | off | Mistral La Plateforme — `mistral-small-latest` (1 slot, free tier ~1 RPM). |
-| `NVIDIA_API_KEY` | off (optional) | NVIDIA NIM — `meta/llama-4-scout-17b-16e-instruct` (1 slot, 40 RPM free). |
-| — (no env var) | — | Chain order/models live in `LLM_PROVIDER_CHAIN` in `lib/llm.ts` — edit that array to reorder, add or remove providers. |
+| `GEMINI_API_KEY` | — | Google AI Studio — `gemini-3.6-flash` + `gemini-3.8-flash` (2 slots, separate daily pools, 1M context). **The only provider in the chain now.** |
+| — (no env var) | — | Chain order/models live in `LLM_PROVIDER_CHAIN` in `lib/llm.ts` — append an entry there to add a provider back. |
+
+> **Why the other providers were removed (2026-09-27):** live testing on this
+> machine showed Groq returns HTTP 413 on any transcript over ~5 minutes
+> (free per-minute INPUT token cap) plus constant 429s, Cerebras' free models
+> are PAID (402), Mistral's free tier 429s above ~1 RPM, and NVIDIA NIM
+> retires models (410 Gone) with recurring timeouts. Google AI Studio was the
+> only provider that reliably completed the viral-detection run, so the chain
+> now runs on its two Flash models (separate daily pools = 503 redundancy).
+> The old `GROQ_API_KEY` / `CEREBRAS_API_KEY` / `MISTRAL_API_KEY` /
+> `NVIDIA_API_KEY` / `OPENROUTER_API_KEY` entries in `.env.local` are ignored.
 | `DEEPGRAM_API_KEY` / `DEEPGRAM_MODEL` | off (`nova-2`) | If set, Deepgram wins over local whisper.cpp. |
 | `WHISPER_CLI_PATH` | auto-detect | Overrides binary discovery. |
 | `WHISPER_MODEL_PATH` | auto-detect | Overrides model discovery (`models/ggml-*.bin`). |
@@ -171,8 +176,10 @@ and tells you exactly what to fix.
    Rendering then asks the LLM again to pick the most gripping moment inside the
    clip (a "suspense hook") - that moment is duplicated to the START of the clip.
 5. Rendering a clip enqueues a BullMQ job → the worker runs:
-   smart crop detection → FFmpeg (mirror + crop + colour + hook intro) → Remotion
-   (captions + hook/CTA overlays) → `generated-clips/{videoId}/{clipId}.mp4`.
+   speaker face tracking (the 9:16 crop window pans to follow the talking person)
+   → FFmpeg (mirror + animated crop + colour + hook intro with a dip-to-black
+   transition) → Remotion (captions + hook/CTA overlays)
+   → `generated-clips/{videoId}/{clipId}.mp4`.
 6. The dashboard plays the clip through `/api/media/...` (a normal HTTP origin, with
    HTTP Range support so seeking works).
 
@@ -376,8 +383,8 @@ lib/ai.ts                prompt templates + JSON parsing on top of the fallback 
 lib/startup-validation.ts the checks behind /startup-validation
 worker/index.ts          both BullMQ workers, graceful shutdown
 worker/processor.ts      per-clip orchestration
-worker/face-detector.ts  mirrored-frame sampling + crop window
-worker/ffmpeg-pipeline.ts hflip → crop → colour → scale → hook concat
+worker/face-detector.ts  mirrored-frame sampling + speaker face track
+worker/ffmpeg-pipeline.ts hflip → animated crop → colour → scale → hook concat (dip-to-black)
 worker/remotion-renderer.ts bundle (cached) → selectComposition → renderMedia
 remotion/                CaptionComposition + AnimatedWord + Hook/CTA overlays
 scripts/setup-whisper.*  binary + ggml model downloader (.mjs and .ps1)

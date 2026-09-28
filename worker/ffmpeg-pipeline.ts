@@ -2,10 +2,15 @@ import fs from 'fs';
 import path from 'path';
 import { AppError, toErrorMessage } from '../lib/errors';
 import { DEFAULT_FILTER_PRESETS } from '../lib/presets';
-import { ClipLayout } from '../lib/types';
 import { getVideoMetadata, runFfmpeg } from '../lib/ffmpeg';
 import { log } from '../lib/logger';
-import { FocusTimeline, Keyframe, SpeakerAnalysis, SplitTimeline } from './speaker-tracker';
+import {
+  LayoutPlan,
+  OUTPUT_HEIGHT,
+  OUTPUT_WIDTH,
+  buildSingleFilterParts,
+  buildSplitFilterComplex,
+} from './layout';
 
 export interface ProcessSegmentOptions {
   sourceVideoPath: string;
@@ -16,9 +21,15 @@ export interface ProcessSegmentOptions {
   /** Where in the clip (seconds, relative to the clip start) the hook intro is cut from. 0 = the first N seconds (legacy behaviour). */
   hookStart: number;
   filterPresetId: string;
-  /** Active-speaker crop timelines for the chosen layout. */
-  speakerAnalysis: SpeakerAnalysis;
-  layout: ClipLayout;
+  /**
+   * The rendering plan built from the ASD result: either a single time-varying
+   * 9:16 window following the active speaker, or an adaptive 2/3/4-person
+   * split-screen grid. Drives the pass-1 filter chain.
+   */
+  plan: LayoutPlan;
+  /** Mirrored source size (expression clamping bounds). */
+  sourceWidth: number;
+  sourceHeight: number;
   /** fps the Remotion composition will use; the intermediate is normalised to it. */
   targetFps: number;
   /** False when the source has no audio stream -> a silent track is muxed in. */
@@ -84,109 +95,6 @@ export function computeOutputSize(cropWidth: number, cropHeight: number): { widt
   return { width: MAX_OUTPUT_WIDTH, height: MAX_OUTPUT_HEIGHT };
 }
 
-/**
- * Build a piecewise-LINEAR ffmpeg expression from timeline keyframes, e.g.
- * `max(0,min(1000,if(lt(t,2.5), 100+20*(t-2), ...)))`. The crop filter
- * re-evaluates x/y every frame, so this is what makes the 9:16 window glide
- * between speakers instead of jumping.
- *
- * The result is meant to be embedded inside single quotes
- * (`crop=w:h:x='EXPR':y=0`) - the quotes protect the commas from the
- * filtergraph parser, so no comma escaping is needed.
- */
-export function buildPiecewiseExpression(keyframes: Keyframe[], clampMax: number): string {
-  // Deduplicate/sort and collapse zero-length spans (they would divide by zero).
-  // Same time AND same place -> keep the later value. Same time but different
-  // place (a step) -> give the old value a 20ms hold so the gap stays positive
-  // and the expression keeps interpolating between the two positions.
-  const sorted = [...keyframes].sort((a, b) => a.t - b.t);
-  const clean: Keyframe[] = [];
-  for (const kf of sorted) {
-    const prev = clean[clean.length - 1];
-    if (prev && kf.t - prev.t < 0.02) {
-      if (Math.abs(kf.v - prev.v) <= 10) {
-        clean[clean.length - 1] = kf;
-      } else {
-        const floor = clean.length >= 2 ? clean[clean.length - 2].t + 1e-3 : 0;
-        prev.t = Math.max(floor, kf.t - 0.02);
-        clean.push(kf);
-      }
-    } else {
-      clean.push(kf);
-    }
-  }
-
-  const max = Math.max(0, clampMax);
-  if (clean.length === 0) return `0`;
-  if (clean.length === 1) return `max(0,min(${max},${clean[0].v.toFixed(2)}))`;
-
-  let expr = clean[clean.length - 1].v.toFixed(2);
-  for (let i = clean.length - 2; i >= 0; i -= 1) {
-    const a = clean[i];
-    const b = clean[i + 1];
-    const slope = (b.v - a.v) / Math.max(0.02, b.t - a.t);
-    const lerp = `${a.v.toFixed(2)}+${slope.toFixed(2)}*(t-${a.t.toFixed(3)})`;
-    expr = `if(lt(t,${b.t.toFixed(3)}),${lerp},${expr})`;
-  }
-  return `max(0,min(${max},${expr}))`;
-}
-
-/**
- * `crop` filter for the speaker-focus layout: a 9:16 window that slides along
- * the source, following the active speaker. Coordinates are in MIRRORED space
- * (the chain runs `hflip` before this crop - see processVideoSegment).
- */
-export function buildFocusCropFilter(
-  focus: FocusTimeline,
-  sourceWidth: number,
-  sourceHeight: number
-): string {
-  const maxX = Math.max(0, sourceWidth - focus.cropW);
-  const maxY = Math.max(0, sourceHeight - focus.cropH);
-  if (focus.axis === 'x') {
-    const expr = buildPiecewiseExpression(focus.keyframes, maxX);
-    return `crop=${focus.cropW}:${focus.cropH}:x='${expr}':y=${Math.round(maxY / 2)}`;
-  }
-  const expr = buildPiecewiseExpression(focus.keyframes, maxY);
-  return `crop=${focus.cropW}:${focus.cropH}:x=${Math.round(maxX / 2)}:y='${expr}'`;
-}
-
-/**
- * Full `-filter_complex` graph for the split-screen layout: two stacked panes,
- * each a sliding crop around one tracked speaker (active speaker on top),
- * vstacked into the 1080x1920 canvas.
- */
-export function buildSplitFilterComplex(
-  split: SplitTimeline,
-  sourceWidth: number,
-  sourceHeight: number,
-  tailFilters = 'format=yuv420p'
-): string {
-  const maxX = Math.max(0, sourceWidth - split.cropW);
-  const maxY = Math.max(0, sourceHeight - split.cropH);
-  const xTop = buildPiecewiseExpression(split.top.map((k) => ({ t: k.t, v: k.x })), maxX);
-  const yTop = buildPiecewiseExpression(split.top.map((k) => ({ t: k.t, v: k.y })), maxY);
-  const xBottom = buildPiecewiseExpression(split.bottom.map((k) => ({ t: k.t, v: k.x })), maxX);
-  const yBottom = buildPiecewiseExpression(split.bottom.map((k) => ({ t: k.t, v: k.y })), maxY);
-  const tail = tailFilters.trim() ? `,${tailFilters.trim()}` : '';
-
-  return [
-    `[0:v]hflip,split=2[sa][sb]`,
-    `[sa]crop=${split.cropW}:${split.cropH}:x='${xTop}':y='${yTop}',scale=1080:960:flags=lanczos[spTop]`,
-    `[sb]crop=${split.cropW}:${split.cropH}:x='${xBottom}':y='${yBottom}',scale=1080:960:flags=lanczos[spBottom]`,
-    `[spTop][spBottom]vstack=inputs=2${tail}[vout]`,
-  ].join(';');
-}
-
-/**
- * The concat demuxer treats `'` specially, and Windows paths contain backslashes it
- * also interprets. Forward slashes + single-quote escaping covers both.
- */
-function concatListEntry(filePath: string): string {
-  const normalized = filePath.replace(/\\/g, '/');
-  return `file '${normalized.replace(/'/g, "'\\''")}'`;
-}
-
 function assertUsableFile(filePath: string, step: string): void {
   if (!fs.existsSync(filePath)) {
     throw new AppError(`FFmpeg finished "${step}" without creating ${filePath}.`, {
@@ -213,8 +121,9 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
     hookDuration,
     hookStart,
     filterPresetId,
-    speakerAnalysis,
-    layout,
+    plan,
+    sourceWidth,
+    sourceHeight,
     targetFps,
     sourceHasAudio,
     onProgress,
@@ -239,17 +148,10 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
 
   const segmentDuration = end - start;
   const fps = normalizeFps(targetFps);
-  const focus = speakerAnalysis.focus;
-  const { width: outWidth, height: outHeight } = computeOutputSize(focus.cropW, focus.cropH);
-
-  if (outWidth < 16 || outHeight < 16 || !focus.keyframes.length) {
-    throw new AppError('Cannot build the FFmpeg filter chain without a valid crop timeline.', {
-      status: 400,
-      details: `layout=${layout}, focusKeyframes=${focus.keyframes.length}, output=${outWidth}x${outHeight}`,
-      resolution:
-        'The speaker tracker produced no usable crop timeline - re-run the render, and check the [SpeakerTracker] lines in the worker log.',
-    });
-  }
+  // The output canvas is ALWAYS the full 1080x1920 composition canvas - both
+  // layout modes tile it exactly, so Remotion does a 1:1 blit with no bars.
+  const outWidth = OUTPUT_WIDTH;
+  const outHeight = OUTPUT_HEIGHT;
 
   const tempDir = path.dirname(outputPath);
   if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
@@ -257,7 +159,6 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
   const baseName = path.basename(outputPath, '.mp4');
   const processedBaseClip = path.join(tempDir, `${baseName}_base.mp4`);
   const hookIntroClip = path.join(tempDir, `${baseName}_hook_intro.mp4`);
-  const concatListPath = path.join(tempDir, `${baseName}_concat.txt`);
 
   // Shared encoder settings. `+global_header` keeps SPS/PPS in the avcC box
   // (standard for MP4, needed by the compositor's strict MP4 parser).
@@ -299,62 +200,57 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
     if (colorFilterStr === 'null' || colorFilterStr === '') colorFilterStr = '';
 
     /**
-     * Order matters: `hflip` runs BEFORE the crop, so every crop coordinate
-     * (including the animated speaker-tracking expressions) lives in MIRRORED
-     * space - worker/speaker-tracker.ts samples frames with `hflip` already
-     * applied, which is what keeps the window on the subject.
+     * Order matters: `hflip` runs BEFORE `crop`, so the crop coordinates must be
+     * expressed in MIRRORED space. worker/frame-sampler.ts samples frames with
+     * `hflip` already applied, which is what makes the crop expressions line up
+     * with the tracked people.
      *
-     * speaker-focus: one 9:16 sliding crop scaled up to the canvas.
-     * split-screen: two sliding crops stacked, each pane 1080x960.
+     * The plan decides the geometry:
+     *  - single  -> one time-varying 9:16 window following the active speaker
+     *  - split   -> a 2/3/4-person grid, each cell tracking its own person
      */
-    const useSplit = layout === 'split-screen';
-    let filterArgs: string[];
-    let videoMap: string;
-
-    if (useSplit) {
-      const tail = [colorFilterStr, 'format=yuv420p'].filter(Boolean).join(',');
-      filterArgs = [
-        '-filter_complex',
-        buildSplitFilterComplex(
-          speakerAnalysis.split,
-          speakerAnalysis.sourceWidth,
-          speakerAnalysis.sourceHeight,
-          tail
-        ),
-      ];
-      videoMap = '[vout]';
-    } else {
-      const filterParts = [
-        'hflip',
-        buildFocusCropFilter(focus, speakerAnalysis.sourceWidth, speakerAnalysis.sourceHeight),
-        ...(colorFilterStr ? [colorFilterStr] : []),
-        `scale=${outWidth}:${outHeight}:flags=lanczos`,
-        'format=yuv420p',
-      ];
-      filterArgs = ['-vf', filterParts.join(',')];
-      videoMap = '0:v:0';
-    }
-
     log.detail(
       `Pass 1/3 · base clip ${start}s → ${end}s ` +
-        `(dur=${segmentDuration.toFixed(2)}s, fps=${fps}, layout=${layout}, out=${outWidth}x${outHeight}, audio=${sourceHasAudio ? 'source' : 'silent'})`
+      `(dur=${segmentDuration.toFixed(2)}s, fps=${fps}, out=${outWidth}x${outHeight}, ` +
+      `layout=${plan.mode}${plan.mode === 'split' ? ` (${plan.cells.length} cells)` : ''}, ` +
+      `audio=${sourceHasAudio ? 'source' : 'silent'})`
     );
     if (onProgress) onProgress(10);
 
-    const pass1Args = [
-      '-y',
-      '-hide_banner',
-      '-loglevel', 'error',
-      '-stats',
-      ...inputArgs,
-      ...filterArgs,
-      '-map', videoMap,
-      '-map', `${audioInputIndex}:a:0`,
-      ...videoArgs,
-      ...audioArgs,
-      ...(sourceHasAudio ? [] : ['-shortest']),
-      processedBaseClip,
-    ];
+    let pass1Args: string[];
+    if (plan.mode === 'single') {
+      const filterParts = buildSingleFilterParts(plan, sourceWidth, sourceHeight, outWidth, outHeight, colorFilterStr);
+      pass1Args = [
+        '-y',
+        '-hide_banner',
+        '-loglevel', 'error',
+        '-stats',
+        ...inputArgs,
+        '-vf', filterParts.join(','),
+        '-map', '0:v:0',
+        '-map', `${audioInputIndex}:a:0`,
+        ...videoArgs,
+        ...audioArgs,
+        ...(sourceHasAudio ? [] : ['-shortest']),
+        processedBaseClip,
+      ];
+    } else {
+      const graph = buildSplitFilterComplex(plan, sourceWidth, sourceHeight, fps, segmentDuration, colorFilterStr);
+      pass1Args = [
+        '-y',
+        '-hide_banner',
+        '-loglevel', 'error',
+        '-stats',
+        ...inputArgs,
+        '-filter_complex', graph,
+        '-map', '[vout]',
+        '-map', `${audioInputIndex}:a:0`,
+        ...videoArgs,
+        ...audioArgs,
+        ...(sourceHasAudio ? [] : ['-shortest']),
+        processedBaseClip,
+      ];
+    }
 
     await runFfmpeg(pass1Args, {
       label: 'trim+mirror+crop+color',
@@ -374,10 +270,15 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
 
       // Re-encode (not `-c copy`) so the hook intro starts on a keyframe and its
       // encoder parameters are byte-identical to the base clip -> clean concat.
-      // `hookStart` is the (LLM-detected) most gripping moment of the clip; 0
-      // keeps the legacy behaviour of duplicating the first N seconds.
-      // Clamp: the hook window must fit inside the base clip.
-      const hookOffset = Math.max(0, Math.min(Number(hookStart) || 0, actualHookDur));
+      // `hookStart` is the gripping moment the clip was built around (from the
+      // viral prompt's hookLineStart); 0 keeps the legacy behaviour of
+      // duplicating the first N seconds.
+      // Clamp: the hook window must fit INSIDE the base clip, i.e. the offset
+      // is bounded by clip length MINUS the hook length (clamping to the hook
+      // length itself used to force every hook onto seconds 0-3 regardless of
+      // where the gripping moment actually was).
+      const maxOffset = Math.max(0, segmentDuration - actualHookDur);
+      const hookOffset = Math.max(0, Math.min(Number(hookStart) || 0, maxOffset));
       const hookExtractArgs = [
         '-y',
         '-hide_banner',
@@ -395,28 +296,40 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
       await runFfmpeg(hookExtractArgs, { label: 'hook-intro' });
       assertUsableFile(hookIntroClip, 'hook intro extraction');
 
-      log.detail('Pass 3/3 · concatenating hook intro + base clip (re-encode)');
+      log.detail(
+        `Pass 3/3 · concatenating hook + base with a dip-to-black transition (re-encode)`
+      );
       if (onProgress) onProgress(70);
 
-      fs.writeFileSync(
-        concatListPath,
-        `${concatListEntry(hookIntroClip)}\n${concatListEntry(processedBaseClip)}\n`,
-        'utf-8'
-      );
-
       // RE-ENCODE, do not stream-copy: stitching two independently encoded MP4s
-      // with `-c copy` produces a file whose second segment's sample table /
-      // timestamps are only good enough for ffmpeg itself. Remotion's compositor
-      // (its own strict MP4 parser) then fails with "No frame found at position N"
-      // for every frame after the hook segment. A fresh CFR encode guarantees one
-      // clean, contiguous frame timeline. Cost: a few extra seconds.
+      // with `-c copy` produced a file whose second segment timestamps Remotion's
+      // compositor could not read ("No frame found at position N").
+      //
+      // The join also gets a short dip-to-black (video fade out/in + audio
+      // afade) so the leap from the hook moment back to the start of the clip
+      // reads as an intentional beat instead of a hard cut. A dip - not a
+      // crossfade - keeps the total duration EXACTLY hook + base, so the
+      // caption timeline (which assumes that sum) stays in sync.
+      const fadeDur = Math.min(0.4, actualHookDur / 2);
+      const fadeSt = Math.max(0, actualHookDur - fadeDur);
+
       const concatArgs = [
         '-y',
         '-hide_banner',
         '-loglevel', 'error',
-        '-f', 'concat',
-        '-safe', '0',
-        '-i', concatListPath,
+        '-i', hookIntroClip,
+        '-i', processedBaseClip,
+        '-filter_complex',
+        [
+          `[0:v]fade=t=out:st=${fadeSt.toFixed(3)}:d=${fadeDur.toFixed(3)},format=yuv420p[v0]`,
+          `[1:v]fade=t=in:st=0:d=${fadeDur.toFixed(3)}[v1]`,
+          '[v0][v1]concat=n=2:v=1:a=0[v]',
+          `[0:a]afade=t=out:st=${fadeSt.toFixed(3)}:d=${fadeDur.toFixed(3)}[a0]`,
+          `[1:a]afade=t=in:st=0:d=${fadeDur.toFixed(3)}[a1]`,
+          '[a0][a1]concat=n=2:v=0:a=1[a]',
+        ].join(';'),
+        '-map', '[v]',
+        '-map', '[a]',
         ...videoArgs,
         ...audioArgs,
         outputPath,
@@ -449,7 +362,7 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
         'Inspect the FFmpeg command in the worker log, verify the source clip exists and the crop window is inside the frame, and retry.',
     });
   } finally {
-    for (const temp of [processedBaseClip, hookIntroClip, concatListPath]) {
+    for (const temp of [processedBaseClip, hookIntroClip]) {
       try {
         if (fs.existsSync(temp)) fs.unlinkSync(temp);
       } catch {

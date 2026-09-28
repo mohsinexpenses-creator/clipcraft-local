@@ -2,14 +2,17 @@ import fs from 'fs';
 import path from 'path';
 import { getCaptionPreset, getClip, getOverlayStylePreset, getVideo, saveClip } from '../lib/db';
 import { AppError, toErrorMessage } from '../lib/errors';
-import { detectHookMoment } from '../lib/ai';
+
 import { getVideoMetadata } from '../lib/ffmpeg';
-import { ClipRecord, JobData, OverlayStylePreset } from '../lib/types';
+import { CaptionEngine, ClipLayout, ClipRecord, JobData, OverlayStylePreset } from '../lib/types';
 import { DEFAULT_OVERLAY_STYLE_PRESETS } from '../lib/presets';
-import { analyzeSpeakers } from './speaker-tracker';
+import { detectFaceTrack } from './frame-sampler';
+import { detectSpeakerTimeline } from './asd';
+import { LayoutPlan, buildLayoutPlan, buildSinglePlan } from './layout';
 import { color, log } from '../lib/logger';
 import { normalizeFps, processVideoSegment } from './ffmpeg-pipeline';
-import { renderCaptionsAndOverlays } from './remotion-renderer';
+import { renderNativeCaptions } from './native-captions';
+import { renderCaptionsAndOverlays, type RenderCaptionsResult } from './remotion-renderer';
 
 /** How far either side of the window we still accept transcript words. */
 const WORD_SLACK_SECONDS = 0.5;
@@ -30,18 +33,24 @@ function deriveOverlayText(words: Array<{ word: string }>, maxWords: number, fal
   return text || fallback;
 }
 
-/** Load an overlay style preset, falling back to the shipped default for its kind. */
-async function resolveOverlayStyle(kind: 'hook' | 'cta', presetId?: string): Promise<OverlayStylePreset> {
+/**
+ * Resolve an overlay STYLE preset id to a full preset. Missing/unknown ids fall
+ * back to the seeded default for that overlay kind - a render never fails just
+ * because a style was deleted.
+ */
+async function resolveOverlayStyle(
+  id: string | undefined,
+  kind: 'hook' | 'cta'
+): Promise<OverlayStylePreset> {
   const fallback =
     DEFAULT_OVERLAY_STYLE_PRESETS.find((p) => p.kind === kind && p.isDefault) ??
     DEFAULT_OVERLAY_STYLE_PRESETS.find((p) => p.kind === kind)!;
-
-  if (presetId) {
+  if (id) {
     try {
-      const preset = await getOverlayStylePreset(presetId);
+      const preset = await getOverlayStylePreset(id);
       if (preset && preset.kind === kind) return preset;
-    } catch (error) {
-      log.warn(`Overlay style "${presetId}" could not be loaded: ${toErrorMessage(error)}`);
+    } catch {
+      // fall through to the default below
     }
   }
   return fallback;
@@ -62,9 +71,7 @@ export async function processClipJob(
     ctaDuration,
     filterPreset,
     captionPresetId,
-    layout,
-    hookStylePresetId,
-    ctaStylePresetId,
+    captionEngine,
   } = jobData;
 
   log.section(
@@ -107,9 +114,15 @@ export async function processClipJob(
   await saveClip(clip);
   await reportProgress(5);
 
-  const outputDir = path.join(process.cwd(), 'generated-clips', videoId);
+  // Output folder mirrors the uploaded video's stored name (e.g. 001_my_recording);
+  // pre-convention uploads fall back to the video id.
+  const outputBase = video.fileBase || videoId;
+  const outputDir = path.join(process.cwd(), 'generated-clips', outputBase);
+  // Intermediate keeps the stable clip id; the FINAL file is named after the
+  // clip's title: generated-clips/001_my_recording/<clip title>.mp4
   const intermediateVideoPath = path.join(outputDir, `${clipId}_processed.mp4`);
-  const finalVideoPath = path.join(outputDir, `${clipId}.mp4`);
+  const clipFileBase = sanitizeClipFileName(clip.title) || clipId;
+  const finalVideoPath = uniqueClipPath(outputDir, clipFileBase);
 
   try {
     if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
@@ -166,52 +179,93 @@ export async function processClipJob(
     }
     const safeHookDuration = Math.min(resolvedHookDuration, segmentDuration / 2);
 
-    // Suspense hook: find the most gripping moment INSIDE the clip and duplicate
-    // that moment to the start (the viewer sees the best beat first, then watches
-    // the clip build back up to it). Falls back to the first N seconds when no
-    // LLM provider can answer.
-    const hookMoment = await detectHookMoment({
-      words: clipWords,
-      segmentDuration,
-      hookDuration: safeHookDuration,
-    });
-    const hookStart = hookMoment
-      ? Math.max(0, Math.min(hookMoment.start, Math.max(0, segmentDuration - safeHookDuration)))
-      : 0;
-    if (hookMoment && hookStart > 0.05) {
+    // Suspense hook: duplicate the gripping moment INSIDE the clip to the
+    // start (the viewer sees the best beat first, then watches the clip build
+    // back up to it).
+    //
+    // The moment comes from the VIRAL DETECTION prompt, which already returns
+    // the hook line's transcript timestamps (hookLineStart/hookLineEnd) for
+    // every clip. Calling a second LLM here to "re-discover" the moment was
+    // pure waste (an extra ~10s + tokens per render) and could even pick a
+    // DIFFERENT moment than the one the clip was packaged around - so it is
+    // gone. Clips created before that data existed fall back to the first N
+    // seconds.
+    const hookLineStartAbs = Number.isFinite(clip.hookLineStart)
+      ? (clip.hookLineStart as number)
+      : undefined;
+    const hookStart =
+      hookLineStartAbs !== undefined
+        ? Math.max(0, Math.min(hookLineStartAbs - start, Math.max(0, segmentDuration - safeHookDuration)))
+        : 0;
+    if (hookLineStartAbs !== undefined && hookStart > 0.05) {
+      const hookLineEndAbs = Number.isFinite(clip.hookLineEnd) ? (clip.hookLineEnd as number) : hookLineStartAbs;
       log.ok(
-        `Hook moment: ${hookMoment.start.toFixed(1)}s → ${hookMoment.end.toFixed(1)}s` +
-        (hookMoment.reason ? `  (${hookMoment.reason})` : '')
+        `Hook moment (from viral prompt): ${hookLineStartAbs.toFixed(1)}s → ${hookLineEndAbs.toFixed(1)}s` +
+        (clip.hookLine ? `  ("${clip.hookLine}")` : '')
       );
-    } else if (hookMoment) {
-      log.detail('Hook moment: first seconds of the clip');
     } else if (safeHookDuration > 0) {
-      log.warn('Hook moment auto-detection unavailable - duplicating the first N seconds.');
+      log.detail('No hook line timestamps on this clip - duplicating the first N seconds.');
     }
 
-    log.step('Step 1/3 · Active-speaker tracking (YuNet)');
-    const clipLayout = layout === 'split-screen' ? 'split-screen' : 'speaker-focus';
-    const speakerAnalysis = await analyzeSpeakers({
-      videoPath: video.filePath,
-      start,
-      duration: segmentDuration,
-      videoWidth: sourceMeta.width,
-      videoHeight: sourceMeta.height,
-      hasAudio: sourceMeta.hasAudio,
-    });
+    log.step('Step 1/3 · Face tracking + active speaker detection');
+    const layout: ClipLayout = jobData.layout === 'split-screen' ? 'split-screen' : 'speaker-focus';
+    clip.layout = layout;
 
-    clip.layout = clipLayout;
-    clip.cropData = {
-      x: Math.round(speakerAnalysis.focus.keyframes[0]?.v ?? 0),
-      y: 0,
-      width: speakerAnalysis.focus.cropW,
-      height: speakerAnalysis.focus.cropH,
-    };
+    let plan: LayoutPlan;
+    try {
+      const asd = await detectSpeakerTimeline(
+        video.filePath,
+        start,
+        segmentDuration,
+        sourceMeta.width,
+        sourceMeta.height,
+        { hasAudio: sourceMeta.hasAudio }
+      );
+      plan = buildLayoutPlan(asd, layout, sourceMeta.width, sourceMeta.height);
+      if (asd.tracks.length === 0) {
+        log.warn('No faces detected in the clip - using a static centred 9:16 crop.');
+      }
+    } catch (error) {
+      // Defensive: if ASD cannot run at all (no ffmpeg frames, bad audio...),
+      // fall back to the legacy single-track smart crop so the render still works.
+      log.warn(`Speaker detection failed (${toErrorMessage(error)}) - using the legacy face track.`);
+      const legacy = await detectFaceTrack(
+        video.filePath,
+        start,
+        segmentDuration,
+        sourceMeta.width,
+        sourceMeta.height
+      );
+      plan = {
+        ...buildSinglePlan(
+          { tracks: [], speakerSegments: [], speakerCount: 0, method: 'skin+audio', hasLandmarks: false, hasAudio: false, maxFacesSeen: 0, framesUsed: 0, framesTotal: 0, sampleFps: 0, voicedRatio: 0 },
+          sourceMeta.width,
+          sourceMeta.height,
+          0.5
+        ),
+        // Legacy behaviour: X pans along the tracked face, Y stays centred.
+        points: legacy.points.map((pt) => ({ t: pt.t, x: pt.x, y: sourceMeta.height / 2 })),
+        cropW: legacy.cropW,
+        cropH: legacy.cropH,
+        faceAnchorY: 0.5,
+      };
+    }
+
+    if (plan.mode === 'single') {
+      clip.cropData = {
+        x: 0,
+        y: 0,
+        width: plan.cropW,
+        height: plan.cropH,
+      };
+    }
     clip.progress = 20;
     await saveClip(clip);
     await reportProgress(20);
 
-    log.step('Step 2/3 · FFmpeg mirror + speaker-tracking crop + colour + hook intro');
+    log.step(
+      `Step 2/3 · FFmpeg mirror + ${plan.mode === 'split' ? `split-screen (${plan.cells.length})` : 'speaker crop'} + colour + hook intro`
+    );
     await processVideoSegment({
       sourceVideoPath: video.filePath,
       outputPath: intermediateVideoPath,
@@ -220,8 +274,9 @@ export async function processClipJob(
       hookDuration: safeHookDuration,
       hookStart,
       filterPresetId: filterPreset,
-      speakerAnalysis,
-      layout: clipLayout,
+      plan,
+      sourceWidth: sourceMeta.width,
+      sourceHeight: sourceMeta.height,
       targetFps: renderFps,
       sourceHasAudio: sourceMeta.hasAudio,
       onProgress: (progress) => {
@@ -247,6 +302,12 @@ export async function processClipJob(
       });
     }
 
+    // Caption engine: explicit job payload wins, then the persisted clip
+    // choice, then the (slow but smoothest) Remotion default.
+    const engine: CaptionEngine = (captionEngine ?? clip.captionEngine ?? 'remotion') === 'native'
+      ? 'native'
+      : 'remotion';
+
     // hookDuration 0 means the hook intro/overlay was turned off for this clip
     // (detection ran with the hook-text switch off) - don't derive text that
     // would only be ignored by the overlay.
@@ -262,38 +323,76 @@ export async function processClipJob(
       log.warn(`No hook text supplied - derived "${resolvedHookText}" from the transcript.`);
     }
 
-    const resolvedCtaText =
-      ctaText?.trim() || clip.ctaText?.trim() || deriveOverlayText(clipWords.slice(-10), 8, 'FOLLOW FOR MORE');
-    if (!ctaText?.trim() && !clip.ctaText?.trim()) {
+    // ctaDuration 0 means the CTA card was turned off for this clip (detection
+    // ran with the CTA switch off) - don't derive text that would only be
+    // ignored by the overlay. An explicit job-payload ctaDuration > 0 re-enables
+    // it for a re-render.
+    const rawCtaDuration = Number.isFinite(ctaDuration)
+      ? (ctaDuration as number)
+      : (clip.ctaDuration ?? 2.5);
+    const ctaOverlayEnabled = rawCtaDuration > 0;
+    const resolvedCtaText = !ctaOverlayEnabled
+      ? ''
+      : ctaText?.trim() || clip.ctaText?.trim() || deriveOverlayText(clipWords.slice(-10), 8, 'FOLLOW FOR MORE');
+    if (!ctaOverlayEnabled) {
+      log.detail('CTA overlay disabled for this clip (ctaDuration=0) - rendering without CTA text.');
+    } else if (!ctaText?.trim() && !clip.ctaText?.trim()) {
       log.warn(`No CTA text supplied - derived "${resolvedCtaText}" from the transcript.`);
     }
 
-    const resolvedCtaDuration =
-      Number.isFinite(ctaDuration) && (ctaDuration ?? 0) > 0
-        ? (ctaDuration as number)
-        : (clip.ctaDuration ?? 2.5);
+    const resolvedCtaDuration = ctaOverlayEnabled ? rawCtaDuration : 0;
 
-    log.step(`Step 3/3 · Remotion captions & overlays  ${color.gray(`(${clipWords.length} words, preset "${preset.name}")`)}`);
-    const renderResult = await renderCaptionsAndOverlays({
-      videoPath: intermediateVideoPath,
-      outputPath: finalVideoPath,
-      hookText: resolvedHookText,
-      hookDuration: safeHookDuration,
-      hookStart,
-      ctaText: resolvedCtaText,
-      ctaDuration: resolvedCtaDuration,
-      words: clipWords,
-      preset,
-      hookStyle: await resolveOverlayStyle('hook', hookStylePresetId ?? clip.hookStylePresetId),
-      ctaStyle: await resolveOverlayStyle('cta', ctaStylePresetId ?? clip.ctaStylePresetId),
-      onProgress: (progress) => {
-        clip.progress = Math.max(clip.progress ?? 0, Math.round(progress));
-        void saveClip(clip).catch((error) =>
-          log.warn('progress save failed: ' + toErrorMessage(error))
-        );
-        void reportProgress(progress);
-      },
-    });
+    // Overlay STYLE presets (font/colors/card/animation) - per clip, falling
+    // back to the seeded defaults. The TEXT above stays prompt-generated.
+    const hookStyle = await resolveOverlayStyle(
+      jobData.hookStylePresetId ?? clip.hookStylePresetId,
+      'hook'
+    );
+    const ctaStyle = await resolveOverlayStyle(
+      jobData.ctaStylePresetId ?? clip.ctaStylePresetId,
+      'cta'
+    );
+
+    log.step(
+      `Step 3/3 · Captions & overlays  ${color.gray(`(${engine === 'native' ? 'native FFmpeg ASS burn' : 'Remotion'}, ` +
+      `${clipWords.length} words, preset "${preset.name}")`)}`
+    );
+    const progressSink = (progress: number): void => {
+      clip.progress = Math.max(clip.progress ?? 0, Math.round(progress));
+      void saveClip(clip).catch((error) =>
+        log.warn('progress save failed: ' + toErrorMessage(error))
+      );
+      void reportProgress(progress);
+    };
+
+    const renderResult: RenderCaptionsResult =
+      engine === 'native'
+        ? await renderNativeCaptions({
+            videoPath: intermediateVideoPath,
+            outputPath: finalVideoPath,
+            hookText: resolvedHookText,
+            hookDuration: safeHookDuration,
+            hookStart,
+            ctaText: resolvedCtaText,
+            ctaDuration: resolvedCtaDuration,
+            words: clipWords,
+            preset,
+            onProgress: progressSink,
+          })
+        : await renderCaptionsAndOverlays({
+            videoPath: intermediateVideoPath,
+            outputPath: finalVideoPath,
+            hookText: resolvedHookText,
+            hookDuration: safeHookDuration,
+            hookStart,
+            ctaText: resolvedCtaText,
+            ctaDuration: resolvedCtaDuration,
+            words: clipWords,
+            preset,
+            hookStyle,
+            ctaStyle,
+            onProgress: progressSink,
+          });
 
     try {
       if (fs.existsSync(intermediateVideoPath)) fs.unlinkSync(intermediateVideoPath);
@@ -306,10 +405,11 @@ export async function processClipJob(
     clip.hookText = resolvedHookText;
     clip.ctaText = resolvedCtaText;
     clip.ctaDuration = resolvedCtaDuration;
-    clip.hookStylePresetId = hookStylePresetId ?? clip.hookStylePresetId;
-    clip.ctaStylePresetId = ctaStylePresetId ?? clip.ctaStylePresetId;
     clip.captionPreset = preset;
-    clip.outputPath = `/generated-clips/${videoId}/${clipId}.mp4`;
+    clip.captionEngine = engine;
+    clip.hookStylePresetId = hookStyle._id;
+    clip.ctaStylePresetId = ctaStyle._id;
+    clip.outputPath = `/generated-clips/${outputBase}/${path.basename(finalVideoPath)}`;
     clip.outputFileSize = renderResult.fileSizeBytes;
     clip.outputFps = renderResult.fps;
     clip.error = undefined;
@@ -332,4 +432,31 @@ export async function processClipJob(
     );
     throw error;
   }
+}
+
+/**
+ * Turn a clip title into a safe file name (Windows + macOS friendly):
+ * characters illegal in file names become spaces, whitespace is collapsed,
+ * and the result is capped at 80 chars so long LLM titles cannot overflow
+ * path limits. Returns '' when nothing usable remains (caller falls back
+ * to the clip id).
+ */
+function sanitizeClipFileName(title: string | undefined): string {
+  if (!title) return '';
+  const cleaned = title
+    .replace(/[\/\\:*?"<>|\u0000-\u001f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned.slice(0, 80).trim();
+}
+
+/** Same-title clips must not overwrite each other: append -2, -3, ... if needed. */
+function uniqueClipPath(dir: string, base: string): string {
+  let candidate = path.join(dir, `${base}.mp4`);
+  let suffix = 2;
+  while (fs.existsSync(candidate)) {
+    candidate = path.join(dir, `${base}-${suffix}.mp4`);
+    suffix += 1;
+  }
+  return candidate;
 }

@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { getClip, listClips, saveClip } from '@/lib/db';
 import { AppError, toErrorMessage, toErrorStatus } from '@/lib/errors';
 import { enqueueClipJob } from '@/lib/queue';
-import { JobData } from '@/lib/types';
+import { CaptionEngine, ClipLayout, JobData } from '@/lib/types';
 
 export async function GET(request: Request) {
   try {
@@ -36,7 +36,8 @@ export async function POST(request: Request) {
     const filterPreset = typeof body.filterPreset === 'string' ? body.filterPreset : 'vibrant';
     const captionPresetId =
       typeof body.captionPresetId === 'string' ? body.captionPresetId : 'preset-bold-yellow';
-    const layout = body.layout === 'split-screen' ? 'split-screen' : 'speaker-focus';
+    const layout: ClipLayout = body.layout === 'split-screen' ? 'split-screen' : 'speaker-focus';
+    const captionEngine: CaptionEngine = body.captionEngine === 'native' ? 'native' : 'remotion';
     const hookStylePresetIdRaw =
       typeof body.hookStylePresetId === 'string' && body.hookStylePresetId
         ? body.hookStylePresetId
@@ -93,6 +94,7 @@ export async function POST(request: Request) {
     existingClip.filterPreset = filterPreset;
     existingClip.captionPresetId = captionPresetId;
     existingClip.layout = layout;
+    existingClip.captionEngine = captionEngine;
     existingClip.hookStylePresetId = hookStylePresetIdRaw ?? existingClip.hookStylePresetId;
     existingClip.ctaStylePresetId = ctaStylePresetIdRaw ?? existingClip.ctaStylePresetId;
 
@@ -113,6 +115,7 @@ export async function POST(request: Request) {
       filterPreset: existingClip.filterPreset,
       captionPresetId: existingClip.captionPresetId,
       layout: existingClip.layout,
+      captionEngine: existingClip.captionEngine,
       hookStylePresetId: existingClip.hookStylePresetId,
       ctaStylePresetId: existingClip.ctaStylePresetId,
     };

@@ -17,10 +17,19 @@
  * without a (non-placeholder) key are skipped with a log line, and a chain
  * where every entry fails throws one clear error listing every attempt.
  *
- * No SDKs on purpose: Groq, Cerebras, OpenRouter and Mistral all expose an
- * OpenAI-compatible `/chat/completions` endpoint, and Google AI Studio has a
+ * No SDKs on purpose: every supported provider either exposes an
+ * OpenAI-compatible `/chat/completions` endpoint or (Google AI Studio) a
  * plain REST `generateContent` endpoint. Node 18+ global `fetch` is enough,
  * so the chain adds zero dependencies.
+ *
+ * Current chain (Sep 2026, after trimming every provider that proved
+ * uncapable in live use): Google AI Studio only, with two Flash models as
+ * separate daily-pool redundancy. Groq was removed (free per-minute INPUT
+ * cap -> HTTP 413 on any transcript over ~5 min, plus constant 429s),
+ * Cerebras (free models 402 PAID), Mistral (~1 RPM, 429 bursts) and NVIDIA
+ * NIM (models 410 Gone + timeouts) all failed in live use. To add a
+ * provider back, append an entry in the same shape - the rest of the file
+ * is provider-agnostic.
  */
 
 import { AppError, toErrorMessage } from "./errors";
@@ -60,61 +69,40 @@ export interface LlmProviderEntry {
 /**
  * THE FALLBACK CHAIN - tried in this exact order.
  *
- * Model ids below were re-verified against provider documentation, third-party
- * free-tier trackers and live API error responses as of 2026-09-25 (sources
- * cited per entry). The Llama
- * models from the original chain (llama-3.3-70b-versatile on Groq,
- * llama-3.1-8b-instant, llama-3.3-70b on Cerebras, gemini-2.0-flash-exp:free
- * on OpenRouter) are all GONE from their free tiers by September 2026 -
- * Groq's free plan dropped Llama entirely, and OpenRouter no longer has any
- * $0 Google/Mistral/DeepSeek models.
- *
- *   Tier 1  Groq (qwen3.8-27b, gpt-oss-120b) / Google AI Studio (gemini-3.6-flash)
- *   Tier 2  Google AI Studio (gemini-2.5-flash) / Cerebras (qwen-3-235b) / OpenRouter (qwen3.8-27b)
- *   Tier 3  OpenRouter (gpt-oss-120b, llama-3.3-70b) / Mistral (mistral-small)
- *   Tier 4  NVIDIA NIM (llama-3.3-70b, optional key) / Groq (gpt-oss-20b)
- *
- * Move entries up or down to change priority; delete an entry to stop using
- * it; add a new one with the same shape to introduce a provider.
+ * Trimmed to Google AI Studio on 2026-09-27 after live testing: every other
+ * free provider in the previous 13-slot chain failed on real workloads
+ * (Groq 413 on long transcripts + 429s, Cerebras 402, Mistral 429,
+ * NVIDIA NIM 410/timeouts, OpenRouter key unused). Both Flash models use
+ * the same GEMINI_API_KEY but draw from SEPARATE free daily pools, so the
+ * second slot is real redundancy against 503 high-demand spikes on one
+ * model. Add entries below to re-introduce providers.
  */
 export const LLM_PROVIDER_CHAIN: LlmProviderEntry[] = [
+  // {
+  //   id: "gemini-studio-3-5-lite",
+  //   provider: "Google AI Studio",
+  //   model: "gemini-3.5-flash-lite",
+  //   apiKeyEnv: "GEMINI_API_KEY",
+  //   kind: "gemini-native",
+  //   retries: 1,
+  // },
   {
-    // Groq free tier (Sep 2026): qwen3.8-27b is the best free chat model left
-    // on Groq after Llama was dropped from the free plan. 30 RPM / 1,000 RPD /
-    // 200K tokens per day, 131K context.
-    id: "groq-qwen3-8-27b",
-    provider: "Groq",
-    model: "qwen/qwen3.8-27b",
-    apiKeyEnv: "GROQ_API_KEY",
-    kind: "openai-compatible",
-    baseUrl: "https://api.groq.com/openai/v1",
-  },
-  {
-    // Confirmed live on AI Studio in 2026-09 (503 = high-demand spike, not a
-    // bad id). Gemini free tier: Flash models only since 2026-04-01, 1M context,
-    // ~1,500 RPD. Strong multilingual support (Urdu/Hindi content).
-    id: "gemini-studio-3-6",
+    id: "gemini-studio-3-1-lite",
     provider: "Google AI Studio",
-    model: "gemini-3.6-flash",
+    model: "gemini-3.1-flash-lite",
     apiKeyEnv: "GEMINI_API_KEY",
     kind: "gemini-native",
     retries: 1,
   },
   {
-    // Groq free tier (Sep 2026): 131K context, separate per-model rate pool
-    // from the qwen slot above.
-    id: "groq-gpt-oss-120b",
-    provider: "Groq",
-    model: "openai/gpt-oss-120b",
-    apiKeyEnv: "GROQ_API_KEY",
-    kind: "openai-compatible",
-    baseUrl: "https://api.groq.com/openai/v1",
+    id: "gemini-studio-2-5-lite",
+    provider: "Google AI Studio",
+    model: "gemini-2.5-flash-lite",
+    apiKeyEnv: "GEMINI_API_KEY",
+    kind: "gemini-native",
+    retries: 1,
   },
   {
-    // gemini-2.5-flash 404s as of late Sep 2026: "no longer available to new
-    // users. Please update your code to use models/gemini-3.8-flash" (Google's
-    // own error text). 1M context, ~1,500 RPD - a SEPARATE daily pool from
-    // gemini-3.6-flash, so the two Gemini slots double the free Google budget.
     id: "gemini-studio-3-8",
     provider: "Google AI Studio",
     model: "gemini-3.8-flash",
@@ -123,107 +111,12 @@ export const LLM_PROVIDER_CHAIN: LlmProviderEntry[] = [
     retries: 1,
   },
   {
-    // Cerebras free tier: gpt-oss-120b (listed online/free Aug-Sep 2026, 131K
-    // context). qwen-3-235b-a22b-instruct-2507 was 404 on some accounts
-    // ("model does not exist or you do not have access") - Cerebras rotates its
-    // free list, and qwen-3.8-27b there is PAID (402). If this id 404s on your
-    // account, check the Cerebras Cloud console and swap it here; the chain
-    // logs it and moves on either way.
-    id: "cerebras-gpt-oss-120b",
-    provider: "Cerebras",
-    model: "gpt-oss-120b",
-    apiKeyEnv: "CEREBRAS_API_KEY",
-    kind: "openai-compatible",
-    baseUrl: "https://api.cerebras.ai/v1",
-  },
-  {
-    // OpenRouter free (Sep 2026): 50 RPD per free model (1,000 RPD after a
-    // one-time $10 top-up). "Safest default" per current free-model trackers.
-    id: "openrouter-qwen3-8-27b",
-    provider: "OpenRouter",
-    model: "qwen/qwen3.8-27b:free",
-    apiKeyEnv: "OPENROUTER_API_KEY",
-    kind: "openai-compatible",
-    baseUrl: "https://openrouter.ai/api/v1",
-  },
-  {
-    // OpenRouter free (Jul 2026, still listed): 131K context, strong general
-    // reasoning for a free model.
-    id: "openrouter-gpt-oss-120b",
-    provider: "OpenRouter",
-    model: "openai/gpt-oss-120b:free",
-    apiKeyEnv: "OPENROUTER_API_KEY",
-    kind: "openai-compatible",
-    baseUrl: "https://openrouter.ai/api/v1",
-  },
-  {
-    // La Plateforme free tier (confirmed live 2026-09 - answers, then 429s on
-    // bursts; ~1 RPM). 429s are transient - retries: 1 helps.
-    id: "mistral-small",
-    provider: "Mistral",
-    model: "mistral-small-latest",
-    apiKeyEnv: "MISTRAL_API_KEY",
-    kind: "openai-compatible",
-    baseUrl: "https://api.mistral.ai/v1",
+    id: "gemini-studio-3-6",
+    provider: "Google AI Studio",
+    model: "gemini-3.6-flash",
+    apiKeyEnv: "GEMINI_API_KEY",
+    kind: "gemini-native",
     retries: 1,
-  },
-  {
-    // OpenRouter free (Jul 2026): "most established pick - live and stable".
-    // If it has been delisted by the time you run this, the slot 404s, the
-    // chain logs it and moves on - swap the id here.
-    id: "openrouter-llama-70b",
-    provider: "OpenRouter",
-    model: "meta-llama/llama-3.3-70b-instruct:free",
-    apiKeyEnv: "OPENROUTER_API_KEY",
-    kind: "openai-compatible",
-    baseUrl: "https://openrouter.ai/api/v1",
-  },
-  {
-    // OPTIONAL 6th key: NVIDIA NIM (build.nvidia.com, 40 RPM, free credits).
-    // meta/llama-4-scout-17b-16e-instruct: verified in the NIM catalog
-    // (Sep 2026), 128K context. meta/llama-3.3-70b-instruct returned HTTP 410
-    // (Gone) - NIM retires models without much notice. NIM has also been
-    // flaky lately (504s/timeouts), so this stays near the bottom of the chain.
-    // Skipped automatically when NVIDIA_API_KEY is empty.
-    id: "nvidia-llama-4-scout",
-    provider: "NVIDIA NIM",
-    model: "meta/llama-4-scout-17b-16e-instruct",
-    apiKeyEnv: "NVIDIA_API_KEY",
-    kind: "openai-compatible",
-    baseUrl: "https://integrate.api.nvidia.com/v1",
-  },
-  {
-    // OPTIONAL 6th key: NVIDIA NIM (build.nvidia.com, free 1,000 credits + up
-    // to 4,000 more on request, 40 RPM; phone verification required at signup).
-    // Skipped automatically when NVIDIA_API_KEY is empty.
-    id: "nvidia-gemma-4-31b",
-    provider: "NVIDIA NIM",
-    model: "google/gemma-4-31b-it",
-    apiKeyEnv: "NVIDIA_API_KEY",
-    kind: "openai-compatible",
-    baseUrl: "https://integrate.api.nvidia.com/v1",
-  },
-  {
-    // OPTIONAL 6th key: NVIDIA NIM (build.nvidia.com, free 1,000 credits + up
-    // to 4,000 more on request, 40 RPM; phone verification required at signup).
-    // Skipped automatically when NVIDIA_API_KEY is empty.
-    id: "nvidia-llama-90b",
-    provider: "NVIDIA NIM",
-    model: "meta/llama-3.2-90b-vision-instruct",
-    apiKeyEnv: "NVIDIA_API_KEY",
-    kind: "openai-compatible",
-    baseUrl: "https://integrate.api.nvidia.com/v1",
-  },
-  {
-    // Last resort (Sep 2026): Groq's fastest free model (1,000+ t/s), 131K
-    // context, own rate pool. Lower quality than the 120B/235B slots but
-    // rarely rate-limited.
-    id: "groq-gpt-oss-20b",
-    provider: "Groq",
-    model: "openai/gpt-oss-20b",
-    apiKeyEnv: "GROQ_API_KEY",
-    kind: "openai-compatible",
-    baseUrl: "https://api.groq.com/openai/v1",
   },
 ];
 
@@ -432,9 +325,24 @@ async function callGeminiNative(
   }
 
   const data = json as {
-    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    candidates?: Array<{
+      content?: { parts?: Array<{ text?: string }> };
+      finishReason?: string;
+    }>;
     promptFeedback?: { blockReason?: string };
   };
+
+  // Gemini 3.x models spend part of maxOutputTokens on "thinking" tokens.
+  // When the budget runs out mid-answer the API still returns HTTP 200 with
+  // finishReason MAX_TOKENS and a silently truncated body - detect it here so
+  // the chain logs a real failure instead of feeding half-JSON to the parser.
+  const finishReason = data.candidates?.[0]?.finishReason;
+  if (finishReason === "MAX_TOKENS") {
+    throw new LlmCallFailure(
+      entry,
+      `output was cut off at the maxOutputTokens limit (${maxTokens}) before the answer could finish (Gemini 3.x spends part of this budget on thinking tokens)`,
+    );
+  }
 
   const text = (data.candidates?.[0]?.content?.parts ?? [])
     .map((part) => part.text ?? "")
@@ -557,9 +465,8 @@ export async function completeWithFallback(
       status: 502,
       details: attempts.join(" • "),
       resolution:
-        "Set at least one working key in .env.local (GROQ_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY, " +
-        "CEREBRAS_API_KEY, MISTRAL_API_KEY, optionally NVIDIA_API_KEY), check the per-provider " +
-        "reasons in the details above, and retry.",
+        "Set a working GEMINI_API_KEY in .env.local, check the per-provider reasons in the " +
+        "details above (and .env.local for typos), and retry.",
     },
   );
 }

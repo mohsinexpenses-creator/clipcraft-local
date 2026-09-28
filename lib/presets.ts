@@ -1,4 +1,4 @@
-import { FilterPreset, CaptionPreset, OverlayStylePreset, PromptTemplate } from './types';
+import { FilterPreset, CaptionPreset, OverlayStylePreset, PromptTemplate, TextPreset } from './types';
 
 export const DEFAULT_FILTER_PRESETS: FilterPreset[] = [
   {
@@ -100,6 +100,35 @@ export const DEFAULT_CAPTION_PRESETS: CaptionPreset[] = [
     uppercase: false,
     isDefault: false,
   },
+];
+
+const textPreset = (
+  _id: string,
+  kind: TextPreset['kind'],
+  text: string
+): TextPreset => ({
+  _id,
+  kind,
+  text,
+  createdAt: new Date(0).toISOString(),
+  updatedAt: new Date(0).toISOString(),
+});
+
+/**
+ * Seed text presets for the intro hook and end CTA overlays (editable and
+ * extensible in the app under "Text Presets"). Kept short on purpose - they
+ * are burned onto video.
+ */
+export const DEFAULT_TEXT_PRESETS: TextPreset[] = [
+  textPreset('text-hook-wait', 'hook', 'WAIT FOR IT…'),
+  textPreset('text-hook-unbelievable', 'hook', "YOU WON'T BELIEVE THIS"),
+  textPreset('text-hook-saidwhat', 'hook', 'HE SAID WHAT?!'),
+  textPreset('text-hook-listen', 'hook', 'LISTEN TO THIS…'),
+  textPreset('text-hook-argument', 'hook', 'THIS ARGUMENT GOT HEATED'),
+  textPreset('text-cta-follow', 'cta', 'FOLLOW FOR PART 2'),
+  textPreset('text-cta-comment', 'cta', 'COMMENT YOUR TAKE'),
+  textPreset('text-cta-subscribe', 'cta', 'SUBSCRIBE FOR MORE'),
+  textPreset('text-cta-share', 'cta', 'SEND THIS TO A FRIEND'),
 ];
 
 export const DEFAULT_OVERLAY_STYLE_PRESETS: OverlayStylePreset[] = [

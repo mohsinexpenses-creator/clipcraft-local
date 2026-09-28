@@ -43,7 +43,7 @@ const COMPOSITION_ID = 'CaptionComposition';
  */
 let cachedBundlePromise: Promise<string> | null = null;
 
-function getRemotionBundle(): Promise<string> {
+export function getRemotionBundle(): Promise<string> {
   if (cachedBundlePromise) return cachedBundlePromise;
 
   cachedBundlePromise = (async () => {
@@ -143,10 +143,14 @@ export async function renderCaptionsAndOverlays(
   }
 
   if (!ctaText.trim()) {
-    throw new AppError('Caption rendering cannot start without CTA text.', {
-      status: 400,
-      resolution: 'Generate a CTA or enter one manually before rendering.',
-    });
+    if (ctaDuration > 0) {
+      throw new AppError('Caption rendering cannot start without CTA text.', {
+        status: 400,
+        resolution: 'Generate a CTA or enter one manually before rendering.',
+      });
+    }
+    // ctaDuration 0 + empty text = the CTA card is intentionally off.
+    log.detail('Rendering without CTA text (CTA overlay disabled).');
   }
 
   if (!fs.existsSync(videoPath)) {

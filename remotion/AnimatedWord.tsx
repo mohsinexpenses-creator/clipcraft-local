@@ -70,6 +70,10 @@ export const AnimatedWord: React.FC<AnimatedWordProps> = ({
   const HOLD_AFTER_SECONDS = 0.35;
   const LOOKAHEAD_SECONDS = 0.06;
 
+  // The FIRST matching chunk wins: the outgoing chunk keeps its 0.35s hold
+  // and the next caption only pops in once that hold is over - no strobing
+  // between words. (Only ONE chunk is ever rendered, so unlike the native
+  // ASS engine there is no risk of two lines sharing the screen.)
   let active: CaptionChunk | null = null;
   for (const chunk of chunks) {
     if (currentTime >= chunk.start - LOOKAHEAD_SECONDS && currentTime <= chunk.end + HOLD_AFTER_SECONDS) {

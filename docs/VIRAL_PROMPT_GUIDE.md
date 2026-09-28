@@ -31,9 +31,10 @@ On the dashboard, **AI clip options** (shown for the selected video, above *Gene
 | Option | Default | What it does |
 | --- | --- | --- |
 | **Number of clips** | `10` | How many top viral moments to generate (1–25). Injected as `{{clipCount}}` and enforced after parsing. |
-| **Min clip length** | `60s` | Clips shorter than this are **never** created (prompt rule + code enforcement). |
-| **Max clip length** | `90s` | Clips longer than this are trimmed to the max (the prompt's 60–90s rule). |
+| **Min clip length** | `60s` | Clips shorter than this are **never** created (prompt rule + code enforcement). This is the **only** length knob — the max is fixed internally. |
+| **Max clip length** | `600s` (fixed) | Not exposed in the UI anymore. Clips longer than 600s are trimmed to 600s. Still injected as `{{maxClipDuration}}`. |
 | **Hook text** (switch) | **On** | When **off**, no hook text is generated, the clip gets `hookDuration: 0`, and renders with **no hook intro/overlay**. |
+| **CTA text** (switch) | **On** | When **off**, no CTA is generated, the clip gets `ctaDuration: 0`, and renders with **no CTA card**. |
 
 Choices persist in `localStorage` (`clipcraft.viral-options`) and are sent with the request:
 
@@ -45,14 +46,15 @@ Content-Type: application/json
   "options": {
     "clipCount": 10,
     "minClipDuration": 60,
-    "maxClipDuration": 90,
-    "includeHookText": true
+    "includeHookText": true,
+    "includeCta": true
   }
 }
 ```
 
-All fields are optional — omitting the body uses the defaults above. Values are clamped
-server-side (`clipCount` 1–25, durations 5–1200s) and never trusted raw.
+All fields are optional — omitting the body uses the defaults above. `maxClipDuration` is
+**ignored** from the request (fixed at 600s internally). Other values are clamped
+server-side (`clipCount` 1–25, min duration 5–600s) and never trusted raw.
 
 ---
 
@@ -65,7 +67,7 @@ Filled automatically at run time (every occurrence):
 | `{{transcript}}` | The timestamped transcript (`[start - end]: text` per segment) — **required** |
 | `{{clipCount}}` | Number of clips to generate |
 | `{{minClipDuration}}` | Minimum clip length in seconds |
-| `{{maxClipDuration}}` | Maximum clip length in seconds |
+| `{{maxClipDuration}}` | Maximum clip length in seconds (fixed at 600s internally) |
 
 The hook/CTA templates use `{{clipTranscript}}` (the clip's own transcript text) and only run
 as **fallbacks** when the viral prompt leaves `hookText` / `ctaText` empty.

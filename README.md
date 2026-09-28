@@ -38,15 +38,19 @@ TECH STACK
   word-level timestamps. No Python whisper.
 - face-api.js (or @vladmandic/face-api, tfjs-node backend) — face detection for
   smart crop, running fully locally, no paid vision API
-- Claude API (Anthropic) — used for two LLM tasks: (1) analyzing the full transcript
-  to identify potentially viral segments with start/end timestamps, and (2)
-  generating a short punchy on-screen hook text (max ~8 words) per selected clip
+- Google AI Studio API (Gemini Flash) — LLM analysis: (1) analyzing the full
+  transcript to identify potentially viral segments with start/end timestamps,
+  (2) picking the most gripping moment inside a clip for the suspense hook intro,
+  and (3) generating short on-screen hook/CTA text. The provider chain
+  (`LLM_PROVIDER_CHAIN` in `lib/llm.ts`) is a config array - currently two Gemini
+  Flash slots (separate daily pools) - and other providers can be appended to it
 - Remotion + @remotion/player — renders animated, styled captions and gives a live
   in-app preview of caption styles before final render
 
 FULL PROCESSING PIPELINE (per uploaded video)
-1. Upload video via a Next.js API route, save to local disk (e.g.
-   /videos/{videoId}/original.mp4). No S3/cloud storage needed.
+1. Upload video via a Next.js API route, save to local disk as
+   /uploads/<NNN>_<original file name>.mp4 (NNN = 3-digit upload sequence,
+   e.g. 001_my_recording.mp4). No S3/cloud storage needed.
 2. Extract audio with ffmpeg, run whisper.cpp on it to get a transcript with
    word-level timestamps. Store transcript JSON in MongoDB.
 3. Send the transcript to Claude API with a user-editable prompt template
@@ -58,9 +62,11 @@ FULL PROCESSING PIPELINE (per uploaded video)
 5. Worker picks up each job and, in as few ffmpeg passes as possible:
    a. Trims the segment (-ss / -to)
    b. Mirrors it horizontally (hflip)
-   c. Runs face detection (face-api.js) on sampled frames of the mirrored clip,
-      smooths the detected face-center trajectory (e.g. moving average) to avoid
-      jitter, and computes a 9:16 crop window from it (smart crop)
+   c. Runs face detection (face-api.js) on sampled frames of the mirrored clip and
+      builds a speaker face track: when several people are visible it follows the
+      largest face (the speaker), and when the shot cuts to another person the 9:16
+      crop window pans over to them smoothly (EMA + slew limit, evaluated by ffmpeg
+      as a per-frame crop expression)
    d. Applies a color filter preset (ffmpeg eq/saturation, e.g. "vibrant",
       "warm", "cinematic" — store these as ffmpeg filter strings in MongoDB)
       Combine steps a–d into a single ffmpeg filter_complex call where possible
@@ -70,7 +76,10 @@ FULL PROCESSING PIPELINE (per uploaded video)
    (configurable, e.g. 3–5s) as a standalone "hook" segment, concatenating it
    onto the front of the clip (re-encoded, NOT stream-copied) — so the clip
    opens with the best beat first, then plays through normally and the viewer
-   watches it build back up to that same moment.
+   watches it build back up to that same moment. The join uses a short
+   dip-to-black transition (video fade out/in + audio afade) instead of a hard
+   cut, and keeps the total duration exactly hook + base so the caption
+   timeline stays in sync.
 7. Send that clip's transcript text to Claude API with a separate prompt to
    generate a short, punchy on-screen hook text overlay (distinct from the
    viral-segment-detection prompt in step 3).
@@ -84,6 +93,19 @@ FULL PROCESSING PIPELINE (per uploaded video)
      (font, size, weight, color, highlight color, stroke, position, animation
      style e.g. karaoke-fill/word-pop/fade-in) stored in a MongoDB
      "captionPresets" collection, so new styles can be added without code changes
+   - The user can choose the CAPTION ENGINE per clip (clip card → "Caption
+     engine"), stored on the clip as `captionEngine`:
+     - `remotion` (default, "Premium") — every frame is rendered through
+       headless Chrome: smoothest spring animations, but slow on long clips
+       (tens of minutes for a 3-minute clip).
+     - `native` ("Fast") — captions are generated as an ASS file
+       (worker/captions-ass.ts: word karaoke fill, line pop/fade entrances,
+       CTA lift) and burned in a single FFmpeg pass at ~real-time speed; the
+       hook text and CTA card keep their Remotion design but are rendered as
+       short transparent PNG sequences (worker/native-captions.ts +
+       remotion/OverlayCompositions.tsx) and composited by the same FFmpeg
+       pass. Trade-off: captions use eased animations instead of spring
+       physics.
 9. Save the final rendered clip to local disk (e.g.
    /generated-clips/{videoId}/{clipId}.mp4) and write/update a record in a
    MongoDB "clips" collection tracking: source video, timestamps, crop data,

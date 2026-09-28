@@ -112,6 +112,8 @@ export interface RunFfmpegOptions {
   timeoutMs?: number;
   /** Label used in logs/errors, e.g. "trim+crop". */
   label?: string;
+  /** Working directory for the process (used to feed libass a plain file name). */
+  cwd?: string;
 }
 
 const DEFAULT_FFMPEG_TIMEOUT_MS = 30 * 60 * 1000;
@@ -125,7 +127,21 @@ export function runFfmpeg(
     const label = options?.label ? ` ${options.label}` : "";
     log.detail(`⚙ ffmpeg${label}: ${ffmpegBin} ${args.join(" ")}`);
 
-    const child = spawn(ffmpegBin, args, { windowsHide: true });
+    // Windows CreateProcess caps the full command line at ~32,767 chars
+    // (Linux is much higher). Warn well below that so an over-long filter
+    // graph (e.g. hundreds of keyframes in a pan expression) is visible in
+    // the log instead of surfacing as an opaque spawn ENAMETOOLONG.
+    const commandLength = args.join(" ").length;
+    if (commandLength > 20000) {
+      log.warn(
+        `FFmpeg command line is ${commandLength.toLocaleString()} chars - close to the OS limit; layout output should be reduced.`,
+      );
+    }
+
+    const child = spawn(ffmpegBin, args, {
+    windowsHide: true,
+    ...(options?.cwd ? { cwd: options.cwd } : {}),
+  });
     let stdout = "";
     let stderr = "";
     let timedOut = false;

@@ -2,13 +2,16 @@ import { NextResponse } from 'next/server';
 import { getVideo, saveClip } from '@/lib/db';
 import { detectViralSegments, generateCtaText, generateHookText, resolveViralOptions } from '@/lib/ai';
 import { AppError, toErrorMessage, toErrorStatus } from '@/lib/errors';
-import { ClipRecord, ViralDetectionOptions } from '@/lib/types';
+import { ClipRecord, DEFAULT_VIRAL_OPTIONS, ViralDetectionOptions } from '@/lib/types';
 
-/** Hard UI/API bounds for the per-run viral detection options. */
+/** Hard UI/API bounds for the per-run viral detection options.
+ * maxClipDuration is intentionally NOT user-configurable anymore: it is fixed
+ * at DEFAULT_VIRAL_OPTIONS.maxClipDuration (90s - clips are packaged 60-90s) - the UI only exposes the
+ * minimum.
+ */
 const OPTION_LIMITS = {
   clipCount: { min: 1, max: 25 },
   minClipDuration: { min: 5, max: 600 },
-  maxClipDuration: { min: 5, max: 1200 },
 } as const;
 
 function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
@@ -37,14 +40,13 @@ function readViralOptions(body: Record<string, unknown>): Required<ViralDetectio
       OPTION_LIMITS.minClipDuration.min,
       OPTION_LIMITS.minClipDuration.max
     ),
-    maxClipDuration: clampNumber(
-      raw.maxClipDuration,
-      90,
-      OPTION_LIMITS.maxClipDuration.min,
-      OPTION_LIMITS.maxClipDuration.max
-    ),
+    // Fixed internal bound - ignore whatever the client sends (stale
+    // localStorage values from the old UI included a max input).
+    maxClipDuration: DEFAULT_VIRAL_OPTIONS.maxClipDuration,
     includeHookText:
       typeof raw.includeHookText === 'boolean' ? raw.includeHookText : raw.includeHookText === 'false' ? false : true,
+    includeCta:
+      typeof raw.includeCta === 'boolean' ? raw.includeCta : raw.includeCta === 'false' ? false : true,
   });
 }
 
@@ -101,8 +103,9 @@ export async function POST(
 
     console.log(
       `[API Detect Viral] Analyzing transcript with AI for video ${id} ` +
-        `(up to ${options.clipCount} clips, ${options.minClipDuration}-${options.maxClipDuration}s, ` +
-        `hook text ${options.includeHookText ? 'on' : 'off'})...`
+        `(up to ${options.clipCount} clips, min ${options.minClipDuration}s, max ${options.maxClipDuration}s ` +
+        `(fixed), hook text ${options.includeHookText ? 'on' : 'off'}, ` +
+        `CTA ${options.includeCta ? 'on' : 'off'})...`
     );
     const viralSegments = await detectViralSegments(video.transcript, video.duration, options);
 
@@ -141,10 +144,14 @@ export async function POST(
       }
 
       // Same idea for the CTA: the viral prompt returns `ctaText` per clip, so
-      // the separate CTA call only runs when the model left it out.
-      const ctaText = segment.ctaText || (await generateCtaText(overlayTranscript));
+      // the separate CTA call only runs when the model left it out. When the
+      // CTA switch is off we skip generation entirely and mark the clip with
+      // ctaDuration 0 (the renderer then skips the CTA overlay).
+      const ctaText = options.includeCta
+        ? segment.ctaText || (await generateCtaText(overlayTranscript))
+        : '';
 
-      if (!ctaText.trim()) {
+      if (options.includeCta && !ctaText.trim()) {
         throw new AppError('AI analysis produced a clip without CTA text.', {
           status: 502,
           resolution: 'Adjust the CTA generation prompt and retry viral analysis.',
@@ -161,13 +168,16 @@ export async function POST(
         hookDuration: options.includeHookText ? 3 : 0,
         hookText,
         ctaText,
-        ctaDuration: 2.5,
+        // 0 = no CTA overlay (CTA switch was off for this run).
+        ctaDuration: options.includeCta ? 2.5 : 0,
         filterPreset: 'vibrant',
         captionPresetId: 'preset-bold-yellow',
         viralScore: segment.score,
         viralReason: segment.reason,
         title: segment.title,
         hookLine: segment.hookLine,
+        hookLineStart: segment.hookLineStart,
+        hookLineEnd: segment.hookLineEnd,
         hashtags: segment.hashtags,
         retentionStrength: segment.retentionStrength,
         psychologicalTrigger: segment.psychologicalTrigger,

@@ -127,10 +127,55 @@ export function validateUploadFileName(fileName: string): string {
   return trimmed;
 }
 
-/** On-disk name: never derived from user input beyond the (validated) extension. */
+/**
+ * On-disk base name from the user's file name: only `[A-Za-z0-9 ._-]`
+ * survives (everything else becomes `_`, runs collapsed), capped at 60 chars
+ * so the final stored name always stays well inside OS path limits.
+ */
+export function sanitizeFileBase(originalName: string): string {
+  const extIndex = originalName.lastIndexOf('.');
+  const base = extIndex > 0 ? originalName.slice(0, extIndex) : originalName;
+  const cleaned = base
+    .replace(/[\/\\:*?"<>|\u0000-\u001f]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned.slice(0, 60).trim() || 'video';
+}
+
+/**
+ * Next sequence number for the `NNN_` upload prefix: the highest number
+ * already present in UPLOAD_DIR (matching `^(\d{3,})_`) plus one. State-free -
+ * works without a database, and deleting files just reuses numbers, which is
+ * fine for a personal tool.
+ */
+export function nextUploadSequenceNumber(): number {
+  const dir = resolveUploadDir();
+  let max = 0;
+  try {
+    for (const entry of fs.readdirSync(dir)) {
+      const match = entry.match(/^(\d{3,})_/);
+      if (match) max = Math.max(max, parseInt(match[1], 10));
+    }
+  } catch {
+    // Upload dir missing/unreadable -> start at 1 (it is created on first use).
+  }
+  return max + 1;
+}
+
+/**
+ * On-disk name: `<NNN>_<user's own file name>` (e.g. `001_my_recording.mp4`),
+ * where NNN is a 3-digit sequence number so uploads are ordered by upload
+ * time in the file explorer. Falls back gracefully if the dir cannot be read.
+ */
 export function buildStoredFileName(originalName: string): string {
   const extension = path.extname(originalName).toLowerCase();
-  return `${Date.now()}-${Math.random().toString(36).slice(2)}${extension}`;
+  let number = nextUploadSequenceNumber();
+  let candidate: string;
+  do {
+    candidate = `${String(number).padStart(3, '0')}_${sanitizeFileBase(originalName)}${extension}`;
+    number += 1;
+  } while (fs.existsSync(path.join(resolveUploadDir(), candidate)));
+  return candidate;
 }
 
 /**
@@ -186,6 +231,8 @@ export async function buildVideoRecord(
     _id: '', // saveVideo() assigns a UUID
     originalName,
     fileName,
+    /** Names the output folder: `001_my_recording` (stored name minus extension). */
+    fileBase: fileName.replace(/\.[^.]+$/, ''),
     filePath,
     duration,
     width,

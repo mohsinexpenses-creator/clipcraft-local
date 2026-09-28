@@ -31,7 +31,6 @@ import {
   TranscriptData,
   ViralDetectionOptions,
   ViralSegment,
-  WordTimestamp,
 } from './types';
 
 /**
@@ -155,6 +154,7 @@ export function resolveViralOptions(
     minClipDuration,
     maxClipDuration,
     includeHookText: partial?.includeHookText ?? DEFAULT_VIRAL_OPTIONS.includeHookText,
+    includeCta: partial?.includeCta ?? DEFAULT_VIRAL_OPTIONS.includeCta,
   };
 }
 
@@ -212,10 +212,12 @@ export async function detectViralSegments(
   });
 
   // Scale the output budget with the number of clips: each clip object carries
-  // the full packaging block (title/hook/CTA/hashtags/scores), so a 10-clip run
-  // needs several times what a 3-clip run needs. Capped at 6K to stay inside
-  // the free-tier output limits of every provider in the chain.
-  const maxTokens = Math.min(6144, 1200 + resolved.clipCount * 320);
+  // the full packaging block (title/hook/CTA/hashtags/scores) at ~500-800
+  // tokens, so a 10-clip run needs 8K+. The old 6K cap truncated the JSON
+  // mid-array on 10-clip runs. Note Gemini 3.x also spends part of this budget
+  // on "thinking" tokens, so the budget must stay generous; the cap (16K) is
+  // far below Gemini Flash's own 65K maxOutputTokens.
+  const maxTokens = Math.min(16384, 1500 + resolved.clipCount * 1200);
 
   let contentText: string;
   try {
@@ -356,124 +358,6 @@ export async function generateCtaText(clipTranscriptText: string): Promise<strin
   });
 }
 
-export interface HookMomentInput {
-  /** Words of the clip, timestamps RELATIVE to the clip start (0 = clip start). */
-  words: WordTimestamp[];
-  segmentDuration: number;
-  /** Length of the duplicated hook intro, in seconds. */
-  hookDuration: number;
-}
-
-export interface HookMoment {
-  /** Start of the hook window, seconds relative to the clip start. */
-  start: number;
-  /** End of the hook window (= start + hookDuration, clamped). */
-  end: number;
-  /** Why the model picked this moment (short). */
-  reason: string;
-}
-
-const HOOK_MOMENT_TIMEOUT_MS = 45_000;
-
-/**
- * Finds the single most gripping moment inside the clip so the render can
- * duplicate it to the START of the viral segment (a "suspense hook": the
- * viewer sees the best beat first, then watches the clip build back up to it).
- *
- * Deliberately provider-agnostic and failure-tolerant: any problem (no LLM
- * key, timeout, unparsable answer, out-of-range timestamps) returns `null`
- * and the worker falls back to the old behaviour (the first N seconds).
- * This is an internal heuristic - the prompt is hard-coded on purpose so no
- * new MongoDB prompt template is required.
- */
-export async function detectHookMoment(input: HookMomentInput): Promise<HookMoment | null> {
-  const { words, segmentDuration, hookDuration } = input;
-  if (!words.length || !(segmentDuration > 0) || !(hookDuration > 0)) return null;
-
-  // Group the words into readable phrases (one line per ~8 words) so the
-  // prompt stays compact and timestamped.
-  const lines: string[] = [];
-  for (let i = 0; i < words.length; i += 8) {
-    const slice = words.slice(i, i + 8);
-    lines.push(
-      `[${slice[0].start.toFixed(1)}s] ${slice.map((w) => w.word).join(' ')}`
-    );
-  }
-
-  const system =
-    'You pick the single best "hook" moment inside a short video clip so it can be ' +
-    'replayed at the very start of the clip to create suspense. Choose the moment that ' +
-    'makes the viewer most desperate to see what happens: a bold claim, a cliffhanger, ' +
-    'a shocking reaction, a question begging an answer, or the peak of the action. ' +
-    'Prefer a moment where something important has JUST happened or is ABOUT to happen. ' +
-    'Return ONLY minified JSON: {"start":<seconds>,"end":<seconds>,"reason":"<max 8 words>"} ' +
-    'using the clip-relative timestamps from the transcript. start must be >= 0 and ' +
-    'end-start must be exactly the given hook length.';
-
-  const prompt =
-    `Clip length: ${segmentDuration.toFixed(1)}s. Hook length to pick: ${hookDuration.toFixed(1)}s.\n` +
-    `Transcript (timestamps relative to clip start):\n${lines.join('\n')}`;
-
-  let text: string;
-  try {
-    const result = await Promise.race([
-      completeWithFallback({
-        task: 'hook moment detection',
-        system,
-        prompt,
-        maxTokens: 150,
-        temperature: 0.4,
-      }),
-      new Promise<never>((_resolve, reject) =>
-        setTimeout(() => reject(new Error('hook moment detection timed out')), HOOK_MOMENT_TIMEOUT_MS)
-      ),
-    ]);
-    text = result.text;
-  } catch (error) {
-    log.detail(`Hook moment detection skipped: ${toErrorMessage(error)}`);
-    return null;
-  }
-
-  // Strict JSON first, then a numeric regex fallback (models love to wrap JSON
-  // in prose or fences).
-  let start: number | null = null;
-  let end: number | null = null;
-  let reason = '';
-
-  try {
-    const first = text.indexOf('{');
-    const last = text.lastIndexOf('}');
-    if (first !== -1 && last > first) {
-      const parsed = JSON.parse(text.slice(first, last + 1)) as Record<string, unknown>;
-      if (typeof parsed.start === 'number') start = parsed.start;
-      if (typeof parsed.end === 'number') end = parsed.end;
-      if (typeof parsed.reason === 'string') reason = parsed.reason.trim();
-    }
-  } catch {
-    // fall through to the regex
-  }
-  if (start === null) {
-    const m = /"start"\s*:\s*(\d+(?:\.\d+)?)/.exec(text);
-    if (m) start = parseFloat(m[1]);
-  }
-  if (end === null) {
-    const m = /"end"\s*:\s*(\d+(?:\.\d+)?)/.exec(text);
-    if (m) end = parseFloat(m[1]);
-  }
-
-  if (start === null || !Number.isFinite(start)) return null;
-
-  // The model's window end may disagree with our hook length; honour its
-  // centre but keep our (user-configured) length, clamped inside the clip.
-  const maxStart = Math.max(0, segmentDuration - hookDuration);
-  const modelEnd = end !== null && Number.isFinite(end) ? end : null;
-  const startGuess = modelEnd !== null ? (start + modelEnd) / 2 - hookDuration / 2 : start;
-  const safeStart = Math.max(0, Math.min(startGuess, maxStart));
-  const safeEnd = Math.min(segmentDuration, safeStart + hookDuration);
-  if (safeEnd - safeStart < 0.5) return null;
-
-  return { start: safeStart, end: safeEnd, reason };
-}
 
 async function generateShortOverlayText(options: {
   transcriptText: string;

@@ -24,6 +24,13 @@ export interface VideoRecord {
   originalName: string;
   /** Sanitised on-disk name inside UPLOAD_DIR (never user-controlled path parts). */
   fileName: string;
+  /**
+   * Stored file name without extension, e.g. `001_my_recording` - the
+   * `NNN_` sequence prefix plus the user's original file name. Names the
+   * per-video output folder (`generated-clips/001_my_recording/`). Optional
+   * only because pre-convention uploads do not have it.
+   */
+  fileBase?: string;
   filePath: string;
   duration: number; // in seconds
   width: number;
@@ -47,10 +54,16 @@ export interface ViralDetectionOptions {
   clipCount: number;
   /** Hard minimum clip length in seconds (clips shorter than this are dropped). */
   minClipDuration: number;
-  /** Hard maximum clip length in seconds (longer clips are trimmed to this). */
+  /**
+   * Hard maximum clip length in seconds (longer clips are trimmed to this).
+   * Fixed internally at 90s (clips are packaged 60-90s) and NOT exposed in the
+   * UI - users only configure the minimum.
+   */
   maxClipDuration: number;
   /** When false, no on-screen hook text is generated or rendered. */
   includeHookText: boolean;
+  /** When false, no on-screen CTA card is generated or rendered. */
+  includeCta: boolean;
 }
 
 export const DEFAULT_VIRAL_OPTIONS: ViralDetectionOptions = {
@@ -58,6 +71,7 @@ export const DEFAULT_VIRAL_OPTIONS: ViralDetectionOptions = {
   minClipDuration: 60,
   maxClipDuration: 90,
   includeHookText: true,
+  includeCta: true,
 };
 
 /** Per-dimension engagement scores produced by the viral prompt (each /10). */
@@ -102,7 +116,11 @@ export interface CropWindow {
   height: number;
 }
 
-/** How the generated 9:16 clip frames its subject(s). */
+/**
+ * How the 9:16 output frames a multi-person clip.
+ * - `speaker-focus`: a single window that smoothly pans to whoever is talking.
+ * - `split-screen`: an adaptive 2/3/4-person grid that keeps everyone visible.
+ */
 export type ClipLayout = 'speaker-focus' | 'split-screen';
 
 /** Visual styling for the hook intro overlay and the end-of-clip CTA overlay. */
@@ -116,7 +134,7 @@ export interface OverlayStylePreset {
   fontSize: number;
   fontWeight: 'normal' | 'bold' | 'extra-bold' | 'black';
   textColor: string;
-  /** Card background behind the text (any CSS color, rgba allowed). */
+  /** Card background behind the text (any CSS color, rgba or gradient). */
   backgroundColor: string;
   borderColor: string;
   borderWidth: number;
@@ -132,6 +150,16 @@ export interface OverlayStylePreset {
   createdAt?: string;
   updatedAt?: string;
 }
+
+/**
+ * How the caption pass is produced:
+ * - `remotion`: every frame rendered through headless Chrome (smoothest spring
+ *   animations, but slow on long clips).
+ * - `native`: captions burned with FFmpeg (ASS) in a single fast pass; hook/CTA
+ *   cards are still designed in Remotion but rendered as tiny transparent
+ *   frame sequences.
+ */
+export type CaptionEngine = 'remotion' | 'native';
 
 export interface FilterPreset {
   id: string;
@@ -168,6 +196,19 @@ export interface PromptTemplate {
   updatedAt: string;
 }
 
+/**
+ * A reusable on-screen text preset: either an intro HOOK line or an end CTA.
+ * Stored in MongoDB (collection "textPresets") and editable in the app - the
+ * clip card offers them as quick-fill options next to the hook/CTA inputs.
+ */
+export interface TextPreset {
+  _id: string;
+  kind: 'hook' | 'cta';
+  text: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ClipRecord {
   _id: string;
   videoId: string;
@@ -181,6 +222,17 @@ export interface ClipRecord {
   filterPreset: string; // filter preset id
   captionPresetId: string;
   captionPreset?: CaptionPreset;
+  /**
+   * Output framing mode:
+   * - `speaker-focus`: the 9:16 window follows the active speaker.
+   * - `split-screen`: everyone relevant is shown in an adaptive grid (2/3/4).
+   */
+  layout?: ClipLayout;
+  /** Caption pass: `remotion` (default, smoothest) or `native` (FFmpeg ASS burn, ~10x faster). */
+  captionEngine?: CaptionEngine;
+  /** Overlay STYLE presets (font/colors/animation) chosen per clip. */
+  hookStylePresetId?: string;
+  ctaStylePresetId?: string;
   cropData?: CropWindow;
   viralScore: number;
   viralReason?: string;
@@ -188,19 +240,21 @@ export interface ClipRecord {
   title?: string;
   /** Exact spoken cold-open line picked by the prompt analysis. */
   hookLine?: string;
+  /**
+   * Transcript timestamp (absolute, seconds) where the hook line starts /
+   * ends. The renderer duplicates exactly this window as the intro hook -
+   * no second LLM call is needed to find the gripping moment.
+   */
+  hookLineStart?: number;
+  hookLineEnd?: number;
   hashtags?: string[];
   retentionStrength?: RetentionStrength;
   psychologicalTrigger?: string;
   safetyRisk?: SafetyRisk;
   safetyNotes?: string;
   scores?: ClipScores;
-  /** Which generated-clip layout to use when rendering (default: speaker-focus). */
-  layout?: ClipLayout;
-  /** Visual style of the hook intro overlay. */
-  hookStylePresetId?: string;
-  /** Visual style of the end-of-clip CTA overlay. */
-  ctaStylePresetId?: string;
-  outputPath?: string; // relative path to output mp4, e.g. /generated-clips/{videoId}/{clipId}.mp4
+  // relative path to output mp4, e.g. /generated-clips/001_my_recording/<clip title>.mp4
+  outputPath?: string;
   outputFileSize?: number; // bytes, 0/undefined means the render did not produce a usable file
   outputFps?: number; // fps actually used for the render
   status: 'pending' | 'processing' | 'done' | 'failed';
@@ -221,7 +275,11 @@ export interface JobData {
   ctaDuration?: number;
   filterPreset: string;
   captionPresetId: string;
+  /** Framing mode for the 9:16 output (default `speaker-focus`). */
   layout?: ClipLayout;
+  /** Caption pass: `remotion` (default) or `native` (fast FFmpeg ASS burn). */
+  captionEngine?: CaptionEngine;
+  /** Overlay STYLE presets (font/colors/animation) chosen per clip. */
   hookStylePresetId?: string;
   ctaStylePresetId?: string;
 }

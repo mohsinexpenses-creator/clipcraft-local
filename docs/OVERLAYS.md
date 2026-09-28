@@ -9,12 +9,14 @@ They are configured in **two independent layers** (both editable in the web app)
 
 | Layer | What it controls | Where |
 | --- | --- | --- |
-| **Text generation** (AI prompts) | *What the text says* — `hook_text` / `cta_text` come from prompt templates with the transcript context. | Generate → **Prompt templates** (`hook_text`, `cta_text`) |
+| **Text generation** (AI prompts) | *What the text says* — `hook_text` / `cta_text` come from prompt templates with the transcript context. | Generate → **Prompt templates** (`prompt-hook-generation`, `prompt-cta-generation`) |
+| **Text presets** (saved snippets) | Ready-made hook/CTA *lines* you can click onto a clip ("WAIT FOR IT…", "FOLLOW FOR PART 2"). | **Presets → Text presets** (`/text-presets`) + the chips on each clip card |
 | **Style presets** | *How it looks* — font, colors, card, position, animation, badge chip. | **Presets → Style presets → "Hook overlay" / "CTA overlay" tabs** |
 
-The two layers never mix: a style preset carries **no copy** (except the decorative
-badge label), and the AI never chooses colors/fonts. Editing the generation prompts is
-exactly as before — style presets are additive.
+The layers never mix: a style preset carries **no copy** (except the decorative
+badge label), the AI never chooses colors/fonts, and picking a text preset never
+changes the styling. Editing the generation prompts is exactly as before — style
+presets are additive.
 
 ## Style presets
 

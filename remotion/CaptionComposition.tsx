@@ -84,6 +84,45 @@ export function buildRenderedWords(
   return [...intro, ...shifted];
 }
 
+/**
+ * Caption chunks on the FINAL clip timeline, built the way the video is cut:
+ *
+ *   [hook intro 0..hookDuration]   words of the hook moment (preview)
+ *   [segment  hookDuration..end]   ALL words, shifted later by hookDuration
+ *
+ * The intro and the shifted words are chunked SEPARATELY. Concatenating the
+ * two word lists first (the old behaviour) glued the last intro chunk's words
+ * to the first shifted words in one chunk - a single caption line whose words
+ * belong to two different moments of the video. During the hook that line
+ * showed the wrong text, which is why hook clips got "galat captions".
+ */
+export function buildFinalCaptionChunks(
+  words: WordTimestamp[],
+  hookStart: number,
+  hookDuration: number,
+  wordsPerChunk = 4
+): CaptionChunk[] {
+  const shifted: WordTimestamp[] = words.map((w) => ({
+    ...w,
+    start: w.start + hookDuration,
+    end: w.end + hookDuration,
+  }));
+  const mainChunks = buildCaptionChunks(shifted, wordsPerChunk);
+
+  if (hookDuration <= 0) return mainChunks;
+
+  const intro: WordTimestamp[] = words
+    .filter((w) => w.end > hookStart && w.start < hookStart + hookDuration)
+    .map((w) => ({
+      ...w,
+      start: Math.max(0, w.start - hookStart),
+      end: Math.min(w.end - hookStart, hookDuration),
+    }));
+  const introChunks = buildCaptionChunks(intro, wordsPerChunk).filter((c) => c.end > 0);
+
+  return [...introChunks, ...mainChunks];
+}
+
 /** Group the transcript into short readable caption lines (TikTok/Shorts style). */
 export function buildCaptionChunks(words: WordTimestamp[], wordsPerChunk = 4): CaptionChunk[] {
   if (!words || words.length === 0) return [];
@@ -131,7 +170,7 @@ export const CaptionComposition: React.FC<CaptionCompositionProps> = ({
    *   `hookStart`), so caption those words as a preview at 0..hookDuration.
    *   With hookStart=0 the window is simply the start of the clip.
    */
-  const chunks = buildCaptionChunks(buildRenderedWords(words, hookStart, hookDuration));
+  const chunks = buildFinalCaptionChunks(words, hookStart, hookDuration);
 
   const currentTime = frame / fps;
   // Lift the captions while the end CTA card occupies the same bottom area.
