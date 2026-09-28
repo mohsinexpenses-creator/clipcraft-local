@@ -45,8 +45,9 @@ TECH STACK
   in-app preview of caption styles before final render
 
 FULL PROCESSING PIPELINE (per uploaded video)
-1. Upload video via a Next.js API route, save to local disk (e.g.
-   /videos/{videoId}/original.mp4). No S3/cloud storage needed.
+1. Upload video via a Next.js API route, save to local disk as
+   /uploads/<NNN>_<original file name>.mp4 (NNN = 3-digit upload sequence,
+   e.g. 001_my_recording.mp4). No S3/cloud storage needed.
 2. Extract audio with ffmpeg, run whisper.cpp on it to get a transcript with
    word-level timestamps. Store transcript JSON in MongoDB.
 3. Send the transcript to Claude API with a user-editable prompt template

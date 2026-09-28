@@ -39,13 +39,19 @@ export async function DELETE(
     await deleteVideo(id);
 
     const uploadDir = path.join(process.cwd(), 'uploads', id);
-    const clipsDir = path.join(process.cwd(), 'generated-clips', id);
+    // Output folder: current convention names it after the stored file
+    // (001_my_recording); older uploads used the video id - clean up both.
+    const clipsDir = path.join(process.cwd(), 'generated-clips', video.fileBase || id);
+    const legacyClipsDir = path.join(process.cwd(), 'generated-clips', id);
 
     if (fs.existsSync(uploadDir)) {
       fs.rmSync(uploadDir, { recursive: true, force: true });
     }
     if (fs.existsSync(clipsDir)) {
       fs.rmSync(clipsDir, { recursive: true, force: true });
+    }
+    if (clipsDir !== legacyClipsDir && fs.existsSync(legacyClipsDir)) {
+      fs.rmSync(legacyClipsDir, { recursive: true, force: true });
     }
 
     return NextResponse.json({ success: true });

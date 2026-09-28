@@ -90,9 +90,15 @@ export async function processClipJob(
   await saveClip(clip);
   await reportProgress(5);
 
-  const outputDir = path.join(process.cwd(), 'generated-clips', videoId);
+  // Output folder mirrors the uploaded video's stored name (e.g. 001_my_recording);
+  // pre-convention uploads fall back to the video id.
+  const outputBase = video.fileBase || videoId;
+  const outputDir = path.join(process.cwd(), 'generated-clips', outputBase);
+  // Intermediate keeps the stable clip id; the FINAL file is named after the
+  // clip's title: generated-clips/001_my_recording/<clip title>.mp4
   const intermediateVideoPath = path.join(outputDir, `${clipId}_processed.mp4`);
-  const finalVideoPath = path.join(outputDir, `${clipId}.mp4`);
+  const clipFileBase = sanitizeClipFileName(clip.title) || clipId;
+  const finalVideoPath = uniqueClipPath(outputDir, clipFileBase);
 
   try {
     if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
@@ -359,7 +365,7 @@ export async function processClipJob(
     clip.ctaDuration = resolvedCtaDuration;
     clip.captionPreset = preset;
     clip.captionEngine = engine;
-    clip.outputPath = `/generated-clips/${videoId}/${clipId}.mp4`;
+    clip.outputPath = `/generated-clips/${outputBase}/${path.basename(finalVideoPath)}`;
     clip.outputFileSize = renderResult.fileSizeBytes;
     clip.outputFps = renderResult.fps;
     clip.error = undefined;
@@ -382,4 +388,31 @@ export async function processClipJob(
     );
     throw error;
   }
+}
+
+/**
+ * Turn a clip title into a safe file name (Windows + macOS friendly):
+ * characters illegal in file names become spaces, whitespace is collapsed,
+ * and the result is capped at 80 chars so long LLM titles cannot overflow
+ * path limits. Returns '' when nothing usable remains (caller falls back
+ * to the clip id).
+ */
+function sanitizeClipFileName(title: string | undefined): string {
+  if (!title) return '';
+  const cleaned = title
+    .replace(/[\/\\:*?"<>|\u0000-\u001f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned.slice(0, 80).trim();
+}
+
+/** Same-title clips must not overwrite each other: append -2, -3, ... if needed. */
+function uniqueClipPath(dir: string, base: string): string {
+  let candidate = path.join(dir, `${base}.mp4`);
+  let suffix = 2;
+  while (fs.existsSync(candidate)) {
+    candidate = path.join(dir, `${base}-${suffix}.mp4`);
+    suffix += 1;
+  }
+  return candidate;
 }

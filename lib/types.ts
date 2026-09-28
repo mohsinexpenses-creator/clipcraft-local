@@ -24,6 +24,13 @@ export interface VideoRecord {
   originalName: string;
   /** Sanitised on-disk name inside UPLOAD_DIR (never user-controlled path parts). */
   fileName: string;
+  /**
+   * Stored file name without extension, e.g. `001_my_recording` - the
+   * `NNN_` sequence prefix plus the user's original file name. Names the
+   * per-video output folder (`generated-clips/001_my_recording/`). Optional
+   * only because pre-convention uploads do not have it.
+   */
+  fileBase?: string;
   filePath: string;
   duration: number; // in seconds
   width: number;
@@ -195,7 +202,8 @@ export interface ClipRecord {
   safetyRisk?: SafetyRisk;
   safetyNotes?: string;
   scores?: ClipScores;
-  outputPath?: string; // relative path to output mp4, e.g. /generated-clips/{videoId}/{clipId}.mp4
+  // relative path to output mp4, e.g. /generated-clips/001_my_recording/<clip title>.mp4
+  outputPath?: string;
   outputFileSize?: number; // bytes, 0/undefined means the render did not produce a usable file
   outputFps?: number; // fps actually used for the render
   status: 'pending' | 'processing' | 'done' | 'failed';

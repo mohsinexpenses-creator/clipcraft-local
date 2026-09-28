@@ -127,6 +127,17 @@ export function runFfmpeg(
     const label = options?.label ? ` ${options.label}` : "";
     log.detail(`⚙ ffmpeg${label}: ${ffmpegBin} ${args.join(" ")}`);
 
+    // Windows CreateProcess caps the full command line at ~32,767 chars
+    // (Linux is much higher). Warn well below that so an over-long filter
+    // graph (e.g. hundreds of keyframes in a pan expression) is visible in
+    // the log instead of surfacing as an opaque spawn ENAMETOOLONG.
+    const commandLength = args.join(" ").length;
+    if (commandLength > 20000) {
+      log.warn(
+        `FFmpeg command line is ${commandLength.toLocaleString()} chars - close to the OS limit; layout output should be reduced.`,
+      );
+    }
+
     const child = spawn(ffmpegBin, args, {
     windowsHide: true,
     ...(options?.cwd ? { cwd: options.cwd } : {}),

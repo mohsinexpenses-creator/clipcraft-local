@@ -80,6 +80,10 @@ const CELL_FACE_HEIGHT_FACTOR = 2.2;
  * that the centre should sit at. Clamped so the window never leaves the frame.
  * (This is a generalisation of the original buildCropXExpression - pass
  * anchorFrac 0.5 and it behaves exactly like that.)
+ *
+ * IMPORTANT: the input MUST be flattened + decimated first (see
+ * flattenAndDecimate) - with 200+ points the FFmpeg command line exceeds
+ * Windows' ~32k character limit and spawn fails with ENAMETOOLONG.
  */
 export function buildPanExpression(
   points: PanPoint[],
@@ -94,7 +98,15 @@ export function buildPanExpression(
   const clamp = (expr: string): string => (maxPos === 0 ? '0' : `min(max(${expr},0),${maxPos})`);
 
   if (points.length === 0) return String(posFor(dimSize / 2));
-  if (points.length === 1) return clamp(posFor(points[0][axis]).toFixed(1));
+
+  // A face that never moves in this axis -> emit a plain constant instead of
+  // a 200-branch if() chain of the same value.
+  const positions = points.map((p) => posFor(p[axis]));
+  const minPos = Math.min(...positions);
+  const maxPosOfValues = Math.max(...positions);
+  if (maxPosOfValues - minPos < 0.5) return clamp(positions[0].toFixed(1));
+
+  if (points.length === 1) return clamp(positions[0].toFixed(1));
 
   let expr = posFor(points[points.length - 1][axis]).toFixed(1);
   for (let i = points.length - 1; i >= 1; i -= 1) {
@@ -112,11 +124,70 @@ export function buildPanExpression(
   return clamp(expr);
 }
 
+/**
+ * Flatten a per-sample face track into a small set of pan keyframes:
+ *
+ * 1. Jitter filter: a point that moves less than `deadZonePx` (source px) in
+ *    BOTH axes from the last kept point is dropped - face detection jitters
+ *    by a few pixels between samples and the old code turned that into a
+ *    visible shake at every sample. Time anchors every 10s keep the timeline
+ *    covered even for a completely static speaker.
+ * 2. Deviation decimation (decimateTrack): collinear points are removed
+ *    without changing the path, and a hard cap (24) keeps the generated
+ *    FFmpeg expressions inside command-line limits - 24 keyframes over 60s
+ *    is one every 2.5s, which is still smooth as piecewise-linear motion.
+ */
+export function flattenAndDecimate(points: PanPoint[], maxPoints = 24, deadZonePx = 6): PanPoint[] {
+  if (points.length === 0) return points;
+
+  const jittered: PanPoint[] = [];
+  for (const p of points) {
+    const last = jittered[jittered.length - 1];
+    if (!last) {
+      jittered.push(p);
+      continue;
+    }
+    const movedX = Math.abs(p.x - last.x) >= deadZonePx;
+    const movedY = Math.abs(p.y - last.y) >= deadZonePx;
+    if (movedX || movedY || p.t - last.t >= 10) {
+      // Freeze each axis that did not move past the dead zone: otherwise a
+      // few pixels of Y-jitter ride along with every real X movement and the
+      // crop visibly shakes at each sample.
+      jittered.push({ t: p.t, x: movedX ? p.x : last.x, y: movedY ? p.y : last.y });
+    }
+  }
+
+  // The final position must stay exact when the face actually travelled
+  // (otherwise a 100px pan would end 6px short). For a pure-jitter track the
+  // tail is frozen, so residual detection noise never leaks in as a twitch.
+  const first = points[0];
+  const lastInput = points[points.length - 1];
+  const lastKept = jittered[jittered.length - 1];
+  if (lastInput !== lastKept) {
+    const overallMoved =
+      Math.abs(lastInput.x - first.x) >= deadZonePx ||
+      Math.abs(lastInput.y - first.y) >= deadZonePx;
+    jittered.push(
+      overallMoved
+        ? lastInput
+        : { t: lastInput.t, x: lastKept.x, y: lastKept.y }
+    );
+  }
+
+  return decimateTrack(
+    jittered.map((p) => ({ t: p.t, x: p.x, y: p.y, box: { x: p.x, y: p.y, w: 1, h: 1 } })),
+    undefined,
+    0.5,
+    maxPoints
+  ).map((p) => ({ t: p.t, x: p.x, y: p.y }));
+}
+
 function trackToPanPoints(track: Track, srcW: number): PanPoint[] {
   if (track.points.length === 0) return [];
   const asFace: FaceTrackPoint[] = track.points.map((p) => ({ t: p.t, x: p.cx, y: p.cy }));
   const smoothed = smoothTrack(asFace, srcW);
-  return smoothed.map((p) => ({ t: p.t, x: p.x, y: p.y }));
+  const points = smoothed.map((p) => ({ t: p.t, x: p.x, y: p.y }));
+  return flattenAndDecimate(points);
 }
 
 /**
@@ -141,7 +212,8 @@ function buildSpeakerPath(asd: AsdResult, srcW: number): PanPoint[] {
   }
   if (raw.length === 0) return [];
   const smoothed = smoothTrack(raw, srcW);
-  return smoothed.map((p) => ({ t: p.t, x: p.x, y: p.y }));
+  const points = smoothed.map((p) => ({ t: p.t, x: p.x, y: p.y }));
+  return flattenAndDecimate(points);
 }
 
 /** Largest 9:16 window that fits inside the source (even dimensions). */
@@ -259,21 +331,34 @@ function buildSplitPlan(asd: AsdResult, srcW: number, srcH: number): SplitPlan {
   }
 
   // Emphasis: red frame on the cell of whoever the timeline says is speaking.
+  // - With a single cell there is nothing to highlight (the whole canvas IS
+  //   the person), so the frame would only add a distracting border.
+  // - Speaking runs from the timeline are fragmented (silence pauses, track
+  //   switches): runs of the same cell closer than 0.6s are merged, and the
+  //   result is capped - a 60s clip must not turn into 120 drawbox clauses
+  //   (that is what blew past Windows' command-line limit).
   const trackToCell = new Map<number, number>();
   cells.forEach((cell, index) => trackToCell.set(cell.trackId, index));
   const emphasis: SplitPlan['emphasis'] = [];
-  for (const seg of asd.speakerSegments) {
-    if (seg.trackId === null) continue;
-    const cellIndex = trackToCell.get(seg.trackId);
-    if (cellIndex === undefined) continue;
-    if (emphasis.length > 0) {
-      const last = emphasis[emphasis.length - 1];
-      if (last.cellIndex === cellIndex && Math.abs(last.t1 - seg.t0) < 0.01) {
-        last.t1 = seg.t1;
-        continue;
+  if (cells.length > 1) {
+    for (const seg of asd.speakerSegments) {
+      if (seg.trackId === null) continue;
+      const cellIndex = trackToCell.get(seg.trackId);
+      if (cellIndex === undefined) continue;
+      if (emphasis.length > 0) {
+        const last = emphasis[emphasis.length - 1];
+        if (last.cellIndex === cellIndex && seg.t0 - last.t1 < 0.6) {
+          last.t1 = seg.t1;
+          continue;
+        }
       }
+      emphasis.push({ cellIndex, t0: seg.t0, t1: seg.t1 });
     }
-    emphasis.push({ cellIndex, t0: seg.t0, t1: seg.t1 });
+    if (emphasis.length > 12) {
+      emphasis.sort((a, b) => (b.t1 - b.t0) - (a.t1 - a.t0));
+      emphasis.length = 12;
+      emphasis.sort((a, b) => a.t0 - b.t0);
+    }
   }
 
   return { mode: 'split', cells, emphasis };
