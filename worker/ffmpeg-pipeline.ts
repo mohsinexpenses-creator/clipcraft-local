@@ -2,8 +2,10 @@ import fs from 'fs';
 import path from 'path';
 import { AppError, toErrorMessage } from '../lib/errors';
 import { DEFAULT_FILTER_PRESETS } from '../lib/presets';
+import { ClipLayout } from '../lib/types';
 import { getVideoMetadata, runFfmpeg } from '../lib/ffmpeg';
 import { log } from '../lib/logger';
+import { FocusTimeline, Keyframe, SpeakerAnalysis, SplitTimeline } from './speaker-tracker';
 
 export interface ProcessSegmentOptions {
   sourceVideoPath: string;
@@ -14,10 +16,9 @@ export interface ProcessSegmentOptions {
   /** Where in the clip (seconds, relative to the clip start) the hook intro is cut from. 0 = the first N seconds (legacy behaviour). */
   hookStart: number;
   filterPresetId: string;
-  cropFilter: string;
-  /** Width/height of the crop window, used to size the output canvas. */
-  cropWidth: number;
-  cropHeight: number;
+  /** Active-speaker crop timelines for the chosen layout. */
+  speakerAnalysis: SpeakerAnalysis;
+  layout: ClipLayout;
   /** fps the Remotion composition will use; the intermediate is normalised to it. */
   targetFps: number;
   /** False when the source has no audio stream -> a silent track is muxed in. */
@@ -84,6 +85,100 @@ export function computeOutputSize(cropWidth: number, cropHeight: number): { widt
 }
 
 /**
+ * Build a piecewise-LINEAR ffmpeg expression from timeline keyframes, e.g.
+ * `max(0,min(1000,if(lt(t,2.5), 100+20*(t-2), ...)))`. The crop filter
+ * re-evaluates x/y every frame, so this is what makes the 9:16 window glide
+ * between speakers instead of jumping.
+ *
+ * The result is meant to be embedded inside single quotes
+ * (`crop=w:h:x='EXPR':y=0`) - the quotes protect the commas from the
+ * filtergraph parser, so no comma escaping is needed.
+ */
+export function buildPiecewiseExpression(keyframes: Keyframe[], clampMax: number): string {
+  // Deduplicate/sort and collapse zero-length spans (they would divide by zero).
+  // Same time AND same place -> keep the later value. Same time but different
+  // place (a step) -> give the old value a 20ms hold so the gap stays positive
+  // and the expression keeps interpolating between the two positions.
+  const sorted = [...keyframes].sort((a, b) => a.t - b.t);
+  const clean: Keyframe[] = [];
+  for (const kf of sorted) {
+    const prev = clean[clean.length - 1];
+    if (prev && kf.t - prev.t < 0.02) {
+      if (Math.abs(kf.v - prev.v) <= 10) {
+        clean[clean.length - 1] = kf;
+      } else {
+        const floor = clean.length >= 2 ? clean[clean.length - 2].t + 1e-3 : 0;
+        prev.t = Math.max(floor, kf.t - 0.02);
+        clean.push(kf);
+      }
+    } else {
+      clean.push(kf);
+    }
+  }
+
+  const max = Math.max(0, clampMax);
+  if (clean.length === 0) return `0`;
+  if (clean.length === 1) return `max(0,min(${max},${clean[0].v.toFixed(2)}))`;
+
+  let expr = clean[clean.length - 1].v.toFixed(2);
+  for (let i = clean.length - 2; i >= 0; i -= 1) {
+    const a = clean[i];
+    const b = clean[i + 1];
+    const slope = (b.v - a.v) / Math.max(0.02, b.t - a.t);
+    const lerp = `${a.v.toFixed(2)}+${slope.toFixed(2)}*(t-${a.t.toFixed(3)})`;
+    expr = `if(lt(t,${b.t.toFixed(3)}),${lerp},${expr})`;
+  }
+  return `max(0,min(${max},${expr}))`;
+}
+
+/**
+ * `crop` filter for the speaker-focus layout: a 9:16 window that slides along
+ * the source, following the active speaker. Coordinates are in MIRRORED space
+ * (the chain runs `hflip` before this crop - see processVideoSegment).
+ */
+export function buildFocusCropFilter(
+  focus: FocusTimeline,
+  sourceWidth: number,
+  sourceHeight: number
+): string {
+  const maxX = Math.max(0, sourceWidth - focus.cropW);
+  const maxY = Math.max(0, sourceHeight - focus.cropH);
+  if (focus.axis === 'x') {
+    const expr = buildPiecewiseExpression(focus.keyframes, maxX);
+    return `crop=${focus.cropW}:${focus.cropH}:x='${expr}':y=${Math.round(maxY / 2)}`;
+  }
+  const expr = buildPiecewiseExpression(focus.keyframes, maxY);
+  return `crop=${focus.cropW}:${focus.cropH}:x=${Math.round(maxX / 2)}:y='${expr}'`;
+}
+
+/**
+ * Full `-filter_complex` graph for the split-screen layout: two stacked panes,
+ * each a sliding crop around one tracked speaker (active speaker on top),
+ * vstacked into the 1080x1920 canvas.
+ */
+export function buildSplitFilterComplex(
+  split: SplitTimeline,
+  sourceWidth: number,
+  sourceHeight: number,
+  tailFilters = 'format=yuv420p'
+): string {
+  const maxX = Math.max(0, sourceWidth - split.cropW);
+  const maxY = Math.max(0, sourceHeight - split.cropH);
+  const xTop = buildPiecewiseExpression(split.top.map((k) => ({ t: k.t, v: k.x })), maxX);
+  const yTop = buildPiecewiseExpression(split.top.map((k) => ({ t: k.t, v: k.y })), maxY);
+  const xBottom = buildPiecewiseExpression(split.bottom.map((k) => ({ t: k.t, v: k.x })), maxX);
+  const yBottom = buildPiecewiseExpression(split.bottom.map((k) => ({ t: k.t, v: k.y })), maxY);
+  const tail = tailFilters.trim() ? `,${tailFilters.trim()}` : '';
+
+  return [
+    `[0:v]hflip,split=2[sa][sb]`,
+    `[sa]crop=${split.cropW}:${split.cropH}:x='${xTop}':y='${yTop}',scale=1080:960:flags=lanczos[spTop]`,
+    `[sb]crop=${split.cropW}:${split.cropH}:x='${xBottom}':y='${yBottom}',scale=1080:960:flags=lanczos[spBottom]`,
+    `[spTop][spBottom]vstack=inputs=2${tail}[vout]`,
+  ].join(';');
+}
+
+/**
  * The concat demuxer treats `'` specially, and Windows paths contain backslashes it
  * also interprets. Forward slashes + single-quote escaping covers both.
  */
@@ -118,9 +213,8 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
     hookDuration,
     hookStart,
     filterPresetId,
-    cropFilter,
-    cropWidth,
-    cropHeight,
+    speakerAnalysis,
+    layout,
     targetFps,
     sourceHasAudio,
     onProgress,
@@ -145,14 +239,15 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
 
   const segmentDuration = end - start;
   const fps = normalizeFps(targetFps);
-  const { width: outWidth, height: outHeight } = computeOutputSize(cropWidth, cropHeight);
+  const focus = speakerAnalysis.focus;
+  const { width: outWidth, height: outHeight } = computeOutputSize(focus.cropW, focus.cropH);
 
-  if (outWidth < 16 || outHeight < 16 || !cropFilter.trim()) {
-    throw new AppError('Cannot build the FFmpeg filter chain without a valid crop window.', {
+  if (outWidth < 16 || outHeight < 16 || !focus.keyframes.length) {
+    throw new AppError('Cannot build the FFmpeg filter chain without a valid crop timeline.', {
       status: 400,
-      details: `crop=${cropWidth}x${cropHeight}, output=${outWidth}x${outHeight}, cropFilter="${cropFilter}"`,
+      details: `layout=${layout}, focusKeyframes=${focus.keyframes.length}, output=${outWidth}x${outHeight}`,
       resolution:
-        'The smart crop returned an unusable window - re-run the render, and check the [FaceDetector] line in the worker log.',
+        'The speaker tracker produced no usable crop timeline - re-run the render, and check the [SpeakerTracker] lines in the worker log.',
     });
   }
 
@@ -204,23 +299,45 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
     if (colorFilterStr === 'null' || colorFilterStr === '') colorFilterStr = '';
 
     /**
-     * Order matters: `hflip` runs BEFORE `crop`, so the crop coordinates must be
-     * expressed in MIRRORED space. worker/face-detector.ts now samples frames with
-     * `hflip` already applied, which is what makes `cropFilter` line up with the
-     * subject. (Previously the detector measured un-mirrored frames, so the crop
-     * window landed on the opposite side of the speaker.)
+     * Order matters: `hflip` runs BEFORE the crop, so every crop coordinate
+     * (including the animated speaker-tracking expressions) lives in MIRRORED
+     * space - worker/speaker-tracker.ts samples frames with `hflip` already
+     * applied, which is what keeps the window on the subject.
      *
-     * The trailing `scale` guarantees an exact, even output size so the Remotion
-     * composition never sees black bars or a resolution mismatch.
+     * speaker-focus: one 9:16 sliding crop scaled up to the canvas.
+     * split-screen: two sliding crops stacked, each pane 1080x960.
      */
-    const filterParts = ['hflip', cropFilter];
-    if (colorFilterStr) filterParts.push(colorFilterStr);
-    filterParts.push(`scale=${outWidth}:${outHeight}:flags=lanczos`);
-    filterParts.push('format=yuv420p');
+    const useSplit = layout === 'split-screen';
+    let filterArgs: string[];
+    let videoMap: string;
+
+    if (useSplit) {
+      const tail = [colorFilterStr, 'format=yuv420p'].filter(Boolean).join(',');
+      filterArgs = [
+        '-filter_complex',
+        buildSplitFilterComplex(
+          speakerAnalysis.split,
+          speakerAnalysis.sourceWidth,
+          speakerAnalysis.sourceHeight,
+          tail
+        ),
+      ];
+      videoMap = '[vout]';
+    } else {
+      const filterParts = [
+        'hflip',
+        buildFocusCropFilter(focus, speakerAnalysis.sourceWidth, speakerAnalysis.sourceHeight),
+        ...(colorFilterStr ? [colorFilterStr] : []),
+        `scale=${outWidth}:${outHeight}:flags=lanczos`,
+        'format=yuv420p',
+      ];
+      filterArgs = ['-vf', filterParts.join(',')];
+      videoMap = '0:v:0';
+    }
 
     log.detail(
       `Pass 1/3 · base clip ${start}s → ${end}s ` +
-      `(dur=${segmentDuration.toFixed(2)}s, fps=${fps}, out=${outWidth}x${outHeight}, audio=${sourceHasAudio ? 'source' : 'silent'})`
+        `(dur=${segmentDuration.toFixed(2)}s, fps=${fps}, layout=${layout}, out=${outWidth}x${outHeight}, audio=${sourceHasAudio ? 'source' : 'silent'})`
     );
     if (onProgress) onProgress(10);
 
@@ -230,8 +347,8 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
       '-loglevel', 'error',
       '-stats',
       ...inputArgs,
-      '-vf', filterParts.join(','),
-      '-map', '0:v:0',
+      ...filterArgs,
+      '-map', videoMap,
       '-map', `${audioInputIndex}:a:0`,
       ...videoArgs,
       ...audioArgs,

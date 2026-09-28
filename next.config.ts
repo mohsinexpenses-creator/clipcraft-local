@@ -6,7 +6,7 @@ const nextConfig: NextConfig = {
    * - ffmpeg-static resolves a binary path at runtime and breaks when bundled (this is
    *   why lib/ffmpeg.ts used to contain an eval'd require). Keeping it external lets
    *   that file use a plain top-level `import ffmpegStaticPath from 'ffmpeg-static'`.
-   * - mongodb, ioredis, bullmq and @vladmandic/face-api are CJS/native with dynamic requires.
+   * - mongodb, ioredis, bullmq and onnxruntime-node are CJS/native with dynamic requires.
    * They are only used from server/worker code, never from the browser bundle.
    */
   serverExternalPackages: [
@@ -14,7 +14,7 @@ const nextConfig: NextConfig = {
     'mongodb',
     'ioredis',
     'bullmq',
-    '@vladmandic/face-api',
+    'onnxruntime-node',
     'ytdl-core',
   ],
 

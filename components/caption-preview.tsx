@@ -3,18 +3,22 @@
 import React, { ComponentType } from 'react';
 import { Player } from '@remotion/player';
 import { CaptionComposition } from '@/remotion/CaptionComposition';
-import { CaptionPreset } from '@/lib/types';
+import { CaptionPreset, OverlayStylePreset } from '@/lib/types';
 
 interface CaptionPreviewProps {
   preset: CaptionPreset;
   hookText?: string;
   ctaText?: string;
+  hookStyle?: OverlayStylePreset;
+  ctaStyle?: OverlayStylePreset;
 }
 
 export const CaptionPreview: React.FC<CaptionPreviewProps> = ({
   preset,
   hookText = 'THE 1 SECRET YOU WERE NEVER TOLD',
   ctaText = 'FOLLOW FOR MORE BREAKDOWNS',
+  hookStyle,
+  ctaStyle,
 }) => {
   const sampleWords = [
     { word: 'Welcome', start: 0.2, end: 0.6 },
@@ -52,6 +56,8 @@ export const CaptionPreview: React.FC<CaptionPreviewProps> = ({
           ctaDuration: 2.2,
           words: sampleWords,
           preset,
+          hookStyle,
+          ctaStyle,
         }}
       />
     </div>

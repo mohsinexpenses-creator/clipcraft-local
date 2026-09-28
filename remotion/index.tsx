@@ -1,6 +1,6 @@
 import React from 'react';
 import { Composition, registerRoot } from 'remotion';
-import { DEFAULT_CAPTION_PRESETS } from '../lib/presets';
+import { DEFAULT_CAPTION_PRESETS, DEFAULT_OVERLAY_STYLE_PRESETS } from '../lib/presets';
 import { CaptionComposition, CaptionCompositionProps } from './CaptionComposition';
 
 /**
@@ -39,6 +39,8 @@ export const RemotionRoot: React.FC = () => {
             ctaText: 'FOLLOW FOR MORE CLIPS LIKE THIS',
             ctaDuration: 2.5,
             preset: DEFAULT_CAPTION_PRESETS[0],
+            hookStyle: DEFAULT_OVERLAY_STYLE_PRESETS.find((p) => p.kind === 'hook'),
+            ctaStyle: DEFAULT_OVERLAY_STYLE_PRESETS.find((p) => p.kind === 'cta'),
             words: [
               { word: 'Welcome', start: 0.2, end: 0.7 },
               { word: 'to', start: 0.8, end: 1.0 },

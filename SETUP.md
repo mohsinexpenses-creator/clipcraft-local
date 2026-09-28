@@ -6,6 +6,9 @@ unchanged on purpose.
 Everything runs on your own PC: Next.js + a separate BullMQ worker + MongoDB/Redis in
 Docker. No Python, no cloud video services (except the optional LLM + Deepgram keys).
 
+For the built-in **viral clip detection prompt** (AI clip options, prompt template
+variables, customization) see [`docs/VIRAL_PROMPT_GUIDE.md`](./docs/VIRAL_PROMPT_GUIDE.md).
+
 ---
 
 ## 1. Prerequisites
@@ -175,21 +178,33 @@ and tells you exactly what to fix.
 
 ---
 
-## 7. Optional: real face detection
+## 7. Active-speaker tracking (YuNet face detection)
 
-The smart crop always works out of the box using a **skin-tone heuristic** (crude but
-dependency-free). For proper face detection add a TensorFlow.js CPU backend:
+Clips use **active-speaker tracking**: the worker runs OpenCV's **YuNet** face detector
+(`face_detection_yunet_2023mar.onnx`) on sampled frames of the clip window, keeps
+identity-free face *tracks*, and multi-cue scores who is talking (audio envelope vs.
+mouth/face motion, motion energy, continuity, face size — so a covered mic/mask/hand
+still works). The 9:16 frame then **follows the active speaker** and glides to the new
+speaker when they change. See [docs/LAYOUTS.md](./docs/LAYOUTS.md) for the two clip
+layouts (speaker focus + split screen) and [docs/OVERLAYS.md](./docs/OVERLAYS.md) for
+hook/CTA overlay styles.
+
+One command downloads and SHA-256-verifies the model into `models/yunet/`:
 
 ```powershell
-npm run setup:faceapi
-# same as: npm i @tensorflow/tfjs-core@^4 @tensorflow/tfjs-backend-cpu@^4
+npm run setup:yunet
 ```
 
-`worker/face-detector.ts` loads `@vladmandic/face-api` + the committed
-`models/face/tiny_face_detector` weights **only if** tfjs is present, and falls back to
-the heuristic otherwise (the worker log says why: `Falling back to the skin-tone
-heuristic: ...`). `face-api.js` (the abandoned fork, which pins tfjs 1.x) was removed
-from `package.json`.
+Mirrors (OpenCV Zoo raw GitHub, jsDelivr, Hugging Face, hf-mirror) are tried in order;
+the file is rejected unless it matches the official 232 589-byte
+`face_detection_yunet_2023mar.onnx`. You can also download it manually from
+[opencv_zoo](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet)
+and place it at `models/yunet/face_detection_yunet_2023mar.onnx`.
+
+**Without the model** the app still works: the worker logs
+`YuNet model not found - active-speaker tracking disabled` and renders use a static
+center crop (the startup check on `/settings` also shows a warning with the fix).
+`onnxruntime-node` runs the model fully locally — no paid vision API.
 
 ---
 

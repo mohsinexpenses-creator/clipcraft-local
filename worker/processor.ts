@@ -1,11 +1,12 @@
 import fs from 'fs';
 import path from 'path';
-import { getCaptionPreset, getClip, getVideo, saveClip } from '../lib/db';
+import { getCaptionPreset, getClip, getOverlayStylePreset, getVideo, saveClip } from '../lib/db';
 import { AppError, toErrorMessage } from '../lib/errors';
 import { detectHookMoment } from '../lib/ai';
 import { getVideoMetadata } from '../lib/ffmpeg';
-import { ClipRecord, JobData } from '../lib/types';
-import { detectFaceCropWindow } from './face-detector';
+import { ClipRecord, JobData, OverlayStylePreset } from '../lib/types';
+import { DEFAULT_OVERLAY_STYLE_PRESETS } from '../lib/presets';
+import { analyzeSpeakers } from './speaker-tracker';
 import { color, log } from '../lib/logger';
 import { normalizeFps, processVideoSegment } from './ffmpeg-pipeline';
 import { renderCaptionsAndOverlays } from './remotion-renderer';
@@ -29,6 +30,23 @@ function deriveOverlayText(words: Array<{ word: string }>, maxWords: number, fal
   return text || fallback;
 }
 
+/** Load an overlay style preset, falling back to the shipped default for its kind. */
+async function resolveOverlayStyle(kind: 'hook' | 'cta', presetId?: string): Promise<OverlayStylePreset> {
+  const fallback =
+    DEFAULT_OVERLAY_STYLE_PRESETS.find((p) => p.kind === kind && p.isDefault) ??
+    DEFAULT_OVERLAY_STYLE_PRESETS.find((p) => p.kind === kind)!;
+
+  if (presetId) {
+    try {
+      const preset = await getOverlayStylePreset(presetId);
+      if (preset && preset.kind === kind) return preset;
+    } catch (error) {
+      log.warn(`Overlay style "${presetId}" could not be loaded: ${toErrorMessage(error)}`);
+    }
+  }
+  return fallback;
+}
+
 export async function processClipJob(
   jobData: JobData,
   onProgress?: (progress: number) => void
@@ -44,6 +62,9 @@ export async function processClipJob(
     ctaDuration,
     filterPreset,
     captionPresetId,
+    layout,
+    hookStylePresetId,
+    ctaStylePresetId,
   } = jobData;
 
   log.section(
@@ -168,26 +189,29 @@ export async function processClipJob(
       log.warn('Hook moment auto-detection unavailable - duplicating the first N seconds.');
     }
 
-    log.step('Step 1/3 · Smart crop detection');
-    const cropResult = await detectFaceCropWindow(
-      video.filePath,
+    log.step('Step 1/3 · Active-speaker tracking (YuNet)');
+    const clipLayout = layout === 'split-screen' ? 'split-screen' : 'speaker-focus';
+    const speakerAnalysis = await analyzeSpeakers({
+      videoPath: video.filePath,
       start,
-      segmentDuration,
-      sourceMeta.width,
-      sourceMeta.height
-    );
+      duration: segmentDuration,
+      videoWidth: sourceMeta.width,
+      videoHeight: sourceMeta.height,
+      hasAudio: sourceMeta.hasAudio,
+    });
 
+    clip.layout = clipLayout;
     clip.cropData = {
-      x: cropResult.cropX,
-      y: cropResult.cropY,
-      width: cropResult.cropW,
-      height: cropResult.cropH,
+      x: Math.round(speakerAnalysis.focus.keyframes[0]?.v ?? 0),
+      y: 0,
+      width: speakerAnalysis.focus.cropW,
+      height: speakerAnalysis.focus.cropH,
     };
     clip.progress = 20;
     await saveClip(clip);
     await reportProgress(20);
 
-    log.step('Step 2/3 · FFmpeg mirror + crop + colour + hook intro');
+    log.step('Step 2/3 · FFmpeg mirror + speaker-tracking crop + colour + hook intro');
     await processVideoSegment({
       sourceVideoPath: video.filePath,
       outputPath: intermediateVideoPath,
@@ -196,9 +220,8 @@ export async function processClipJob(
       hookDuration: safeHookDuration,
       hookStart,
       filterPresetId: filterPreset,
-      cropFilter: cropResult.cropFilter,
-      cropWidth: cropResult.cropW,
-      cropHeight: cropResult.cropH,
+      speakerAnalysis,
+      layout: clipLayout,
       targetFps: renderFps,
       sourceHasAudio: sourceMeta.hasAudio,
       onProgress: (progress) => {
@@ -224,11 +247,18 @@ export async function processClipJob(
       });
     }
 
-    const resolvedHookText =
-      hookText?.trim() ||
-      clip.hookText?.trim() ||
-      deriveOverlayText(clipWords, 8, 'WATCH THIS');
-    if (!hookText?.trim() && !clip.hookText?.trim()) {
+    // hookDuration 0 means the hook intro/overlay was turned off for this clip
+    // (detection ran with the hook-text switch off) - don't derive text that
+    // would only be ignored by the overlay.
+    const hookOverlayEnabled = safeHookDuration > 0;
+    const resolvedHookText = !hookOverlayEnabled
+      ? ''
+      : hookText?.trim() ||
+        clip.hookText?.trim() ||
+        deriveOverlayText(clipWords, 8, 'WATCH THIS');
+    if (!hookOverlayEnabled) {
+      log.detail('Hook overlay disabled for this clip (hookDuration=0) - rendering without hook text.');
+    } else if (!hookText?.trim() && !clip.hookText?.trim()) {
       log.warn(`No hook text supplied - derived "${resolvedHookText}" from the transcript.`);
     }
 
@@ -254,6 +284,8 @@ export async function processClipJob(
       ctaDuration: resolvedCtaDuration,
       words: clipWords,
       preset,
+      hookStyle: await resolveOverlayStyle('hook', hookStylePresetId ?? clip.hookStylePresetId),
+      ctaStyle: await resolveOverlayStyle('cta', ctaStylePresetId ?? clip.ctaStylePresetId),
       onProgress: (progress) => {
         clip.progress = Math.max(clip.progress ?? 0, Math.round(progress));
         void saveClip(clip).catch((error) =>
@@ -274,6 +306,8 @@ export async function processClipJob(
     clip.hookText = resolvedHookText;
     clip.ctaText = resolvedCtaText;
     clip.ctaDuration = resolvedCtaDuration;
+    clip.hookStylePresetId = hookStylePresetId ?? clip.hookStylePresetId;
+    clip.ctaStylePresetId = ctaStylePresetId ?? clip.ctaStylePresetId;
     clip.captionPreset = preset;
     clip.outputPath = `/generated-clips/${videoId}/${clipId}.mp4`;
     clip.outputFileSize = renderResult.fileSizeBytes;

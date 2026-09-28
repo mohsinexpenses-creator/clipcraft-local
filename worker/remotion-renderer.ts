@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { AppError, toErrorMessage } from '../lib/errors';
 import { getVideoMetadata } from '../lib/ffmpeg';
-import { CaptionPreset, WordTimestamp } from '../lib/types';
+import { CaptionPreset, OverlayStylePreset, WordTimestamp } from '../lib/types';
 import { normalizeFps } from './ffmpeg-pipeline';
 import { startClipMediaServer } from './clip-http-server';
 import { color, log } from '../lib/logger';
@@ -18,6 +18,10 @@ export interface RenderCaptionsOptions {
   ctaDuration: number;
   words: WordTimestamp[];
   preset: CaptionPreset;
+  /** Visual style of the hook intro overlay. */
+  hookStyle: OverlayStylePreset;
+  /** Visual style of the end-of-clip CTA overlay. */
+  ctaStyle: OverlayStylePreset;
   onProgress?: (progress: number) => void;
 }
 
@@ -113,17 +117,22 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 export async function renderCaptionsAndOverlays(
   options: RenderCaptionsOptions
 ): Promise<RenderCaptionsResult> {
-  const { videoPath, outputPath, hookText, hookDuration, hookStart, ctaText, ctaDuration, words, preset, onProgress } =
+  const { videoPath, outputPath, hookText, hookDuration, hookStart, ctaText, ctaDuration, words, preset, hookStyle, ctaStyle, onProgress } =
     options;
 
   log.detail(`Captions & overlays for ${color.bold(path.basename(videoPath))}`);
   if (onProgress) onProgress(82);
 
   if (!hookText.trim()) {
-    throw new AppError('Caption rendering cannot start without hook text.', {
-      status: 400,
-      resolution: 'Generate hook text again or enter a non-empty hook text before rendering.',
-    });
+    if (hookDuration > 0) {
+      throw new AppError('Caption rendering cannot start without hook text.', {
+        status: 400,
+        resolution:
+          'Enter a non-empty hook text, or set the hook duration to 0 to render the clip without a hook overlay.',
+      });
+    }
+    // hookDuration 0 + empty text = the hook overlay is intentionally off.
+    log.detail('Rendering without hook text (hook overlay disabled).');
   }
 
   if (words.length === 0) {
@@ -204,6 +213,8 @@ export async function renderCaptionsAndOverlays(
       ctaDuration,
       words,
       preset,
+      hookStyle,
+      ctaStyle,
     };
 
     const composition = await withTimeout(

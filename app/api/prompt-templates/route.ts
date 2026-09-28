@@ -1,5 +1,10 @@
 import { NextResponse } from 'next/server';
-import { getPromptTemplate, listPromptTemplates, savePromptTemplate } from '@/lib/db';
+import {
+  getPromptTemplate,
+  listPromptTemplates,
+  resetPromptTemplates,
+  savePromptTemplate,
+} from '@/lib/db';
 import { toErrorMessage, toErrorStatus } from '@/lib/errors';
 
 export async function GET(request: Request) {
@@ -17,6 +22,37 @@ export async function GET(request: Request) {
   } catch (error) {
     return NextResponse.json(
       { error: toErrorMessage(error, 'Failed to load prompt templates.') },
+      { status: toErrorStatus(error, 500) }
+    );
+  }
+}
+
+/**
+ * POST with `{ "action": "reset" }` restores the shipped default prompt
+ * templates (e.g. after an app update brings a new built-in viral prompt).
+ * User-edited values for the built-in templates are overwritten.
+ */
+export async function POST(request: Request) {
+  try {
+    let body: Record<string, unknown> = {};
+    try {
+      body = (await request.json()) as Record<string, unknown>;
+    } catch {
+      // fall through - the action check below rejects an empty body
+    }
+
+    if (body.action !== 'reset') {
+      return NextResponse.json(
+        { error: 'Unsupported action. Send { "action": "reset" } to restore default prompt templates.' },
+        { status: 400 }
+      );
+    }
+
+    const templates = await resetPromptTemplates();
+    return NextResponse.json({ success: true, templates });
+  } catch (error) {
+    return NextResponse.json(
+      { error: toErrorMessage(error, 'Failed to reset prompt templates.') },
       { status: toErrorStatus(error, 500) }
     );
   }

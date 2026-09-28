@@ -1,5 +1,6 @@
 import React from 'react';
 import { interpolate, spring } from 'remotion';
+import { OverlayStylePreset } from '../lib/types';
 
 interface CTAOverlayProps {
   ctaText: string;
@@ -7,6 +8,8 @@ interface CTAOverlayProps {
   totalDurationInSeconds: number;
   frame: number;
   fps: number;
+  /** Visual style preset for the CTA card. */
+  style?: OverlayStylePreset;
 }
 
 export interface CtaWindow {
@@ -60,6 +63,21 @@ export function getCtaBottomLiftPercent(
   return Math.min(inProgress, outProgress) * 15;
 }
 
+function animationTransform(
+  animationStyle: OverlayStylePreset['animationStyle'],
+  pop: number
+): string {
+  switch (animationStyle) {
+    case 'slide-up':
+      return `translateY(${((1 - pop) * 50).toFixed(2)}px)`;
+    case 'fade':
+    case 'none':
+      return 'none';
+    default:
+      return `translateY(${((1 - pop) * 40).toFixed(2)}px) scale(${(0.94 + pop * 0.06).toFixed(4)})`;
+  }
+}
+
 /** End-of-clip call to action. Frame-driven so preview and render always match. */
 export const CTAOverlay: React.FC<CTAOverlayProps> = ({
   ctaText,
@@ -67,6 +85,7 @@ export const CTAOverlay: React.FC<CTAOverlayProps> = ({
   totalDurationInSeconds,
   frame,
   fps,
+  style,
 }) => {
   const text = ctaText?.trim();
   if (!text || ctaDurationInSeconds <= 0) return null;
@@ -94,16 +113,24 @@ export const CTAOverlay: React.FC<CTAOverlayProps> = ({
     durationInFrames: Math.max(8, Math.round(0.4 * fps)),
   });
 
+  const fontFamily = style?.fontFamily || 'Inter, system-ui, sans-serif';
+  const fontSize = style?.fontSize ?? 34;
+  const fontWeight =
+    style?.fontWeight === 'normal' ? 400 : style?.fontWeight === 'bold' ? 700 : style?.fontWeight === 'extra-bold' ? 800 : 900;
+
+  // positionY is "% from top"; the legacy default card sat at bottom 12%.
+  const topPercent = style?.positionY ?? 70;
+
   return (
     <div
       style={{
         position: 'absolute',
         left: '7%',
         right: '7%',
-        bottom: '12%',
+        top: `${topPercent}%`,
         zIndex: 35,
         opacity,
-        transform: `translateY(${((1 - pop) * 40).toFixed(2)}px) scale(${(0.94 + pop * 0.06).toFixed(4)})`,
+        transform: animationTransform(style?.animationStyle ?? 'pop', pop),
         display: 'flex',
         justifyContent: 'center',
       }}
@@ -112,23 +139,23 @@ export const CTAOverlay: React.FC<CTAOverlayProps> = ({
         style={{
           width: '100%',
           maxWidth: 880,
-          borderRadius: 24,
+          borderRadius: style?.borderRadius ?? 24,
           padding: '18px 22px',
-          background: 'linear-gradient(135deg, rgba(34,197,94,0.94), rgba(14,165,233,0.94))',
+          background: style?.backgroundColor || 'linear-gradient(135deg, rgba(34,197,94,0.94), rgba(14,165,233,0.94))',
           boxShadow: '0 18px 50px rgba(0, 0, 0, 0.45)',
-          border: '2px solid rgba(255,255,255,0.2)',
+          border: `${style?.borderWidth ?? 2}px solid ${style?.borderColor || 'rgba(255,255,255,0.2)'}`,
           textAlign: 'center',
         }}
       >
         <div
           style={{
-            fontSize: 34,
+            fontSize,
             lineHeight: 1.2,
-            fontWeight: 900,
-            color: '#FFFFFF',
-            textTransform: 'uppercase',
+            fontWeight,
+            color: style?.textColor || '#FFFFFF',
+            textTransform: style?.textTransform === 'none' ? 'none' : 'uppercase',
             textShadow: '0 3px 12px rgba(0, 0, 0, 0.35)',
-            fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif',
+            fontFamily,
           }}
         >
           {text}

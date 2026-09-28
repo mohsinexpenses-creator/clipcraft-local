@@ -36,6 +36,15 @@ export async function POST(request: Request) {
     const filterPreset = typeof body.filterPreset === 'string' ? body.filterPreset : 'vibrant';
     const captionPresetId =
       typeof body.captionPresetId === 'string' ? body.captionPresetId : 'preset-bold-yellow';
+    const layout = body.layout === 'split-screen' ? 'split-screen' : 'speaker-focus';
+    const hookStylePresetIdRaw =
+      typeof body.hookStylePresetId === 'string' && body.hookStylePresetId
+        ? body.hookStylePresetId
+        : undefined;
+    const ctaStylePresetIdRaw =
+      typeof body.ctaStylePresetId === 'string' && body.ctaStylePresetId
+        ? body.ctaStylePresetId
+        : undefined;
 
     if (!clipId || !videoId) {
       return NextResponse.json({ error: 'Missing clipId or videoId' }, { status: 400 });
@@ -83,6 +92,9 @@ export async function POST(request: Request) {
     if (ctaText !== undefined) existingClip.ctaText = ctaText;
     existingClip.filterPreset = filterPreset;
     existingClip.captionPresetId = captionPresetId;
+    existingClip.layout = layout;
+    existingClip.hookStylePresetId = hookStylePresetIdRaw ?? existingClip.hookStylePresetId;
+    existingClip.ctaStylePresetId = ctaStylePresetIdRaw ?? existingClip.ctaStylePresetId;
 
     existingClip.status = 'pending';
     existingClip.progress = 0;
@@ -100,6 +112,9 @@ export async function POST(request: Request) {
       ctaDuration: existingClip.ctaDuration,
       filterPreset: existingClip.filterPreset,
       captionPresetId: existingClip.captionPresetId,
+      layout: existingClip.layout,
+      hookStylePresetId: existingClip.hookStylePresetId,
+      ctaStylePresetId: existingClip.ctaStylePresetId,
     };
 
     await enqueueClipJob(jobData);

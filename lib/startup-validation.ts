@@ -346,6 +346,40 @@ async function validatePromptTemplates(): Promise<StartupCheck> {
 }
 
 /**
+ * YuNet face-detection model for active-speaker tracking. Its absence is a
+ * WARNING (renders still work with a static center crop), not an error.
+ */
+async function validateYunetModel(): Promise<StartupCheck> {
+  const modelPath = path.join(
+    process.cwd(),
+    'models',
+    'yunet',
+    'face_detection_yunet_2023mar.onnx'
+  );
+  try {
+    const stat = fs.statSync(modelPath);
+    if (stat.isFile() && stat.size > 100_000) {
+      return createCheck({
+        id: 'yunet-model',
+        label: 'YuNet face detection model',
+        status: 'ok',
+        summary: 'YuNet model present - active-speaker tracking is enabled.',
+        details: modelPath,
+      });
+    }
+    throw new Error(`file at ${modelPath} is unexpectedly small (${stat.size} bytes)`);
+  } catch {
+    return createCheck({
+      id: 'yunet-model',
+      label: 'YuNet face detection model',
+      status: 'warning',
+      summary: 'YuNet model not found - clips will use a static center crop instead of speaker tracking.',
+      resolution: 'Run "npm run setup:yunet" to download face_detection_yunet_2023mar.onnx.',
+    });
+  }
+}
+
+/**
  * `createRequire` that works in both ways this code can run:
  * - the worker (tsx): `__filename` is a real path, so use it;
  * - Next.js dev (Turbopack): `__filename` is a VIRTUAL path like
@@ -423,6 +457,7 @@ export async function runStartupValidation(): Promise<StartupValidationResult> {
     validateTranscription(),
     validateAiProvider(),
     validatePromptTemplates(),
+    validateYunetModel(),
     validateRemotion(),
   ]);
 

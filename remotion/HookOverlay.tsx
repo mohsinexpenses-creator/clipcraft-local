@@ -1,5 +1,6 @@
 import React from 'react';
 import { interpolate, spring } from 'remotion';
+import { OverlayStylePreset } from '../lib/types';
 
 interface HookOverlayProps {
   hookText: string;
@@ -7,19 +8,44 @@ interface HookOverlayProps {
   hookDurationInSeconds: number;
   frame: number;
   fps: number;
+  /** Visual style preset for the hook card. */
+  style?: OverlayStylePreset;
+}
+
+function animationTransform(
+  animationStyle: OverlayStylePreset['animationStyle'],
+  pop: number,
+  drift: number
+): string {
+  switch (animationStyle) {
+    case 'slide-up':
+      return `translateY(${((1 - pop) * 60 + drift / 2).toFixed(2)}px) scale(${(0.92 + pop * 0.08).toFixed(4)})`;
+    case 'fade':
+      return 'none';
+    case 'none':
+      return 'none';
+    default:
+      return `translateY(${drift.toFixed(2)}px) scale(${(0.86 + pop * 0.14).toFixed(4)})`;
+  }
+}
+
+function animationOpacity(animationStyle: OverlayStylePreset['animationStyle'], pop: number): number {
+  return animationStyle === 'fade' ? Math.max(pop, 0.02) : 1;
 }
 
 /**
  * Big "stop scrolling" text shown over the duplicated hook intro (0 -> hookDuration).
  *
  * Frame-driven (interpolate/spring) instead of CSS transitions so the render is
- * deterministic and matches the in-app preview.
+ * deterministic and matches the in-app preview. Styling comes from the hook
+ * OverlayStylePreset (font, colors, card, badge, position, animation).
  */
 export const HookOverlay: React.FC<HookOverlayProps> = ({
   hookText,
   hookDurationInSeconds,
   frame,
   fps,
+  style,
 }) => {
   const text = hookText?.trim();
   if (!text || hookDurationInSeconds <= 0) return null;
@@ -30,10 +56,11 @@ export const HookOverlay: React.FC<HookOverlayProps> = ({
   const fadeOutFrames = Math.max(4, Math.round(0.25 * fps));
   const totalFrames = Math.max(fadeOutFrames + 1, Math.round(hookDurationInSeconds * fps));
 
-  const opacity = interpolate(frame, [0, 6, totalFrames - fadeOutFrames, totalFrames], [0, 1, 1, 0], {
-    extrapolateLeft: 'clamp',
-    extrapolateRight: 'clamp',
-  });
+  const opacity =
+    interpolate(frame, [0, 6, totalFrames - fadeOutFrames, totalFrames], [0, 1, 1, 0], {
+      extrapolateLeft: 'clamp',
+      extrapolateRight: 'clamp',
+    }) * animationOpacity(style?.animationStyle ?? 'pop', 1);
   if (opacity <= 0.01) return null;
 
   const pop = spring({
@@ -48,11 +75,17 @@ export const HookOverlay: React.FC<HookOverlayProps> = ({
     extrapolateRight: 'clamp',
   });
 
+  const fontFamily =
+    style?.fontFamily || 'Inter, Impact, Arial Black, system-ui, sans-serif';
+  const fontSize = style?.fontSize ?? 38;
+  const fontWeight =
+    style?.fontWeight === 'normal' ? 400 : style?.fontWeight === 'bold' ? 700 : style?.fontWeight === 'extra-bold' ? 800 : 900;
+
   return (
     <div
       style={{
         position: 'absolute',
-        top: '16%',
+        top: `${style?.positionY ?? 12}%`,
         left: '6%',
         right: '6%',
         zIndex: 30,
@@ -61,45 +94,48 @@ export const HookOverlay: React.FC<HookOverlayProps> = ({
         flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
-        transform: `translateY(${drift.toFixed(2)}px) scale(${(0.86 + pop * 0.14).toFixed(4)})`,
+        transform: animationTransform(style?.animationStyle ?? 'pop', pop, drift),
       }}
     >
-      <div
-        style={{
-          backgroundColor: 'rgba(239, 68, 68, 0.95)',
-          color: '#FFFFFF',
-          fontSize: 14,
-          fontWeight: 800,
-          textTransform: 'uppercase',
-          letterSpacing: 2,
-          padding: '4px 14px',
-          borderRadius: 20,
-          marginBottom: 8,
-          boxShadow: '0 4px 12px rgba(239, 68, 68, 0.5)',
-          fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif',
-        }}
-      >
-        Hook Intro
-      </div>
+      {style?.showBadge !== false && (
+        <div
+          style={{
+            backgroundColor: 'rgba(239, 68, 68, 0.95)',
+            color: '#FFFFFF',
+            fontSize: 14,
+            fontWeight: 800,
+            textTransform: 'uppercase',
+            letterSpacing: 2,
+            padding: '4px 14px',
+            borderRadius: 20,
+            marginBottom: 8,
+            boxShadow: '0 4px 12px rgba(239, 68, 68, 0.5)',
+            fontFamily,
+          }}
+        >
+          {style?.badgeText || 'Hook Intro'}
+        </div>
+      )}
 
       <div
         style={{
-          background: 'linear-gradient(135deg, rgba(0, 0, 0, 0.88), rgba(15, 23, 42, 0.92))',
-          border: '2px solid rgba(255, 230, 0, 0.9)',
-          borderRadius: 16,
+          background: style?.backgroundColor || 'rgba(15, 23, 42, 0.92)',
+          border: `${style?.borderWidth ?? 2}px solid ${style?.borderColor || 'rgba(255, 230, 0, 0.9)'}`,
+          borderRadius: style?.borderRadius ?? 16,
           padding: '20px 24px',
           textAlign: 'center',
-          boxShadow: '0 12px 32px rgba(0, 0, 0, 0.7), 0 0 20px rgba(255, 230, 0, 0.3)',
+          boxShadow: '0 12px 32px rgba(0, 0, 0, 0.7)',
+          maxWidth: '100%',
         }}
       >
         <span
           style={{
-            fontFamily: 'Inter, Impact, Arial Black, system-ui, sans-serif',
-            fontSize: 38,
-            fontWeight: 900,
-            color: '#FFE600',
+            fontFamily,
+            fontSize,
+            fontWeight,
+            color: style?.textColor || '#FFE600',
             lineHeight: 1.2,
-            textTransform: 'uppercase',
+            textTransform: style?.textTransform === 'none' ? 'none' : 'uppercase',
             letterSpacing: 1,
             textShadow: '2px 2px 8px rgba(0, 0, 0, 0.9)',
             display: 'block',

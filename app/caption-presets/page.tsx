@@ -1,9 +1,11 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { CaptionPreset } from '@/lib/types';
+import { CaptionPreset, OverlayStylePreset } from '@/lib/types';
 import { CaptionPreview } from '@/components/caption-preview';
-import { DEFAULT_CAPTION_PRESETS } from '@/lib/presets';
+import { OverlayStyleEditor } from '@/components/overlay-style-editor';
+import { DEFAULT_CAPTION_PRESETS, DEFAULT_OVERLAY_STYLE_PRESETS } from '@/lib/presets';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
@@ -85,6 +87,12 @@ export default function CaptionPresetsPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [hookStyle, setHookStyle] = useState<OverlayStylePreset>(
+    DEFAULT_OVERLAY_STYLE_PRESETS.find((p) => p.kind === 'hook')!
+  );
+  const [ctaStyle, setCtaStyle] = useState<OverlayStylePreset>(
+    DEFAULT_OVERLAY_STYLE_PRESETS.find((p) => p.kind === 'cta')!
+  );
 
   const initializedRef = useRef(false);
 
@@ -214,10 +222,10 @@ export default function CaptionPresetsPage() {
       {/* Page header */}
       <div className="flex animate-fade-up flex-col justify-between gap-4 sm:flex-row sm:items-center">
         <div className="space-y-1">
-          <h1 className="text-2xl font-semibold tracking-tight">Caption presets</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">Style presets</h1>
           <p className="text-sm text-muted-foreground">
-            Design caption styles with live preview — typography, colors, stroke, and
-            animation.
+            Design caption, hook overlay, and CTA overlay styles with live preview —
+            typography, colors, card look, and animation.
           </p>
         </div>
         <Button size="lg" onClick={handleCreateNewPreset}>
@@ -236,6 +244,14 @@ export default function CaptionPresetsPage() {
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
         {/* Editor */}
         <div className="animate-fade-up space-y-4 lg:col-span-7" style={{ animationDelay: '60ms' }}>
+          <Tabs defaultValue="captions">
+            <TabsList>
+              <TabsTrigger value="captions">Captions</TabsTrigger>
+              <TabsTrigger value="hook">Hook overlay</TabsTrigger>
+              <TabsTrigger value="cta">CTA overlay</TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="captions" className="space-y-4">
           {/* Preset selector */}
           <div className="flex flex-wrap gap-2">
             {presets.map((p) => {
@@ -454,6 +470,16 @@ export default function CaptionPresetsPage() {
               </Button>
             </CardFooter>
           </Card>
+            </TabsContent>
+
+            <TabsContent value="hook">
+              <OverlayStyleEditor kind="hook" value={hookStyle} onChange={setHookStyle} />
+            </TabsContent>
+
+            <TabsContent value="cta">
+              <OverlayStyleEditor kind="cta" value={ctaStyle} onChange={setCtaStyle} />
+            </TabsContent>
+          </Tabs>
         </div>
 
         {/* Live preview */}
@@ -468,11 +494,13 @@ export default function CaptionPresetsPage() {
               preset={activePreset}
               hookText={sampleHookText}
               ctaText={sampleCtaText}
+              hookStyle={hookStyle}
+              ctaStyle={ctaStyle}
             />
 
             <p className="text-center text-xs leading-relaxed text-muted-foreground">
               Interactive Remotion Player showing the 9:16 layout, hook overlay, and
-              word-synced captions.
+              word-synced captions. Switch tabs to style the hook and CTA overlays.
             </p>
           </div>
         </div>

@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { Db, MongoClient } from 'mongodb';
-import { CaptionPreset, ClipRecord, PromptTemplate, VideoRecord } from './types';
-import { DEFAULT_CAPTION_PRESETS, DEFAULT_PROMPT_TEMPLATES } from './presets';
+import { CaptionPreset, ClipRecord, OverlayStylePreset, PromptTemplate, VideoRecord } from './types';
+import { DEFAULT_CAPTION_PRESETS, DEFAULT_OVERLAY_STYLE_PRESETS, DEFAULT_PROMPT_TEMPLATES } from './presets';
 import { AppError, ensureEnvVar, toErrorMessage } from './errors';
 import { log } from './logger';
 
@@ -15,6 +15,7 @@ async function initializeSeeds(database: Db) {
 
   const promptTemplates = database.collection<PromptTemplate>('promptTemplates');
   const captionPresets = database.collection<CaptionPreset>('captionPresets');
+  const overlayStylePresets = database.collection<OverlayStylePreset>('overlayStylePresets');
 
   await Promise.all([
     ...DEFAULT_PROMPT_TEMPLATES.map((template) =>
@@ -26,6 +27,13 @@ async function initializeSeeds(database: Db) {
     ),
     ...DEFAULT_CAPTION_PRESETS.map((preset) =>
       captionPresets.updateOne(
+        { _id: preset._id },
+        { $setOnInsert: preset },
+        { upsert: true }
+      )
+    ),
+    ...DEFAULT_OVERLAY_STYLE_PRESETS.map((preset) =>
+      overlayStylePresets.updateOne(
         { _id: preset._id },
         { $setOnInsert: preset },
         { upsert: true }
@@ -174,6 +182,36 @@ export async function savePromptTemplate(template: PromptTemplate): Promise<Prom
   return template;
 }
 
+/**
+ * Overwrite the built-in prompt templates with the shipped defaults.
+ *
+ * Seeding uses `$setOnInsert` so user edits survive restarts - this function is
+ * the explicit "restore the defaults" escape hatch (e.g. to pick up a new
+ * built-in viral prompt after an app update). Custom templates with other _ids
+ * are untouched. The `_id` stays in the filter only - never in `$set` - so
+ * MongoDB's immutable `_id` rule cannot trip.
+ */
+export async function resetPromptTemplates(): Promise<PromptTemplate[]> {
+  const mongodb = await getDb();
+  const collection = mongodb.collection<PromptTemplate>('promptTemplates');
+
+  await Promise.all(
+    DEFAULT_PROMPT_TEMPLATES.map((template) => {
+      const { _id, ...rest } = template;
+      return collection.updateOne(
+        { _id },
+        { $set: { ...rest, updatedAt: new Date().toISOString() } },
+        { upsert: true }
+      );
+    })
+  );
+
+  return DEFAULT_PROMPT_TEMPLATES.map((template) => ({
+    ...template,
+    updatedAt: new Date().toISOString(),
+  }));
+}
+
 export async function listCaptionPresets(): Promise<CaptionPreset[]> {
   const mongodb = await getDb();
   return (await mongodb.collection<CaptionPreset>('captionPresets').find().toArray()) as CaptionPreset[];
@@ -211,4 +249,74 @@ export async function deleteCaptionPreset(id: string): Promise<boolean> {
 
   await mongodb.collection<CaptionPreset>('captionPresets').deleteOne({ _id: id });
   return true;
+}
+
+export async function listOverlayStylePresets(kind?: 'hook' | 'cta'): Promise<OverlayStylePreset[]> {
+  const mongodb = await getDb();
+  const query = kind ? { kind } : {};
+  return (await mongodb
+    .collection<OverlayStylePreset>('overlayStylePresets')
+    .find(query)
+    .sort({ kind: 1, name: 1 })
+    .toArray()) as OverlayStylePreset[];
+}
+
+export async function getOverlayStylePreset(id: string): Promise<OverlayStylePreset | null> {
+  const mongodb = await getDb();
+  return (await mongodb
+    .collection<OverlayStylePreset>('overlayStylePresets')
+    .findOne({ _id: id })) as OverlayStylePreset | null;
+}
+
+export async function saveOverlayStylePreset(preset: OverlayStylePreset): Promise<OverlayStylePreset> {
+  const mongodb = await getDb();
+  if (!preset._id) preset._id = `overlay-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+  preset.updatedAt = new Date().toISOString();
+  if (!preset.createdAt) preset.createdAt = preset.updatedAt;
+
+  await mongodb.collection<OverlayStylePreset>('overlayStylePresets').updateOne(
+    { _id: preset._id },
+    { $set: preset },
+    { upsert: true }
+  );
+
+  return preset;
+}
+
+export async function deleteOverlayStylePreset(id: string): Promise<boolean> {
+  const mongodb = await getDb();
+  const existing = await getOverlayStylePreset(id);
+  if (!existing) return false;
+
+  if (existing.isDefault) {
+    throw new AppError('Default overlay style presets cannot be deleted.', {
+      status: 400,
+      resolution: 'Create a custom style preset if you need a variation instead of deleting the built-in presets.',
+    });
+  }
+
+  await mongodb.collection<OverlayStylePreset>('overlayStylePresets').deleteOne({ _id: id });
+  return true;
+}
+
+/** Restore the shipped overlay style presets (hook + CTA). Custom presets are kept. */
+export async function resetOverlayStylePresets(): Promise<OverlayStylePreset[]> {
+  const mongodb = await getDb();
+  const collection = mongodb.collection<OverlayStylePreset>('overlayStylePresets');
+
+  await Promise.all(
+    DEFAULT_OVERLAY_STYLE_PRESETS.map((preset) => {
+      const { _id, ...rest } = preset;
+      return collection.updateOne(
+        { _id },
+        { $set: { ...rest, updatedAt: new Date().toISOString() } },
+        { upsert: true }
+      );
+    })
+  );
+
+  return DEFAULT_OVERLAY_STYLE_PRESETS.map((preset) => ({
+    ...preset,
+    updatedAt: new Date().toISOString(),
+  }));
 }

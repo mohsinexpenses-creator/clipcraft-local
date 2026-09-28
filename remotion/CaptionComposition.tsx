@@ -1,6 +1,6 @@
 import React from 'react';
 import { AbsoluteFill, OffthreadVideo, useCurrentFrame, useVideoConfig } from 'remotion';
-import { CaptionPreset, WordTimestamp } from '../lib/types';
+import { CaptionPreset, OverlayStylePreset, WordTimestamp } from '../lib/types';
 import { AnimatedWord, CaptionChunk } from './AnimatedWord';
 import { CTAOverlay, getCtaBottomLiftPercent } from './CTAOverlay';
 import { HookOverlay } from './HookOverlay';
@@ -40,6 +40,10 @@ export interface CaptionCompositionProps {
   /** Word timings relative to the START of the source segment (0 = segment start). */
   words: WordTimestamp[];
   preset: CaptionPreset;
+  /** Visual style of the hook intro overlay (style preset). */
+  hookStyle?: OverlayStylePreset;
+  /** Visual style of the end-of-clip CTA overlay (style preset). */
+  ctaStyle?: OverlayStylePreset;
 }
 
 /**
@@ -111,6 +115,8 @@ export const CaptionComposition: React.FC<CaptionCompositionProps> = ({
   ctaDuration = 2.5,
   words = [],
   preset,
+  hookStyle,
+  ctaStyle,
 }) => {
   const frame = useCurrentFrame();
   const { fps, durationInFrames } = useVideoConfig();
@@ -178,7 +184,13 @@ export const CaptionComposition: React.FC<CaptionCompositionProps> = ({
       )}
 
       {hookDuration > 0 ? (
-        <HookOverlay hookText={hookText} hookDurationInSeconds={hookDuration} frame={frame} fps={fps} />
+        <HookOverlay
+          hookText={hookText}
+          hookDurationInSeconds={hookDuration}
+          frame={frame}
+          fps={fps}
+          style={hookStyle}
+        />
       ) : null}
 
       {preset ? (
@@ -198,6 +210,7 @@ export const CaptionComposition: React.FC<CaptionCompositionProps> = ({
           totalDurationInSeconds={totalDurationInSeconds}
           frame={frame}
           fps={fps}
+          style={ctaStyle}
         />
       ) : null}
     </AbsoluteFill>

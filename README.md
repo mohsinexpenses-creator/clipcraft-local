@@ -2,7 +2,10 @@ PROJECT: Personal-use AI clip generator (Next.js, no Python)
 
 > **This file is the original product specification and is kept unchanged.**
 > For installation, environment variables, running the worker and troubleshooting,
-> see **[SETUP.md](./SETUP.md)**.
+> see **[SETUP.md](./SETUP.md)**. Feature docs:
+> **[docs/VIRAL_PROMPT_GUIDE.md](./docs/VIRAL_PROMPT_GUIDE.md)** (pre-generation options),
+> **[docs/LAYOUTS.md](./docs/LAYOUTS.md)** (speaker focus / split screen + speaker tracking),
+> **[docs/OVERLAYS.md](./docs/OVERLAYS.md)** (hook/CTA text prompts + style presets).
 
 
 GOAL

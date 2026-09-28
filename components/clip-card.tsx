@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useState } from 'react';
-import { ClipRecord, CaptionPreset } from '@/lib/types';
+import React, { useEffect, useState } from 'react';
+import { ClipRecord, CaptionPreset, ClipLayout, OverlayStylePreset } from '@/lib/types';
 import { DEFAULT_FILTER_PRESETS } from '@/lib/presets';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -80,8 +80,33 @@ export const ClipCard: React.FC<ClipCardProps> = ({ clip, captionPresets, onRefr
   const [ctaText, setCtaText] = useState(clip.ctaText || '');
   const [hookDuration] = useState(clip.hookDuration ?? 3);
   const [ctaDuration] = useState(clip.ctaDuration ?? 2.5);
+  const [layout, setLayout] = useState<ClipLayout>(clip.layout || 'speaker-focus');
+  const [hookStylePresetId, setHookStylePresetId] = useState(
+    clip.hookStylePresetId || 'hook-bold-yellow'
+  );
+  const [ctaStylePresetId, setCtaStylePresetId] = useState(
+    clip.ctaStylePresetId || 'cta-gradient-green'
+  );
+  const [overlayPresets, setOverlayPresets] = useState<OverlayStylePreset[]>([]);
   const [isTriggering, setIsTriggering] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let ignore = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/overlay-presets');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!ignore && Array.isArray(data.presets)) setOverlayPresets(data.presets);
+      } catch {
+        // Style pickers stay on their defaults when the API is unavailable.
+      }
+    })();
+    return () => {
+      ignore = true;
+    };
+  }, []);
 
   const handleRender = async () => {
     setIsTriggering(true);
@@ -95,12 +120,15 @@ export const ClipCard: React.FC<ClipCardProps> = ({ clip, captionPresets, onRefr
           videoId: clip.videoId,
           start: clip.start,
           end: clip.end,
-          hookDuration,
+          hookDuration: hookText.trim() ? (hookDuration > 0 ? hookDuration : 3) : 0,
           hookText,
           ctaText,
           ctaDuration,
           filterPreset,
           captionPresetId,
+          layout,
+          hookStylePresetId,
+          ctaStylePresetId,
         }),
       });
 
@@ -201,7 +229,7 @@ export const ClipCard: React.FC<ClipCardProps> = ({ clip, captionPresets, onRefr
                 {Math.round(clip.end - clip.start)}s segment
               </p>
               <h3 className="truncate text-base font-semibold tracking-tight">
-                {clip.hookText || 'Short clip segment'}
+                {clip.title || clip.hookText || 'Short clip segment'}
               </h3>
             </div>
             <ClipStatusBadge status={clip.status} />
@@ -211,6 +239,45 @@ export const ClipCard: React.FC<ClipCardProps> = ({ clip, captionPresets, onRefr
             <p className="mt-3 rounded-lg bg-muted/60 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
               <span className="font-medium text-foreground/80">Why it works: </span>
               {clip.viralReason}
+            </p>
+          )}
+
+          {(clip.retentionStrength ||
+            clip.psychologicalTrigger ||
+            clip.safetyRisk ||
+            clip.scores) && (
+            <div className="mt-3 flex flex-wrap items-center gap-1.5">
+              {clip.retentionStrength && (
+                <Badge variant="secondary">🎯 Retention: {clip.retentionStrength}</Badge>
+              )}
+              {clip.psychologicalTrigger && (
+                <Badge variant="secondary">🧠 {clip.psychologicalTrigger}</Badge>
+              )}
+              {clip.safetyRisk && (
+                <Badge
+                  variant={clip.safetyRisk === 'High' ? 'destructive' : 'outline'}
+                  className={clip.safetyRisk === 'Medium' ? 'border-amber-500/50 text-amber-600 dark:text-amber-400' : undefined}
+                >
+                  {clip.safetyRisk === 'Low' ? '✅' : '⚠️'} Safety: {clip.safetyRisk}
+                </Badge>
+              )}
+              {clip.scores && (
+                <span className="text-[11px] text-muted-foreground">
+                  Viral {clip.scores.viral}/10 · Retention {clip.scores.retention}/10 ·
+                  Controversy {clip.scores.controversy}/10 · Shareability {clip.scores.shareability}/10
+                </span>
+              )}
+            </div>
+          )}
+
+          {clip.hashtags && clip.hashtags.length > 0 && (
+            <p className="mt-2 text-xs text-muted-foreground">{clip.hashtags.join(' ')}</p>
+          )}
+
+          {clip.safetyNotes && clip.safetyNotes !== 'No risky wording detected.' && (
+            <p className="mt-2 rounded-lg bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:text-amber-400">
+              <span className="font-medium">Safety notes: </span>
+              {clip.safetyNotes}
             </p>
           )}
 
@@ -242,9 +309,18 @@ export const ClipCard: React.FC<ClipCardProps> = ({ clip, captionPresets, onRefr
                 id={`hook-${clip._id}`}
                 value={hookText}
                 onChange={(e) => setHookText(e.target.value)}
-                placeholder="e.g. WATCH THIS FIRST"
+                placeholder={
+                  hookText.trim()
+                    ? 'e.g. WATCH THIS FIRST'
+                    : 'Hook overlay off — type text to enable it'
+                }
                 disabled={isProcessing}
               />
+              {!hookText.trim() && (
+                <p className="text-xs text-muted-foreground">
+                  This clip renders without a hook intro/overlay until hook text is added.
+                </p>
+              )}
             </div>
 
             <div className="space-y-2 sm:col-span-2">
@@ -256,6 +332,23 @@ export const ClipCard: React.FC<ClipCardProps> = ({ clip, captionPresets, onRefr
                 placeholder="e.g. FOLLOW FOR MORE"
                 disabled={isProcessing}
               />
+            </div>
+
+            <div className="space-y-2">
+              <Label id={`layout-label-${clip._id}`}>Clip layout</Label>
+              <Select
+                value={layout}
+                onValueChange={(v) => setLayout(v === 'split-screen' ? 'split-screen' : 'speaker-focus')}
+                disabled={isProcessing}
+              >
+                <SelectTrigger aria-labelledby={`layout-label-${clip._id}`}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="speaker-focus">Speaker focus · follows the talker</SelectItem>
+                  <SelectItem value="split-screen">Split screen · two speakers</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
 
             <div className="space-y-2">
@@ -292,6 +385,52 @@ export const ClipCard: React.FC<ClipCardProps> = ({ clip, captionPresets, onRefr
                   {captionPresets.map((cp) => (
                     <SelectItem key={cp._id} value={cp._id}>
                       {cp.name} · {cp.animationStyle}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label id={`hook-style-label-${clip._id}`}>Hook style</Label>
+              <Select
+                value={hookStylePresetId}
+                onValueChange={(v) => setHookStylePresetId(String(v ?? 'hook-bold-yellow'))}
+                disabled={isProcessing}
+              >
+                <SelectTrigger aria-labelledby={`hook-style-label-${clip._id}`}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {(overlayPresets.filter((p) => p.kind === 'hook').length
+                    ? overlayPresets.filter((p) => p.kind === 'hook')
+                    : [{ _id: 'hook-bold-yellow', name: 'Bold Yellow Punch' }] as OverlayStylePreset[]
+                  ).map((p) => (
+                    <SelectItem key={p._id} value={p._id}>
+                      {p.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label id={`cta-style-label-${clip._id}`}>CTA style</Label>
+              <Select
+                value={ctaStylePresetId}
+                onValueChange={(v) => setCtaStylePresetId(String(v ?? 'cta-gradient-green'))}
+                disabled={isProcessing}
+              >
+                <SelectTrigger aria-labelledby={`cta-style-label-${clip._id}`}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {(overlayPresets.filter((p) => p.kind === 'cta').length
+                    ? overlayPresets.filter((p) => p.kind === 'cta')
+                    : [{ _id: 'cta-gradient-green', name: 'Green Gradient Card' }] as OverlayStylePreset[]
+                  ).map((p) => (
+                    <SelectItem key={p._id} value={p._id}>
+                      {p.name}
                     </SelectItem>
                   ))}
                 </SelectContent>

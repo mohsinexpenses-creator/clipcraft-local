@@ -38,12 +38,61 @@ export interface VideoRecord {
   updatedAt: string;
 }
 
+/**
+ * User-facing knobs for a viral detection run, collected on the dashboard
+ * before the AI is called.
+ */
+export interface ViralDetectionOptions {
+  /** How many clips to return, ranked by viral potential (highest first). */
+  clipCount: number;
+  /** Hard minimum clip length in seconds (clips shorter than this are dropped). */
+  minClipDuration: number;
+  /** Hard maximum clip length in seconds (longer clips are trimmed to this). */
+  maxClipDuration: number;
+  /** When false, no on-screen hook text is generated or rendered. */
+  includeHookText: boolean;
+}
+
+export const DEFAULT_VIRAL_OPTIONS: ViralDetectionOptions = {
+  clipCount: 10,
+  minClipDuration: 60,
+  maxClipDuration: 90,
+  includeHookText: true,
+};
+
+/** Per-dimension engagement scores produced by the viral prompt (each /10). */
+export interface ClipScores {
+  viral: number;
+  retention: number;
+  controversy: number;
+  shareability: number;
+}
+
+export type RetentionStrength = 'Weak' | 'Medium' | 'Strong' | 'Extreme';
+export type SafetyRisk = 'Low' | 'Medium' | 'High';
+
 export interface ViralSegment {
   start: number;
   end: number;
   hookText: string;
   reason: string;
   score: number;
+  /** Curiosity-driven short-form title from the viral prompt. */
+  title?: string;
+  /** End-screen call-to-action text. */
+  ctaText?: string;
+  /** Exact spoken line the prompt picked as the cold-open hook. */
+  hookLine?: string;
+  /** Transcript timestamps of the hook line (absolute, video-relative seconds). */
+  hookLineStart?: number;
+  hookLineEnd?: number;
+  hashtags?: string[];
+  retentionStrength?: RetentionStrength;
+  psychologicalTrigger?: string;
+  safetyRisk?: SafetyRisk;
+  /** Exact risky words / phrases (or "No risky wording detected."). */
+  safetyNotes?: string;
+  scores?: ClipScores;
 }
 
 export interface CropWindow {
@@ -51,6 +100,37 @@ export interface CropWindow {
   y: number;
   width: number;
   height: number;
+}
+
+/** How the generated 9:16 clip frames its subject(s). */
+export type ClipLayout = 'speaker-focus' | 'split-screen';
+
+/** Visual styling for the hook intro overlay and the end-of-clip CTA overlay. */
+export interface OverlayStylePreset {
+  _id: string;
+  kind: 'hook' | 'cta';
+  name: string;
+  description?: string;
+  fontFamily: string;
+  /** Overlay text size in composition pixels (1080x1920 canvas). */
+  fontSize: number;
+  fontWeight: 'normal' | 'bold' | 'extra-bold' | 'black';
+  textColor: string;
+  /** Card background behind the text (any CSS color, rgba allowed). */
+  backgroundColor: string;
+  borderColor: string;
+  borderWidth: number;
+  borderRadius: number;
+  textTransform: 'uppercase' | 'none';
+  /** Vertical position of the card, % from the TOP of the frame. */
+  positionY: number;
+  animationStyle: 'pop' | 'fade' | 'slide-up' | 'none';
+  /** Hook only: small chip shown above the text ("Hook Intro"). */
+  showBadge?: boolean;
+  badgeText?: string;
+  isDefault?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface FilterPreset {
@@ -104,6 +184,22 @@ export interface ClipRecord {
   cropData?: CropWindow;
   viralScore: number;
   viralReason?: string;
+  /** Curiosity-driven short-form title suggested by the viral prompt. */
+  title?: string;
+  /** Exact spoken cold-open line picked by the prompt analysis. */
+  hookLine?: string;
+  hashtags?: string[];
+  retentionStrength?: RetentionStrength;
+  psychologicalTrigger?: string;
+  safetyRisk?: SafetyRisk;
+  safetyNotes?: string;
+  scores?: ClipScores;
+  /** Which generated-clip layout to use when rendering (default: speaker-focus). */
+  layout?: ClipLayout;
+  /** Visual style of the hook intro overlay. */
+  hookStylePresetId?: string;
+  /** Visual style of the end-of-clip CTA overlay. */
+  ctaStylePresetId?: string;
   outputPath?: string; // relative path to output mp4, e.g. /generated-clips/{videoId}/{clipId}.mp4
   outputFileSize?: number; // bytes, 0/undefined means the render did not produce a usable file
   outputFps?: number; // fps actually used for the render
@@ -125,6 +221,9 @@ export interface JobData {
   ctaDuration?: number;
   filterPreset: string;
   captionPresetId: string;
+  layout?: ClipLayout;
+  hookStylePresetId?: string;
+  ctaStylePresetId?: string;
 }
 
 /**
