@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { ClipRecord, CaptionPreset } from "@/lib/types";
+import { ClipRecord, CaptionPreset, TextPreset } from "@/lib/types";
 import { DEFAULT_FILTER_PRESETS } from "@/lib/presets";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -31,6 +31,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 interface ClipCardProps {
   clip: ClipRecord;
   captionPresets: CaptionPreset[];
+  textPresets: TextPreset[];
   onRefresh: () => Promise<void>;
 }
 
@@ -71,9 +72,47 @@ async function getErrorFromResponse(response: Response, fallback: string) {
   }
 }
 
+/**
+ * Tiny "fill from preset" picker shown next to the hook/CTA text inputs.
+ * Selecting a preset puts its text into the (editable) input - the user can
+ * still tweak it afterwards. Manageable under "Text Presets" in the navbar.
+ */
+function TextPresetPicker({
+  presets,
+  onPick,
+  disabled,
+  label,
+}: {
+  presets: TextPreset[];
+  onPick: (text: string) => void;
+  disabled: boolean;
+  label: string;
+}) {
+  if (presets.length === 0) return null;
+  return (
+    <Select
+      value={undefined}
+      onValueChange={(v) => v && onPick(v)}
+      disabled={disabled}
+    >
+      <SelectTrigger className="h-7 w-36 gap-1 text-xs" aria-label={label}>
+        <SelectValue placeholder="Insert preset…" />
+      </SelectTrigger>
+      <SelectContent>
+        {presets.map((p) => (
+          <SelectItem key={p._id} value={p.text}>
+            {p.text}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
 export const ClipCard: React.FC<ClipCardProps> = ({
   clip,
   captionPresets,
+  textPresets,
   onRefresh,
 }) => {
   const [filterPreset, setFilterPreset] = useState(
@@ -319,7 +358,15 @@ export const ClipCard: React.FC<ClipCardProps> = ({
           {/* Settings */}
           <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="space-y-2 sm:col-span-2">
-              <Label htmlFor={`hook-${clip._id}`}>Intro hook text</Label>
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor={`hook-${clip._id}`}>Intro hook text</Label>
+                <TextPresetPicker
+                  presets={textPresets.filter((p) => p.kind === "hook")}
+                  onPick={setHookText}
+                  disabled={isProcessing}
+                  label="Insert hook preset"
+                />
+              </div>
               <Input
                 id={`hook-${clip._id}`}
                 value={hookText}
@@ -340,7 +387,15 @@ export const ClipCard: React.FC<ClipCardProps> = ({
             </div>
 
             <div className="space-y-2 sm:col-span-2">
-              <Label htmlFor={`cta-${clip._id}`}>End CTA text</Label>
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor={`cta-${clip._id}`}>End CTA text</Label>
+                <TextPresetPicker
+                  presets={textPresets.filter((p) => p.kind === "cta")}
+                  onPick={setCtaText}
+                  disabled={isProcessing}
+                  label="Insert CTA preset"
+                />
+              </div>
               <Input
                 id={`cta-${clip._id}`}
                 value={ctaText}

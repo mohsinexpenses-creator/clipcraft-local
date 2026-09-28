@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { Db, MongoClient } from 'mongodb';
-import { CaptionPreset, ClipRecord, PromptTemplate, VideoRecord } from './types';
-import { DEFAULT_CAPTION_PRESETS, DEFAULT_PROMPT_TEMPLATES } from './presets';
+import { CaptionPreset, ClipRecord, PromptTemplate, TextPreset, VideoRecord } from './types';
+import { DEFAULT_CAPTION_PRESETS, DEFAULT_PROMPT_TEMPLATES, DEFAULT_TEXT_PRESETS } from './presets';
 import { AppError, ensureEnvVar, toErrorMessage } from './errors';
 import { log } from './logger';
 
@@ -15,6 +15,7 @@ async function initializeSeeds(database: Db) {
 
   const promptTemplates = database.collection<PromptTemplate>('promptTemplates');
   const captionPresets = database.collection<CaptionPreset>('captionPresets');
+  const textPresets = database.collection<TextPreset>('textPresets');
 
   await Promise.all([
     ...DEFAULT_PROMPT_TEMPLATES.map((template) =>
@@ -26,6 +27,13 @@ async function initializeSeeds(database: Db) {
     ),
     ...DEFAULT_CAPTION_PRESETS.map((preset) =>
       captionPresets.updateOne(
+        { _id: preset._id },
+        { $setOnInsert: preset },
+        { upsert: true }
+      )
+    ),
+    ...DEFAULT_TEXT_PRESETS.map((preset) =>
+      textPresets.updateOne(
         { _id: preset._id },
         { $setOnInsert: preset },
         { upsert: true }
@@ -240,5 +248,35 @@ export async function deleteCaptionPreset(id: string): Promise<boolean> {
   }
 
   await mongodb.collection<CaptionPreset>('captionPresets').deleteOne({ _id: id });
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Text presets (intro hook / end CTA overlay texts)
+// ---------------------------------------------------------------------------
+
+export async function listTextPresets(kind?: TextPreset['kind']): Promise<TextPreset[]> {
+  const mongodb = await getDb();
+  const query = kind ? { kind } : {};
+  return (await mongodb.collection<TextPreset>('textPresets').find(query).toArray()) as TextPreset[];
+}
+
+export async function saveTextPreset(preset: TextPreset): Promise<TextPreset> {
+  const mongodb = await getDb();
+  preset.updatedAt = new Date().toISOString();
+  if (!preset.createdAt) preset.createdAt = preset.updatedAt;
+
+  await mongodb.collection<TextPreset>('textPresets').updateOne(
+    { _id: preset._id },
+    { $set: preset },
+    { upsert: true }
+  );
+
+  return preset;
+}
+
+export async function deleteTextPreset(id: string): Promise<boolean> {
+  const mongodb = await getDb();
+  await mongodb.collection<TextPreset>('textPresets').deleteOne({ _id: id });
   return true;
 }

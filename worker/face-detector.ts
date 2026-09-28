@@ -322,7 +322,11 @@ export async function detectFacesWithMouth(
       // over every detection adds the 68 landmarks to each of them.
       const base = await faceapi.detectAllFaces(
         tensor,
-        new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.4 })
+        // 416 input + 0.3 threshold (was 320/0.4): podcast-style frames often
+        // hold a SECOND, smaller/darker speaker that the tighter old settings
+        // silently dropped - which is exactly what made both layouts look
+        // "stuck in the centre" (only one track, or none, survived).
+        new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.3 })
       );
       detections = await Promise.all(
         base.map((d) => {
@@ -601,7 +605,14 @@ export function decimateTrack(
  *   2. slew limit (a "camera pan" never teleports - it moves at most
  *      MAX_PAN_PX_PER_SEC, so a cut to another person glides over ~1s).
  */
-export const MAX_PAN_PX_PER_SEC = 900;
+/**
+ * A cut to another person must COMPLETE within a short speaking turn: two
+ * podcast speakers can sit ~900px apart in a 1920px frame, and at 900px/s the
+ * window spent most of the clip travelling - to the viewer the frame looked
+ * "stuck in the centre" between them. 1600px/s crosses the whole frame in
+ * ~0.6s: fast enough to feel like a cut, slow enough to never look shaky.
+ */
+export const MAX_PAN_PX_PER_SEC = 1600;
 const EMA_ALPHA = 0.45;
 
 export function smoothTrack(

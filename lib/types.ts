@@ -168,6 +168,19 @@ export interface PromptTemplate {
   updatedAt: string;
 }
 
+/**
+ * A reusable on-screen text preset: either an intro HOOK line or an end CTA.
+ * Stored in MongoDB (collection "textPresets") and editable in the app - the
+ * clip card offers them as quick-fill options next to the hook/CTA inputs.
+ */
+export interface TextPreset {
+  _id: string;
+  kind: 'hook' | 'cta';
+  text: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ClipRecord {
   _id: string;
   videoId: string;
@@ -196,6 +209,13 @@ export interface ClipRecord {
   title?: string;
   /** Exact spoken cold-open line picked by the prompt analysis. */
   hookLine?: string;
+  /**
+   * Transcript timestamp (absolute, seconds) where the hook line starts /
+   * ends. The renderer duplicates exactly this window as the intro hook -
+   * no second LLM call is needed to find the gripping moment.
+   */
+  hookLineStart?: number;
+  hookLineEnd?: number;
   hashtags?: string[];
   retentionStrength?: RetentionStrength;
   psychologicalTrigger?: string;

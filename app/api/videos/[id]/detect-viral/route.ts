@@ -176,6 +176,8 @@ export async function POST(
         viralReason: segment.reason,
         title: segment.title,
         hookLine: segment.hookLine,
+        hookLineStart: segment.hookLineStart,
+        hookLineEnd: segment.hookLineEnd,
         hashtags: segment.hashtags,
         retentionStrength: segment.retentionStrength,
         psychologicalTrigger: segment.psychologicalTrigger,

@@ -167,9 +167,15 @@ export async function detectSpeakerTimeline(
 
     if (tracks.length > 0) {
       for (const track of tracks) {
+        const third = videoWidth / 3;
+        const avgX = Math.round(
+          track.points.reduce((sum, p) => sum + p.cx, 0) / track.points.length
+        );
+        const side = avgX < third ? 'LEFT' : avgX > third * 2 ? 'RIGHT' : 'centre';
         log.detail(
           `  person#${track.id}: visible ${track.visibleTime.toFixed(1)}s, ` +
-          `avg face ${Math.round(track.avgW)}px, ${track.points.length} sightings`
+          `avg face ${Math.round(track.avgW)}px, ${track.points.length} sightings, ` +
+          `sits ${side} (avg x=${avgX} of ${videoWidth})`
         );
       }
     }

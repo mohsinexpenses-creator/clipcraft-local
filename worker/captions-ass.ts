@@ -15,7 +15,7 @@
  * What ASS cannot do: spring physics (overshoot) and per-word scaling on the
  * active word - the fill/slide approximation is intentional and close.
  */
-import { buildCaptionChunks, buildRenderedWords } from '../remotion/CaptionComposition';
+import { buildFinalCaptionChunks } from '../remotion/CaptionComposition';
 import { getCtaBottomLiftPercent } from '../remotion/CTAOverlay';
 import type { CaptionPreset, WordTimestamp } from '../lib/types';
 
@@ -37,6 +37,15 @@ export interface AssGenerationInput {
 const HOLD_AFTER_SECONDS = 0.35;
 const PLAY_RES_X = 1080;
 const PLAY_RES_Y = 1920;
+/**
+ * libass glyphs render visually ~15-20% smaller than the browser text at the
+ * same nominal px size (no subpixel AA, different hinting, centred outline),
+ * so the native engine scales the preset size up to MATCH the Remotion engine
+ * on screen. A per-line width guard below keeps long chunks inside the frame.
+ */
+const ASS_FONT_SCALE = 1.2;
+/** Rough bold-uppercase advance width as a fraction of the font size. */
+const EST_CHAR_WIDTH_FRACTION = 0.55;
 
 /** #RRGGBB -> ASS &HAABBGGRR& (00 = fully opaque). */
 function assColor(hex: string, alphaHex = '00'): string {
@@ -110,7 +119,7 @@ function buildStyleLine(preset: CaptionPreset): string {
 
   const bold = fontWeight === 'black' || fontWeight === 'extra-bold' || fontWeight === 'bold' ? -1 : 0;
   return (
-    `Style: Cap,${assFontName(preset.fontFamily)},${fontSize},` +
+    `Style: Cap,${assFontName(preset.fontFamily)},${Math.round(fontSize * ASS_FONT_SCALE)},` +
     // Primary = karaoke FILL colour (the highlight), Secondary = base text colour.
     `${assColor(highlightColor)},${assColor(textColor)},${assColor(strokeColor)},&H80000000,` +
     `${bold},0,0,0,100,100,0,0,1,${strokeWidth},0,5,60,60,0,1`
@@ -123,7 +132,24 @@ function baseYFor(positionY: number, fontSize: number): number {
   return bottomEdgeY - (fontSize * 1.25) / 2;
 }
 
-function buildDialogue(chunk: { words: WordTimestamp[]; start: number; end: number }, input: AssGenerationInput): string {
+/**
+ * Font size for one line: the preset size scaled up (see ASS_FONT_SCALE),
+ * but never wider than ~94% of the frame - long 4-word chunks shrink to fit
+ * instead of clipping at the edges.
+ */
+function fontSizeForLine(chunk: { words: WordTimestamp[] }, fontSize: number): number {
+  const text = chunk.words.map((w) => w.word).join(' ');
+  const scaled = fontSize * ASS_FONT_SCALE;
+  const maxForWidth = (PLAY_RES_X * 0.94) / Math.max(1, text.length) / EST_CHAR_WIDTH_FRACTION;
+  return Math.max(20, Math.floor(Math.min(scaled, maxForWidth)));
+}
+
+function buildDialogue(
+  chunk: { words: WordTimestamp[]; start: number; end: number },
+  /** Start of the NEXT chunk (undefined for the last) - the line must end before it. */
+  nextStart: number | undefined,
+  input: AssGenerationInput
+): string | null {
   const { preset, totalDurationSeconds, ctaDuration } = input;
   const {
     fontSize = 48,
@@ -131,14 +157,23 @@ function buildDialogue(chunk: { words: WordTimestamp[]; start: number; end: numb
     animationStyle = 'karaoke',
     uppercase = true,
   } = preset;
+  const size = fontSizeForLine(chunk, fontSize);
 
   const start = Math.max(0, chunk.start);
-  const end = chunk.end + HOLD_AFTER_SECONDS;
+  // NEVER let two caption lines share the screen: the outgoing line ends at
+  // the latest 0.35s after its words, but no later than just before the next
+  // line starts. (Two overlapping ASS lines at the same \pos is what made the
+  // native captions look "glitchy" - next caption arriving before the
+  // previous one left.)
+  const holdEnd = chunk.end + HOLD_AFTER_SECONDS;
+  const end = nextStart !== undefined ? Math.min(holdEnd, nextStart - 0.02) : holdEnd;
+  if (end - start < 0.12) return null; // too short to be readable - drop it
+  const exitCs = Math.max(0, Math.min(EXIT_FADE_CS, Math.round((end - chunk.end) * 100)));
 
   // Caption lift while the CTA card is on screen (evaluated at the chunk centre).
   const chunkCenter = (start + chunk.end) / 2;
   const liftPercent = getCtaBottomLiftPercent(ctaDuration, totalDurationSeconds, chunkCenter);
-  const y = Math.round(baseYFor(positionY, fontSize) - (liftPercent / 100) * PLAY_RES_Y);
+  const y = Math.round(baseYFor(positionY, size) - (liftPercent / 100) * PLAY_RES_Y);
 
   const wordsShown = chunk.words.map((w) => {
     const t = w.word.trim() || ' ';
@@ -157,11 +192,16 @@ function buildDialogue(chunk: { words: WordTimestamp[]; start: number; end: numb
     body = (preRollCs > 0 ? `{\\k${preRollCs}}` : '') + tagged;
   }
 
+  // The style carries the scaled size; lines that the width guard shrank get
+  // a proportional \fscx scale so they still fill exactly `size` px.
+  const lineScale = Math.min(100, (size / (fontSize * ASS_FONT_SCALE)) * 100);
+  const target = lineScale.toFixed(1);
   const entrance = entranceFor(animationStyle);
+  const from = ((lineScale * entrance.scale) / 100).toFixed(1);
   const anim =
     animationStyle === 'static'
-      ? ''
-      : `\\fscx${entrance.scale}\\fscy${entrance.scale}\\t(0,${entrance.cs},\\fscx100\\fscy100)\\fad(${entrance.cs},${EXIT_FADE_CS})`;
+      ? (lineScale < 100 ? `\\fscx${target}\\fscy${target}` : '')
+      : `\\fscx${from}\\fscy${from}\\t(0,${entrance.cs},\\fscx${target}\\fscy${target})\\fad(${entrance.cs},${exitCs})`;
 
   const pos = `\\an8\\pos(${PLAY_RES_X / 2},${y})`;
   const tag = `{${pos}${anim}}`;
@@ -172,9 +212,9 @@ export function generateAssFile(input: AssGenerationInput): string {
   const { preset, words, hookDuration, hookStart } = input;
 
   // Same timeline remapping as the Remotion composition: the processed clip is
-  // [hook intro][full segment], so segment words shift later by hookDuration.
-  const rendered = buildRenderedWords(words, hookStart, hookDuration);
-  const chunks = buildCaptionChunks(rendered, 4).filter((c) => c.end > 0);
+  // [hook intro][full segment]. Intro (hook moment) chunks and shifted chunks
+  // are built separately so a line never mixes words from two moments.
+  const chunks = buildFinalCaptionChunks(words, hookStart, hookDuration).filter((c) => c.end > 0);
 
   const lines: string[] = [
     '[Script Info]',
@@ -192,8 +232,9 @@ export function generateAssFile(input: AssGenerationInput): string {
     'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
   ];
 
-  for (const chunk of chunks) {
-    lines.push(buildDialogue(chunk, input));
+  for (let i = 0; i < chunks.length; i += 1) {
+    const line = buildDialogue(chunks[i], chunks[i + 1]?.start, input);
+    if (line) lines.push(line);
   }
 
   return lines.join('\n') + '\n';

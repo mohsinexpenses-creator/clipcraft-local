@@ -3,7 +3,15 @@
 import React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Clapperboard, LayoutGrid, MessageSquareText, ShieldCheck, SlidersHorizontal, Upload } from 'lucide-react';
+import {
+  Clapperboard,
+  LayoutGrid,
+  MessageSquareText,
+  ShieldCheck,
+  SlidersHorizontal,
+  Type,
+  Upload,
+} from 'lucide-react';
 import { cn } from 'cn';
 import { ModeToggle } from '@/components/theme-toggle';
 
@@ -12,6 +20,7 @@ const navItems = [
   { label: 'Upload', href: '/upload', icon: Upload },
   { label: 'Startup Check', href: '/startup-validation', icon: ShieldCheck },
   { label: 'Caption Presets', href: '/caption-presets', icon: SlidersHorizontal },
+  { label: 'Text Presets', href: '/text-presets', icon: Type },
   { label: 'Prompts', href: '/prompt-templates', icon: MessageSquareText },
 ];
 

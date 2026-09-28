@@ -141,6 +141,8 @@ export function flattenAndDecimate(points: PanPoint[], maxPoints = 24, deadZoneP
   if (points.length === 0) return points;
 
   const jittered: PanPoint[] = [];
+  /** Last point dropped by the dead zone (its time anchors the end of a flat run). */
+  let lastDroppedT: number | null = null;
   for (const p of points) {
     const last = jittered[jittered.length - 1];
     if (!last) {
@@ -150,10 +152,19 @@ export function flattenAndDecimate(points: PanPoint[], maxPoints = 24, deadZoneP
     const movedX = Math.abs(p.x - last.x) >= deadZonePx;
     const movedY = Math.abs(p.y - last.y) >= deadZonePx;
     if (movedX || movedY || p.t - last.t >= 10) {
-      // Freeze each axis that did not move past the dead zone: otherwise a
-      // few pixels of Y-jitter ride along with every real X movement and the
-      // crop visibly shakes at each sample.
+      // A flat (dead-zoned) run just ended with a real move: re-insert the
+      // end of that run at its frozen position. Without this, the crop window
+      // is drawn as ONE straight line from "arrived at speaker B" to
+      // "left speaker A" - a diagonal that crosses the centre of the frame
+      // for most of the hold. The user saw exactly that: "frame stays in the
+      // centre".
+      if (lastDroppedT !== null && (movedX || movedY)) {
+        jittered.push({ t: lastDroppedT, x: last.x, y: last.y });
+      }
       jittered.push({ t: p.t, x: movedX ? p.x : last.x, y: movedY ? p.y : last.y });
+      lastDroppedT = null;
+    } else {
+      lastDroppedT = p.t;
     }
   }
 
@@ -249,6 +260,16 @@ export function buildSinglePlan(
   const { w: cropW, h: cropH } = largest916Window(srcW, srcH);
   let points = buildSpeakerPath(asd, srcW);
 
+  // Fallback: the audio+visual speaker fusion can come back empty (short clip,
+  // low voice energy, ...). The window must still follow SOMEONE - use the
+  // most visible track instead of freezing a static centred crop.
+  if (points.length <= 1) {
+    const best = asd.tracks
+      .filter((track) => track.points.length >= 2)
+      .sort((a, b) => b.visibleTime * b.avgW - a.visibleTime * a.avgW)[0];
+    if (best) points = trackToPanPoints(best, srcW);
+  }
+
   if (points.length <= 1) {
     // No usable track data -> static centred crop (the long-standing fallback).
     return { mode: 'single', cropW, cropH, points: [], faceAnchorY };
@@ -275,6 +296,29 @@ function buildSplitPlan(asd: AsdResult, srcW: number, srcH: number): SplitPlan {
   const minVisible = 2; // seconds - brief passers-by do not get a cell
   let relevant = ranked.filter((track) => track.visibleTime >= minVisible);
   if (relevant.length === 0) relevant = ranked.slice(0, 1);
+
+  // No faces at all (detector found nothing): a single static centred 9:16
+  // crop. (An empty cell list would build a filter graph with no cells, which
+  // FFmpeg rejects.)
+  if (relevant.length === 0) {
+    const { w: cropW, h: cropH } = largest916Window(srcW, srcH);
+    return {
+      mode: 'split',
+      cells: [
+        {
+          trackId: -1,
+          cellX: 0,
+          cellY: 0,
+          cellW: OUTPUT_WIDTH,
+          cellH: OUTPUT_HEIGHT,
+          cropW,
+          cropH,
+          points: [],
+        },
+      ],
+      emphasis: [],
+    };
+  }
   const count = Math.min(4, relevant.length);
 
   // Adaptive 9:16 grids (1080x1920 canvas) - all tile the canvas exactly.

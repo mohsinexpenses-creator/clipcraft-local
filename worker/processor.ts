@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { getCaptionPreset, getClip, getVideo, saveClip } from '../lib/db';
 import { AppError, toErrorMessage } from '../lib/errors';
-import { detectHookMoment } from '../lib/ai';
+
 import { getVideoMetadata } from '../lib/ffmpeg';
 import { CaptionEngine, ClipLayout, ClipRecord, JobData } from '../lib/types';
 import { detectFaceTrack } from './face-detector';
@@ -155,27 +155,32 @@ export async function processClipJob(
     }
     const safeHookDuration = Math.min(resolvedHookDuration, segmentDuration / 2);
 
-    // Suspense hook: find the most gripping moment INSIDE the clip and duplicate
-    // that moment to the start (the viewer sees the best beat first, then watches
-    // the clip build back up to it). Falls back to the first N seconds when no
-    // LLM provider can answer.
-    const hookMoment = await detectHookMoment({
-      words: clipWords,
-      segmentDuration,
-      hookDuration: safeHookDuration,
-    });
-    const hookStart = hookMoment
-      ? Math.max(0, Math.min(hookMoment.start, Math.max(0, segmentDuration - safeHookDuration)))
-      : 0;
-    if (hookMoment && hookStart > 0.05) {
+    // Suspense hook: duplicate the gripping moment INSIDE the clip to the
+    // start (the viewer sees the best beat first, then watches the clip build
+    // back up to it).
+    //
+    // The moment comes from the VIRAL DETECTION prompt, which already returns
+    // the hook line's transcript timestamps (hookLineStart/hookLineEnd) for
+    // every clip. Calling a second LLM here to "re-discover" the moment was
+    // pure waste (an extra ~10s + tokens per render) and could even pick a
+    // DIFFERENT moment than the one the clip was packaged around - so it is
+    // gone. Clips created before that data existed fall back to the first N
+    // seconds.
+    const hookLineStartAbs = Number.isFinite(clip.hookLineStart)
+      ? (clip.hookLineStart as number)
+      : undefined;
+    const hookStart =
+      hookLineStartAbs !== undefined
+        ? Math.max(0, Math.min(hookLineStartAbs - start, Math.max(0, segmentDuration - safeHookDuration)))
+        : 0;
+    if (hookLineStartAbs !== undefined && hookStart > 0.05) {
+      const hookLineEndAbs = Number.isFinite(clip.hookLineEnd) ? (clip.hookLineEnd as number) : hookLineStartAbs;
       log.ok(
-        `Hook moment: ${hookMoment.start.toFixed(1)}s → ${hookMoment.end.toFixed(1)}s` +
-        (hookMoment.reason ? `  (${hookMoment.reason})` : '')
+        `Hook moment (from viral prompt): ${hookLineStartAbs.toFixed(1)}s → ${hookLineEndAbs.toFixed(1)}s` +
+        (clip.hookLine ? `  ("${clip.hookLine}")` : '')
       );
-    } else if (hookMoment) {
-      log.detail('Hook moment: first seconds of the clip');
     } else if (safeHookDuration > 0) {
-      log.warn('Hook moment auto-detection unavailable - duplicating the first N seconds.');
+      log.detail('No hook line timestamps on this clip - duplicating the first N seconds.');
     }
 
     log.step('Step 1/3 · Face tracking + active speaker detection');

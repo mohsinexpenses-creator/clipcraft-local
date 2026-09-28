@@ -270,10 +270,15 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
 
       // Re-encode (not `-c copy`) so the hook intro starts on a keyframe and its
       // encoder parameters are byte-identical to the base clip -> clean concat.
-      // `hookStart` is the (LLM-detected) most gripping moment of the clip; 0
-      // keeps the legacy behaviour of duplicating the first N seconds.
-      // Clamp: the hook window must fit inside the base clip.
-      const hookOffset = Math.max(0, Math.min(Number(hookStart) || 0, actualHookDur));
+      // `hookStart` is the gripping moment the clip was built around (from the
+      // viral prompt's hookLineStart); 0 keeps the legacy behaviour of
+      // duplicating the first N seconds.
+      // Clamp: the hook window must fit INSIDE the base clip, i.e. the offset
+      // is bounded by clip length MINUS the hook length (clamping to the hook
+      // length itself used to force every hook onto seconds 0-3 regardless of
+      // where the gripping moment actually was).
+      const maxOffset = Math.max(0, segmentDuration - actualHookDur);
+      const hookOffset = Math.max(0, Math.min(Number(hookStart) || 0, maxOffset));
       const hookExtractArgs = [
         '-y',
         '-hide_banner',
