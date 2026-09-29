@@ -1,7 +1,12 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { ClipRecord, CaptionPreset, OverlayStylePreset, TextPreset } from "@/lib/types";
+import {
+  ClipRecord,
+  CaptionPreset,
+  OverlayStylePreset,
+  TextPreset,
+} from "@/lib/types";
 import { DEFAULT_FILTER_PRESETS } from "@/lib/presets";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -21,6 +26,7 @@ import {
   Clock,
   Download,
   Flame,
+  InfoIcon,
   Loader2,
   Play,
   Sparkles,
@@ -28,6 +34,11 @@ import {
   XCircle,
 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 interface ClipCardProps {
   clip: ClipRecord;
@@ -110,7 +121,9 @@ export const ClipCard: React.FC<ClipCardProps> = ({
   const [ctaStylePresetId, setCtaStylePresetId] = useState(
     clip.ctaStylePresetId || "cta-gradient-green",
   );
-  const [overlayPresets, setOverlayPresets] = useState<OverlayStylePreset[]>([]);
+  const [overlayPresets, setOverlayPresets] = useState<OverlayStylePreset[]>(
+    [],
+  );
   const [isTriggering, setIsTriggering] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -131,7 +144,8 @@ export const ClipCard: React.FC<ClipCardProps> = ({
         const res = await fetch("/api/overlay-presets");
         if (!res.ok) return;
         const data = await res.json();
-        if (!ignore && Array.isArray(data.presets)) setOverlayPresets(data.presets);
+        if (!ignore && Array.isArray(data.presets))
+          setOverlayPresets(data.presets);
       } catch {
         // Style pickers stay on their defaults when the API is unavailable.
       }
@@ -426,72 +440,6 @@ export const ClipCard: React.FC<ClipCardProps> = ({
               />
             </div>
 
-            <div className="space-y-2">
-              <Label id={`hook-text-preset-label-${clip._id}`}>
-                Hook text preset
-              </Label>
-              <Select
-                value={hookTextPresetId}
-                onValueChange={(v) => {
-                  const preset = hookPresets.find((p) => p._id === v);
-                  if (preset) setHookText(preset.text);
-                }}
-                disabled={isProcessing}
-              >
-                <SelectTrigger
-                  aria-labelledby={`hook-text-preset-label-${clip._id}`}
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="custom">
-                    Custom · use the text above
-                  </SelectItem>
-                  {hookPresets.map((p) => (
-                    <SelectItem key={p._id} value={p._id}>
-                      {p.text}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground">
-                Pick a preset to fill the hook box; manage them under “Text
-                Presets”.
-              </p>
-            </div>
-
-            <div className="space-y-2">
-              <Label id={`cta-text-preset-label-${clip._id}`}>CTA text preset</Label>
-              <Select
-                value={ctaTextPresetId}
-                onValueChange={(v) => {
-                  const preset = ctaPresets.find((p) => p._id === v);
-                  if (preset) setCtaText(preset.text);
-                }}
-                disabled={isProcessing}
-              >
-                <SelectTrigger
-                  aria-labelledby={`cta-text-preset-label-${clip._id}`}
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="custom">
-                    Custom · use the text above
-                  </SelectItem>
-                  {ctaPresets.map((p) => (
-                    <SelectItem key={p._id} value={p._id}>
-                      {p.text}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground">
-                Pick a preset to fill the CTA box; manage them under “Text
-                Presets”.
-              </p>
-            </div>
-
             <SettingsSection title="Captions & layout" />
 
             <div className="space-y-2">
@@ -539,6 +487,20 @@ export const ClipCard: React.FC<ClipCardProps> = ({
             <div className="space-y-2">
               <Label id={`caption-engine-label-${clip._id}`}>
                 Caption engine
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <InfoIcon size={14} className="text-muted-foreground" />
+                    }
+                  />
+                  <TooltipContent>
+                    <p>
+                      Premium renders every frame in the browser (spring
+                      animations, slow on long clips). Fast burns animated
+                      captions with FFmpeg in one native pass.
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
               </Label>
               <Select
                 value={captionEngine}
@@ -561,15 +523,27 @@ export const ClipCard: React.FC<ClipCardProps> = ({
                   </SelectItem>
                 </SelectContent>
               </Select>
-              <p className="text-xs text-muted-foreground">
-                Premium renders every frame in the browser (spring animations,
-                slow on long clips). Fast burns animated captions with FFmpeg in
-                one native pass.
-              </p>
             </div>
 
             <div className="space-y-2">
-              <Label id={`layout-label-${clip._id}`}>Layout (9:16 output)</Label>
+              <Label id={`layout-label-${clip._id}`}>
+                Layout (9:16 output)
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <InfoIcon size={14} className="text-muted-foreground" />
+                    }
+                  />
+                  <TooltipContent>
+                    <p>
+                      Speaker focus crops 9:16 around whoever is talking (smooth
+                      pan). Multi-person splits the frame between everyone
+                      detected (2×2, up to 4) with the active speaker
+                      highlighted.
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
+              </Label>
               <Select
                 value={clipLayout}
                 onValueChange={(v) =>
@@ -591,11 +565,6 @@ export const ClipCard: React.FC<ClipCardProps> = ({
                   </SelectItem>
                 </SelectContent>
               </Select>
-              <p className="text-xs text-muted-foreground">
-                Speaker focus crops 9:16 around whoever is talking (smooth pan).
-                Multi-person splits the frame between everyone detected (2×2, up
-                to 4) with the active speaker highlighted.
-              </p>
             </div>
 
             <SettingsSection title="Overlay styles" />
@@ -615,7 +584,9 @@ export const ClipCard: React.FC<ClipCardProps> = ({
                 <SelectContent>
                   {(overlayPresets.filter((p) => p.kind === "hook").length
                     ? overlayPresets.filter((p) => p.kind === "hook")
-                    : [{ _id: "hook-bold-yellow", name: "Bold Yellow Punch" }] as OverlayStylePreset[]
+                    : ([
+                        { _id: "hook-bold-yellow", name: "Bold Yellow Punch" },
+                      ] as OverlayStylePreset[])
                   ).map((p) => (
                     <SelectItem key={p._id} value={p._id}>
                       {p.name}
@@ -640,7 +611,12 @@ export const ClipCard: React.FC<ClipCardProps> = ({
                 <SelectContent>
                   {(overlayPresets.filter((p) => p.kind === "cta").length
                     ? overlayPresets.filter((p) => p.kind === "cta")
-                    : [{ _id: "cta-gradient-green", name: "Green Gradient Card" }] as OverlayStylePreset[]
+                    : ([
+                        {
+                          _id: "cta-gradient-green",
+                          name: "Green Gradient Card",
+                        },
+                      ] as OverlayStylePreset[])
                   ).map((p) => (
                     <SelectItem key={p._id} value={p._id}>
                       {p.name}

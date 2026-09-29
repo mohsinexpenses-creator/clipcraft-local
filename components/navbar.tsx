@@ -1,8 +1,8 @@
-'use client';
+"use client";
 
-import React from 'react';
-import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import React from "react";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 import {
   Clapperboard,
   LayoutGrid,
@@ -11,17 +11,20 @@ import {
   SlidersHorizontal,
   Type,
   Upload,
-} from 'lucide-react';
-import { cn } from 'cn';
-import { ModeToggle } from '@/components/theme-toggle';
+} from "lucide-react";
+import { cn } from "cn";
+import { ModeToggle } from "@/components/theme-toggle";
 
 const navItems = [
-  { label: 'Dashboard', href: '/', icon: LayoutGrid },
-  { label: 'Upload', href: '/upload', icon: Upload },
-  { label: 'Startup Check', href: '/startup-validation', icon: ShieldCheck },
-  { label: 'Caption Presets', href: '/caption-presets', icon: SlidersHorizontal },
-  { label: 'Text Presets', href: '/text-presets', icon: Type },
-  { label: 'Prompts', href: '/prompt-templates', icon: MessageSquareText },
+  { label: "Dashboard", href: "/", icon: LayoutGrid },
+  { label: "Upload", href: "/upload", icon: Upload },
+  { label: "Startup Check", href: "/startup-validation", icon: ShieldCheck },
+  {
+    label: "Caption Presets",
+    href: "/caption-presets",
+    icon: SlidersHorizontal,
+  },
+  { label: "Prompts", href: "/prompt-templates", icon: MessageSquareText },
 ];
 
 export const Navbar = () => {
@@ -52,10 +55,10 @@ export const Navbar = () => {
                 href={item.href}
                 title={item.label}
                 className={cn(
-                  'flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/40',
+                  "flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
                   isActive
-                    ? 'bg-accent text-accent-foreground'
-                    : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                    ? "bg-accent text-accent-foreground"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground",
                 )}
               >
                 <Icon className="size-4" />
