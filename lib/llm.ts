@@ -78,30 +78,6 @@ export interface LlmProviderEntry {
  * model. Add entries below to re-introduce providers.
  */
 export const LLM_PROVIDER_CHAIN: LlmProviderEntry[] = [
-  // {
-  //   id: "gemini-studio-3-5-lite",
-  //   provider: "Google AI Studio",
-  //   model: "gemini-3.5-flash-lite",
-  //   apiKeyEnv: "GEMINI_API_KEY",
-  //   kind: "gemini-native",
-  //   retries: 1,
-  // },
-  {
-    id: "gemini-studio-3-1-lite",
-    provider: "Google AI Studio",
-    model: "gemini-3.1-flash-lite",
-    apiKeyEnv: "GEMINI_API_KEY",
-    kind: "gemini-native",
-    retries: 1,
-  },
-  {
-    id: "gemini-studio-2-5-lite",
-    provider: "Google AI Studio",
-    model: "gemini-2.5-flash-lite",
-    apiKeyEnv: "GEMINI_API_KEY",
-    kind: "gemini-native",
-    retries: 1,
-  },
   {
     id: "gemini-studio-3-8",
     provider: "Google AI Studio",
@@ -114,6 +90,30 @@ export const LLM_PROVIDER_CHAIN: LlmProviderEntry[] = [
     id: "gemini-studio-3-6",
     provider: "Google AI Studio",
     model: "gemini-3.6-flash",
+    apiKeyEnv: "GEMINI_API_KEY",
+    kind: "gemini-native",
+    retries: 1,
+  },
+  {
+    id: "gemini-studio-3-5-lite",
+    provider: "Google AI Studio",
+    model: "gemini-3.5-flash-lite",
+    apiKeyEnv: "GEMINI_API_KEY",
+    kind: "gemini-native",
+    retries: 1,
+  },
+  {
+    id: "gemini-studio-3-1-lite",
+    provider: "Google AI Studio",
+    model: "gemini-3.1-flash-lite",
+    apiKeyEnv: "GEMINI_API_KEY",
+    kind: "gemini-native",
+    retries: 1,
+  },
+  {
+    id: "gemini-studio-2-5-lite",
+    provider: "Google AI Studio",
+    model: "gemini-2.5-flash-lite",
     apiKeyEnv: "GEMINI_API_KEY",
     kind: "gemini-native",
     retries: 1,
