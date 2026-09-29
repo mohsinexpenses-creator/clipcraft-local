@@ -260,6 +260,8 @@ export interface ClipRecord {
   status: 'pending' | 'processing' | 'done' | 'failed';
   progress?: number; // 0-100
   error?: string;
+  /** True once the user asked to stop a running render; the worker honours it. */
+  cancelling?: boolean;
   createdAt: string;
   updatedAt: string;
 }

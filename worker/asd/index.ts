@@ -4,7 +4,6 @@ import { AppError, toErrorMessage } from '../../lib/errors';
 import { log } from '../../lib/logger';
 import {
   cleanupSampledFrames,
-  detectWithSkinHeuristic,
   sampleSegmentFrames,
 } from '../frame-sampler';
 import { detectFacesYunet, loadYuNet, yunetModelPresent } from '../yunet-detector';
@@ -42,7 +41,7 @@ export interface AsdResult {
   speakerSegments: SpeakerSegment[];
   /** Distinct people who were ever the active speaker. */
   speakerCount: number;
-  method: 'yunet+audio-visual' | 'yunet-visual' | 'yunet' | 'skin+audio';
+  method: 'yunet+audio-visual' | 'yunet-visual' | 'yunet';
   hasLandmarks: boolean;
   hasAudio: boolean;
   /** Busiest frame (how many faces at once). */
@@ -138,15 +137,16 @@ export async function detectSpeakerTimeline(
     const voice =
       pcm.length > 0 ? computeVoiceEnvelope(pcm, 16000, sampleFps).voice : new Array(frames.length).fill(0);
 
-    // 2) YuNet runtime. Missing model -> a clear error; the caller falls back to
-    //    the legacy skin-heuristic track so the render still works.
+    // 2) YuNet runtime. Missing model -> a clear error. There is NO fallback
+    //    detector by design: if we cannot detect a face the render stops with
+    //    an informative error instead of producing a static/centre crop.
     const runtime = await loadYuNet();
     if (!runtime) {
       throw new AppError(
         `YuNet face detection is unavailable${yunetModelPresent() ? '' : ' (model not found)'}.`,
         {
           details: 'Run "npm run setup:yunet" to download face_detection_yunet_2023mar.onnx.',
-          resolution: 'npm run setup:yunet - or let the worker fall back to the static smart crop.',
+          resolution: 'Run "npm run setup:yunet" (or set YUNET_MODEL_PATH) and re-render the clip.',
         }
       );
     }
@@ -155,7 +155,6 @@ export async function detectSpeakerTimeline(
     const tracker = new Tracker();
     let maxFacesSeen = 0;
     let framesUsed = 0;
-    let usedSkinFallback = false;
     let prevThumbs: Array<{ cx: number; cy: number; w: number; full: number[]; mouth: number[] }> = [];
 
     for (let i = 0; i < frames.length; i += 1) {
@@ -169,28 +168,17 @@ export async function detectSpeakerTimeline(
       const scaleFactor = videoWidth / Math.max(1, width);
 
       const detections = await detectFacesYunet(runtime, { data, width, height });
-      let faces: Array<{ cx: number; cy: number; w: number; h: number }> = detections.map((d) => ({
+      const faces: Array<{ cx: number; cy: number; w: number; h: number }> = detections.map((d) => ({
         cx: (d.box.x + d.box.width / 2) * scaleFactor,
         cy: (d.box.y + d.box.height / 2) * scaleFactor,
         w: d.box.width * scaleFactor,
         h: d.box.height * scaleFactor,
       }));
 
-      if (faces.length === 0 && i % 4 === 0) {
-        // Very sparse fallback: skin-blob centroid keeps SOME pan alive on
-        // frames YuNet misses entirely (profile shots, heavy occlusion).
-        const skin = await detectWithSkinHeuristic(framePath);
-        if (skin.length > 0) {
-          usedSkinFallback = true;
-          faces = skin.map((f) => ({
-            cx: f.centerX * scaleFactor,
-            cy: f.centerY * scaleFactor,
-            w: f.faceWidth * scaleFactor,
-            h: f.faceWidth * scaleFactor,
-          }));
-        }
-      }
-
+      // No skin-heuristic fallback here by design: a frame YuNet misses simply
+      // contributes no track points (the tracker ages it out). If the WHOLE
+      // window yields no face, detectSpeakerTimeline throws and the render
+      // stops with an informative error instead of faking a pan.
       maxFacesSeen = Math.max(maxFacesSeen, faces.length);
       if (faces.length === 0) {
         // Still feed an empty frame so the tracker ages its grace periods.
@@ -243,6 +231,19 @@ export async function detectSpeakerTimeline(
 
     // 4) Fuse audio + per-track visual cues into a speaker timeline.
     const tracks = tracker.allVisible();
+
+    if (tracks.length === 0) {
+      throw new AppError(
+        `No faces were detected in this clip window (0 of ${frames.length} sampled frames contained a face).`,
+        {
+          details:
+            'The 9:16 speaker layout crops and pans around a detected face, and no fallback detector is used - the render stops here instead of producing a static centre crop.',
+          resolution:
+            'Make sure a face is visible, reasonably large and well lit in this part of the video (avoid extreme angles, heavy occlusion or a very small face), or pick a different window, then re-render the clip.',
+        }
+      );
+    }
+
     const { segments, speakerCount } = buildSpeakerTimeline({
       duration,
       fps: sampleFps,
@@ -276,11 +277,9 @@ export async function detectSpeakerTimeline(
       }
     }
 
-    const method: AsdResult['method'] = !options.hasAudio
-      ? 'yunet-visual'
-      : usedSkinFallback
-        ? 'skin+audio'
-        : 'yunet+audio-visual';
+    const method: AsdResult['method'] = options.hasAudio
+      ? 'yunet+audio-visual'
+      : 'yunet-visual';
 
     return {
       tracks,

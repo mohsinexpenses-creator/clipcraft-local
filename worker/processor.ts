@@ -1,14 +1,13 @@
 import fs from 'fs';
 import path from 'path';
 import { getCaptionPreset, getClip, getOverlayStylePreset, getVideo, saveClip } from '../lib/db';
-import { AppError, toErrorMessage } from '../lib/errors';
+import { AppError, RenderCancelledError, toErrorMessage } from '../lib/errors';
 
 import { getVideoMetadata } from '../lib/ffmpeg';
 import { CaptionEngine, ClipLayout, ClipRecord, JobData, OverlayStylePreset } from '../lib/types';
 import { DEFAULT_OVERLAY_STYLE_PRESETS } from '../lib/presets';
-import { detectFaceTrack } from './frame-sampler';
 import { detectSpeakerTimeline } from './asd';
-import { LayoutPlan, buildLayoutPlan, buildSinglePlan } from './layout';
+import { buildLayoutPlan } from './layout';
 import { color, log } from '../lib/logger';
 import { normalizeFps, processVideoSegment } from './ffmpeg-pipeline';
 import { renderNativeCaptions } from './native-captions';
@@ -111,6 +110,9 @@ export async function processClipJob(
   clip.status = 'processing';
   clip.progress = 5;
   clip.error = undefined;
+  // A re-render starts fresh: a stale cancelling flag (from a previous
+  // cancelled render) must not abort this new job on its first poll.
+  clip.cancelling = false;
   await saveClip(clip);
   await reportProgress(5);
 
@@ -124,7 +126,23 @@ export async function processClipJob(
   const clipFileBase = sanitizeClipFileName(clip.title) || clipId;
   const finalVideoPath = uniqueClipPath(outputDir, clipFileBase);
 
+  // Cancellation: the UI flips clip.cancelling (POST /api/clips/<id>/cancel).
+  // A watcher polls the DB every 2s; the FFmpeg passes check the flag
+  // continuously and each step boundary aborts immediately.
+  let cancelFlag = false;
+  let cancelWatcher: NodeJS.Timeout | null = null;
   try {
+    cancelWatcher = setInterval(() => {
+      void getClip(clipId)
+        .then((fresh) => {
+          if (fresh?.cancelling) cancelFlag = true;
+        })
+        .catch(() => undefined);
+    }, 2000);
+    const checkCancelled = (): void => {
+      if (cancelFlag) throw new RenderCancelledError();
+    };
+
     if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
 
     /**
@@ -211,45 +229,19 @@ export async function processClipJob(
     const layout: ClipLayout = jobData.layout === 'split-screen' ? 'split-screen' : 'speaker-focus';
     clip.layout = layout;
 
-    let plan: LayoutPlan;
-    try {
-      const asd = await detectSpeakerTimeline(
-        video.filePath,
-        start,
-        segmentDuration,
-        sourceMeta.width,
-        sourceMeta.height,
-        { hasAudio: sourceMeta.hasAudio }
-      );
-      plan = buildLayoutPlan(asd, layout, sourceMeta.width, sourceMeta.height);
-      if (asd.tracks.length === 0) {
-        log.warn('No faces detected in the clip - using a static centred 9:16 crop.');
-      }
-    } catch (error) {
-      // Defensive: if ASD cannot run at all (no ffmpeg frames, bad audio...),
-      // fall back to the legacy single-track smart crop so the render still works.
-      log.warn(`Speaker detection failed (${toErrorMessage(error)}) - using the legacy face track.`);
-      const legacy = await detectFaceTrack(
-        video.filePath,
-        start,
-        segmentDuration,
-        sourceMeta.width,
-        sourceMeta.height
-      );
-      plan = {
-        ...buildSinglePlan(
-          { tracks: [], speakerSegments: [], speakerCount: 0, method: 'skin+audio', hasLandmarks: false, hasAudio: false, maxFacesSeen: 0, framesUsed: 0, framesTotal: 0, sampleFps: 0, voicedRatio: 0 },
-          sourceMeta.width,
-          sourceMeta.height,
-          0.5
-        ),
-        // Legacy behaviour: X pans along the tracked face, Y stays centred.
-        points: legacy.points.map((pt) => ({ t: pt.t, x: pt.x, y: sourceMeta.height / 2 })),
-        cropW: legacy.cropW,
-        cropH: legacy.cropH,
-        faceAnchorY: 0.5,
-      };
-    }
+    // No fallbacks by design: detectSpeakerTimeline throws an informative
+    // error when it finds no face in the window (or YuNet is unavailable),
+    // and the render STOPS - no static-centre crop, no legacy skin track.
+    const asd = await detectSpeakerTimeline(
+      video.filePath,
+      start,
+      segmentDuration,
+      sourceMeta.width,
+      sourceMeta.height,
+      { hasAudio: sourceMeta.hasAudio }
+    );
+    const plan = buildLayoutPlan(asd, layout, sourceMeta.width, sourceMeta.height);
+    checkCancelled();
 
     if (plan.mode === 'single') {
       clip.cropData = {
@@ -266,6 +258,7 @@ export async function processClipJob(
     log.step(
       `Step 2/3 · FFmpeg mirror + ${plan.mode === 'split' ? `split-screen (${plan.cells.length})` : 'speaker crop'} + colour + hook intro`
     );
+    checkCancelled();
     await processVideoSegment({
       sourceVideoPath: video.filePath,
       outputPath: intermediateVideoPath,
@@ -279,6 +272,7 @@ export async function processClipJob(
       sourceHeight: sourceMeta.height,
       targetFps: renderFps,
       sourceHasAudio: sourceMeta.hasAudio,
+      isCancelled: () => cancelFlag,
       onProgress: (progress) => {
         // ffmpeg stage owns 20% -> 80% of the overall bar.
         const scaled = 20 + Math.max(0, Math.min(80, progress)) * 0.75;
@@ -365,6 +359,7 @@ export async function processClipJob(
       void reportProgress(progress);
     };
 
+    checkCancelled();
     const renderResult: RenderCaptionsResult =
       engine === 'native'
         ? await renderNativeCaptions({
@@ -378,6 +373,7 @@ export async function processClipJob(
             words: clipWords,
             preset,
             onProgress: progressSink,
+            isCancelled: () => cancelFlag,
           })
         : await renderCaptionsAndOverlays({
             videoPath: intermediateVideoPath,
@@ -392,6 +388,7 @@ export async function processClipJob(
             hookStyle,
             ctaStyle,
             onProgress: progressSink,
+            isCancelled: () => cancelFlag,
           });
 
     try {
@@ -424,13 +421,28 @@ export async function processClipJob(
     log.detail(`→ ${finalVideoPath}`);
     return clip;
   } catch (error) {
+    if (error instanceof RenderCancelledError) {
+      // A cancel is not a failure: persist the cancelled state, end the job
+      // cleanly (no rethrow -> no retry).
+      log.warn(`Render cancelled by user: ${color.bold(clipId)}`);
+      clip.status = 'failed';
+      clip.error = 'Cancelled by user.';
+      clip.cancelling = false;
+      await saveClip(clip).catch((saveError) =>
+        log.error('Could not persist the cancelled state: ' + toErrorMessage(saveError))
+      );
+      return clip;
+    }
     log.error(`Render failed for ${color.bold(clipId)}: ${toErrorMessage(error)}`);
     clip.status = 'failed';
     clip.error = toErrorMessage(error);
+    clip.cancelling = false;
     await saveClip(clip).catch((saveError) =>
       log.error('Could not persist the failure state: ' + toErrorMessage(saveError))
     );
     throw error;
+  } finally {
+    if (cancelWatcher) clearInterval(cancelWatcher);
   }
 }
 

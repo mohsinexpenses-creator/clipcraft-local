@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { AppError, toErrorMessage } from '../lib/errors';
+import { AppError, RenderCancelledError, toErrorMessage } from '../lib/errors';
 import { getVideoMetadata } from '../lib/ffmpeg';
 import { CaptionPreset, OverlayStylePreset, WordTimestamp } from '../lib/types';
 import { normalizeFps } from './ffmpeg-pipeline';
@@ -23,6 +23,8 @@ export interface RenderCaptionsOptions {
   /** Visual style of the end-of-clip CTA overlay. */
   ctaStyle: OverlayStylePreset;
   onProgress?: (progress: number) => void;
+  /** Poll for a user-requested cancel; the in-flight render is abandoned. */
+  isCancelled?: () => boolean;
 }
 
 export interface RenderCaptionsResult {
@@ -117,7 +119,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 export async function renderCaptionsAndOverlays(
   options: RenderCaptionsOptions
 ): Promise<RenderCaptionsResult> {
-  const { videoPath, outputPath, hookText, hookDuration, hookStart, ctaText, ctaDuration, words, preset, hookStyle, ctaStyle, onProgress } =
+  const { videoPath, outputPath, hookText, hookDuration, hookStart, ctaText, ctaDuration, words, preset, hookStyle, ctaStyle, onProgress, isCancelled } =
     options;
 
   log.detail(`Captions & overlays for ${color.bold(path.basename(videoPath))}`);
@@ -248,7 +250,7 @@ export async function renderCaptionsAndOverlays(
       );
     }
 
-    await withTimeout(
+    const renderJob = withTimeout(
       renderMedia({
         composition: {
           ...composition,
@@ -284,6 +286,38 @@ export async function renderCaptionsAndOverlays(
       getRenderTimeoutMs(),
       'renderMedia'
     );
+
+    // Cancellation: poll the flag while the browser renders; when the user
+    // asks to stop, drop the partial file and reject - the in-flight render is
+    // abandoned and its (ignored) result never settles anything.
+    if (isCancelled) {
+      renderJob.catch(() => undefined); // result handled by the race below
+      const cancelRace = new Promise<never>((_, rejectCancel) => {
+        const poll = setInterval(() => {
+          let wantsCancel = false;
+          try {
+            wantsCancel = isCancelled() === true;
+          } catch {
+            wantsCancel = false;
+          }
+          if (!wantsCancel) return;
+          clearInterval(poll);
+          try {
+            if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+          } catch {
+            // ignore
+          }
+          rejectCancel(new RenderCancelledError());
+        }, 1000);
+        void renderJob.then(
+          () => clearInterval(poll),
+          () => clearInterval(poll),
+        );
+      });
+      await Promise.race([renderJob, cancelRace]);
+    } else {
+      await renderJob;
+    }
 
     if (!fs.existsSync(outputPath)) {
       throw new AppError('Remotion reported success but no output file exists.', {

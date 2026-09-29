@@ -35,6 +35,8 @@ export interface ProcessSegmentOptions {
   /** False when the source has no audio stream -> a silent track is muxed in. */
   sourceHasAudio: boolean;
   onProgress?: (progress: number) => void;
+  /** Poll for a user-requested cancel; the running FFmpeg child is killed. */
+  isCancelled?: () => boolean;
 }
 
 /** The composition is 1080x1920; never upscale past it, never exceed it. */
@@ -127,6 +129,7 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
     targetFps,
     sourceHasAudio,
     onProgress,
+    isCancelled,
   } = options;
 
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
@@ -255,6 +258,7 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
     await runFfmpeg(pass1Args, {
       label: 'trim+mirror+crop+color',
       totalDurationSeconds: segmentDuration,
+      isCancelled,
       onProgress: (progress) => {
         if (onProgress && progress.percent) onProgress(10 + Math.floor(progress.percent * 0.4));
       },
@@ -293,7 +297,7 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
         hookIntroClip,
       ];
 
-      await runFfmpeg(hookExtractArgs, { label: 'hook-intro' });
+      await runFfmpeg(hookExtractArgs, { label: 'hook-intro', isCancelled });
       assertUsableFile(hookIntroClip, 'hook intro extraction');
 
       log.detail(
@@ -335,7 +339,7 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
         outputPath,
       ];
 
-      await runFfmpeg(concatArgs, { label: 'concat' });
+      await runFfmpeg(concatArgs, { label: 'concat', isCancelled });
     } else {
       log.detail('Pass 2/3 · skipped (hookDuration=0) - using the base clip as the output');
       if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);

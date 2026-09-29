@@ -25,6 +25,7 @@ import {
   Play,
   Sparkles,
   Trash2,
+  XCircle,
 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 
@@ -72,40 +73,12 @@ async function getErrorFromResponse(response: Response, fallback: string) {
   }
 }
 
-/**
- * Tiny "fill from preset" picker shown next to the hook/CTA text inputs.
- * Selecting a preset puts its text into the (editable) input - the user can
- * still tweak it afterwards. Manageable under "Text Presets" in the navbar.
- */
-function TextPresetPicker({
-  presets,
-  onPick,
-  disabled,
-  label,
-}: {
-  presets: TextPreset[];
-  onPick: (text: string) => void;
-  disabled: boolean;
-  label: string;
-}) {
-  if (presets.length === 0) return null;
+/** Section heading used by the settings grid to keep the card tidy. */
+function SettingsSection({ title }: { title: string }) {
   return (
-    <Select
-      value={undefined}
-      onValueChange={(v) => v && onPick(v)}
-      disabled={disabled}
-    >
-      <SelectTrigger className="h-7 w-36 gap-1 text-xs" aria-label={label}>
-        <SelectValue placeholder="Insert preset…" />
-      </SelectTrigger>
-      <SelectContent>
-        {presets.map((p) => (
-          <SelectItem key={p._id} value={p.text}>
-            {p.text}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
+    <p className="sm:col-span-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+      {title}
+    </p>
   );
 }
 
@@ -139,7 +112,17 @@ export const ClipCard: React.FC<ClipCardProps> = ({
   );
   const [overlayPresets, setOverlayPresets] = useState<OverlayStylePreset[]>([]);
   const [isTriggering, setIsTriggering] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+
+  // Which hook/CTA text preset (if any) matches the current typed text; the
+  // selects below show "Custom" as soon as the user edits the text.
+  const hookPresets = textPresets.filter((p) => p.kind === "hook");
+  const ctaPresets = textPresets.filter((p) => p.kind === "cta");
+  const hookTextPresetId =
+    hookPresets.find((p) => p.text === hookText.trim())?._id ?? "custom";
+  const ctaTextPresetId =
+    ctaPresets.find((p) => p.text === ctaText.trim())?._id ?? "custom";
 
   useEffect(() => {
     let ignore = false;
@@ -220,6 +203,32 @@ export const ClipCard: React.FC<ClipCardProps> = ({
       setActionError(
         err instanceof Error ? err.message : "Failed to delete clip.",
       );
+    }
+  };
+
+  const handleCancel = async () => {
+    if (!confirm("Stop rendering this clip?")) return;
+    setIsCancelling(true);
+    setActionError(null);
+    try {
+      const res = await fetch(`/api/clips/${clip._id}/cancel`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        throw new Error(
+          await getErrorFromResponse(res, "Failed to cancel the render."),
+        );
+      }
+      // The worker notices within ~2s and marks the clip as cancelled;
+      // refresh so the card flips out of "processing" promptly.
+      await onRefresh();
+    } catch (err) {
+      console.error("Error cancelling render:", err);
+      setActionError(
+        err instanceof Error ? err.message : "Failed to cancel the render.",
+      );
+    } finally {
+      setIsCancelling(false);
     }
   };
 
@@ -382,17 +391,11 @@ export const ClipCard: React.FC<ClipCardProps> = ({
           )}
 
           {/* Settings */}
-          <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div className="mt-5 grid grid-cols-1 items-start gap-x-4 gap-y-4 sm:grid-cols-2">
+            <SettingsSection title="Hook & CTA text" />
+
             <div className="space-y-2 sm:col-span-2">
-              <div className="flex items-center justify-between gap-2">
-                <Label htmlFor={`hook-${clip._id}`}>Intro hook text</Label>
-                <TextPresetPicker
-                  presets={textPresets.filter((p) => p.kind === "hook")}
-                  onPick={setHookText}
-                  disabled={isProcessing}
-                  label="Insert hook preset"
-                />
-              </div>
+              <Label htmlFor={`hook-${clip._id}`}>Intro hook text</Label>
               <Input
                 id={`hook-${clip._id}`}
                 value={hookText}
@@ -413,15 +416,7 @@ export const ClipCard: React.FC<ClipCardProps> = ({
             </div>
 
             <div className="space-y-2 sm:col-span-2">
-              <div className="flex items-center justify-between gap-2">
-                <Label htmlFor={`cta-${clip._id}`}>End CTA text</Label>
-                <TextPresetPicker
-                  presets={textPresets.filter((p) => p.kind === "cta")}
-                  onPick={setCtaText}
-                  disabled={isProcessing}
-                  label="Insert CTA preset"
-                />
-              </div>
+              <Label htmlFor={`cta-${clip._id}`}>End CTA text</Label>
               <Input
                 id={`cta-${clip._id}`}
                 value={ctaText}
@@ -430,6 +425,74 @@ export const ClipCard: React.FC<ClipCardProps> = ({
                 disabled={isProcessing}
               />
             </div>
+
+            <div className="space-y-2">
+              <Label id={`hook-text-preset-label-${clip._id}`}>
+                Hook text preset
+              </Label>
+              <Select
+                value={hookTextPresetId}
+                onValueChange={(v) => {
+                  const preset = hookPresets.find((p) => p._id === v);
+                  if (preset) setHookText(preset.text);
+                }}
+                disabled={isProcessing}
+              >
+                <SelectTrigger
+                  aria-labelledby={`hook-text-preset-label-${clip._id}`}
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="custom">
+                    Custom · use the text above
+                  </SelectItem>
+                  {hookPresets.map((p) => (
+                    <SelectItem key={p._id} value={p._id}>
+                      {p.text}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Pick a preset to fill the hook box; manage them under “Text
+                Presets”.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label id={`cta-text-preset-label-${clip._id}`}>CTA text preset</Label>
+              <Select
+                value={ctaTextPresetId}
+                onValueChange={(v) => {
+                  const preset = ctaPresets.find((p) => p._id === v);
+                  if (preset) setCtaText(preset.text);
+                }}
+                disabled={isProcessing}
+              >
+                <SelectTrigger
+                  aria-labelledby={`cta-text-preset-label-${clip._id}`}
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="custom">
+                    Custom · use the text above
+                  </SelectItem>
+                  {ctaPresets.map((p) => (
+                    <SelectItem key={p._id} value={p._id}>
+                      {p.text}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Pick a preset to fill the CTA box; manage them under “Text
+                Presets”.
+              </p>
+            </div>
+
+            <SettingsSection title="Captions & layout" />
 
             <div className="space-y-2">
               <Label id={`filter-label-${clip._id}`}>Color filter</Label>
@@ -505,10 +568,8 @@ export const ClipCard: React.FC<ClipCardProps> = ({
               </p>
             </div>
 
-            <div className="space-y-2 sm:col-span-2">
-              <Label id={`layout-label-${clip._id}`}>
-                Layout (9:16 output)
-              </Label>
+            <div className="space-y-2">
+              <Label id={`layout-label-${clip._id}`}>Layout (9:16 output)</Label>
               <Select
                 value={clipLayout}
                 onValueChange={(v) =>
@@ -536,6 +597,8 @@ export const ClipCard: React.FC<ClipCardProps> = ({
                 to 4) with the active speaker highlighted.
               </p>
             </div>
+
+            <SettingsSection title="Overlay styles" />
 
             <div className="space-y-2">
               <Label id={`hook-style-label-${clip._id}`}>Hook style</Label>
@@ -612,6 +675,22 @@ export const ClipCard: React.FC<ClipCardProps> = ({
                 >
                   <Download />
                   Download
+                </Button>
+              )}
+
+              {isProcessing && (
+                <Button
+                  variant="outline"
+                  onClick={handleCancel}
+                  disabled={isCancelling}
+                  className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                >
+                  {isCancelling ? (
+                    <Loader2 className="animate-spin" />
+                  ) : (
+                    <XCircle />
+                  )}
+                  {isCancelling ? "Cancelling…" : "Cancel"}
                 </Button>
               )}
 

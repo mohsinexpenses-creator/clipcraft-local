@@ -13,8 +13,9 @@ import { log } from '../lib/logger';
  * `FaceDetectorYNImpl` (modules/objdetect/src/face_detect.cpp) EXACTLY so the
  * detections match what cv::FaceDetectorYN produces:
  *
- *   - the caller resizes the frame (aspect-preserving); we pad bottom/right to
- *     a multiple of 32,
+ *   - the caller resizes the frame; we bilinearly resample it to the model's
+ *     STATIC 640x640 input (the 2023mar ONNX rejects any other size), then
+ *     scale the decoded boxes/landmarks back to the frame's pixel space,
  *   - blobFromImage defaults: float32 NCHW, RGB (swapRB), NO mean/std scaling
  *     (raw 0-255 pixel values),
  *   - the 2023mar (v2) model returns 12 feature maps:
@@ -43,7 +44,13 @@ export const YUNET_MODEL_RELPATH = path.join('models', 'yunet', 'face_detection_
 export const YUNET_MODEL_SHA256 = '8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4';
 
 const STRIDES = [8, 16, 32] as const;
-const DIVISOR = 32;
+/**
+ * The 2023mar ONNX has a STATIC 640x640 input (onnxruntime rejects 640x384 /
+ * 320x192 with "Got invalid dimensions for input ... Expected: 640"). OpenCV's
+ * FaceDetectorYN resizes internally; here we bilinearly resample every frame
+ * to this size and rescale the decoded coordinates back to the frame space.
+ */
+const YUNET_INPUT_SIZE = 640;
 const CONF_THRESHOLD = 0.55;
 const NMS_THRESHOLD = 0.3;
 const TOP_K = 5000;
@@ -204,33 +211,58 @@ export async function detectFacesYunet(
   const { width: inputW, height: inputH, data } = frame;
   if (inputW < 16 || inputH < 16) return [];
 
-  // Pad bottom/right to a multiple of 32 - exactly what padWithDivisor() does.
-  const padW = (Math.floor((inputW - 1) / DIVISOR) + 1) * DIVISOR;
-  const padH = (Math.floor((inputH - 1) / DIVISOR) + 1) * DIVISOR;
-
+  // Bilinearly resample the frame to the model's static 640x640 input
+  // (pixel-centre mapping, clamped edges - same spirit as OpenCV's resize).
   // blobFromImage defaults: NCHW float32, RGB (swapRB=true), no normalization.
-  const blob = new Float32Array(3 * padW * padH);
-  const plane = padW * padH;
-  for (let y = 0; y < inputH; y += 1) {
-    for (let x = 0; x < inputW; x += 1) {
-      const src = (y * inputW + x) * 4;
-      const dst = y * padW + x;
-      blob[dst] = data[src]; // R
-      blob[plane + dst] = data[src + 1]; // G
-      blob[2 * plane + dst] = data[src + 2]; // B
+  const size = YUNET_INPUT_SIZE;
+  const plane = size * size;
+  const blob = new Float32Array(3 * plane);
+  const xRatio = inputW / size;
+  const yRatio = inputH / size;
+  for (let y = 0; y < size; y += 1) {
+    const sy = (y + 0.5) * yRatio - 0.5;
+    const y0 = Math.min(inputH - 1, Math.max(0, Math.floor(sy)));
+    const y1 = Math.min(inputH - 1, y0 + 1);
+    const fy = sy - Math.floor(sy);
+    const rowTop = y0 * inputW * 4;
+    const rowBot = y1 * inputW * 4;
+    let dst = y * size;
+    for (let x = 0; x < size; x += 1) {
+      const sx = (x + 0.5) * xRatio - 0.5;
+      const x0 = Math.min(inputW - 1, Math.max(0, Math.floor(sx)));
+      const x1 = Math.min(inputW - 1, x0 + 1);
+      const fx = sx - Math.floor(sx);
+      const srcTop = rowTop + x0 * 4;
+      const srcTop1 = rowTop + x1 * 4;
+      const srcBot = rowBot + x0 * 4;
+      const srcBot1 = rowBot + x1 * 4;
+      const top = data[srcTop] * (1 - fx) + data[srcTop1] * fx;
+      const bottom = data[srcBot] * (1 - fx) + data[srcBot1] * fx;
+      blob[dst] = top * (1 - fy) + bottom * fy; // R
+      const topG = data[srcTop + 1] * (1 - fx) + data[srcTop1 + 1] * fx;
+      const bottomG = data[srcBot + 1] * (1 - fx) + data[srcBot1 + 1] * fx;
+      blob[plane + dst] = topG * (1 - fy) + bottomG * fy; // G
+      const topB = data[srcTop + 2] * (1 - fx) + data[srcTop1 + 2] * fx;
+      const bottomB = data[srcBot + 2] * (1 - fx) + data[srcBot1 + 2] * fx;
+      blob[2 * plane + dst] = topB * (1 - fy) + bottomB * fy; // B
+      dst += 1;
     }
   }
 
-  const tensor = new ort.Tensor('float32', blob, [1, 3, padH, padW]);
+  const tensor = new ort.Tensor('float32', blob, [1, 3, size, size]);
   const outputs = await runtime.session.run({ [runtime.inputName]: tensor });
+
+  // The model decodes in 640x640 space; map back to the frame's own pixels.
+  const scaleX = inputW / size;
+  const scaleY = inputH / size;
 
   const confThreshold = options?.confThreshold ?? CONF_THRESHOLD;
   const faces: Array<{ face: DetectedFace; score: number }> = [];
 
   for (let level = 0; level < STRIDES.length; level += 1) {
     const stride = STRIDES[level];
-    const cols = Math.floor(padW / stride);
-    const rows = Math.floor(padH / stride);
+    const cols = Math.floor(size / stride);
+    const rows = Math.floor(size / stride);
     const cells = rows * cols;
 
     const cls = pickOutput(outputs, `cls_${stride}`, level);
@@ -255,16 +287,17 @@ export async function detectFacesYunet(
         const score = Math.sqrt(clsScore * objScore);
         if (score < confThreshold) continue;
 
-        const cx = (c + bboxV[idx * 4 + 0]) * stride;
-        const cy = (r + bboxV[idx * 4 + 1]) * stride;
-        const w = Math.exp(bboxV[idx * 4 + 2]) * stride;
-        const h = Math.exp(bboxV[idx * 4 + 3]) * stride;
+        // Decode in model space (640x640), then map to frame pixels.
+        const cx = (c + bboxV[idx * 4 + 0]) * stride * scaleX;
+        const cy = (r + bboxV[idx * 4 + 1]) * stride * scaleY;
+        const w = Math.exp(bboxV[idx * 4 + 2]) * stride * scaleX;
+        const h = Math.exp(bboxV[idx * 4 + 3]) * stride * scaleY;
 
         const points: Array<{ x: number; y: number }> = [];
         for (let n = 0; n < 5; n += 1) {
           points.push({
-            x: (kpsV[idx * 10 + 2 * n] + c) * stride,
-            y: (kpsV[idx * 10 + 2 * n + 1] + r) * stride,
+            x: (kpsV[idx * 10 + 2 * n] + c) * stride * scaleX,
+            y: (kpsV[idx * 10 + 2 * n + 1] + r) * stride * scaleY,
           });
         }
 
@@ -280,9 +313,8 @@ export async function detectFacesYunet(
     }
   }
 
-  // Greedy NMS with the model's IoU threshold. Blob space is 1:1 with the
-  // frame's pixels (padding sits outside [0..inputW)x[0..inputH)), so decoded
-  // coordinates need no scaling - only clipping away padding garbage.
+  // Greedy NMS with the model's IoU threshold. Decoded coordinates are already
+  // in frame pixel space (scaled above), so only clipping is needed.
   faces.sort((a, b) => b.score - a.score);
   const kept: DetectedFace[] = [];
 
@@ -304,7 +336,7 @@ export async function detectFacesYunet(
   return kept;
 }
 
-/** Clip a detection to the real frame area; drop it when its centre is padding. */
+/** Clip a detection to the frame bounds; drop it when its centre is outside. */
 function clipToFrame(face: DetectedFace, frameW: number, frameH: number): DetectedFace | null {
   const cx = face.box.x + face.box.width / 2;
   const cy = face.box.y + face.box.height / 2;

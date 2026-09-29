@@ -36,6 +36,8 @@ export interface RenderNativeCaptionsOptions {
   words: WordTimestamp[];
   preset: CaptionPreset;
   onProgress?: (progress: number) => void;
+  /** Poll for a user-requested cancel; the running FFmpeg child is killed. */
+  isCancelled?: () => boolean;
 }
 
 const OUTPUT_WIDTH = 1080;
@@ -178,7 +180,7 @@ export interface RenderNativeCaptionsResult {
 }
 
 export async function renderNativeCaptions(options: RenderNativeCaptionsOptions): Promise<RenderNativeCaptionsResult> {
-  const { videoPath, outputPath, hookText, hookDuration, hookStart, ctaText, ctaDuration, words, preset, onProgress } = options;
+  const { videoPath, outputPath, hookText, hookDuration, hookStart, ctaText, ctaDuration, words, preset, onProgress, isCancelled } = options;
 
   log.detail(`Native captions (FFmpeg ASS) for ${color.bold(path.basename(videoPath))}`);
   if (onProgress) onProgress(82);
@@ -267,6 +269,7 @@ export async function renderNativeCaptions(options: RenderNativeCaptionsOptions)
       label: 'native-captions',
       cwd: workDir,
       totalDurationSeconds: totalDuration,
+      isCancelled,
       onProgress: ({ percent }) => {
         if (percent !== undefined && onProgress) onProgress(88 + Math.min(10, Math.round(percent / 10)));
       },

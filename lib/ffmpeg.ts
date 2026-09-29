@@ -1,7 +1,7 @@
 import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
-import { AppError, toErrorMessage } from "./errors";
+import { AppError, RenderCancelledError, toErrorMessage } from "./errors";
 import { log } from "./logger";
 
 /**
@@ -114,6 +114,12 @@ export interface RunFfmpegOptions {
   label?: string;
   /** Working directory for the process (used to feed libass a plain file name). */
   cwd?: string;
+  /**
+   * Poll for a user-requested cancellation (checked at most once per second
+   * while FFmpeg is running). When it returns true the child is killed and the
+   * promise rejects with RenderCancelledError.
+   */
+  isCancelled?: () => boolean;
 }
 
 const DEFAULT_FFMPEG_TIMEOUT_MS = 30 * 60 * 1000;
@@ -145,12 +151,42 @@ export function runFfmpeg(
     let stdout = "";
     let stderr = "";
     let timedOut = false;
+    let cancelled = false;
+    let settled = false;
 
     const timeoutMs = options?.timeoutMs ?? DEFAULT_FFMPEG_TIMEOUT_MS;
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill("SIGKILL");
     }, timeoutMs);
+
+    // Cancellation: poll at most once per second; when the user asked to stop,
+    // kill the child and reject with RenderCancelledError (never retried).
+    let cancelTimer: NodeJS.Timeout | null = null;
+    if (options?.isCancelled) {
+      const pollCancel = options.isCancelled;
+      cancelTimer = setInterval(() => {
+        if (settled || cancelled) return;
+        let wantsCancel = false;
+        try {
+          wantsCancel = pollCancel() === true;
+        } catch {
+          wantsCancel = false;
+        }
+        if (!wantsCancel) return;
+        cancelled = true;
+        settled = true;
+        clearTimeout(timer);
+        if (cancelTimer) clearInterval(cancelTimer);
+        child.kill("SIGKILL");
+        reject(new RenderCancelledError());
+      }, 1000);
+    }
+
+    const finishSettled = () => {
+      clearTimeout(timer);
+      if (cancelTimer) clearInterval(cancelTimer);
+    };
 
     child.stdout?.on("data", (chunk) => {
       stdout += chunk.toString();
@@ -188,7 +224,9 @@ export function runFfmpeg(
     });
 
     child.on("error", (error) => {
-      clearTimeout(timer);
+      if (settled) return;
+      settled = true;
+      finishSettled();
       reject(
         new AppError("Failed to start FFmpeg.", {
           details: `${ffmpegBin}: ${error.message}`,
@@ -199,7 +237,10 @@ export function runFfmpeg(
     });
 
     child.on("close", (code) => {
-      clearTimeout(timer);
+      finishSettled();
+
+      if (settled) return; // cancelled path already rejected
+      settled = true;
 
       if (timedOut) {
         reject(

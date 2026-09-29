@@ -58,6 +58,18 @@ export class AppError extends Error {
 }
 
 /**
+ * Thrown (and caught) when the user cancels a running render. Unlike AppError
+ * this is NOT a failure: the job ends cleanly, the clip is marked as cancelled
+ * and the runner must not retry it.
+ */
+export class RenderCancelledError extends Error {
+  constructor(message = 'Render cancelled by user.') {
+    super(message);
+    this.name = 'RenderCancelledError';
+  }
+}
+
+/**
  * Route-handler error payload.
  *
  * The dashboard reads `data.error` (see getErrorFromResponse in app/page.tsx) while the
