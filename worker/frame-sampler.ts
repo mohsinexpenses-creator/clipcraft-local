@@ -1,9 +1,9 @@
-import fs from 'fs';
-import path from 'path';
-import { Jimp } from 'jimp';
-import { AppError, toErrorMessage } from '../lib/errors';
-import { runFfmpeg } from '../lib/ffmpeg';
-import { log } from '../lib/logger';
+import fs from "fs";
+import path from "path";
+import { Jimp } from "jimp";
+import { AppError, toErrorMessage } from "../lib/errors";
+import { runFfmpeg } from "../lib/ffmpeg";
+import { log } from "../lib/logger";
 
 /**
  * Detector-agnostic frame sampling + the legacy "skin heuristic" smart crop.
@@ -20,10 +20,16 @@ interface FrameSample {
   height: number;
 }
 
-export async function readFrame(framePath: string): Promise<FrameSample | null> {
+export async function readFrame(
+  framePath: string,
+): Promise<FrameSample | null> {
   try {
     const image = await Jimp.read(framePath);
-    return { path: framePath, width: image.bitmap.width, height: image.bitmap.height };
+    return {
+      path: framePath,
+      width: image.bitmap.width,
+      height: image.bitmap.height,
+    };
   } catch {
     return null;
   }
@@ -36,7 +42,7 @@ export interface CropWindowResult {
   cropY: number;
   cropFilter: string;
   /** Which detector produced the crop - useful in the worker log. */
-  method: 'yunet' | 'skin-heuristic' | 'center-fallback';
+  method: "yunet" | "skin-heuristic" | "center-fallback";
   /** Average detector confidence (0-1) when available. */
   confidence?: number;
 }
@@ -50,7 +56,10 @@ export interface FaceTrackPoint {
   y: number;
 }
 
-export interface FaceTrackResult extends Omit<CropWindowResult, 'cropX' | 'cropFilter'> {
+export interface FaceTrackResult extends Omit<
+  CropWindowResult,
+  "cropX" | "cropFilter"
+> {
   /** Smoothed per-time face centres; empty = static centred crop. */
   points: FaceTrackPoint[];
   /** Average centre (for the DB record / logs). */
@@ -103,46 +112,53 @@ export async function sampleSegmentFrames(
   duration: number,
   targetFps: number,
   maxFrames: number,
-  tmpPrefix = 'frames'
+  tmpPrefix = "frames",
 ): Promise<SampledFrames> {
   const safeDuration = Math.max(0.5, duration);
   const fps = Math.max(0.5, Math.min(targetFps, maxFrames / safeDuration));
 
   const tempFramesDir = path.join(
     process.cwd(),
-    '.tmp',
-    `${tmpPrefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    ".tmp",
+    `${tmpPrefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
   );
   fs.mkdirSync(tempFramesDir, { recursive: true });
 
   try {
     const frameArgs = [
-      '-y',
-      '-hide_banner',
-      '-loglevel', 'error',
-      '-ss', start.toFixed(3),
-      '-t', safeDuration.toFixed(3),
-      '-i', videoPath,
+      "-y",
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-ss",
+      start.toFixed(3),
+      "-t",
+      safeDuration.toFixed(3),
+      "-i",
+      videoPath,
       // hflip FIRST: sample exactly what the crop filter will see.
       // fps=<fps> limits the decode work - without it ffmpeg decodes every
       // frame of the segment and only -frames:v caps the output (slow).
-      '-vf', `hflip,scale=640:-2,fps=${fps.toFixed(3)}`,
-      '-frames:v', String(maxFrames),
-      path.join(tempFramesDir, 'frame_%03d.jpg'),
+      "-vf",
+      `hflip,scale=640:-2,fps=${fps.toFixed(3)}`,
+      "-frames:v",
+      String(maxFrames),
+      path.join(tempFramesDir, "frame_%03d.jpg"),
     ];
 
-    await runFfmpeg(frameArgs, { label: 'sample-frames' });
+    await runFfmpeg(frameArgs, { label: "sample-frames" });
 
     const frames = fs
       .readdirSync(tempFramesDir)
-      .filter((file) => file.toLowerCase().endsWith('.jpg'))
+      .filter((file) => file.toLowerCase().endsWith(".jpg"))
       .sort()
       .map((file) => path.join(tempFramesDir, file));
 
     if (frames.length === 0) {
-      throw new AppError('Frame sampling produced no frames.', {
+      throw new AppError("Frame sampling produced no frames.", {
         details: `start=${start}, duration=${safeDuration}`,
-        resolution: 'Check the clip timestamps and verify FFmpeg can decode the source video.',
+        resolution:
+          "Check the clip timestamps and verify FFmpeg can decode the source video.",
       });
     }
 
@@ -156,7 +172,8 @@ export async function sampleSegmentFrames(
 /** Remove a sampled-frames directory (caller passes the dir it sampled into). */
 export function cleanupSampledFrames(tempFramesDir: string): void {
   try {
-    if (fs.existsSync(tempFramesDir)) fs.rmSync(tempFramesDir, { recursive: true, force: true });
+    if (fs.existsSync(tempFramesDir))
+      fs.rmSync(tempFramesDir, { recursive: true, force: true });
   } catch {
     // Ignore cleanup errors.
   }
@@ -167,7 +184,7 @@ export function cleanupSampledFrames(tempFramesDir: string): void {
  * wood, warm backgrounds and hands) but it needs no ML runtime at all.
  */
 export async function detectWithSkinHeuristic(
-  framePath: string
+  framePath: string,
 ): Promise<FaceDetection[]> {
   try {
     const image = await Jimp.read(framePath);
@@ -189,9 +206,13 @@ export async function detectWithSkinHeuristic(
 
         // Classic RGB skin rule (Peer et al.) - cheap and reasonably robust.
         const isSkin =
-          r > 95 && g > 40 && b > 20 &&
+          r > 95 &&
+          g > 40 &&
+          b > 20 &&
           Math.max(r, g, b) - Math.min(r, g, b) > 15 &&
-          Math.abs(r - g) > 15 && r > g && r > b;
+          Math.abs(r - g) > 15 &&
+          r > g &&
+          r > b;
 
         if (!isSkin) continue;
         skinPixels += 1;
@@ -214,7 +235,8 @@ export async function detectWithSkinHeuristic(
     if (weightTotal === 0) return [];
 
     // Confidence is how concentrated the skin mass is (a single face -> high).
-    const concentration = Math.max(...counts) / Math.max(1, skinPixels / columns);
+    const concentration =
+      Math.max(...counts) / Math.max(1, skinPixels / columns);
     return [
       {
         centerX: weightedSum / weightTotal,
@@ -242,7 +264,7 @@ export async function detectWithSkinHeuristic(
 export function selectSpeakerFace(
   faces: FaceDetection[],
   prevCenterX: number | null,
-  frameWidth: number
+  frameWidth: number,
 ): FaceDetection | null {
   if (faces.length === 0) return null;
   if (faces.length === 1) return faces[0];
@@ -253,7 +275,10 @@ export function selectSpeakerFace(
     const proximity =
       prevCenterX === null
         ? 1
-        : Math.max(0, 1 - Math.abs(face.centerX - prevCenterX) / (frameWidth * 0.5));
+        : Math.max(
+            0,
+            1 - Math.abs(face.centerX - prevCenterX) / (frameWidth * 0.5),
+          );
     // faceWidth^1.5 makes size dominate; proximity (0..1) breaks ties softly.
     const score = Math.pow(face.faceWidth, 1.5) * (0.6 + 0.4 * proximity);
     if (score > bestScore) {
@@ -276,7 +301,7 @@ export function decimateTrack(
   points: FaceTrackPoint[],
   clampX?: (x: number) => number,
   tolerancePx = 0.5,
-  maxPoints = 48
+  maxPoints = 48,
 ): FaceTrackPoint[] {
   if (points.length <= 3 || points.length <= maxPoints) return points;
   const cx = clampX ?? ((x: number) => x);
@@ -319,12 +344,12 @@ export function decimateTrack(
  * "stuck in the centre" between them. 1600px/s crosses the whole frame in
  * ~0.6s: fast enough to feel like a cut, slow enough to never look shaky.
  */
-export const MAX_PAN_PX_PER_SEC = 1600;
-const EMA_ALPHA = 0.45;
+export const MAX_PAN_PX_PER_SEC = 2800;
+const EMA_ALPHA = 0.6;
 
 export function smoothTrack(
   raw: FaceTrackPoint[],
-  videoWidth: number
+  videoWidth: number,
 ): FaceTrackPoint[] {
   if (raw.length === 0) return [];
   if (raw.length === 1) return raw;
@@ -380,14 +405,22 @@ export async function detectFaceTrack(
   start: number,
   duration: number,
   videoWidth: number,
-  videoHeight: number
+  videoHeight: number,
 ): Promise<FaceTrackResult> {
-  if (!Number.isFinite(videoWidth) || !Number.isFinite(videoHeight) || videoWidth <= 0 || videoHeight <= 0) {
-    throw new AppError('Cannot compute a smart crop without a valid source resolution.', {
-      status: 400,
-      details: `width=${videoWidth}, height=${videoHeight}`,
-      resolution: 'Re-upload the video so FFmpeg can read its resolution.',
-    });
+  if (
+    !Number.isFinite(videoWidth) ||
+    !Number.isFinite(videoHeight) ||
+    videoWidth <= 0 ||
+    videoHeight <= 0
+  ) {
+    throw new AppError(
+      "Cannot compute a smart crop without a valid source resolution.",
+      {
+        status: 400,
+        details: `width=${videoWidth}, height=${videoHeight}`,
+        resolution: "Re-upload the video so FFmpeg can read its resolution.",
+      },
+    );
   }
 
   // Largest 9:16 window that fits inside the source, with even dimensions.
@@ -404,8 +437,8 @@ export async function detectFaceTrack(
 
   const tempFramesDir = path.join(
     process.cwd(),
-    '.tmp',
-    `frames_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    ".tmp",
+    `frames_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
   );
 
   try {
@@ -413,41 +446,54 @@ export async function detectFaceTrack(
 
     // Keep the frame count bounded on long segments.
     const safeDuration = Math.max(0.5, duration);
-    const sampleFps = Math.max(0.5, Math.min(2, MAX_SAMPLED_FRAMES / safeDuration));
+    const sampleFps = Math.max(
+      0.5,
+      Math.min(2, MAX_SAMPLED_FRAMES / safeDuration),
+    );
 
     const frameArgs = [
-      '-y',
-      '-hide_banner',
-      '-loglevel', 'error',
-      '-ss', start.toFixed(3),
-      '-t', safeDuration.toFixed(3),
-      '-i', videoPath,
+      "-y",
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-ss",
+      start.toFixed(3),
+      "-t",
+      safeDuration.toFixed(3),
+      "-i",
+      videoPath,
       // hflip FIRST: sample exactly what the crop filter will see.
       // fps=<sampleFps> is what actually limits the decode work - without it ffmpeg
       // decodes every frame of the segment and only -frames:v caps the output, which
       // is slow on long clips.
-      '-vf', `hflip,scale=640:-2,fps=${sampleFps.toFixed(3)}`,
-      '-frames:v', String(MAX_SAMPLED_FRAMES),
-      path.join(tempFramesDir, 'frame_%03d.jpg'),
+      "-vf",
+      `hflip,scale=640:-2,fps=${sampleFps.toFixed(3)}`,
+      "-frames:v",
+      String(MAX_SAMPLED_FRAMES),
+      path.join(tempFramesDir, "frame_%03d.jpg"),
     ];
 
-    await runFfmpeg(frameArgs, { label: 'sample-frames' });
+    await runFfmpeg(frameArgs, { label: "sample-frames" });
 
     const frameFiles = fs
       .readdirSync(tempFramesDir)
-      .filter((file) => file.toLowerCase().endsWith('.jpg'))
+      .filter((file) => file.toLowerCase().endsWith(".jpg"))
       .sort();
 
     if (frameFiles.length === 0) {
-      throw new AppError('Smart crop failed because no sample frames were extracted.', {
-        details: `start=${start}, duration=${safeDuration}`,
-        resolution: 'Check the clip timestamps and verify FFmpeg can decode the source video.',
-      });
+      throw new AppError(
+        "Smart crop failed because no sample frames were extracted.",
+        {
+          details: `start=${start}, duration=${safeDuration}`,
+          resolution:
+            "Check the clip timestamps and verify FFmpeg can decode the source video.",
+        },
+      );
     }
 
     const rawPoints: FaceTrackPoint[] = [];
     const scores: number[] = [];
-    let method: CropWindowResult['method'] = 'skin-heuristic';
+    let method: CropWindowResult["method"] = "skin-heuristic";
     let maxFacesSeen = 0;
     let prevCenterX: number | null = null;
 
@@ -487,14 +533,23 @@ export async function detectFaceTrack(
     }
 
     // Keep the vertical centre; for a landscape source this is normally 0 anyway.
-    const cropY = evenSize(Math.max(0, Math.floor((videoHeight - cropH) / 2)), 0);
+    const cropY = evenSize(
+      Math.max(0, Math.floor((videoHeight - cropH) / 2)),
+      0,
+    );
 
     // Decimate in the SAME space the ffmpeg expression lives in (clamped X):
     // a keyframe is only redundant if the clamped interpolation is flat.
     const clampX = (x: number): number =>
       Math.max(0, Math.min(Math.round(x - cropW / 2), videoWidth - cropW));
     let points = decimateTrack(smoothTrack(rawPoints, videoWidth), clampX);
-    let staticCropX = evenSize(Math.max(0, Math.min(videoWidth - cropW, Math.round(videoWidth / 2 - cropW / 2))), 0);
+    let staticCropX = evenSize(
+      Math.max(
+        0,
+        Math.min(videoWidth - cropW, Math.round(videoWidth / 2 - cropW / 2)),
+      ),
+      0,
+    );
     let confidence: number | undefined;
 
     if (rawPoints.length === 0) {
@@ -503,27 +558,44 @@ export async function detectFaceTrack(
        * failing the job. (Previously this threw, so any landscape/b-roll
        * segment could never render.)
        */
-      log.warn('No subject detected in the sampled frames - using a static centred 9:16 crop.');
-      method = 'center-fallback';
+      log.warn(
+        "No subject detected in the sampled frames - using a static centred 9:16 crop.",
+      );
+      method = "center-fallback";
       points = [];
     } else {
-      confidence = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : undefined;
+      confidence =
+        scores.length > 0
+          ? scores.reduce((a, b) => a + b, 0) / scores.length
+          : undefined;
       staticCropX = evenSize(
-        Math.max(0, Math.min(videoWidth - cropW, Math.round(points[points.length - 1].x - cropW / 2))),
-        0
+        Math.max(
+          0,
+          Math.min(
+            videoWidth - cropW,
+            Math.round(points[points.length - 1].x - cropW / 2),
+          ),
+        ),
+        0,
       );
       if (maxFacesSeen > 1) {
-        log.detail(`Multiple people detected (max ${maxFacesSeen} in one frame) - following the speaker.`);
+        log.detail(
+          `Multiple people detected (max ${maxFacesSeen} in one frame) - following the speaker.`,
+        );
       }
     }
 
-    const firstX = points.length > 0 ? Math.round(points[0].x) : Math.round(videoWidth / 2);
-    const lastX = points.length > 0 ? Math.round(points[points.length - 1].x) : Math.round(videoWidth / 2);
+    const firstX =
+      points.length > 0 ? Math.round(points[0].x) : Math.round(videoWidth / 2);
+    const lastX =
+      points.length > 0
+        ? Math.round(points[points.length - 1].x)
+        : Math.round(videoWidth / 2);
     log.ok(
-      `face track: ${points.length ? `pan ${firstX}→${lastX}px` : 'static crop'} across ${points.length} keyframes ` +
-      `(method=${method}, frames=${rawPoints.length}/${frameFiles.length}` +
-      `${maxFacesSeen > 0 ? `, people=${maxFacesSeen}` : ''}` +
-      `${confidence !== undefined ? `, confidence=${confidence.toFixed(2)}` : ''})`
+      `face track: ${points.length ? `pan ${firstX}→${lastX}px` : "static crop"} across ${points.length} keyframes ` +
+        `(method=${method}, frames=${rawPoints.length}/${frameFiles.length}` +
+        `${maxFacesSeen > 0 ? `, people=${maxFacesSeen}` : ""}` +
+        `${confidence !== undefined ? `, confidence=${confidence.toFixed(2)}` : ""})`,
     );
 
     return {
@@ -541,14 +613,15 @@ export async function detectFaceTrack(
   } catch (error) {
     if (error instanceof AppError) throw error;
 
-    throw new AppError('Smart crop detection failed.', {
+    throw new AppError("Smart crop detection failed.", {
       details: toErrorMessage(error),
       resolution:
-        'Inspect the sampled-frame FFmpeg command in the worker log, confirm the segment is inside the video, and retry.',
+        "Inspect the sampled-frame FFmpeg command in the worker log, confirm the segment is inside the video, and retry.",
     });
   } finally {
     try {
-      if (fs.existsSync(tempFramesDir)) fs.rmSync(tempFramesDir, { recursive: true, force: true });
+      if (fs.existsSync(tempFramesDir))
+        fs.rmSync(tempFramesDir, { recursive: true, force: true });
     } catch {
       // Ignore cleanup errors.
     }
@@ -564,7 +637,7 @@ export function getFaceDetectionStatus(): {
 } {
   return {
     modelsPresent: true,
-    modelsDir: path.join(process.cwd(), 'models', 'yunet'),
+    modelsDir: path.join(process.cwd(), "models", "yunet"),
     runtimeLoaded: true,
     unavailableReason: null,
   };
