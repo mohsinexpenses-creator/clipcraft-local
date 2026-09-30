@@ -97,20 +97,22 @@ function rgbaFrame(width: number, height: number, fill: (x: number, y: number) =
 test('decodes YuNet v2 outputs into boxes and landmarks (stride-8 cell)', async () => {
   // 640x640 frame -> identity resize, model space == frame space.
   // Face at rows=2, cols=3 of the stride-8 grid (80x80 cells).
+  // wCells must be >= 5 (40px): anything smaller is dropped by the min-width
+  // filter (tiny boxes are almost never real faces).
   const outputs = makeOutputs(640, [
-    { stride: 8, r: 2, c: 3, cls: 0.81, obj: 1.0, dx: 0.5, dy: 0.5, wCells: 2, hCells: 2 },
+    { stride: 8, r: 2, c: 3, cls: 0.81, obj: 1.0, dx: 0.5, dy: 0.5, wCells: 5, hCells: 2 },
   ]);
   const faces = await detectFacesYunet(makeRuntime(outputs), rgbaFrame(640, 640, () => [200, 100, 50]));
 
   assert.equal(faces.length, 1);
   const face = faces[0];
-  // cx=(3+0.5)*8=28, cy=(2+0.5)*8=20, w=exp(ln2)*8=16, h=16
+  // cx=(3+0.5)*8=28, cy=(2+0.5)*8=20, w=exp(ln5)*8=40, h=16
   // (float32 storage of the exp/log widths makes these ~1e-8 inexact)
   const near = (actual: number, expected: number) =>
     assert.ok(Math.abs(actual - expected) < 1e-3, `${actual} ~ ${expected}`);
-  near(face.box.x, 20);
+  near(face.box.x, 8);
   near(face.box.y, 12);
-  near(face.box.width, 16);
+  near(face.box.width, 40);
   near(face.box.height, 16);
   near(face.score, 0.9);
 
@@ -124,22 +126,23 @@ test('decodes YuNet v2 outputs into boxes and landmarks (stride-8 cell)', async 
 
 test('decoded boxes are rescaled from 640x640 model space to the frame space', async () => {
   // 320x320 frame: the model still decodes at 640, so every coordinate is
-  // scaled back by 0.5.
+  // scaled back by 0.5. wCells=6 -> 48px in 640 space (>= the 40px min width),
+  // 24px in frame space.
   const outputs = makeOutputs(640, [
-    { stride: 8, r: 20, c: 40, cls: 0.81, obj: 1.0, dx: 0.5, dy: 0.5, wCells: 3, hCells: 3 },
+    { stride: 8, r: 20, c: 40, cls: 0.81, obj: 1.0, dx: 0.5, dy: 0.5, wCells: 6, hCells: 6 },
   ]);
   const faces = await detectFacesYunet(makeRuntime(outputs), rgbaFrame(320, 320, () => [200, 100, 50]));
 
   assert.equal(faces.length, 1);
   const face = faces[0];
-  // model: cx=(40+0.5)*8=324, cy=(20+0.5)*8=164, w=h=24
-  // frame: cx=162, cy=82, w=h=12 -> box.x = 162-6 = 156, box.y = 82-6 = 76
+  // model: cx=(40+0.5)*8=324, cy=(20+0.5)*8=164, w=h=48
+  // frame: cx=162, cy=82, w=h=24 -> box.x = 162-12 = 150, box.y = 82-12 = 70
   const near = (actual: number, expected: number) =>
     assert.ok(Math.abs(actual - expected) < 1e-3, `${actual} ~ ${expected}`);
-  near(face.box.x, 156);
-  near(face.box.y, 76);
-  near(face.box.width, 12);
-  near(face.box.height, 12);
+  near(face.box.x, 150);
+  near(face.box.y, 70);
+  near(face.box.width, 24);
+  near(face.box.height, 24);
   // Landmark 0 offset (0,0): model (40*8, 20*8) = (320, 160) -> frame (160, 80)
   near(face.landmarks.points[0].x, 160);
   near(face.landmarks.points[0].y, 80);
@@ -177,11 +180,34 @@ test('confidence gate: score = sqrt(cls*obj) must reach 0.6', async () => {
   assert.equal(faces.length, 0);
 });
 
+test('faces narrower than 40px in 640 model space are dropped (passers-by filter)', async () => {
+  // wCells=4 -> 32px in 640 space: high score, but too small to be a real
+  // face in this use case (walls, posters, background people).
+  const tiny = makeOutputs(640, [
+    { stride: 8, r: 20, c: 40, cls: 0.95, obj: 1.0, dx: 0.5, dy: 0.5, wCells: 4, hCells: 4 },
+  ]);
+  assert.equal((await detectFacesYunet(makeRuntime(tiny), rgbaFrame(640, 640, () => [1, 2, 3]))).length, 0);
+
+  // The same cell at wCells=5 -> 40px exactly is kept.
+  const real = makeOutputs(640, [
+    { stride: 8, r: 20, c: 40, cls: 0.95, obj: 1.0, dx: 0.5, dy: 0.5, wCells: 5, hCells: 5 },
+  ]);
+  assert.equal((await detectFacesYunet(makeRuntime(real), rgbaFrame(640, 640, () => [1, 2, 3]))).length, 1);
+
+  // On a 320px frame the same 40px model-space box is 20px wide in frame
+  // space - the filter measures model space, so it is kept.
+  const small = makeOutputs(640, [
+    { stride: 8, r: 20, c: 40, cls: 0.95, obj: 1.0, dx: 0.5, dy: 0.5, wCells: 5, hCells: 5 },
+  ]);
+  assert.equal((await detectFacesYunet(makeRuntime(small), rgbaFrame(320, 320, () => [1, 2, 3]))).length, 1);
+});
+
 test('greedy NMS keeps the stronger face of an overlapping pair', async () => {
-  // Two 32px faces in neighbouring stride-8 cells overlap heavily.
+  // Two 48px faces in neighbouring stride-8 cells overlap heavily (width is
+  // >= 40px in 640 space so both survive the min-width filter and reach NMS).
   const outputs = makeOutputs(640, [
-    { stride: 8, r: 20, c: 40, cls: 0.81, obj: 1.0, dx: 0.5, dy: 0.5, wCells: 4, hCells: 4 },
-    { stride: 8, r: 20, c: 41, cls: 0.64, obj: 1.0, dx: 0.5, dy: 0.5, wCells: 4, hCells: 4 },
+    { stride: 8, r: 20, c: 40, cls: 0.81, obj: 1.0, dx: 0.5, dy: 0.5, wCells: 6, hCells: 6 },
+    { stride: 8, r: 20, c: 41, cls: 0.64, obj: 1.0, dx: 0.5, dy: 0.5, wCells: 6, hCells: 6 },
   ]);
   const faces = await detectFacesYunet(makeRuntime(outputs), rgbaFrame(640, 640, () => [1, 2, 3]));
   assert.equal(faces.length, 1);
@@ -200,7 +226,7 @@ test('detections centred outside the frame are clipped away', async () => {
 
 test('multi-level detections are unioned and sorted by score', async () => {
   const outputs = makeOutputs(640, [
-    { stride: 8, r: 20, c: 20, cls: 0.64, obj: 1.0, dx: 0.5, dy: 0.5, wCells: 3, hCells: 3 },
+    { stride: 8, r: 20, c: 20, cls: 0.64, obj: 1.0, dx: 0.5, dy: 0.5, wCells: 6, hCells: 6 },
     { stride: 32, r: 1, c: 1, cls: 1.0, obj: 1.0, dx: 0.5, dy: 0.5, wCells: 2, hCells: 2 },
   ]);
   const faces = await detectFacesYunet(makeRuntime(outputs), rgbaFrame(640, 640, () => [1, 2, 3]));

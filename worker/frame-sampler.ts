@@ -332,20 +332,22 @@ export function decimateTrack(
 }
 
 /**
- * Turn raw per-sample face centres into a smooth pan:
+ * Turn raw per-sample face centres into a pan:
  *   1. exponential moving average (kills per-frame jitter),
  *   2. slew limit (a "camera pan" never teleports - it moves at most
- *      MAX_PAN_PX_PER_SEC, so a cut to another person glides over ~1s).
+ *      MAX_PAN_PX_PER_SEC between samples).
  */
 /**
- * A cut to another person must COMPLETE within a short speaking turn: two
- * podcast speakers can sit ~900px apart in a 1920px frame, and at 900px/s the
- * window spent most of the clip travelling - to the viewer the frame looked
- * "stuck in the centre" between them. 1600px/s crosses the whole frame in
- * ~0.6s: fast enough to feel like a cut, slow enough to never look shaky.
+ * These settings are used by the FALLBACK track (worker/layout.ts
+ * trackToPanPoints) when the ASD speaker path is unavailable. They are
+ * deliberately near-instant: 8000px/s crosses the whole 1920px frame in
+ * ~0.24s and EMA 0.9 keeps only a whisper of smoothing, so the fallback
+ * window snaps to the tracked person instead of drifting or lingering in
+ * the centre between two speakers. The primary speaker path no longer
+ * smooths at all - it emits explicit lock + glide keyframes.
  */
-export const MAX_PAN_PX_PER_SEC = 2800;
-const EMA_ALPHA = 0.6;
+export const MAX_PAN_PX_PER_SEC = 8000;
+const EMA_ALPHA = 0.9;
 
 export function smoothTrack(
   raw: FaceTrackPoint[],

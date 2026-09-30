@@ -186,16 +186,25 @@ export async function processClipJob(
 
     // hookDuration/ctaDuration are optional on the job payload; never pass undefined
     // into the FFmpeg/Remotion stages or the timeline maths silently breaks.
-    const resolvedHookDuration = Number.isFinite(hookDuration) && (hookDuration ?? 0) >= 0
+    //
+    // The hook intro is ALWAYS exactly 3 seconds when enabled - a platform
+    // constant, not a user-configurable length (longer hooks give away the
+    // punchline, shorter ones don't land). 0 (or ~0) still means "hook off".
+    // On very short clips it clamps to half the clip so the intro still fits.
+    const HOOK_INTRO_SECONDS = 3;
+    const rawHookDuration = Number.isFinite(hookDuration) && (hookDuration ?? 0) >= 0
       ? (hookDuration as number)
-      : 3;
-    if (resolvedHookDuration > segmentDuration) {
-      log.warn(
-        `hookDuration (${resolvedHookDuration}s) exceeds the clip length ` +
-        `(${segmentDuration.toFixed(1)}s) - clamping it to half the clip.`
+      : HOOK_INTRO_SECONDS;
+    const hookOff = rawHookDuration < 0.15;
+    const safeHookDuration = hookOff
+      ? 0
+      : Math.min(HOOK_INTRO_SECONDS, segmentDuration / 2);
+    if (!hookOff && rawHookDuration > HOOK_INTRO_SECONDS + 0.1) {
+      log.detail(
+        `hookDuration (${rawHookDuration.toFixed(1)}s) normalised to the fixed ` +
+        `${HOOK_INTRO_SECONDS}s hook intro.`
       );
     }
-    const safeHookDuration = Math.min(resolvedHookDuration, segmentDuration / 2);
 
     // Suspense hook: duplicate the gripping moment INSIDE the clip to the
     // start (the viewer sees the best beat first, then watches the clip build

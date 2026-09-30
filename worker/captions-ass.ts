@@ -17,6 +17,7 @@
  */
 import { buildFinalCaptionChunks } from '../remotion/CaptionComposition';
 import { getCtaBottomLiftPercent } from '../remotion/CTAOverlay';
+import { maskProfanity } from '../lib/profanity';
 import type { CaptionPreset, WordTimestamp } from '../lib/types';
 
 export interface AssGenerationInput {
@@ -31,6 +32,12 @@ export interface AssGenerationInput {
   hookStart: number;
   /** CTA card duration at the end (drives the caption lift). */
   ctaDuration: number;
+  /**
+   * Length (s) of the dip-to-black transition around the hook join. Captions
+   * are blanked across [hookDuration - N, hookDuration + N] (the video is
+   * fading and the audio is silent there).
+   */
+  hookTransitionDuration?: number;
 }
 
 /** Keep in sync with AnimatedWord's HOLD_AFTER_SECONDS. */
@@ -166,7 +173,19 @@ function buildDialogue(
   // native captions look "glitchy" - next caption arriving before the
   // previous one left.)
   const holdEnd = chunk.end + HOLD_AFTER_SECONDS;
-  const end = nextStart !== undefined ? Math.min(holdEnd, nextStart - 0.02) : holdEnd;
+  let end = nextStart !== undefined ? Math.min(holdEnd, nextStart - 0.02) : holdEnd;
+
+  // Never let a line linger INTO the dip-to-black window around the hook join
+  // (the hold tail would otherwise draw text over the black).
+  const transitionDur =
+    input.hookDuration > 0
+      ? Math.max(0, Math.min(input.hookTransitionDuration ?? 0, input.hookDuration / 2))
+      : 0;
+  if (transitionDur > 0) {
+    const windowStart = input.hookDuration - transitionDur;
+    if (start < windowStart) end = Math.min(end, windowStart);
+  }
+
   if (end - start < 0.12) return null; // too short to be readable - drop it
   const exitCs = Math.max(0, Math.min(EXIT_FADE_CS, Math.round((end - chunk.end) * 100)));
 
@@ -209,12 +228,31 @@ function buildDialogue(
 }
 
 export function generateAssFile(input: AssGenerationInput): string {
-  const { preset, words, hookDuration, hookStart } = input;
+  const { preset, hookDuration, hookStart } = input;
+
+  // On-screen profanity masking happens at render time only - the stored
+  // transcript (and logs) keep the original words.
+  const maskedWords = input.words.map((w) => ({ ...w, word: maskProfanity(w.word) }));
+
+  // The dip-to-black window around the hook join: the video fades out/in and
+  // the audio is fully silent there, so no caption may be drawn inside it.
+  const transitionDur =
+    hookDuration > 0
+      ? Math.max(0, Math.min(input.hookTransitionDuration ?? 0, hookDuration / 2))
+      : 0;
+  const windowStart = hookDuration - transitionDur;
+  const windowEnd = hookDuration + transitionDur;
 
   // Same timeline remapping as the Remotion composition: the processed clip is
   // [hook intro][full segment]. Intro (hook moment) chunks and shifted chunks
   // are built separately so a line never mixes words from two moments.
-  const chunks = buildFinalCaptionChunks(words, hookStart, hookDuration).filter((c) => c.end > 0);
+  const allChunks = buildFinalCaptionChunks(maskedWords, hookStart, hookDuration).filter(
+    (c) => c.end > 0
+  );
+  const chunks =
+    transitionDur > 0
+      ? allChunks.filter((c) => c.end <= windowStart || c.start >= windowEnd)
+      : allChunks;
 
   const lines: string[] = [
     '[Script Info]',
@@ -235,6 +273,12 @@ export function generateAssFile(input: AssGenerationInput): string {
   for (let i = 0; i < chunks.length; i += 1) {
     const line = buildDialogue(chunks[i], chunks[i + 1]?.start, input);
     if (line) lines.push(line);
+  }
+
+  // Blank (\h) dialogue covering the dip window: documents the intentional gap
+  // and guarantees nothing renders over the black.
+  if (transitionDur > 0) {
+    lines.push(`Dialogue: 0,${assTime(windowStart)},${assTime(windowEnd)},Cap,,0,0,0,,{\\h}`);
   }
 
   return lines.join('\n') + '\n';

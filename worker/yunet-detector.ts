@@ -51,9 +51,19 @@ const STRIDES = [8, 16, 32] as const;
  * to this size and rescale the decoded coordinates back to the frame space.
  */
 const YUNET_INPUT_SIZE = 640;
-const CONF_THRESHOLD = 0.55;
+/**
+ * Raised from 0.55: YuNet rejects most wall/hand/low-confidence "faces" at
+ * 0.7, while real faces almost always score above 0.8.
+ */
+const CONF_THRESHOLD = 0.7;
 const NMS_THRESHOLD = 0.3;
 const TOP_K = 5000;
+/**
+ * Minimum face box width, measured in the model's 640px input space (~80px+
+ * in a typical 1280px source). Tiny detections are almost never real faces in
+ * this use case (walls, posters, hands, background people).
+ */
+const MIN_FACE_WIDTH_640 = 40;
 
 export interface FaceBox {
   x: number;
@@ -330,7 +340,14 @@ export async function detectFacesYunet(
     if (overlaps) continue;
 
     const clipped = clipToFrame(candidate.face, inputW, inputH);
-    if (clipped) kept.push(clipped);
+    if (!clipped) continue;
+
+    // Minimum face size (measured in the 640px model input space, so the
+    // threshold is the same no matter what size the frame was resampled from):
+    // tiny boxes are almost never real faces in this use case.
+    if (clipped.box.width / scaleX < MIN_FACE_WIDTH_640) continue;
+
+    kept.push(clipped);
   }
 
   return kept;

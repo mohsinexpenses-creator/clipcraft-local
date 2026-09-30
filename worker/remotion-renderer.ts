@@ -1,9 +1,15 @@
 import fs from 'fs';
 import path from 'path';
 import { AppError, RenderCancelledError, toErrorMessage } from '../lib/errors';
-import { getVideoMetadata } from '../lib/ffmpeg';
+import { getVideoMetadata, runFfmpeg } from '../lib/ffmpeg';
 import { CaptionPreset, OverlayStylePreset, WordTimestamp } from '../lib/types';
-import { normalizeFps } from './ffmpeg-pipeline';
+import {
+  buildProfanityAudioFilter,
+  buildProfanityWindows,
+  getProfanityAudioMode,
+  maskProfanity,
+} from '../lib/profanity';
+import { HOOK_TRANSITION_SECONDS, normalizeFps } from './ffmpeg-pipeline';
 import { startClipMediaServer } from './clip-http-server';
 import { color, log } from '../lib/logger';
 
@@ -206,18 +212,32 @@ export async function renderCaptionsAndOverlays(
      * v3 (now): serve the clip from a throwaway 127.0.0.1 server and pass the
      * http URL. This is the approach Remotion's own docs recommend.
      */
+    // On-screen profanity masking (captions + hook/CTA overlays). Only the
+    // words handed to the renderer are masked - the stored transcript and the
+    // worker log keep the original words, so re-renders never need a
+    // re-transcription.
+    const maskedWords: WordTimestamp[] = words.map((w) => ({
+      ...w,
+      word: maskProfanity(w.word),
+    }));
+    const maskedHookText = maskProfanity(hookText);
+    const maskedCtaText = maskProfanity(ctaText);
+
     const inputProps = {
       videoSrc: mediaServer.url,
       videoHasAudio: meta.hasAudio,
       videoWidth: meta.width,
       videoHeight: meta.height,
       sourceFps: meta.fps,
-      hookText,
+      hookText: maskedHookText,
       hookDuration,
+      // Dip-to-black window around the hook join: the composition blanks all
+      // captions/overlays inside it (see CaptionComposition).
+      hookTransitionDuration: HOOK_TRANSITION_SECONDS,
       hookStart: Math.max(0, Number(hookStart) || 0),
-      ctaText,
+      ctaText: maskedCtaText,
       ctaDuration,
-      words,
+      words: maskedWords,
       preset,
       hookStyle,
       ctaStyle,
@@ -340,6 +360,60 @@ export async function renderCaptionsAndOverlays(
       log.warn('Rendered clip has no audio stream - check that the processed clip has audio and enforceAudioTrack is still set.');
     }
 
+    // --- Profanity audio (PROFANITY_AUDIO_MODE: mute|beep|off) ---
+    // Remotion already encoded the audio, so mute/beep is applied in a second
+    // fast FFmpeg pass on the finished file: the video stream is COPIED
+    // untouched, only the audio is re-encoded to AAC. Skipped entirely when
+    // the transcript has no profane words in this clip.
+    if (outputMeta.hasAudio) {
+      const profanityMode = getProfanityAudioMode();
+      const profanityWindows = buildProfanityWindows(
+        words,
+        Math.max(0, Number(hookStart) || 0),
+        hookDuration,
+        Math.max(0, meta.duration - hookDuration)
+      );
+      const audioPlan = buildProfanityAudioFilter(profanityWindows, profanityMode, outputMeta.duration, 1);
+      if (audioPlan) {
+        const passPath = `${outputPath}.profaudio.tmp.mp4`;
+        log.detail(
+          `Profanity audio: ${profanityMode} ${profanityWindows.length} window(s) - separate pass (video copied)`
+        );
+        try {
+          const args = [
+            '-hide_banner', '-loglevel', 'error', '-y',
+            '-i', outputPath,
+            ...audioPlan.extraArgs,
+            '-filter_complex', audioPlan.filters.join(';'),
+            '-map', '0:v',
+            '-map', audioPlan.audioLabel,
+            '-c:v', 'copy',
+            '-c:a', 'aac', '-b:a', '192k',
+            '-movflags', '+faststart',
+            passPath,
+          ];
+          await runFfmpeg(args, { label: 'profanity-audio', isCancelled });
+          if (!fs.existsSync(passPath)) {
+            throw new AppError('The profanity audio pass finished without creating its output file.', {
+              details: passPath,
+              resolution: 'Inspect the FFmpeg log above and retry the render.',
+            });
+          }
+          fs.rmSync(outputPath, { force: true });
+          fs.renameSync(passPath, outputPath);
+        } catch (error) {
+          try { fs.rmSync(passPath, { force: true }); } catch { /* ignore */ }
+          // A cancel is not a failure - let the processor persist the cancelled state.
+          if (error instanceof RenderCancelledError) throw error;
+          if (error instanceof AppError) throw error;
+          throw new AppError('The profanity audio pass failed.', {
+            details: toErrorMessage(error),
+            resolution: 'Inspect the FFmpeg log above and retry the render.',
+          });
+        }
+      }
+    }
+
     if (onProgress) onProgress(100);
     log.ok(
       `Rendered ${outputMeta.width}x${outputMeta.height} @ ${outputMeta.fps}fps, ` +
@@ -356,6 +430,9 @@ export async function renderCaptionsAndOverlays(
       fileSizeBytes,
     };
   } catch (error) {
+    // A cancel is not a failure - the processor needs the raw error to persist
+    // the "Cancelled by user" state (same contract as runFfmpeg's cancellation).
+    if (error instanceof RenderCancelledError) throw error;
     if (error instanceof AppError) throw error;
 
     throw new AppError('Remotion caption rendering failed.', {

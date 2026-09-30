@@ -236,7 +236,7 @@ When selecting clips, focus on:
 - High Value: powerful advice, insights, lessons, or mindset shifts.
 
 For every clip, perform this full analysis and fold it into the JSON fields:
-1. Hook Line Analysis - identify the single strongest spoken line that can be used as a cold-open hook: the exact line (hookLine) plus its exact transcript timestamp (hookLineStart, hookLineEnd). Also write a punchy on-screen hook text (hookText, MAX 8 WORDS) that makes viewers stop scrolling.
+1. Hook Line Analysis - pick the single most psychologically gripping moment of the clip to use as the cold-open hook. It MUST be one of: a curiosity gap, a cliffhanger, a shocking statement, a reactive face/beat, a controversial claim, a teaser of a reveal, or an emotional pivot - NOT simply the first line of the clip. Prefer the moment that makes the viewer think "wait, what? I need to see the rest" over generic loud or excited lines. Set hookLine to that exact spoken line and hookLineStart/hookLineEnd to its exact transcript timestamps. CRITICAL: hookLineStart must sit exactly at the BEGINNING of that spoken phrase - never start the hook mid-sentence (the transcript is word-level timestamped, so align hookLineStart to a word boundary). The hook intro is ALWAYS cut to exactly 3 seconds starting at hookLineStart (this is a hard platform rule: hooks longer than ~3s give away the punchline, and hooks under 2.5s don't land), so the chosen moment must still work as a hook in exactly 3 seconds. Also write a punchy on-screen hook text (hookText, MAX 8 WORDS) that makes viewers stop scrolling.
 2. Retention Analysis - what creates curiosity in the first 3 seconds, where the payoff happens, and what open loop keeps viewers watching till the end. Summarize this into "reason" and rate retentionStrength (Weak / Medium / Strong / Extreme).
 3. Psychological Trigger Analysis - the dominant trigger for the clip: one of Curiosity, Anger, Inspiration, Shock, Validation, Fear, Controversy, Humor.
 4. TikTok / Shorts Safety & Eligibility Analysis - check the spoken words for policy-sensitive wording, monetization risk, reused-content risk, and algorithm suppression risk. Set safetyRisk (Low / Medium / High). In safetyNotes write the EXACT risky words or phrases clearly (never hidden references like "f-word" - write the actual word) followed by a safer replacement after "->". If the clip is clean, set safetyNotes to "No risky wording detected."
@@ -278,7 +278,7 @@ Transcript:
     description: 'Generates a compelling on-screen text overlay for the intro hook portion of a clip',
     systemPrompt: 'You are a master social media copywriter. You create viral, punchy, curiosity-inducing on-screen text overlays for short-form videos.',
     template: `Generate a short, high-impact on-screen hook overlay (MAX 8 WORDS) for this video clip transcript segment.
-The hook must make viewers immediately stop scrolling and want to watch the rest of the clip.
+The hook must create a "wait, what? - I need to see the rest" feeling: a curiosity gap, a cliffhanger, a shocking claim, or a tease of what is about to happen - NOT a summary of the content and NOT generic excitement.
 Use ALL CAPS or strong action words. Return ONLY the hook text string without quotes.
 
 Clip Transcript:

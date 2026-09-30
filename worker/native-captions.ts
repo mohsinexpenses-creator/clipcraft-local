@@ -18,7 +18,14 @@ import os from 'os';
 import path from 'path';
 import { AppError, toErrorMessage } from '../lib/errors';
 import { getVideoMetadata, runFfmpeg } from '../lib/ffmpeg';
-import { normalizeFps } from './ffmpeg-pipeline';
+import {
+  ProfanityAudioMode,
+  buildProfanityAudioFilter,
+  buildProfanityWindows,
+  getProfanityAudioMode,
+  maskProfanity,
+} from '../lib/profanity';
+import { HOOK_TRANSITION_SECONDS, normalizeFps } from './ffmpeg-pipeline';
 import { color, log } from '../lib/logger';
 import { CaptionPreset, WordTimestamp } from '../lib/types';
 import { generateAssFile } from './captions-ass';
@@ -116,9 +123,15 @@ export interface FfmpegBuildInput {
   totalDuration: number;
   hookEnabled: boolean;
   hookDuration: number;
+  /** When the hook overlay stops (end of the dip-to-black window). */
+  hookOverlayEnd: number;
   ctaEnabled: boolean;
   ctaStart: number;
   hasAudio: boolean;
+  /** Final-timeline [start, end) windows where a profane word is spoken. */
+  profanityWindows: [number, number][];
+  /** How those windows are treated in the audio (mute/beep/off). */
+  profanityMode: ProfanityAudioMode;
 }
 
 /**
@@ -127,12 +140,15 @@ export interface FfmpegBuildInput {
  *   input 0  = the processed clip (video + audio)
  *   input 1? = hook PNG sequence (plays at t=0)
  *   input N? = CTA PNG sequence (shifted onto the timeline via setpts)
+ *   input ?  = 1 kHz tone (beep mode only, supplied by the profanity filter)
  *   filter   = ass burn -> [overlay hook] -> [overlay CTA]
+ *              + profanity mute/beep on the audio (PROFANITY_AUDIO_MODE)
  */
 export function buildFfmpegArgs(input: FfmpegBuildInput): string[] {
   const {
     videoPath, outputPath, workDir, assFile, fps, totalDuration,
-    hookEnabled, hookDuration, ctaEnabled, ctaStart, hasAudio,
+    hookEnabled, hookOverlayEnd, ctaEnabled, ctaStart, hasAudio,
+    profanityWindows, profanityMode,
   } = input;
 
   const args: string[] = ['-hide_banner', '-loglevel', 'error', '-y', '-i', videoPath];
@@ -144,6 +160,18 @@ export function buildFfmpegArgs(input: FfmpegBuildInput): string[] {
     args.push('-framerate', String(fps), '-start_number', '1', '-i', path.join(workDir, 'cta', 'ov_%05d.png'));
   }
 
+  // Profanity audio (mute/beep) - the 1 kHz tone (beep mode) becomes the LAST
+  // input, after the video and the optional PNG sequences.
+  const audioPlan = hasAudio
+    ? buildProfanityAudioFilter(
+        profanityWindows,
+        profanityMode,
+        totalDuration,
+        (hookEnabled ? 1 : 0) + (ctaEnabled ? 1 : 0) + 1
+      )
+    : null;
+  if (audioPlan && audioPlan.extraArgs.length > 0) args.push(...audioPlan.extraArgs);
+
   const filter: string[] = [`[0:v]ass=${assFile}[vbase]`];
   if (ctaEnabled) {
     // Shift the CTA sequence onto the main timeline (it plays at t=ctaStart).
@@ -152,7 +180,11 @@ export function buildFfmpegArgs(input: FfmpegBuildInput): string[] {
   let lastLabel = 'vbase';
   if (hookEnabled) {
     const next = 'vhook';
-    filter.push(`[${lastLabel}][1:v]overlay=0:0:enable='between(t,0,${hookDuration.toFixed(3)})'[${next}]`);
+    // The hook card stops at the dip-to-black window - no overlay text on the
+    // black (the PNG sequence itself is only hookOverlayEnd long).
+    filter.push(
+      `[${lastLabel}][1:v]overlay=0:0:enable='between(t,0,${hookOverlayEnd.toFixed(3)})'[${next}]`
+    );
     lastLabel = next;
   }
   if (ctaEnabled) {
@@ -161,9 +193,10 @@ export function buildFfmpegArgs(input: FfmpegBuildInput): string[] {
     lastLabel = next;
   }
   if (lastLabel !== 'vout') filter.push(`[${lastLabel}]null[vout]`);
+  if (audioPlan) filter.push(...audioPlan.filters);
 
   args.push('-filter_complex', filter.join(';'), '-map', '[vout]');
-  if (hasAudio) args.push('-map', '0:a');
+  if (hasAudio) args.push('-map', audioPlan ? audioPlan.audioLabel : '0:a');
   args.push('-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p');
   if (hasAudio) args.push('-c:a', 'aac', '-b:a', '192k');
   args.push('-movflags', '+faststart', outputPath);
@@ -201,9 +234,41 @@ export async function renderNativeCaptions(options: RenderNativeCaptionsOptions)
   const meta = await getVideoMetadata(videoPath);
   const fps = normalizeFps(meta.fps);
   const totalDuration = Math.max(0.1, meta.duration);
-  const hookEnabled = hookDuration > 0 && hookText.trim().length > 0;
+
+  // The dip-to-black transition around the hook join: the hook card stops at
+  // its start, and the ASS file blanks captions across the whole window.
+  const transitionDur =
+    hookDuration > 0
+      ? Math.max(0, Math.min(HOOK_TRANSITION_SECONDS, hookDuration / 2))
+      : 0;
+  const hookOverlayEnd = Math.max(0, hookDuration - transitionDur);
+
+  // On-screen profanity masking for the overlay PNGs (captions are masked in
+  // generateAssFile). The stored transcript and logs keep the original words.
+  const maskedHookText = maskProfanity(hookText);
+  const maskedCtaText = maskProfanity(ctaText);
+
+  const hookEnabled = hookDuration > 0 && hookText.trim().length > 0 && hookOverlayEnd > 0.05;
   const ctaEnabled = ctaDuration > 0 && ctaText.trim().length > 0;
   const ctaStart = Math.max(0, totalDuration - ctaDuration);
+
+  // Profane AUDIO windows (PROFANITY_AUDIO_MODE: mute|beep|off). The transcript
+  // words are on the base timeline; buildProfanityWindows shifts them onto the
+  // final clip timeline (hook intro + base) and also covers the words that
+  // replay during the duplicated hook intro.
+  const profanityMode = getProfanityAudioMode();
+  const profanityWindows = buildProfanityWindows(
+    words,
+    Math.max(0, Number(hookStart) || 0),
+    hookDuration,
+    Math.max(0, totalDuration - hookDuration)
+  );
+  if (profanityWindows.length > 0) {
+    log.detail(
+      `Profanity audio: ${profanityMode} ${profanityWindows.length} window(s) ` +
+      `[${profanityWindows.map(([a, b]) => `${a.toFixed(2)}-${b.toFixed(2)}s`).join(', ')}]`
+    );
+  }
 
   const workDir = path.join(os.tmpdir(), 'clipcraft-native', path.basename(videoPath));
   fs.mkdirSync(workDir, { recursive: true });
@@ -219,19 +284,22 @@ export async function renderNativeCaptions(options: RenderNativeCaptionsOptions)
       hookDuration,
       hookStart: Math.max(0, Number(hookStart) || 0),
       ctaDuration,
+      hookTransitionDuration: transitionDur,
     }), 'utf8');
 
     // 2. Transparent overlay sequences (only when the overlays are on).
     if (hookEnabled || ctaEnabled) {
       const bundleDir = await getRemotionBundle();
       if (hookEnabled) {
+        // The sequence only covers 0..hookOverlayEnd (it stops at the
+        // dip-to-black window, so no hook text sits on the black).
         await renderOverlayFrames({
           bundleDir,
           compositionId: 'HookOverlayComposition',
           outputDir: path.join(workDir, 'hook'),
           fps,
-          durationSeconds: hookDuration,
-          inputProps: { hookText, hookDuration },
+          durationSeconds: hookOverlayEnd,
+          inputProps: { hookText: maskedHookText, hookDuration: hookOverlayEnd },
           label: 'Hook overlay',
         });
       }
@@ -242,14 +310,14 @@ export async function renderNativeCaptions(options: RenderNativeCaptionsOptions)
           outputDir: path.join(workDir, 'cta'),
           fps,
           durationSeconds: ctaDuration,
-          inputProps: { ctaText, ctaDuration },
+          inputProps: { ctaText: maskedCtaText, ctaDuration },
           label: 'CTA overlay',
         });
       }
       if (onProgress) onProgress(88);
     }
 
-    // 3. Single native pass: captions + overlays + audio.
+    // 3. Single native pass: captions + overlays + audio (+ profanity mute/beep).
     const args = buildFfmpegArgs({
       videoPath,
       outputPath,
@@ -259,9 +327,12 @@ export async function renderNativeCaptions(options: RenderNativeCaptionsOptions)
       totalDuration,
       hookEnabled,
       hookDuration,
+      hookOverlayEnd,
       ctaEnabled,
       ctaStart,
       hasAudio: meta.hasAudio,
+      profanityWindows,
+      profanityMode,
     });
 
     log.detail(`Native burn: ${totalDuration.toFixed(1)}s, hook=${hookEnabled ? hookDuration + 's' : 'off'}, cta=${ctaEnabled ? ctaDuration + 's' : 'off'}`);

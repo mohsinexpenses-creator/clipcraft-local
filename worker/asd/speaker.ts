@@ -52,17 +52,17 @@ export interface SpeakerTimelineResult {
 }
 
 /** Windows shorter than this are merged, longer ones split, in the decision. */
-const WINDOW_SECONDS = 1.0;
-const STEP_SECONDS = 0.5;
+const WINDOW_SECONDS = 0.6;
+const STEP_SECONDS = 0.25;
 /** A window is "voiced" when the mean voice energy is at least this. */
 const VOICE_THRESHOLD = 0.18;
 /**
  * A challenger must beat the current speaker's score by this factor to take
  * over (anti-flicker hysteresis).
  */
-const SWITCH_MARGIN = 1.3;
+const SWITCH_MARGIN = 1.15;
 /** Once a speaker is chosen, they are kept for at least this long. */
-const MIN_HOLD_SECONDS = 0.8;
+const MIN_HOLD_SECONDS = 0.4;
 /** Mouth-opening std-dev that counts as "clearly articulating". */
 const MOUTH_STD_SPEAKING = 0.05;
 /** Face width (fraction of frame width) that counts as "maximally prominent". */

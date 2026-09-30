@@ -43,6 +43,16 @@ export interface ProcessSegmentOptions {
 const MAX_OUTPUT_WIDTH = 1080;
 const MAX_OUTPUT_HEIGHT = 1920;
 
+/**
+ * Length (s) of the dip-to-black transition between the hook intro and the
+ * base clip: the last 0.5s of the hook fades to black (+ silence) and the
+ * first 0.5s of the base clip fades in from black (+ silence). The caption
+ * engines (worker/remotion-renderer.ts, worker/captions-ass.ts) blank all
+ * captions/overlays across this 1s window - import this constant instead of
+ * re-hard-coding 0.5.
+ */
+export const HOOK_TRANSITION_SECONDS = 0.5;
+
 /** libx264 refuses odd widths/heights, and `crop` happily produces them. */
 export function evenSize(value: number, minimum = 2): number {
   const rounded = Math.floor(value / 2) * 2;
@@ -309,12 +319,18 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
       // with `-c copy` produced a file whose second segment timestamps Remotion's
       // compositor could not read ("No frame found at position N").
       //
-      // The join also gets a short dip-to-black (video fade out/in + audio
-      // afade) so the leap from the hook moment back to the start of the clip
-      // reads as an intentional beat instead of a hard cut. A dip - not a
-      // crossfade - keeps the total duration EXACTLY hook + base, so the
+      // The join gets a 0.5s dip-to-black (HOOK_TRANSITION_SECONDS): the last
+      // 0.5s of the hook fades to black and the first 0.5s of the base clip
+      // fades in from black, so the leap from the hook moment back to the start
+      // of the clip reads as an intentional "teaser -> clip" beat. A dip - not
+      // a crossfade - keeps the total duration EXACTLY hook + base, so the
       // caption timeline (which assumes that sum) stays in sync.
-      const fadeDur = Math.min(0.4, actualHookDur / 2);
+      //
+      // AUDIO: afade=t=out reaches 0 gain exactly at the join (fadeSt+fadeDur =
+      // actualHookDur) and afade=t=in starts from 0 gain, so both sides are
+      // fully silent across the whole dip window - no floating audio under the
+      // black. The caption engines blank captions over the same window.
+      const fadeDur = Math.min(HOOK_TRANSITION_SECONDS, actualHookDur / 2);
       const fadeSt = Math.max(0, actualHookDur - fadeDur);
 
       const concatArgs = [

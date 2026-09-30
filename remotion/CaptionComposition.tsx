@@ -29,6 +29,13 @@ export interface CaptionCompositionProps {
   /** Length of the duplicated hook intro, in seconds. */
   hookDuration: number;
   /**
+   * Length (s) of the dip-to-black transition around the hook join. The FFmpeg
+   * stage fades the last N seconds of the hook to black and the first N
+   * seconds of the base clip in from black; nothing (captions, hook overlay)
+   * may be drawn during that window, so both are blanked here.
+   */
+  hookTransitionDuration?: number;
+  /**
    * Where in the clip (seconds from the clip start) the duplicated hook intro
    * was cut from. 0 (or unset) = the intro shows the first N seconds (legacy
    * behaviour); any other value = the intro replays that moment, and its
@@ -149,6 +156,7 @@ export const CaptionComposition: React.FC<CaptionCompositionProps> = ({
   // clip now always fills the frame, so layout no longer branches on them.
   hookText,
   hookDuration = 3,
+  hookTransitionDuration = 0,
   hookStart = 0,
   ctaText,
   ctaDuration = 2.5,
@@ -169,8 +177,25 @@ export const CaptionComposition: React.FC<CaptionCompositionProps> = ({
    * - During the intro the video replays the HOOK MOMENT (the words around
    *   `hookStart`), so caption those words as a preview at 0..hookDuration.
    *   With hookStart=0 the window is simply the start of the clip.
+   *
+   * The dip-to-black transition (FFmpeg) covers
+   * [hookDuration - transitionDur, hookDuration + transitionDur]: the video is
+   * fading out/in and the audio is fully silent there, so NO captions and NO
+   * hook/CTA overlay may be drawn inside that window.
    */
-  const chunks = buildFinalCaptionChunks(words, hookStart, hookDuration);
+  const transitionDur =
+    hookDuration > 0
+      ? Math.max(0, Math.min(hookTransitionDuration, hookDuration / 2))
+      : 0;
+  const hookWindowStart = hookDuration - transitionDur;
+  const hookWindowEnd = hookDuration + transitionDur;
+
+  const chunks = buildFinalCaptionChunks(words, hookStart, hookDuration).filter(
+    (chunk) => {
+      if (transitionDur <= 0) return true;
+      return chunk.end <= hookWindowStart || chunk.start >= hookWindowEnd;
+    }
+  );
 
   const currentTime = frame / fps;
   // Lift the captions while the end CTA card occupies the same bottom area.
@@ -222,10 +247,12 @@ export const CaptionComposition: React.FC<CaptionCompositionProps> = ({
         </AbsoluteFill>
       )}
 
-      {hookDuration > 0 ? (
+      {/* The hook card stops at the dip-to-black window: it fades out by
+          hookDuration - transitionDur, so no overlay text sits on the black. */}
+      {hookDuration > 0 && hookWindowStart > 0.05 ? (
         <HookOverlay
           hookText={hookText}
-          hookDurationInSeconds={hookDuration}
+          hookDurationInSeconds={hookWindowStart}
           frame={frame}
           fps={fps}
           style={hookStyle}

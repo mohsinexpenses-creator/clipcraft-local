@@ -69,10 +69,18 @@ export interface TrackerOptions {
   jitterTolerance?: number;
 }
 
+/**
+ * Tightened defaults (2026-09): reject flicker/false-positive tracks.
+ *  - maxMissed 3: a track dies after ~0.75s @4fps instead of 2s, so a false
+ *    wall-"face" that flickers in/out cannot accumulate 2s of visible time.
+ *  - gateFactor 0.5: a detection must sit near the track's predicted position.
+ *  - jitterTolerance 30: far-away detections cannot glom onto a track or spawn
+ *    new ones as easily.
+ */
 const DEFAULT_OPTIONS: Required<TrackerOptions> = {
-  maxMissed: 8,
-  gateFactor: 0.75,
-  jitterTolerance: 60,
+  maxMissed: 3,
+  gateFactor: 0.5,
+  jitterTolerance: 30,
 };
 
 export class Tracker {

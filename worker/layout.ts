@@ -201,30 +201,74 @@ function trackToPanPoints(track: Track, srcW: number): PanPoint[] {
   return flattenAndDecimate(points);
 }
 
+/** How long (s) the crop window glides from one speaker to the next. */
+const SPEAKER_GLIDE_SECONDS = 0.15;
+
+/** Median of a number array (unlike the mean, it rejects outlier sightings). */
+function median(values: number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
 /**
- * The camera path for speaker-focus: the centres of whoever the timeline says
- * is speaking, in time order. Speaker switches become short linear glides
- * (smoothed + slew-limited afterwards), so the frame moves instead of jumping.
+ * The camera path for speaker-focus: ONE stable anchor per speaker segment.
+ *
+ * While a person speaks the crop window stays LOCKED on that person's median
+ * centre - the old per-sample chase (which drifted with every minor head or
+ * body movement) is gone. The MEDIAN (not the mean) rejects outliers from
+ * brief occlusions and head turns.
+ *
+ * The crop filter is piecewise-linear over keyframes, so "lock on A until B is
+ * judged the speaker, then a fast glide to B" needs explicit keyframes:
+ *   - at seg.t0       : the previous speaker's anchor (still locked on A at the
+ *                      exact moment B starts - no creeping toward B early),
+ *   - at t0 + 0.15s   : this segment's anchor (the glide is complete),
+ *   - at seg.t1       : the same anchor again (locked for the rest of the
+ *                      segment - without this the window would ramp toward the
+ *                      NEXT speaker during the current speaker's segment).
+ * No EMA/slew smoothing is applied: the keyframes themselves encode the
+ * lock + 0.15s glide, and re-smoothing them would blur the lock.
  */
-function buildSpeakerPath(asd: AsdResult, srcW: number): PanPoint[] {
+// `_srcW` is intentionally part of the signature (the pan expressions clamp
+// against the source size downstream); the anchor maths works in source px.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function buildSpeakerPath(asd: AsdResult, _srcW: number): PanPoint[] {
   const byId = new Map<number, Track>();
   for (const track of asd.tracks) byId.set(track.id, track);
 
-  const raw: PanPoint[] = [];
+  const points: PanPoint[] = [];
+  let prev: { x: number; y: number } | null = null;
+
   for (const seg of asd.speakerSegments) {
-    if (seg.trackId === null) continue; // hold previous position
+    if (seg.trackId === null) continue; // no face on screen: hold previous position
     const track = byId.get(seg.trackId);
     if (!track) continue;
-    for (const p of track.points) {
-      if (p.t >= seg.t0 - 0.001 && p.t <= seg.t1 + 0.001) {
-        raw.push({ t: p.t, x: p.cx, y: p.cy });
-      }
+
+    // The speaker's sightings inside this segment (0.001s epsilon).
+    const inSegment = track.points.filter(
+      (p) => p.t >= seg.t0 - 0.001 && p.t <= seg.t1 + 0.001
+    );
+    if (inSegment.length === 0) continue;
+    const x = median(inSegment.map((p) => p.cx));
+    const y = median(inSegment.map((p) => p.cy));
+
+    if (prev === null) {
+      points.push({ t: seg.t0, x, y });
+    } else {
+      // Speaker switch: hold the previous anchor at the boundary (robust even
+      // with a gap between segments), then glide to the new anchor.
+      points.push({ t: seg.t0, x: prev.x, y: prev.y });
+      points.push({ t: Math.min(seg.t0 + SPEAKER_GLIDE_SECONDS, seg.t1), x, y });
     }
+    // Lock the anchor for the remainder of the segment.
+    points.push({ t: seg.t1, x, y });
+
+    prev = { x, y };
   }
-  if (raw.length === 0) return [];
-  const smoothed = smoothTrack(raw, srcW);
-  const points = smoothed.map((p) => ({ t: p.t, x: p.x, y: p.y }));
-  return flattenAndDecimate(points);
+
+  return points;
 }
 
 /** Largest 9:16 window that fits inside the source (even dimensions). */
@@ -275,27 +319,52 @@ export function buildSinglePlan(
     return { mode: 'single', cropW, cropH, points: [], faceAnchorY };
   }
 
-  // Decimate in the same clamped space the X expression lives in.
-  const clampX = (x: number): number =>
-    Math.max(0, Math.min(Math.round(x - cropW / 2), srcW - cropW));
-  points = decimateTrack(
-    points.map((p) => ({ t: p.t, x: p.x, y: p.y })),
-    clampX
-  ).map((p) => ({ t: p.t, x: p.x, y: p.y }));
+  // No decimation/smoothing here: the speaker path already emits exactly the
+  // keyframes it needs (one lock anchor per segment + switch glides), and
+  // re-smoothing them would reintroduce the drift toward the next speaker.
+  // The fallback path (trackToPanPoints) still decimates internally.
 
   return { mode: 'single', cropW, cropH, points, faceAnchorY };
 }
 
 function buildSplitPlan(asd: AsdResult, srcW: number, srcH: number): SplitPlan {
-  const tracks = asd.tracks.filter((track) => track.points.length >= 2);
-
-  // Relevant people = the ones actually on screen, ranked by screen-time * size.
-  const ranked = [...tracks].sort(
-    (a, b) => b.visibleTime * b.avgW - a.visibleTime * a.avgW
+  // Who was EVER the active speaker - those people always win a cell, and
+  // their count caps the grid (a 2-person conversation must never grow a 3rd/
+  // 4th cell from a briefly-glimpsed false face).
+  const speakerIds = new Set(
+    asd.speakerSegments
+      .map((seg) => seg.trackId)
+      .filter((id): id is number => id !== null)
   );
-  const minVisible = 2; // seconds - brief passers-by do not get a cell
-  let relevant = ranked.filter((track) => track.visibleTime >= minVisible);
-  if (relevant.length === 0) relevant = ranked.slice(0, 1);
+
+  // A track counts as a real on-screen person when it has enough sightings
+  // AND a big-enough average face (source px) - this kills the tiny YuNet
+  // false positives (walls, doors, posters, hands, background faces).
+  const candidateTracks = asd.tracks.filter(
+    (track) => track.points.length >= 3 && track.avgW >= 80
+  );
+
+  // Score: speakers ALWAYS beat non-speakers (1e6 bonus), then screen-time*size.
+  const scored = candidateTracks
+    .map((track) => {
+      const isSpeaker = speakerIds.has(track.id);
+      return {
+        track,
+        isSpeaker,
+        score: (isSpeaker ? 1_000_000 : 0) + track.visibleTime * track.avgW,
+      };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  // Relevant = every actual speaker (no minimum screen time for them) plus
+  // non-speaker co-participants who were on screen for at least 3 seconds.
+  const MIN_CO_PARTICIPANT_VISIBLE_SECONDS = 3;
+  let relevant = scored
+    .filter(
+      (s) =>
+        s.isSpeaker || s.track.visibleTime >= MIN_CO_PARTICIPANT_VISIBLE_SECONDS
+    )
+    .map((s) => s.track);
 
   // No faces at all (detector found nothing): a single static centred 9:16
   // crop. (An empty cell list would build a filter graph with no cells, which
@@ -319,7 +388,11 @@ function buildSplitPlan(asd: AsdResult, srcW: number, srcH: number): SplitPlan {
       emphasis: [],
     };
   }
-  const count = Math.min(4, relevant.length);
+
+  // Cap the grid by how many people actually spoke: a single presenter gets a
+  // full-screen cell, a 2-person conversation stays at 2 cells.
+  const count = Math.min(4, Math.max(speakerIds.size, 1), relevant.length);
+  relevant = relevant.slice(0, count);
 
   // Adaptive 9:16 grids (1080x1920 canvas) - all tile the canvas exactly.
   const grids: Array<Array<[number, number, number, number]>> = [
