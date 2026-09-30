@@ -39,7 +39,7 @@ These four reproduce the previously hardcoded overlay looks 1:1.
 | Field | Meaning |
 | --- | --- |
 | `fontFamily`, `fontSize`, `fontWeight` | Typography (weights: `normal`/`bold`/`extra-bold`/`black`) |
-| `textColor`, `backgroundColor`, `borderColor`, `borderWidth`, `borderRadius` | Card styling. `backgroundColor` is any CSS color **or gradient** (e.g. `linear-gradient(135deg, rgba(34,197,94,0.94), rgba(14,165,233,0.94))`) |
+| `textColor`, `backgroundColor`, `borderColor`, `borderWidth`, `borderRadius` | Card styling. `backgroundColor` is any CSS color **or gradient** (e.g. `linear-gradient(135deg, rgba(34,197,94,0.94), rgba(14,165,233,0.94))`) — the style editor has a visual **Solid / Gradient** picker (two color stops + per-stop opacity + angle) that writes this field |
 | `textTransform` | `uppercase` or `none` |
 | `positionY` | Card position as **% from the top** of the 9:16 frame (hook default 12, CTA default 64) |
 | `animationStyle` | `pop` · `fade` · `slide-up` · `none` — the entrance animation |
@@ -47,11 +47,18 @@ These four reproduce the previously hardcoded overlay looks 1:1.
 
 ## Rendering
 
-The Remotion root (`CaptionComposition` → `HookOverlay` / `CTAOverlay`) receives the
-resolved style preset as `hookStyle` / `ctaStyle`; the worker resolves the clip's
-`hookStylePresetId` / `ctaStylePresetId` (defaults `hook-bold-yellow` /
-`cta-gradient-green`). Each clip can pick its own pair — see the **Hook style** /
-**CTA style** selects on the clip card (and in `POST /api/clips` payloads).
+Both caption engines honour the style presets:
+
+- **Remotion** — `CaptionComposition` → `HookOverlay` / `CTAOverlay` receives the
+  resolved preset as `hookStyle` / `ctaStyle`.
+- **Native (fast)** — `renderNativeCaptions` renders the transparent
+  `HookOverlayComposition` / `CtaOverlayComposition` PNG sequences with the same
+  `hookStyle` / `ctaStyle` input props, so style changes show up in both engines.
+
+The worker resolves the clip's `hookStylePresetId` / `ctaStylePresetId` (defaults
+`hook-bold-yellow` / `cta-gradient-green`). Each clip can pick its own pair — see
+the **Hook style** / **CTA style** selects on the clip card (and in
+`POST /api/clips` payloads).
 
 The hook window still follows `getCtaWindow`/`getCtaBottomLiftPercent` timing logic:
 the hook overlays the first `hookDuration` seconds of the clip, the CTA the final

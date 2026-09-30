@@ -1,5 +1,6 @@
 import React from 'react';
 import { AbsoluteFill, useCurrentFrame, useVideoConfig } from 'remotion';
+import { OverlayStylePreset } from '../lib/types';
 import { CTAOverlay } from './CTAOverlay';
 import { HookOverlay } from './HookOverlay';
 
@@ -19,7 +20,8 @@ import { HookOverlay } from './HookOverlay';
 export const HookOverlayComposition: React.FC<{
   hookText: string;
   hookDuration: number;
-}> = ({ hookText, hookDuration }) => {
+  hookStyle?: OverlayStylePreset;
+}> = ({ hookText, hookDuration, hookStyle }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   return (
@@ -27,6 +29,7 @@ export const HookOverlayComposition: React.FC<{
       <HookOverlay
         hookText={hookText}
         hookDurationInSeconds={hookDuration}
+        style={hookStyle}
         frame={frame}
         fps={fps}
       />
@@ -37,7 +40,8 @@ export const HookOverlayComposition: React.FC<{
 export const CtaOverlayComposition: React.FC<{
   ctaText: string;
   ctaDuration: number;
-}> = ({ ctaText, ctaDuration }) => {
+  ctaStyle?: OverlayStylePreset;
+}> = ({ ctaText, ctaDuration, ctaStyle }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   return (
@@ -51,6 +55,7 @@ export const CtaOverlayComposition: React.FC<{
         ctaText={ctaText}
         ctaDurationInSeconds={ctaDuration}
         totalDurationInSeconds={ctaDuration}
+        style={ctaStyle}
         frame={frame}
         fps={fps}
       />

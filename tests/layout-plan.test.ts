@@ -14,9 +14,9 @@ import {
 import { AsdResult } from '../worker/asd/index';
 import { Track } from '../worker/asd/tracker';
 
-function panTrack(id: number, xs: number[], tStep = 0.25, w = 240): Track {
+function panTrack(id: number, xs: number[], tStep = 0.25, w = 240, t0 = 0): Track {
   const points = xs.map((x, i) => ({
-    t: i * tStep,
+    t: t0 + i * tStep,
     cx: x,
     cy: 400,
     w,
@@ -33,7 +33,7 @@ function panTrack(id: number, xs: number[], tStep = 0.25, w = 240): Track {
     cy: 400,
     vx: 0,
     vy: 0,
-    lastT: (xs.length - 1) * tStep,
+    lastT: t0 + (xs.length - 1) * tStep,
     missed: 0,
   };
 }
@@ -161,4 +161,48 @@ test('no usable tracks: speaker-focus falls back to a static centred crop', () =
   assert.equal(plan.mode, 'single');
   assert.equal(plan.points.length, 0, 'empty path = static crop');
   assert.ok(plan.cropW > 0 && plan.cropH > 0);
+});
+
+test('split grid size follows PEAK concurrent faces, not raw track count', () => {
+  // Person A's track is fragmented into ids 1 and 3 (long occlusion in the
+  // middle); person B is one track. All three ids speak at some point, so the
+  // speaker-count rule alone would ask for 3 panes - but only TWO people ever
+  // share the screen, so the split must show exactly 2.
+  const a1 = panTrack(1, Array.from({ length: 16 }, () => 400), 0.25, 240, 0); // 0-3.75s
+  const b = panTrack(2, Array.from({ length: 40 }, () => 1500), 0.25, 240, 0); // 0-9.75s
+  const a2 = panTrack(3, Array.from({ length: 16 }, () => 420), 0.25, 240, 20); // 20-23.75s
+
+  const plan = buildLayoutPlan(
+    asd([a1, b, a2], [
+      { trackId: 1, t0: 0, t1: 2 },
+      { trackId: 2, t0: 2, t1: 6 },
+      { trackId: 3, t0: 20, t1: 23 },
+    ]),
+    'split-screen',
+    1920,
+    1080
+  );
+  assert.equal(plan.mode, 'split');
+  if (plan.mode === 'split') {
+    assert.equal(plan.cells.length, 2, 'two people at peak -> exactly two panes');
+  }
+});
+
+test('a 2-person conversation never becomes a 4-cell grid', () => {
+  const a = panTrack(1, Array.from({ length: 40 }, () => 400));
+  const b = panTrack(2, Array.from({ length: 40 }, () => 1500));
+  const plan = buildLayoutPlan(
+    asd([a, b], [
+      { trackId: 1, t0: 0, t1: 5 },
+      { trackId: 2, t0: 5, t1: 10 },
+    ]),
+    'split-screen',
+    1920,
+    1080
+  );
+  assert.equal(plan.mode, 'split');
+  if (plan.mode === 'split') {
+    assert.equal(plan.cells.length, 2, 'two tracks -> two stacked panes (1080x960 each)');
+    assert.ok(plan.cells.every((c) => c.cellW === 1080 && c.cellH === 960));
+  }
 });

@@ -101,6 +101,78 @@ function thumbDiff(a: number[] | null, b: number[]): number {
   return Math.min(1, Math.max(0, sum / a.length / 255));
 }
 
+/** Two tracks "co-exist" when both are seen around the same sampled frame. */
+function tracksCoExist(a: Track, b: Track, eps = 0.3): boolean {
+  let i = 0;
+  let j = 0;
+  while (i < a.points.length && j < b.points.length) {
+    const dt = a.points[i].t - b.points[j].t;
+    if (Math.abs(dt) <= eps) return true;
+    if (dt < 0) i += 1;
+    else j += 1;
+  }
+  return false;
+}
+
+function trackCenter(track: Track): { x: number; y: number } {
+  let x = 0;
+  let y = 0;
+  for (const p of track.points) {
+    x += p.cx;
+    y += p.cy;
+  }
+  const n = Math.max(1, track.points.length);
+  return { x: x / n, y: y / n };
+}
+
+/**
+ * Merge FRAGMENTED tracks: the same person re-identified after a long occlusion
+ * (mic swing, hand, profile turn) leaves the tracker with two ids for one
+ * face. Two tracks that are NEVER on screen at the same time and sit within
+ * ~1.6 face-widths of each other are the same person - without this, a
+ * two-person video can light up as a 4-cell split (one cell per fragment).
+ */
+export function mergeTrackFragments(tracks: Track[]): Track[] {
+  const out = [...tracks];
+  let merged = true;
+  while (merged) {
+    merged = false;
+    outer: for (let i = 0; i < out.length; i += 1) {
+      for (let j = i + 1; j < out.length; j += 1) {
+        const a = out[i];
+        const b = out[j];
+        if (tracksCoExist(a, b)) continue;
+        const ca = trackCenter(a);
+        const cb = trackCenter(b);
+        const gate = 1.6 * Math.max(a.maxW, b.maxW);
+        if (Math.hypot(ca.x - cb.x, ca.y - cb.y) > gate) continue;
+
+        const points = [...a.points, ...b.points].sort((p, q) => p.t - q.t);
+        const last = points[points.length - 1];
+        const nA = a.points.length;
+        const nB = b.points.length;
+        out[i] = {
+          id: a.id,
+          points,
+          visibleTime: a.visibleTime + b.visibleTime,
+          avgW: (a.avgW * nA + b.avgW * nB) / Math.max(1, nA + nB),
+          maxW: Math.max(a.maxW, b.maxW),
+          cx: last.cx,
+          cy: last.cy,
+          vx: a.vx,
+          vy: a.vy,
+          lastT: Math.max(a.lastT, b.lastT),
+          missed: 0,
+        };
+        out.splice(j, 1);
+        merged = true;
+        break outer;
+      }
+    }
+  }
+  return out;
+}
+
 export async function detectSpeakerTimeline(
   videoPath: string,
   start: number,
@@ -230,7 +302,10 @@ export async function detectSpeakerTimeline(
     }
 
     // 4) Fuse audio + per-track visual cues into a speaker timeline.
-    const tracks = tracker.allVisible();
+    // Fragments of one person (ids lost through long occlusions) are merged
+    // FIRST so both the speaker decision and the split-grid count see PEOPLE,
+    // not track-id history.
+    const tracks = mergeTrackFragments(tracker.allVisible());
 
     if (tracks.length === 0) {
       throw new AppError(
@@ -243,6 +318,7 @@ export async function detectSpeakerTimeline(
         }
       );
     }
+
 
     const { segments, speakerCount } = buildSpeakerTimeline({
       duration,

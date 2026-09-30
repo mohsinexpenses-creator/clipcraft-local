@@ -17,12 +17,227 @@ import {
 } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { CheckCircle2, Loader2, Plus, Save, Sparkles, Trash2 } from 'lucide-react';
+import { buildBackground, parseBackground } from '@/lib/overlay-bg';
 
 interface OverlayStyleEditorProps {
   kind: 'hook' | 'cta';
   value: OverlayStylePreset;
   onChange: (preset: OverlayStylePreset) => void;
 }
+
+const DEFAULT_SOLID = { hex: '#0F172A', alpha: 0.92 };
+const DEFAULT_GRADIENT_FROM = { hex: '#0F172A', alpha: 0.95 };
+const DEFAULT_GRADIENT_TO = { hex: '#1E293B', alpha: 0.95 };
+const DEFAULT_GRADIENT_ANGLE = 165;
+
+/**
+ * Visual CARD BACKGROUND picker: solid color or gradient, in the same
+ * "label + color input" style as the text/border color fields. The raw CSS
+ * input stays in sync and still accepts any custom value.
+ */
+const BackgroundField: React.FC<{
+  value: string;
+  kind: 'hook' | 'cta';
+  onChange: (css: string) => void;
+}> = ({ value, kind, onChange }) => {
+  const parsed = parseBackground(value);
+  const isGradient = parsed.mode === 'gradient';
+  const solid = parsed.mode === 'solid' ? parsed.color : DEFAULT_SOLID;
+  const from = parsed.mode === 'gradient' ? parsed.from : DEFAULT_GRADIENT_FROM;
+  const to = parsed.mode === 'gradient' ? parsed.to : DEFAULT_GRADIENT_TO;
+  const angle = parsed.mode === 'gradient' ? parsed.angle : DEFAULT_GRADIENT_ANGLE;
+
+  const setMode = (mode: 'solid' | 'gradient') => {
+    if (mode === 'gradient') {
+      // Seed the second stop darker so the gradient is visible immediately.
+      const seedFrom = parsed.mode === 'solid' ? parsed.color : DEFAULT_GRADIENT_FROM;
+      const seedTo =
+        parsed.mode === 'solid'
+          ? { hex: parsed.color.hex, alpha: Math.max(0.15, parsed.color.alpha * 0.55) }
+          : DEFAULT_GRADIENT_TO;
+      onChange(
+        buildBackground({ mode: 'gradient', angle: DEFAULT_GRADIENT_ANGLE, from: seedFrom, to: seedTo })
+      );
+    } else {
+      onChange(
+        buildBackground({
+          mode: 'solid',
+          color: parsed.mode === 'gradient' ? parsed.from : DEFAULT_SOLID,
+        })
+      );
+    }
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <Button
+          type="button"
+          size="sm"
+          variant={isGradient ? 'outline' : 'secondary'}
+          className="h-7"
+          onClick={() => setMode('solid')}
+        >
+          Solid
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={isGradient ? 'secondary' : 'outline'}
+          className="h-7"
+          onClick={() => setMode('gradient')}
+        >
+          Gradient
+        </Button>
+        {parsed.mode === 'raw' ? (
+          <span className="text-[11px] text-muted-foreground">custom CSS active</span>
+        ) : null}
+      </div>
+
+      {!isGradient ? (
+        <div className="grid grid-cols-[120px_1fr] items-center gap-3">
+          <Input
+            type="color"
+            value={solid.hex}
+            onChange={(e) =>
+              onChange(buildBackground({ mode: 'solid', color: { ...solid, hex: e.target.value } }))
+            }
+            className="h-9 p-1"
+            aria-label="Card background color"
+          />
+          <div className="flex items-center gap-2">
+            <Slider
+              min={0}
+              max={100}
+              step={1}
+              value={Math.round(solid.alpha * 100)}
+              onValueChange={(opacity) =>
+                onChange(
+                  buildBackground({ mode: 'solid', color: { ...solid, alpha: opacity / 100 } })
+                )
+              }
+              aria-label="Card background opacity"
+            />
+            <span className="w-12 text-right text-xs text-muted-foreground">
+              {Math.round(solid.alpha * 100)}%
+            </span>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <div className="grid grid-cols-[120px_1fr] items-center gap-3">
+            <Input
+              type="color"
+              value={from.hex}
+              onChange={(e) =>
+                onChange(
+                  buildBackground({
+                    mode: 'gradient',
+                    angle,
+                    from: { ...from, hex: e.target.value },
+                    to,
+                  })
+                )
+              }
+              className="h-9 p-1"
+              aria-label="Gradient start color"
+            />
+            <div className="flex items-center gap-2">
+              <Slider
+                min={0}
+                max={100}
+                step={1}
+                value={Math.round(from.alpha * 100)}
+                onValueChange={(opacity) =>
+                  onChange(
+                    buildBackground({
+                      mode: 'gradient',
+                      angle,
+                      from: { ...from, alpha: opacity / 100 },
+                      to,
+                    })
+                  )
+                }
+                aria-label="Gradient start opacity"
+              />
+              <span className="w-12 text-right text-xs text-muted-foreground">
+                {Math.round(from.alpha * 100)}%
+              </span>
+            </div>
+          </div>
+          <div className="grid grid-cols-[120px_1fr] items-center gap-3">
+            <Input
+              type="color"
+              value={to.hex}
+              onChange={(e) =>
+                onChange(
+                  buildBackground({
+                    mode: 'gradient',
+                    angle,
+                    from,
+                    to: { ...to, hex: e.target.value },
+                  })
+                )
+              }
+              className="h-9 p-1"
+              aria-label="Gradient end color"
+            />
+            <div className="flex items-center gap-2">
+              <Slider
+                min={0}
+                max={100}
+                step={1}
+                value={Math.round(to.alpha * 100)}
+                onValueChange={(opacity) =>
+                  onChange(
+                    buildBackground({
+                      mode: 'gradient',
+                      angle,
+                      from,
+                      to: { ...to, alpha: opacity / 100 },
+                    })
+                  )
+                }
+                aria-label="Gradient end opacity"
+              />
+              <span className="w-12 text-right text-xs text-muted-foreground">
+                {Math.round(to.alpha * 100)}%
+              </span>
+            </div>
+          </div>
+          <div className="grid grid-cols-[120px_1fr] items-center gap-3">
+            <Label className="text-xs text-muted-foreground">Angle</Label>
+            <div className="flex items-center gap-2">
+              <Slider
+                min={0}
+                max={360}
+                step={1}
+                value={angle}
+                onValueChange={(next) =>
+                  onChange(buildBackground({ mode: 'gradient', angle: next, from, to }))
+                }
+                aria-label="Gradient angle"
+              />
+              <span className="w-12 text-right text-xs text-muted-foreground">{angle}°</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <Input
+        id={`style-bg-${kind}`}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="rgba(15, 23, 42, 0.92)"
+        className="font-mono text-xs"
+      />
+      <p className="text-[11px] text-muted-foreground">
+        Solid or gradient card fill behind the hook/CTA text. The field shows the exact CSS and
+        also accepts any custom value.
+      </p>
+    </div>
+  );
+};
 
 /**
  * Editor for hook / CTA overlay STYLE presets: font, colors, card, position and
@@ -299,13 +514,11 @@ export const OverlayStyleEditor: React.FC<OverlayStyleEditorProps> = ({ kind, va
             </div>
 
             <div className="space-y-2 sm:col-span-2">
-              <Label htmlFor={`style-bg-${kind}`}>Card background (CSS color or gradient)</Label>
-              <Input
-                id={`style-bg-${kind}`}
+              <Label>Card background</Label>
+              <BackgroundField
                 value={draft.backgroundColor}
-                onChange={(e) => patch({ backgroundColor: e.target.value })}
-                placeholder="rgba(15, 23, 42, 0.92)"
-                className="font-mono text-xs"
+                kind={kind}
+                onChange={(css) => patch({ backgroundColor: css })}
               />
             </div>
 

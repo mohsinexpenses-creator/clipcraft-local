@@ -327,6 +327,30 @@ export function buildSinglePlan(
   return { mode: 'single', cropW, cropH, points, faceAnchorY };
 }
 
+/**
+ * How many DIFFERENT people are on screen at the same time at the busiest
+ * moment (0.25s buckets). The split grid is sized from this - not from the
+ * raw track count - so a two-person conversation is always a 2-pane split
+ * even if the tracker had to re-identify someone mid-clip.
+ */
+function peakConcurrent(tracks: Track[]): number {
+  const buckets = new Map<number, Set<number>>();
+  for (const track of tracks) {
+    for (const p of track.points) {
+      const key = Math.round(p.t * 4);
+      let set = buckets.get(key);
+      if (!set) {
+        set = new Set<number>();
+        buckets.set(key, set);
+      }
+      set.add(track.id);
+    }
+  }
+  let peak = 0;
+  for (const set of buckets.values()) peak = Math.max(peak, set.size);
+  return peak;
+}
+
 function buildSplitPlan(asd: AsdResult, srcW: number, srcH: number): SplitPlan {
   // Who was EVER the active speaker - those people always win a cell, and
   // their count caps the grid (a 2-person conversation must never grow a 3rd/
@@ -388,10 +412,16 @@ function buildSplitPlan(asd: AsdResult, srcW: number, srcH: number): SplitPlan {
       emphasis: [],
     };
   }
-
   // Cap the grid by how many people actually spoke: a single presenter gets a
-  // full-screen cell, a 2-person conversation stays at 2 cells.
-  const count = Math.min(4, Math.max(speakerIds.size, 1), relevant.length);
+  // full-screen cell, a 2-person conversation stays at 2 cells. peakConcurrent
+  // is an extra guard - never more panes than the busiest frame had faces on
+  // screen, so fragmented track ids can never inflate 2 people into 3-4 cells.
+  const count = Math.min(
+    4,
+    Math.max(speakerIds.size, 1),
+    relevant.length,
+    Math.max(1, peakConcurrent(candidateTracks))
+  );
   relevant = relevant.slice(0, count);
 
   // Adaptive 9:16 grids (1080x1920 canvas) - all tile the canvas exactly.

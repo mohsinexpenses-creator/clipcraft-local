@@ -167,6 +167,75 @@ function fillTemplate(template: string, values: Record<string, string | number>)
   return out;
 }
 
+/**
+ * Post-parse rule enforcement, mirroring the prompt's hard constraints:
+ *  - clip length stays within [minClipDuration, maxClipDuration] (over-long
+ *    clips are trimmed to the max; SHORT clips are EXTENDED to the minimum so
+ *    the user gets the exact clip count and the 60s-90s length rule both),
+ *  - clips are ranked by viral potential (highest score first),
+ *  - no two clips overlap (and never overlap an already-kept `taken` window),
+ *  - at most `options.clipCount` NEW clips survive.
+ */
+function enforceViralConstraints(
+  segments: ViralSegment[],
+  options: Required<ViralDetectionOptions> & { videoDuration: number },
+  taken: ViralSegment[] = []
+): ViralSegment[] {
+  const withinBounds: ViralSegment[] = [];
+
+  for (const segment of segments) {
+    let end = segment.end;
+    const duration = end - segment.start;
+
+    if (duration < options.minClipDuration) {
+      // Extend to the minimum instead of dropping - a 55s model pick is still
+      // a valid moment, and dropping it would silently shrink the clip count.
+      // (A clip that cannot reach the minimum before the VIDEO ends is a
+      // genuine "the video cannot support it" case and is still dropped.)
+      if (segment.start + options.minClipDuration > options.videoDuration) {
+        log.warn(
+          `Dropping viral segment ${segment.start.toFixed(1)}s-${segment.end.toFixed(1)}s ` +
+            `(${options.minClipDuration}s minimum does not fit before the video ends)`
+        );
+        continue;
+      }
+      end = segment.start + options.minClipDuration;
+      log.detail(
+        `Extending viral segment ${segment.start.toFixed(1)}s-${segment.end.toFixed(1)}s ` +
+          `to ${end.toFixed(1)}s (the ${options.minClipDuration}s minimum)`
+      );
+    } else if (duration > options.maxClipDuration) {
+      end = segment.start + options.maxClipDuration;
+      log.detail(
+        `Trimming viral segment ${segment.start.toFixed(1)}s-${segment.end.toFixed(1)}s ` +
+          `to the ${options.maxClipDuration}s maximum`
+      );
+    }
+
+    withinBounds.push({ ...segment, end });
+  }
+
+  // Rank by viral potential first, then greedily keep non-overlapping clips so
+  // the "no overlapping timestamps" rule survives imperfect model output.
+  // Already-kept windows (`taken`) always win; new clips must dodge them.
+  const ranked = [...withinBounds].sort((a, b) => b.score - a.score);
+  const kept: ViralSegment[] = [...taken];
+
+  for (const segment of ranked) {
+    const overlaps = kept.some((other) => segment.start < other.end && segment.end > other.start);
+    if (overlaps) {
+      log.warn(
+        `Dropping overlapping viral segment ${segment.start.toFixed(1)}s-${segment.end.toFixed(1)}s ` +
+          `(conflicts with a higher-ranked clip)`
+      );
+      continue;
+    }
+    kept.push(segment);
+  }
+
+  return kept.slice(taken.length, taken.length + options.clipCount);
+}
+
 export async function detectViralSegments(
   transcript: TranscriptData,
   videoDuration: number,
@@ -211,60 +280,82 @@ export async function detectViralSegments(
     maxClipDuration: resolved.maxClipDuration,
   });
 
-  // Scale the output budget with the number of clips: each clip object carries
-  // the full packaging block (title/hook/CTA/hashtags/scores) at ~500-800
-  // tokens, so a 10-clip run needs 8K+. The old 6K cap truncated the JSON
-  // mid-array on 10-clip runs. Note Gemini 3.x also spends part of this budget
-  // on "thinking" tokens, so the budget must stay generous; the cap (16K) is
-  // far below Gemini Flash's own 65K maxOutputTokens.
-  const maxTokens = Math.min(16384, 1500 + resolved.clipCount * 1200);
+  /**
+   * One LLM detection pass: complete -> extract JSON -> sanitize.
+   * `soft` turns model failures into an empty result (used by the top-up
+   * passes, where "no more clips" just means the transcript is exhausted).
+   */
+  const runDetectionPass = async (
+    prompt: string,
+    clipBudget: number,
+    label: string,
+    soft: boolean
+  ): Promise<ViralSegment[]> => {
+    // Scale the output budget with the number of clips: each clip object
+    // carries the full packaging block (title/hook/CTA/hashtags/scores) at
+    // ~500-800 tokens. The 16K cap stays far below Gemini Flash's 65K max.
+    const maxTokens = Math.min(16384, 1500 + clipBudget * 1200);
 
-  let contentText: string;
-  try {
-    const result = await completeWithFallback({
-      task: 'viral segment detection',
-      system: templateDoc.systemPrompt,
-      prompt: userPrompt,
-      maxTokens,
-      temperature: 0.5,
-    });
-    contentText = result.text;
-    console.log(`[AI] Raw response (${result.entry.provider}/${result.entry.model}):`, contentText);
-  } catch (error) {
-    if (error instanceof AppError) throw error;
-    throw new AppError('Viral segment detection failed.', {
-      status: 502,
-      details: toErrorMessage(error),
-      resolution: 'Check the LLM fallback chain keys in .env.local (see lib/llm.ts) and retry.',
-    });
-  }
-
-  const parsed = extractViralSegmentArray(contentText);
-  if (!parsed) {
-    const looksTruncated = contentText.includes('[') && !contentText.trimEnd().endsWith(']');
-    throw new AppError(
-      looksTruncated
-        ? 'The model\'s viral segment JSON was cut off before it could be completed (likely the output token budget ran out).'
-        : 'The model did not return a JSON array for viral segments.',
-      {
-        status: 502,
-        details: contentText,
-        resolution: looksTruncated
-          ? 'Retry the analysis - on repeated failures lower the number of clips in the AI clip options or shorten the transcript window.'
-          : 'Tighten the viral detection prompt so the model returns only strict JSON.',
+    let contentText: string;
+    try {
+      const result = await completeWithFallback({
+        task: 'viral segment detection',
+        system: templateDoc.systemPrompt,
+        prompt,
+        maxTokens,
+        temperature: 0.5,
+      });
+      contentText = result.text;
+      console.log(`[AI] Raw response (${result.entry.provider}/${result.entry.model})${label}:`, contentText);
+    } catch (error) {
+      if (soft) {
+        log.warn(`Top-up viral pass${label} failed: ${toErrorMessage(error)}`);
+        return [];
       }
-    );
-  }
+      if (error instanceof AppError) throw error;
+      throw new AppError('Viral segment detection failed.', {
+        status: 502,
+        details: toErrorMessage(error),
+        resolution: 'Check the LLM fallback chain keys in .env.local (see lib/llm.ts) and retry.',
+      });
+    }
 
-  if (!Array.isArray(parsed) || parsed.length === 0) {
-    throw new AppError('The model returned an empty viral segment list.', {
-      status: 502,
-      resolution: 'Adjust the transcript or prompt template and retry viral detection.',
-    });
-  }
+    const parsed = extractViralSegmentArray(contentText);
+    if (!parsed) {
+      if (soft) {
+        log.warn(`Top-up viral pass${label} returned no parseable JSON array.`);
+        return [];
+      }
+      const looksTruncated = contentText.includes('[') && !contentText.trimEnd().endsWith(']');
+      throw new AppError(
+        looksTruncated
+          ? 'The model\'s viral segment JSON was cut off before it could be completed (likely the output token budget ran out).'
+          : 'The model did not return a JSON array for viral segments.',
+        {
+          status: 502,
+          details: contentText,
+          resolution: looksTruncated
+            ? 'Retry the analysis - on repeated failures lower the number of clips in the AI clip options or shorten the transcript window.'
+            : 'Tighten the viral detection prompt so the model returns only strict JSON.',
+        }
+      );
+    }
 
-  const sanitized = parsed.map((item, index) => sanitizeSegment(item, index, videoDuration));
-  const valid = enforceViralConstraints(sanitized, resolved);
+    if (!Array.isArray(parsed) || parsed.length === 0) {
+      if (soft) return [];
+      throw new AppError('The model returned an empty viral segment list.', {
+        status: 502,
+        resolution: 'Adjust the transcript or prompt template and retry viral detection.',
+      });
+    }
+
+    return parsed.map((item: unknown, index: number) => sanitizeSegment(item, index, videoDuration));
+  };
+
+  const enforceOptions = { ...resolved, videoDuration };
+
+  const firstBatch = await runDetectionPass(userPrompt, resolved.clipCount, '', false);
+  let valid = enforceViralConstraints(firstBatch, enforceOptions, []);
 
   if (!valid.length) {
     throw new AppError(
@@ -278,64 +369,36 @@ export async function detectViralSegments(
     );
   }
 
+  // EXACT-CLIP-COUNT top-up: models often return fewer clips than requested.
+  // Ask again for the missing count with the already-taken windows excluded
+  // (the viral_detection template itself stays untouched), until the user's
+  // number is reached or the transcript genuinely runs out of material.
+  for (let pass = 0; pass < 2 && valid.length < resolved.clipCount; pass += 1) {
+    const missing = resolved.clipCount - valid.length;
+    const takenWindows = valid
+      .map((segment) => `- ${segment.start.toFixed(1)}s - ${segment.end.toFixed(1)}s`)
+      .join('\n');
+    const topUpPrompt =
+      `${userPrompt}\n\n---\n` +
+      `FOLLOW-UP REQUEST - MORE CLIPS ONLY:\n` +
+      `${valid.length} clip(s) were ALREADY selected at these exact windows:\n${takenWindows}\n\n` +
+      `Return EXACTLY ${missing} MORE clip${missing === 1 ? '' : 's'} as a strict JSON array ` +
+      `(no markdown fences, no commentary) that:\n` +
+      `- lie COMPLETELY OUTSIDE and non-overlapping with every selected window above ` +
+      `(different moments - never the same moment re-framed),\n` +
+      `- are each between ${resolved.minClipDuration}s and ${resolved.maxClipDuration}s long,\n` +
+      `- follow ALL the same rules and the same per-clip JSON schema as before.\n` +
+      `Do NOT return the selected clips again. Return ONLY the JSON array of ${missing} new clip${missing === 1 ? '' : 's'}.`;
+
+    const more = await runDetectionPass(topUpPrompt, missing, ` (top-up ${pass + 1}, want ${missing})`, true);
+    if (!more.length) break;
+
+    const merged = enforceViralConstraints(more, { ...enforceOptions, clipCount: missing }, valid);
+    if (merged.length <= valid.length) break; // nothing new survived the rules
+    valid = merged;
+  }
+
   return valid;
-}
-
-/**
- * Post-parse rule enforcement, mirroring the prompt's hard constraints:
- *  - clip length stays within [minClipDuration, maxClipDuration] (over-long
- *    clips are trimmed to the max, under-minimum clips are dropped),
- *  - clips are ranked by viral potential (highest score first),
- *  - no two clips overlap,
- *  - at most `clipCount` clips survive.
- */
-function enforceViralConstraints(
-  segments: ViralSegment[],
-  options: Required<ViralDetectionOptions>
-): ViralSegment[] {
-  const withinBounds: ViralSegment[] = [];
-
-  for (const segment of segments) {
-    let end = segment.end;
-    const duration = end - segment.start;
-
-    if (duration < options.minClipDuration) {
-      log.warn(
-        `Dropping viral segment ${segment.start.toFixed(1)}s-${end.toFixed(1)}s ` +
-          `(${duration.toFixed(1)}s is below the ${options.minClipDuration}s minimum)`
-      );
-      continue;
-    }
-
-    if (duration > options.maxClipDuration) {
-      end = segment.start + options.maxClipDuration;
-      log.detail(
-        `Trimming viral segment ${segment.start.toFixed(1)}s-${segment.end.toFixed(1)}s ` +
-          `to the ${options.maxClipDuration}s maximum`
-      );
-    }
-
-    withinBounds.push({ ...segment, end });
-  }
-
-  // Rank by viral potential first, then greedily keep non-overlapping clips so
-  // the "no overlapping timestamps" rule survives imperfect model output.
-  const ranked = [...withinBounds].sort((a, b) => b.score - a.score);
-  const kept: ViralSegment[] = [];
-
-  for (const segment of ranked) {
-    const overlaps = kept.some((other) => segment.start < other.end && segment.end > other.start);
-    if (overlaps) {
-      log.warn(
-        `Dropping overlapping viral segment ${segment.start.toFixed(1)}s-${segment.end.toFixed(1)}s ` +
-          `(conflicts with a higher-ranked clip)`
-      );
-      continue;
-    }
-    kept.push(segment);
-  }
-
-  return kept.slice(0, options.clipCount);
 }
 
 export async function generateHookText(clipTranscriptText: string): Promise<string> {

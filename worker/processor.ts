@@ -381,6 +381,8 @@ export async function processClipJob(
             ctaDuration: resolvedCtaDuration,
             words: clipWords,
             preset,
+            hookStyle,
+            ctaStyle,
             onProgress: progressSink,
             isCancelled: () => cancelFlag,
           })

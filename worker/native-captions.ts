@@ -27,7 +27,7 @@ import {
 } from '../lib/profanity';
 import { HOOK_TRANSITION_SECONDS, normalizeFps } from './ffmpeg-pipeline';
 import { color, log } from '../lib/logger';
-import { CaptionPreset, WordTimestamp } from '../lib/types';
+import { OverlayStylePreset, CaptionPreset, WordTimestamp } from '../lib/types';
 import { generateAssFile } from './captions-ass';
 import { getRemotionBundle } from './remotion-renderer';
 
@@ -42,6 +42,9 @@ export interface RenderNativeCaptionsOptions {
   hookStart: number;
   words: WordTimestamp[];
   preset: CaptionPreset;
+  /** Overlay STYLE presets (font/colors/card/animation) for the hook/CTA cards. */
+  hookStyle?: OverlayStylePreset;
+  ctaStyle?: OverlayStylePreset;
   onProgress?: (progress: number) => void;
   /** Poll for a user-requested cancel; the running FFmpeg child is killed. */
   isCancelled?: () => boolean;
@@ -213,7 +216,7 @@ export interface RenderNativeCaptionsResult {
 }
 
 export async function renderNativeCaptions(options: RenderNativeCaptionsOptions): Promise<RenderNativeCaptionsResult> {
-  const { videoPath, outputPath, hookText, hookDuration, hookStart, ctaText, ctaDuration, words, preset, onProgress, isCancelled } = options;
+  const { videoPath, outputPath, hookText, hookDuration, hookStart, ctaText, ctaDuration, words, preset, hookStyle, ctaStyle, onProgress, isCancelled } = options;
 
   log.detail(`Native captions (FFmpeg ASS) for ${color.bold(path.basename(videoPath))}`);
   if (onProgress) onProgress(82);
@@ -299,7 +302,7 @@ export async function renderNativeCaptions(options: RenderNativeCaptionsOptions)
           outputDir: path.join(workDir, 'hook'),
           fps,
           durationSeconds: hookOverlayEnd,
-          inputProps: { hookText: maskedHookText, hookDuration: hookOverlayEnd },
+          inputProps: { hookText: maskedHookText, hookDuration: hookOverlayEnd, hookStyle },
           label: 'Hook overlay',
         });
       }
@@ -310,7 +313,7 @@ export async function renderNativeCaptions(options: RenderNativeCaptionsOptions)
           outputDir: path.join(workDir, 'cta'),
           fps,
           durationSeconds: ctaDuration,
-          inputProps: { ctaText: maskedCtaText, ctaDuration },
+          inputProps: { ctaText: maskedCtaText, ctaDuration, ctaStyle },
           label: 'CTA overlay',
         });
       }

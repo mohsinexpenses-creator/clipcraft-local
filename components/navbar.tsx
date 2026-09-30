@@ -9,7 +9,6 @@ import {
   MessageSquareText,
   ShieldCheck,
   SlidersHorizontal,
-  Type,
   Upload,
 } from "lucide-react";
 import { cn } from "cn";
