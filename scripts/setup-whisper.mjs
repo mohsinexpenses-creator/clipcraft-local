@@ -198,12 +198,14 @@ async function installWindowsBinary() {
 }
 
 async function installUnixBinary() {
-  // The repo already ships a Linux x86-64 build; on macOS/Linux a prebuilt binary is not
-  // published by whisper.cpp, so building from source is the reliable route.
-  const bundled = path.join(ROOT, 'bin', process.platform === 'darwin' ? 'whisper-cli' : 'whisper-cli');
-  if (process.platform === 'linux' && fs.existsSync(bundled)) {
-    log(`Using the bundled Linux binary: ${bundled}`);
-    log('If it fails to run (glibc/CPU mismatch), build whisper.cpp from source and set WHISPER_CLI_PATH.');
+  // whisper.cpp does not publish prebuilt macOS/Linux binaries, so building from
+  // source is the reliable route. (The repo ships a Windows x64 build only.)
+  // Escape hatch: if you built whisper.cpp yourself and dropped `whisper-cli`
+  // into bin/, use it as-is.
+  const bundled = path.join(ROOT, 'bin', 'whisper-cli');
+  if (fs.existsSync(bundled)) {
+    log(`Using the local binary: ${bundled}`);
+    log('If it fails to run (glibc/CPU mismatch), rebuild whisper.cpp and set WHISPER_CLI_PATH.');
     return bundled;
   }
 

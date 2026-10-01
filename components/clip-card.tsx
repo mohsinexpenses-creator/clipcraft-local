@@ -5,7 +5,6 @@ import {
   ClipRecord,
   CaptionPreset,
   OverlayStylePreset,
-  TextPreset,
 } from "@/lib/types";
 import { DEFAULT_FILTER_PRESETS } from "@/lib/presets";
 import { Button } from "@/components/ui/button";
@@ -43,7 +42,6 @@ import {
 interface ClipCardProps {
   clip: ClipRecord;
   captionPresets: CaptionPreset[];
-  textPresets: TextPreset[];
   onRefresh: () => Promise<void>;
 }
 
@@ -96,7 +94,6 @@ function SettingsSection({ title }: { title: string }) {
 export const ClipCard: React.FC<ClipCardProps> = ({
   clip,
   captionPresets,
-  textPresets,
   onRefresh,
 }) => {
   const [filterPreset, setFilterPreset] = useState(
@@ -127,15 +124,6 @@ export const ClipCard: React.FC<ClipCardProps> = ({
   const [isTriggering, setIsTriggering] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-
-  // Which hook/CTA text preset (if any) matches the current typed text; the
-  // selects below show "Custom" as soon as the user edits the text.
-  const hookPresets = textPresets.filter((p) => p.kind === "hook");
-  const ctaPresets = textPresets.filter((p) => p.kind === "cta");
-  const hookTextPresetId =
-    hookPresets.find((p) => p.text === hookText.trim())?._id ?? "custom";
-  const ctaTextPresetId =
-    ctaPresets.find((p) => p.text === ctaText.trim())?._id ?? "custom";
 
   useEffect(() => {
     let ignore = false;

@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useCallback, Suspense } from "react";
 import Link from "next/link";
 import { useSearchParams, useRouter } from "next/navigation";
-import { VideoRecord, ClipRecord, CaptionPreset, TextPreset } from "@/lib/types";
+import { VideoRecord, ClipRecord, CaptionPreset } from "@/lib/types";
 import { ClipCard } from "@/components/clip-card";
 import { ViralDetectOptions } from "@/components/viral-detect-options";
 import { useViralOptions } from "@/components/use-viral-options";
@@ -100,7 +100,6 @@ function DashboardContent() {
   );
   const [clips, setClips] = useState<ClipRecord[]>([]);
   const [captionPresets, setCaptionPresets] = useState<CaptionPreset[]>([]);
-  const [textPresets, setTextPresets] = useState<TextPreset[]>([]);
   const [isLoadingVideos, setIsLoadingVideos] = useState(true);
   const [isDetectingViral, setIsDetectingViral] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
@@ -123,16 +122,14 @@ function DashboardContent() {
   const loadClipsAndPresets = useCallback(async (): Promise<{
     clips: ClipRecord[];
     presets: CaptionPreset[];
-    textPresets: TextPreset[];
   }> => {
-    const [clipsRes, presetsRes, textRes] = await Promise.all([
+    const [clipsRes, presetsRes] = await Promise.all([
       fetch(
         selectedVideoId
           ? `/api/clips?videoId=${selectedVideoId}`
           : "/api/clips",
       ),
       fetch("/api/caption-presets"),
-      fetch("/api/text-presets"),
     ]);
 
     if (!clipsRes.ok) {
@@ -150,18 +147,14 @@ function DashboardContent() {
       );
     }
 
-    const [clipsData, presetsData, textData] = await Promise.all([
+    const [clipsData, presetsData] = await Promise.all([
       clipsRes.json(),
       presetsRes.json(),
-      // Text presets are non-critical: a failure here should not block the
-      // dashboard, so swallow it and fall back to an empty list.
-      textRes.ok ? textRes.json() : { presets: [] },
     ]);
 
     return {
       clips: clipsData.clips || [],
       presets: presetsData.presets || [],
-      textPresets: textData.presets || [],
     };
   }, [selectedVideoId]);
 
@@ -169,7 +162,6 @@ function DashboardContent() {
     const data = await loadClipsAndPresets();
     setClips(data.clips);
     setCaptionPresets(data.presets);
-    setTextPresets(data.textPresets);
     setErrorMessage(null);
   }, [loadClipsAndPresets]);
 
@@ -210,7 +202,6 @@ function DashboardContent() {
         if (ignore) return;
         setClips(data.clips);
         setCaptionPresets(data.presets);
-    setTextPresets(data.textPresets);
       } catch (err) {
         if (!ignore) {
           setErrorMessage(
@@ -238,7 +229,6 @@ function DashboardContent() {
         const data = await loadClipsAndPresets();
         setClips(data.clips);
         setCaptionPresets(data.presets);
-    setTextPresets(data.textPresets);
       } catch (err) {
         setErrorMessage(
           err instanceof Error ? err.message : "Failed to refresh clip status.",
@@ -691,7 +681,6 @@ function DashboardContent() {
                         key={clip._id}
                         clip={clip}
                         captionPresets={captionPresets}
-                        textPresets={textPresets}
                         onRefresh={refreshClipsAndPresets}
                       />
                     ))}

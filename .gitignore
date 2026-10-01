@@ -31,8 +31,8 @@
 /models/*.bin
 /bin/ffmpeg/
 
-# The tiny face-detection weights under /models/face/ (~200KB) ARE committed - the
-# pattern above only matches *.bin directly inside /models, so nothing to un-ignore.
+# The tiny YuNet face-detection model under /models/yunet/ (~230KB) IS committed;
+# /models/*.bin only matches .bin files directly in /models, so the .onnx survives.
 
 # misc
 .DS_Store

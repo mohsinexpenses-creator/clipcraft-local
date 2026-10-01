@@ -1,142 +1,148 @@
-PROJECT: Personal-use AI clip generator (Next.js, no Python)
+# ClipCraft Local
 
-> **This file is the original product specification and is kept unchanged.**
-> For installation, environment variables, running the worker and troubleshooting,
-> see **[SETUP.md](./SETUP.md)**. Feature docs:
-> **[docs/VIRAL_PROMPT_GUIDE.md](./docs/VIRAL_PROMPT_GUIDE.md)** (pre-generation options),
-> **[docs/LAYOUTS.md](./docs/LAYOUTS.md)** (speaker focus / split screen + speaker tracking),
-> **[docs/OVERLAYS.md](./docs/OVERLAYS.md)** (hook/CTA text prompts + style presets).
+A **personal, local-first** AI clip generator: give it one long landscape video
+(podcast, interview, sermon, lecture) and it produces short, vertical **9:16 clips**
+optimized for social feeds — each with an active-speaker crop, a duplicated 3-second
+"suspense hook" intro, on-screen hook/CTA text, and word-synced animated captions.
 
+Everything heavy runs **on your own machine** (Node.js only, no Python). The only
+network calls are to your local MongoDB/Redis (Docker) and the free **Google AI
+Studio** LLM (viral-segment detection + hook/CTA text). Speech-to-text and face
+detection are fully local (whisper.cpp + OpenCV YuNet).
 
-GOAL
-Build a personal-use (not for production/multi-user deployment) web app that takes a
-long-form landscape video (e.g. a YouTube video) and automatically produces several
-short, portrait (9:16) clips optimized for virality — each with smart cropping,
-color filters, a duplicated "hook" intro, an AI-generated hook text overlay, and
-styled animated captions.
+---
 
-HARD CONSTRAINTS
-- No Python anywhere in the stack. Everything must run in Node.js/TypeScript.
-- Personal use only — single user, runs locally, no need for multi-tenant auth,
-  billing, or horizontal scaling. Optimize for simplicity over scalability.
-- Do NOT use the "fluent-ffmpeg" npm package (unmaintained). Use "ffmpeg-static"
-  (binary) + Node's native child_process.spawn to build ffmpeg commands directly.
-- Deployment target: runs entirely on the user's local machine (Next.js dev/build +
-  a separate worker process + local Redis via Docker + local MongoDB or MongoDB
-  Atlas free tier). This will NOT be deployed to Vercel — heavy processing needs a
-  long-running local worker, not serverless functions.
+## What it does, end to end
 
-TECH STACK
-- Next.js (App Router) + TypeScript + Tailwind CSS — frontend + lightweight API routes
-- MongoDB — stores video metadata, transcripts, prompt templates, clip records,
-  caption presets, job status
-- BullMQ + local Redis (Docker container) — background job queue for heavy processing
-- A separate long-running Node.js worker process (not inside Next.js API routes)
-  that consumes BullMQ jobs and does the actual video processing
-- ffmpeg-static + child_process.spawn — cutting, mirroring, cropping, filters, concat
-- whisper.cpp (compiled binary, called via child_process) — speech-to-text with
-  word-level timestamps. No Python whisper.
-- face-api.js (or @vladmandic/face-api, tfjs-node backend) — face detection for
-  smart crop, running fully locally, no paid vision API
-- Google AI Studio API (Gemini Flash) — LLM analysis: (1) analyzing the full
-  transcript to identify potentially viral segments with start/end timestamps,
-  (2) picking the most gripping moment inside a clip for the suspense hook intro,
-  and (3) generating short on-screen hook/CTA text. The provider chain
-  (`LLM_PROVIDER_CHAIN` in `lib/llm.ts`) is a config array - currently two Gemini
-  Flash slots (separate daily pools) - and other providers can be appended to it
-- Remotion + @remotion/player — renders animated, styled captions and gives a live
-  in-app preview of caption styles before final render
+1. **Upload** — resumable, chunked, **no size limit** (a 3-hour podcast is a normal
+   input). Files are stored as `uploads/001_my_recording.mp4`.
+2. **Transcribe** — whisper.cpp (local) produces a transcript with **word-level
+   timestamps**, stored in MongoDB. (Optional Deepgram override if you set a key.)
+3. **Detect viral segments** — the Gemini LLM picks the most promising windows and
+   writes `{start, end, hookText, ctaText, reason, score}`. If it returns fewer
+   clips than requested, a **top-up pass** tops the list up to the exact count.
+4. **Find the hook** — the LLM picks the single most gripping moment inside each
+   clip; it is duplicated to the **start** (fixed 3 s) with a 0.5 s dip-to-black,
+   so the clip opens with the best beat and then builds back to it.
+5. **Frame the speaker** — active-speaker detection (YuNet faces + audio/motion
+   fusion, `worker/asd/`) drives the 9:16 crop:
+   - **Speaker focus** — one window that glides to follow whoever is talking.
+   - **Split screen** — an adaptive 2/3/4-cell grid where each pane tracks a person
+     and the active speaker's cell gets a red emphasis frame.
+   There is **no fallback detector**: if no face can be found, the render fails
+   with a clear explanation instead of guessing.
+6. **Render** — FFmpeg (mirror → animated crop → colour → hook concat) plus one of
+   two per-clip caption engines:
+   - `remotion` (default, "Premium") — every frame painted in headless Chrome;
+     spring-smooth but slow on long clips.
+   - `native` ("Fast") — captions burned in from an ASS file in one near-real-time
+     FFmpeg pass; hook/CTA cards render as PNG sequences composited by the same pass.
+   On-screen hook/CTA text comes from user-editable **style presets** (font,
+   colours, position, animation, solid or **gradient** card background).
+7. **Mask profanity** — captions and overlay text are always masked on screen
+   (`fuck` → `f**k`, while `class`/`pass`/`glass` stay untouched); the **audio** of
+   a profane word is muted, beeped, or left alone (`PROFANITY_AUDIO_MODE`) — all at
+   render time, so re-rendering after a settings change never re-transcribes.
+8. **Store** — output lands in `generated-clips/001_my_recording/<clip title>.mp4`
+   with a MongoDB record (status, score, layout, engines, presets). The dashboard
+   streams it back over a Range-enabled HTTP endpoint for preview/download.
 
-FULL PROCESSING PIPELINE (per uploaded video)
-1. Upload video via a Next.js API route, save to local disk as
-   /uploads/<NNN>_<original file name>.mp4 (NNN = 3-digit upload sequence,
-   e.g. 001_my_recording.mp4). No S3/cloud storage needed.
-2. Extract audio with ffmpeg, run whisper.cpp on it to get a transcript with
-   word-level timestamps. Store transcript JSON in MongoDB.
-3. Send the transcript to Claude API with a user-editable prompt template
-   (store prompt templates in a MongoDB collection so they're easy to tweak).
-   Ask for strict JSON output: an array of { start, end, hookText, reason, score }
-   for the most promising short segments.
-4. For each identified segment, enqueue a BullMQ job with the video ID, clip
-   timestamps, and any user-chosen crop/filter/caption-preset settings.
-5. Worker picks up each job and, in as few ffmpeg passes as possible:
-   a. Trims the segment (-ss / -to)
-   b. Mirrors it horizontally (hflip)
-   c. Runs face detection (face-api.js) on sampled frames of the mirrored clip and
-      builds a speaker face track: when several people are visible it follows the
-      largest face (the speaker), and when the shot cuts to another person the 9:16
-      crop window pans over to them smoothly (EMA + slew limit, evaluated by ffmpeg
-      as a per-frame crop expression)
-   d. Applies a color filter preset (ffmpeg eq/saturation, e.g. "vibrant",
-      "warm", "cinematic" — store these as ffmpeg filter strings in MongoDB)
-      Combine steps a–d into a single ffmpeg filter_complex call where possible
-      to minimize re-encodes.
-6. Find the most engaging moment inside the clip (the LLM picks it from the
-   clip's word timings - a "suspense hook") and duplicate N seconds of it
-   (configurable, e.g. 3–5s) as a standalone "hook" segment, concatenating it
-   onto the front of the clip (re-encoded, NOT stream-copied) — so the clip
-   opens with the best beat first, then plays through normally and the viewer
-   watches it build back up to that same moment. The join uses a short
-   dip-to-black transition (video fade out/in + audio afade) instead of a hard
-   cut, and keeps the total duration exactly hook + base so the caption
-   timeline stays in sync.
-7. Send that clip's transcript text to Claude API with a separate prompt to
-   generate a short, punchy on-screen hook text overlay (distinct from the
-   viral-segment-detection prompt in step 3).
-8. Render captions with Remotion:
-   - During the duplicated hook portion (0 to hookDuration), overlay the
-     LLM-generated hook text
-   - For the rest of the clip, render normal word-synced animated captions from
-     the transcript (remember to time-shift transcript timestamps by
-     +hookDuration since the video timeline has changed)
-   - Caption appearance must come from a user-selectable "caption preset"
-     (font, size, weight, color, highlight color, stroke, position, animation
-     style e.g. karaoke-fill/word-pop/fade-in) stored in a MongoDB
-     "captionPresets" collection, so new styles can be added without code changes
-   - The user can choose the CAPTION ENGINE per clip (clip card → "Caption
-     engine"), stored on the clip as `captionEngine`:
-     - `remotion` (default, "Premium") — every frame is rendered through
-       headless Chrome: smoothest spring animations, but slow on long clips
-       (tens of minutes for a 3-minute clip).
-     - `native` ("Fast") — captions are generated as an ASS file
-       (worker/captions-ass.ts: word karaoke fill, line pop/fade entrances,
-       CTA lift) and burned in a single FFmpeg pass at ~real-time speed; the
-       hook text and CTA card keep their Remotion design but are rendered as
-       short transparent PNG sequences (worker/native-captions.ts +
-       remotion/OverlayCompositions.tsx) and composited by the same FFmpeg
-       pass. Trade-off: captions use eased animations instead of spring
-       physics.
-9. Save the final rendered clip to local disk (e.g.
-   /generated-clips/{videoId}/{clipId}.mp4) and write/update a record in a
-   MongoDB "clips" collection tracking: source video, timestamps, crop data,
-   filter preset used, caption preset used, hook text, viral score, file path,
-   and job status (pending/processing/done/failed).
+## Tech stack
 
-FRONTEND REQUIREMENTS
-- Upload page for source videos
-- A dashboard listing generated clips per video with status, viral score, and
-  a way to preview/download each clip
-- A caption-preset picker with a live preview (using @remotion/player) so the
-  user can see caption style changes before triggering a full render
-- A simple way to view/edit the LLM prompt templates used in steps 3 and 7
+| Layer | Choice |
+|---|---|
+| Frontend + API | Next.js 16 (App Router), TypeScript, Tailwind v4, shadcn-style UI |
+| Persistence | MongoDB (Docker) — videos, transcripts, clips, presets, prompt templates |
+| Queue | BullMQ + Redis (Docker) — separate workers for transcription and rendering |
+| Worker | long-running `tsx worker/index.ts` process (not serverless) |
+| Video | `ffmpeg-static` + `child_process` (no fluent-ffmpeg), mirrored before face tracking |
+| Speech-to-text | whisper.cpp (local binary + ggml model; optional Deepgram override) |
+| Face detection | OpenCV **YuNet** ONNX on `onnxruntime-node` (no face-api, no vision APIs) |
+| LLM | Google AI Studio only — a 5-slot Gemini fallback chain in `lib/llm.ts` (plain `fetch`, no SDKs) |
+| Captions | Remotion (per-frame, default) or native ASS burn-in (fast) |
 
-COST PRIORITY
-Everything should run free/local except the two Claude API calls (viral segment
-detection and hook text generation), which are cheap (Claude Haiku-tier) and are
-the one place worth paying for since output quality matters most there.
+## Quickstart
 
-WHAT I NEED FROM YOU
-1. Confirm you understand this scope, then create a new git branch (do not
-   touch main/master directly).
-2. Propose a clear project folder structure (Next.js app + separate /worker
-   directory for the BullMQ consumer) before writing code.
-3. Implement incrementally: (a) upload + storage, (b) transcript pipeline,
-   (c) LLM viral-segment + hook-text integration with editable prompts, (d)
-   BullMQ + Redis job queue wiring, (e) ffmpeg processing chain (mirror, smart
-   crop via face-api.js, filters, hook duplication/concat), (f) Remotion
-   caption rendering with presets and live preview, (g) dashboard UI.
-4. After each major step, tell me what env vars, local services (Docker
-   commands for Redis, MongoDB connection string, etc.), or API keys
-   (Anthropic API key) I need to set up on my machine to run/test it.
-5. Push all work to the feature branch as you go so I can review commits
-   before I merge to main myself.
+Full instructions (env vars, troubleshooting, Windows specifics) live in
+**[SETUP.md](./SETUP.md)**. The short version:
+
+```powershell
+# 1. dependencies
+npm install
+
+# 2. configure
+copy .env.example .env.local   # then set MONGODB_URI, REDIS_URL, GEMINI_API_KEY
+
+# 3. databases (Docker)
+npm run db:up
+
+# 4. whisper.cpp model (Windows build is committed; this fetches the ggml model)
+npm run setup:whisper
+
+# 5. worker + web (or just double-click start-clipcraft.bat)
+npm run worker
+npm run dev
+```
+
+Then open <http://localhost:3000> and start at **`/startup-validation`** — it
+checks MongoDB, Redis, FFmpeg, the transcription engine, the LLM chain, and the
+Remotion renderer, and tells you exactly what to fix.
+
+## Project structure
+
+```
+app/                    Next.js pages + API routes
+  upload/               upload page (resumable chunks, optional YouTube import)
+  caption-presets/      caption style preset manager (live preview)
+  prompt-templates/     edit the LLM prompt templates
+  startup-validation/   pre-flight checks UI
+  api/                  videos, clips, transcript, detect-viral, upload(+session),
+                        media (Range file server), presets, templates
+lib/                    shared server logic
+  llm.ts                Gemini fallback chain (config array, plain fetch)
+  ai.ts                 prompt templates, JSON parsing, exact-count top-up
+  whisper.ts            whisper.cpp discovery + transcription
+  ffmpeg.ts             ffmpeg-static resolution + spawn wrapper
+  queue.ts              BullMQ queues (transcription + clip render)
+  profanity.ts          word masking + render-time mute/beep windows
+  overlay-bg.ts         solid/gradient card-background picker helpers
+  presets.ts            default caption/overlay/text presets
+  upload*.ts            upload policy, resumable sessions, browser client
+  db.ts                 MongoDB (database name: clipcraft)
+worker/                 the long-running BullMQ consumer
+  index.ts              both workers + graceful shutdown
+  processor.ts          per-clip orchestration (hook, layout, engines, masking)
+  asd/                  active-speaker detection (audio, YuNet, tracker, scoring)
+  yunet-detector.ts     YuNet ONNX pre/post-processing (OpenCV-exact)
+  layout.ts             speaker-focus vs split-grid plans (peak-concurrent cells)
+  ffmpeg-pipeline.ts    hflip → animated crop → colour → hook concat (dip-to-black)
+  remotion-renderer.ts  "remotion" caption engine
+  native-captions.ts    "native" engine (ASS + PNG-sequence overlays)
+  clip-http-server.ts   throwaway HTTP server so Remotion can read the clip
+remotion/               compositions: captions, hook overlay, CTA overlay
+scripts/                setup-whisper.{mjs,ps1}, setup-yunet.mjs
+bin/whisper-win-x64/    committed Windows whisper.cpp build (whisper-cli + DLLs)
+models/yunet/           committed YuNet face-detection model (232 KB)
+tests/                  node:test unit tests (tsx --test)
+docs/                   feature guides (layouts, overlays, viral prompt)
+```
+
+## Hard constraints (by design)
+
+- **No Python anywhere.** Everything is Node.js/TypeScript.
+- **Local + free.** Single user, runs on one PC, no multi-tenant auth, no billing,
+  no cloud media services. The only paid-capable dependency is the Gemini key,
+  which is free-tier.
+- **No `fluent-ffmpeg`.** `ffmpeg-static` + `child_process.spawn` directly.
+- **9:16 output, always** (1080×1920).
+- **Not for Vercel** — heavy processing needs a long-running local worker.
+
+## Documentation
+
+- **[SETUP.md](./SETUP.md)** — install, env vars, running, troubleshooting
+- **[docs/LAYOUTS.md](./docs/LAYOUTS.md)** — speaker focus vs split screen + how
+  active-speaker tracking works
+- **[docs/OVERLAYS.md](./docs/OVERLAYS.md)** — hook/CTA text, style presets, the
+  background picker
+- **[docs/VIRAL_PROMPT_GUIDE.md](./docs/VIRAL_PROMPT_GUIDE.md)** — the viral-detection
+  prompt, its variables, and how to customize it

@@ -1,13 +1,16 @@
 # ClipCraft Local — Setup & Troubleshooting (Windows-first)
 
-This file is the practical guide. `README.md` is the original product spec — it is kept
-unchanged on purpose.
+Practical guide to installing and running ClipCraft. The product overview lives in
+[README.md](./README.md); feature guides in [`docs/`](./docs).
 
 Everything runs on your own PC: Next.js + a separate BullMQ worker + MongoDB/Redis in
-Docker. No Python, no cloud video services (except the optional LLM + Deepgram keys).
+Docker. **No Python, no cloud media services** — the only external calls are to your
+local Docker services and the free Google AI Studio LLM. (Deepgram is an *optional*
+paid transcription override, off by default.)
 
-For the built-in **viral clip detection prompt** (AI clip options, prompt template
-variables, customization) see [`docs/VIRAL_PROMPT_GUIDE.md`](./docs/VIRAL_PROMPT_GUIDE.md).
+One-click on Windows: **`start-clipcraft.bat`** starts Docker Desktop, the DB
+containers, the worker and the web app, then opens the browser. The steps below are
+what it does, manually.
 
 ---
 
@@ -18,7 +21,7 @@ variables, customization) see [`docs/VIRAL_PROMPT_GUIDE.md`](./docs/VIRAL_PROMPT
 | Node.js 20+ (LTS) | Next.js 16 + the worker | `node -v` |
 | Docker Desktop | MongoDB + Redis containers | `docker compose version` |
 | **Microsoft Visual C++ Redistributable (x64)** | `whisper-cli.exe` is a native build and needs `vcruntime140.dll` / `msvcp140.dll` | Install once: <https://aka.ms/vs/17/release/vc_redist.x64.exe> |
-| Google AI Studio API key (`GEMINI_API_KEY`) | Viral-segment detection + hook/CTA text (2-slot fallback chain) | required |
+| Google AI Studio API key (`GEMINI_API_KEY`) | Viral-segment detection + hook/CTA text | Free: <https://aistudio.google.com/app/apikey> |
 
 FFmpeg is **not** a manual install — `ffmpeg-static` downloads a binary during
 `npm install` and `lib/ffmpeg.ts` resolves it automatically.
@@ -33,10 +36,12 @@ npm install
 ```
 
 `npm install` fetches:
+
 - `ffmpeg-static` → the FFmpeg binary used for cutting/mirroring/cropping/concat
-- `@remotion/bundler` + `@remotion/renderer` → the headless browser Remotion needs to
-  render captions (first run downloads Chromium automatically)
-- `@vladmandic/face-api` → **optional** face detection (see §7)
+- `@remotion/bundler` + `@remotion/renderer` → the headless browser Remotion needs
+  to render captions (first render downloads Chromium automatically)
+- `onnxruntime-node` → the ONNX runtime that runs the committed YuNet face model
+  (fully local, no vision API)
 
 ---
 
@@ -54,44 +59,37 @@ REDIS_URL=redis://127.0.0.1:6379
 GEMINI_API_KEY=your-key
 ```
 
+Both `npm run dev` and `npm run worker` load `.env.local` (via `@next/env`'s
+`loadEnvConfig` in `lib/errors.ts`) — **start the worker from the repository root**.
+
 ### All variables
 
 | Variable | Default | Notes |
 |---|---|---|
-| `MONGODB_URI` | — | Use `127.0.0.1`, **not** `localhost`, if Docker/WSL2 resolves it to `::1`. |
-| `REDIS_URL` | — | Same note as above. |
-| `GEMINI_API_KEY` | — | Google AI Studio — `gemini-3.6-flash` + `gemini-3.8-flash` (2 slots, separate daily pools, 1M context). **The only provider in the chain now.** |
-| — (no env var) | — | Chain order/models live in `LLM_PROVIDER_CHAIN` in `lib/llm.ts` — append an entry there to add a provider back. |
-
-> **Why the other providers were removed (2026-09-27):** live testing on this
-> machine showed Groq returns HTTP 413 on any transcript over ~5 minutes
-> (free per-minute INPUT token cap) plus constant 429s, Cerebras' free models
-> are PAID (402), Mistral's free tier 429s above ~1 RPM, and NVIDIA NIM
-> retires models (410 Gone) with recurring timeouts. Google AI Studio was the
-> only provider that reliably completed the viral-detection run, so the chain
-> now runs on its two Flash models (separate daily pools = 503 redundancy).
-> The old `GROQ_API_KEY` / `CEREBRAS_API_KEY` / `MISTRAL_API_KEY` /
-> `NVIDIA_API_KEY` / `OPENROUTER_API_KEY` entries in `.env.local` are ignored.
-| `DEEPGRAM_API_KEY` / `DEEPGRAM_MODEL` | off (`nova-2`) | If set, Deepgram wins over local whisper.cpp. |
-| `WHISPER_CLI_PATH` | auto-detect | Overrides binary discovery. |
+| `MONGODB_URI` | — | Use `127.0.0.1`, **not** `localhost`, if Docker/WSL2 resolves it to `::1`. Database name is fixed to `clipcraft` (`lib/db.ts`). |
+| `REDIS_URL` | — | Same note as above. BullMQ needs Redis ≥ 6.2. |
+| `GEMINI_API_KEY` | — | Google AI Studio. The chain is Gemini-only (5 slots, newest-first: `gemini-3.8-flash` → `gemini-3.6-flash` → `gemini-3.5-flash-lite` → `gemini-3.1-flash-lite` → `gemini-2.5-flash-lite`); every slot reads this one key but draws from a separate free daily pool, so it is real 503-redundancy. Model order lives in `LLM_PROVIDER_CHAIN` in `lib/llm.ts` — append an entry there (and set the key) to add a provider back. The other free providers were removed after live testing: Groq 413 (free per-minute INPUT cap) + 429s, Cerebras 402 (paid), Mistral 429 (~1 RPM), NVIDIA NIM 404/410 (retired models) + timeouts. |
+| `DEEPGRAM_API_KEY` / `DEEPGRAM_MODEL` | off (`nova-2`) | **Optional, paid.** If set, Deepgram wins over local whisper.cpp. Leave empty to stay 100 % local/free. |
+| `WHISPER_CLI_PATH` | auto-detect | Overrides binary discovery (searches `.whisper/…`, `bin/whisper-win-x64/whisper-cli.exe`, `bin/whisper-cli`). |
 | `WHISPER_MODEL_PATH` | auto-detect | Overrides model discovery (`models/ggml-*.bin`). |
-| `WHISPER_LANGUAGE` | `auto` | e.g. `ur`, `hi`, `en`. `auto` lets whisper detect. |
-| `WHISPER_THREADS` | half your cores | Raise for faster transcription. |
-| `FFMPEG_PATH` | `ffmpeg-static` (FFmpeg 7.x) | Point at your own `ffmpeg.exe` if you prefer - it must be FFmpeg ≥ 5.1 (the pipeline uses `-fps_mode`, which older builds don't have; `-vsync` was removed in 7). |
+| `WHISPER_LANGUAGE` | `auto` | e.g. `ur`, `hi`, `en`. `auto` detects the spoken language (needed for Urdu/Hindi/Punjabi). |
+| `WHISPER_THREADS` | half your cores (2–8) | CPU threads for whisper. |
+| `FFMPEG_PATH` | `ffmpeg-static` | Point at your own `ffmpeg.exe` if the npm download failed. Must be FFmpeg ≥ 5.1 (the pipeline uses `-fps_mode`; `-vsync` was removed in 7). |
 | `PORT` | `3000` | Next.js port. |
-| `WORKER_CONCURRENCY` | `1` | Clips rendered in parallel. Keep at 1 unless you have ≥32 GB RAM. |
-| `REMOTION_CONCURRENCY` | auto (half the cores) | Chrome render threads. |
+| `ALLOWED_DEV_ORIGINS` | `*.e2b.app` (built in) | Extra hostnames allowed for dev assets (tunnels, LAN). Comma-separated, no scheme/port. |
+| `WORKER_CONCURRENCY` | `1` | Clips rendered in parallel. Keep at 1 on a normal PC: each job runs FFmpeg + a headless Chrome render. |
+| `REMOTION_CONCURRENCY` | auto (half the cores) | Chrome tabs Remotion uses per render. |
 | `REMOTION_LOG_LEVEL` | `info` | `verbose` when debugging a render. |
 | `REMOTION_TIMEOUT_MINUTES` | `60` | Per-render ceiling. |
-| `OFFTHREAD_VIDEO_CACHE_MB` | Remotion default | Raise this (e.g. `2048`) only if a render fails with "No frame found at position" on a machine with plenty of RAM - it sizes the offthread video frame cache. |
-| `OFFTHREAD_VIDEO_THREADS` | Remotion default | Number of compositor frame-extraction threads. |
-| `ENABLE_YT_IMPORT` | `0` | Set to `1` to re-enable the fragile YouTube download path. |
+| `OFFTHREAD_VIDEO_CACHE_MB` | Remotion default | Raise (e.g. `2048`) only if a render fails with "No frame found at position" on a machine with plenty of RAM. |
+| `OFFTHREAD_VIDEO_THREADS` | Remotion default | Compositor frame-extraction threads. |
+| `ENABLE_YT_IMPORT` | off | Set `1` to re-enable the (fragile) YouTube download path on the upload page. |
+| `PROFANITY_AUDIO_MODE` | `mute` | Render-time audio handling of profane words from the transcript: `mute` (silence the word), `beep` (1 kHz tone), `off` (leave audio alone). Captions/overlay text are masked **regardless**; the stored transcript keeps the original words, so changing this only needs a re-render. |
 | `UPLOAD_DIR` | `uploads` | Where source videos + in-progress upload sessions are stored. |
-| `MAX_UPLOAD_MB` | `0` (unlimited) | Optional guard rail for a single upload. Long podcasts need no limit, so leave it at 0. |
-| `UPLOAD_CHUNK_MB` | `8` | Chunk size the resumable uploader is told to use. |
-| `MAX_MULTIPART_MB` | `256` | Size cap for the single-request `POST /api/upload` (it buffers the body in RAM). The resumable endpoint has no cap. |
+| `MAX_UPLOAD_MB` | `0` (unlimited) | Optional guard rail for a single upload. Long podcasts need no limit — leave at 0. |
+| `UPLOAD_CHUNK_MB` | `8` | Chunk size the resumable uploader sends. |
+| `MAX_MULTIPART_MB` | `256` | Size cap for the single-request `POST /api/upload` (it buffers the body in RAM). The UI never uses that endpoint. |
 | `UPLOAD_SESSION_TTL_HOURS` | `24` | Unfinished upload sessions are deleted after this long. |
-| `ALLOWED_DEV_ORIGINS` | `*.e2b.app` | Extra hostnames allowed to load dev assets (tunnels, LAN). Comma-separated, no scheme/port. |
 
 ---
 
@@ -103,17 +101,17 @@ npm run db:logs    # watch the logs
 npm run db:down    # stop
 ```
 
-Data survives restarts in the named Docker volumes `clipcraft-mongo` / `clipcraft-redis`.
-Neither service has auth enabled — they are bound for local single-user use only. Do not
-expose these ports to the internet.
+Data survives restarts in the named Docker volumes `clipcraft-mongo` /
+`clipcraft-redis`. Neither service has auth — they are for local single-user use
+only. Do not expose these ports to the internet.
 
 ---
 
-## 5. Download whisper.cpp + a model
+## 5. Download a whisper.cpp model
 
 The repo ships a **Windows x64** whisper.cpp build at `bin/whisper-win-x64/`
-(`whisper-cli.exe` + `whisper.dll`), but ggml models are 75 MB–1.5 GB each and are
-deliberately **not** committed. Download one with:
+(`whisper-cli.exe` + its DLLs). The ggml *models* are 75 MB–1.5 GB and are
+deliberately **not** committed — download one:
 
 ```powershell
 npm run setup:whisper        # Node script (Windows/macOS/Linux)
@@ -123,23 +121,44 @@ npm run setup:whisper:ps     # pure PowerShell equivalent
 npm run setup:whisper -- --model small --force
 ```
 
-That fetches:
-1. the latest whisper.cpp release for your OS/arch into `bin/` (skipped on Windows if
-   `bin/whisper-win-x64/whisper-cli.exe` already exists), and
-2. a ggml model into `models/` (default `base`, mirror fallback included), and
+The script:
+
+1. fetches a whisper.cpp release binary into `.whisper/` (skipped on Windows when
+   the committed `bin/whisper-win-x64/whisper-cli.exe` exists; on macOS/Linux it
+   prints build-from-source instructions),
+2. downloads a ggml model into `models/` (default **`small`** — much better for
+   Urdu/Hindi; `tiny` faster/rougher, `medium`/`large-v3` best/slowest), and
 3. writes `WHISPER_CLI_PATH` / `WHISPER_MODEL_PATH` into `.env.local`.
 
-Model choice: `tiny` (fastest, rough), `base` (default), `small` (much better for
-Urdu/Hindi), `medium`/`large-v3` (best, slow, big). Non-English audio → use `small` or
-better, and set `WHISPER_LANGUAGE=ur` (or leave `auto`).
+For non-English audio use `small` or better, and set `WHISPER_LANGUAGE=ur` (or
+leave `auto`).
 
-> If your network blocks GitHub/Hugging Face, download
-> `ggml-base.bin` manually from <https://huggingface.co/ggerganov/whisper.cpp/tree/main>
-> and drop it in `models/`, then set `WHISPER_MODEL_PATH=models/ggml-base.bin`.
+> If your network blocks GitHub/Hugging Face, download `ggml-small.bin` manually
+> from <https://huggingface.co/ggerganov/whisper.cpp/tree/main> into `models/` and
+> set `WHISPER_MODEL_PATH=models/ggml-small.bin`.
 
 ---
 
-## 6. Run the app (three processes)
+## 6. YuNet face model (active-speaker tracking)
+
+Clips frame the active speaker with OpenCV's **YuNet** detector
+(`face_detection_yunet_2023mar.onnx`) running on `onnxruntime-node` — fully local.
+The 232 KB model is **committed** at `models/yunet/`, so there is nothing to do.
+
+`npm run setup:yunet` is idempotent: it re-downloads and SHA-256-verifies the model
+(if the committed copy is ever missing/corrupt) from OpenCV Zoo / jsDelivr /
+Hugging Face mirrors, and refuses a file that doesn't match the official
+232 589-byte checksum.
+
+**There is no fallback detector** (no skin-tone heuristic, no static-crop
+"pretend tracking"). If the model is missing or the ONNX runtime fails, speaker
+layout renders **stop with a clear error** telling you to run
+`npm run setup:yunet` — see [docs/LAYOUTS.md](./docs/LAYOUTS.md) for the full
+tracking design (audio↔motion fusion, hysteresis, split-grid emphasis).
+
+---
+
+## 7. Run the app (three processes)
 
 ```powershell
 # 1. databases
@@ -152,152 +171,136 @@ npm run worker
 npm run dev
 ```
 
+(or double-click **`start-clipcraft.bat`** to do all of the above at once)
+
 Open <http://localhost:3000>, then **visit `/startup-validation` first**. That page
 checks MongoDB, Redis, FFmpeg, the transcription engine (using the *same* discovery
-logic as the real run), the AI provider, the prompt templates and the Remotion renderer,
-and tells you exactly what to fix.
+logic as the real run), the AI provider chain, and the Remotion renderer, and tells
+you exactly what to fix.
 
 ### What happens after you upload
 
-1. The browser uploads through `POST /api/upload/session` + `PUT /api/upload/session/{id}`
-   in chunks (8 MB by default). **There is no size limit** — a three-hour podcast is a
-   normal input — and because each chunk is streamed straight to disk, a multi-GB file
-   never sits in the server's RAM. Losing the connection (VPN hiccup, dev-server reload,
-   laptop sleep) is fine: press **Resume upload** and it continues from the last byte the
-   server confirmed. The old 512 MB rejection is gone.
-   The single-request `POST /api/upload` is still there for scripts/Postman, but it
-   buffers the multipart body in memory, so it is capped at `MAX_MULTIPART_MB` (256 MB)
-   and points callers at the resumable endpoint.
-2. Finishing the upload moves the assembled file into `uploads/`, probes it with FFmpeg
-   and enqueues a **transcription job** — the request returns immediately.
-3. The worker transcribes with whisper.cpp (or Deepgram) and stores word-level
-   timestamps in MongoDB.
-4. "Detect viral segments" asks the LLM for `{start, end, hookText, score}`.
-   Rendering then asks the LLM again to pick the most gripping moment inside the
-   clip (a "suspense hook") - that moment is duplicated to the START of the clip.
-5. Rendering a clip enqueues a BullMQ job → the worker runs:
-   speaker face tracking (the 9:16 crop window pans to follow the talking person)
-   → FFmpeg (mirror + animated crop + colour + hook intro with a dip-to-black
-   transition) → Remotion (captions + hook/CTA overlays)
-   → `generated-clips/{videoId}/{clipId}.mp4`.
-6. The dashboard plays the clip through `/api/media/...` (a normal HTTP origin, with
-   HTTP Range support so seeking works).
-
----
-
-## 7. Active-speaker tracking (YuNet face detection)
-
-Clips use **active-speaker tracking**: the worker runs OpenCV's **YuNet** face detector
-(`face_detection_yunet_2023mar.onnx`) on sampled frames of the clip window, keeps
-identity-free face *tracks*, and multi-cue scores who is talking (audio envelope vs.
-mouth/face motion, motion energy, continuity, face size — so a covered mic/mask/hand
-still works). The 9:16 frame then **follows the active speaker** and glides to the new
-speaker when they change. See [docs/LAYOUTS.md](./docs/LAYOUTS.md) for the two clip
-layouts (speaker focus + split screen) and [docs/OVERLAYS.md](./docs/OVERLAYS.md) for
-hook/CTA overlay styles.
-
-One command downloads and SHA-256-verifies the model into `models/yunet/`:
-
-```powershell
-npm run setup:yunet
-```
-
-Mirrors (OpenCV Zoo raw GitHub, jsDelivr, Hugging Face, hf-mirror) are tried in order;
-the file is rejected unless it matches the official 232 589-byte
-`face_detection_yunet_2023mar.onnx`. You can also download it manually from
-[opencv_zoo](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet)
-and place it at `models/yunet/face_detection_yunet_2023mar.onnx`.
-
-**Without the model** the app still works: the worker logs
-`YuNet model not found - active-speaker tracking disabled` and renders use a static
-center crop (the startup check on `/settings` also shows a warning with the fix).
-`onnxruntime-node` runs the model fully locally — no paid vision API.
+1. The browser uploads through `POST /api/upload/session` +
+   `PUT /api/upload/session/{id}` in chunks (8 MB default). **No size limit** — a
+   three-hour podcast is normal — and each chunk streams straight to disk, so a
+   multi-GB file never sits in the server's RAM. Losing the connection (VPN hiccup,
+   dev-server reload, laptop sleep) is fine: press **Resume upload** and it
+   continues from the last confirmed byte. The single-request `POST /api/upload`
+   remains for scripts/Postman, but it buffers the body in memory, so it is capped
+   at `MAX_MULTIPART_MB` (256 MB).
+2. Finishing the upload moves the file into `uploads/` (named
+   `001_my_recording.mp4` — 3-digit sequence + original name), probes it with
+   FFmpeg and enqueues a **transcription job** — the request returns immediately.
+3. The worker transcribes with whisper.cpp (or Deepgram, if you opted in) and
+   stores word-level timestamps in MongoDB.
+4. **Detect viral segments** asks the Gemini chain (5-slot fallback) for
+   `{start, end, hookText, ctaText, reason, score}` — with an automatic **top-up
+   pass** if it returns fewer than the requested count. Clip count, minimum clip
+   length (max is fixed internally at 90 s), and the hook/CTA switches are
+   per-video options persisted in your browser.
+5. **Render** (per clip): a second LLM pass picks the most gripping moment in the
+   clip → it is duplicated to the **start** as a **fixed 3 s hook** with a 0.5 s
+   dip-to-black → active-speaker layout planning (`worker/asd/` +
+   `worker/layout.ts`) → FFmpeg (mirror + animated crop + colour + hook concat) →
+   captions via the clip's **caption engine** (`remotion` default, or `native`
+   fast ASS burn-in) → on-screen hook/CTA cards from your style presets
+   (solid or **gradient** backgrounds).
+6. Output: `generated-clips/001_my_recording/<clip title>.mp4`, tracked in
+   MongoDB. The dashboard plays it through `/api/media/...` (Range-enabled, so
+   seeking works).
 
 ---
 
 ## 8. Troubleshooting
 
+**`YuNet face detection is unavailable` / `No faces were detected in this clip window`**
+Speaker layouts have no fallback detector by design: run `npm run setup:yunet`
+(model), and if a face genuinely can't be found, pick a window where the speaker
+is visible, reasonably large and well lit — then re-render.
+
 **"Compositor error: No frame found at position N"**
 Two known causes, both handled: (1) the hook+base clip used to be stitched with
-FFmpeg `-c copy`, which left the second segment's timestamps unusable for
-Remotion's compositor - the concat step now re-encodes, producing one clean CFR
-file; (2) a too-small offthread video frame cache on low-memory machines - raise
-`OFFTHREAD_VIDEO_CACHE_MB` (see env table). If it still happens, post the processed
-clip and `npx remotion versions` output at https://remotion.dev/report.
+FFmpeg `-c copy`, leaving the second segment's timestamps unusable for Remotion's
+compositor — the concat step now re-encodes into one clean CFR file; (2) a
+too-small offthread video frame cache on low-memory machines — raise
+`OFFTHREAD_VIDEO_CACHE_MB`. If it still happens, post the processed clip and
+`npx remotion versions` output at https://remotion.dev/report.
 
-**"Not allowed to load local resource: file:///…" / "Can only download URLs starting
-with http:// or https://"**
-Fixed. Remotion renders inside headless Chrome, which **cannot read the filesystem** —
-video sources must be http(s)/data: URLs (or `staticFile()`). The worker now serves the
-processed clip from a throwaway `127.0.0.1` HTTP server for the duration of the render
-(`worker/clip-http-server.ts`) and passes that URL as `videoSrc`. Never pass a raw
-absolute path or `file://` URL as a Remotion video source. The worker logs the served
-URL: `[Remotion Renderer] Serving clip to Remotion via http://127.0.0.1:PORT/clip.mp4`.
+**"Not allowed to load local resource: file:///…" / "Can only download URLs
+starting with http:// or https://"**
+Remotion renders inside headless Chrome, which **cannot read the filesystem** —
+video sources must be http(s)/data: URLs (or `staticFile()`). The worker serves the
+processed clip from a throwaway `127.0.0.1` HTTP server for the duration of the
+render (`worker/clip-http-server.ts`) and passes that URL as `videoSrc`. The worker
+logs the served URL: `[Remotion Renderer] Serving clip to Remotion via
+http://127.0.0.1:PORT/clip.mp4`.
 
 **Rendered clip has no video / black frames**
-Check the worker log line
-`[Remotion Renderer] Source: WxH @ Nfps …` — if the source probe failed, the FFmpeg stage
-produced a bad intermediate. If that line looks correct, confirm the "Serving clip" line
-appears right after it and the URL is reachable in a browser tab on the same machine.
+Check the worker log line `[Remotion Renderer] Source: WxH @ Nfps …` — if the
+source probe failed, the FFmpeg stage produced a bad intermediate. If it looks
+correct, confirm the "Serving clip" line appears right after it and the URL is
+reachable in a browser tab on the same machine.
 
 **Rendered clip is silent**
 The renderer sets `enforceAudioTrack: true` and the FFmpeg stage muxes a silent
-`anullsrc` track when the source has no audio, so the track always exists. If the log
-prints `WARNING: the rendered clip has no audio stream`, the processed clip lost its
-audio — check the `-map` output in the worker log.
+`anullsrc` track when the source has no audio, so the track always exists. (Note:
+profanity `mute` mode intentionally silences short windows — see
+`PROFANITY_AUDIO_MODE`.) If the log prints `WARNING: the rendered clip has no audio
+stream`, the processed clip lost its audio — check the `-map` output in the worker
+log.
 
 **Captions out of sync / clip plays at the wrong speed**
-Fixed: fps is now derived from the source (`normalizeFps`) and passed to both the FFmpeg
-stage (`-r` + `-vsync cfr`) and `renderMedia`. Previously it was hard-coded to 30fps.
+fps is derived from the source (`normalizeFps`) and passed to both the FFmpeg stage
+(`-r` + cfr) and `renderMedia`. If sync is off, check the `[FFmpeg]` probe lines in
+the worker log.
 
 **Crop is on the wrong side of the speaker**
-Fixed: sample frames are extracted with `hflip` applied, because the render chain is
-`hflip,crop=…` — the crop coordinates must live in *mirrored* space.
+Sample frames are extracted with `hflip` applied, because the render chain is
+`hflip,crop=…` — crop coordinates must live in *mirrored* space. If you change the
+pipeline, keep sampling and cropping in the same space.
 
 **Re-rendering a clip does nothing**
-Fixed: BullMQ silently drops a job when the `jobId` already exists. `lib/queue.ts` now
-removes any completed/failed job with the same id first, and returns HTTP 409 if that
-clip is still actively rendering.
+BullMQ silently drops a job when the `jobId` already exists. `lib/queue.ts`
+removes any completed/failed job with the same id first, and returns HTTP 409 if
+that clip is still actively rendering.
 
-**`whisper-cli.exe` fails with "The code execution cannot proceed because VCRUNTIME140.dll was not found"**
+**`whisper-cli.exe` fails with "VCRUNTIME140.dll was not found"**
 Install the VC++ redistributable (§1).
 
 **Whisper complains about an unknown option (`-ojf`, `-sow`, `-wt`)**
-Those are newer whisper.cpp flags. The bundled build supports them; if you point
+Those are newer whisper.cpp flags. The committed build supports them; if you point
 `WHISPER_CLI_PATH` at an older build, use one that accepts `-ojf` (or re-run
-`npm run setup:whisper --force` to fetch the latest release).
+`npm run setup:whisper --force`).
 
-**Upload fails with "File is too large (max 512 MB)"**
-Gone — that check has been removed. Uploads are unlimited by default: the browser sends
-the file in chunks through `/api/upload/session`, streams them to disk and can resume
-after an interrupted connection. If you still see a size error, one of the optional guard
-rails is set: `MAX_UPLOAD_MB` (unlimited unless you set it) or `MAX_MULTIPART_MB` for the
-single-request `POST /api/upload` (scripts only). The UI never uses that endpoint.
+**Upload fails with a size error**
+The UI's resumable path has **no limit**. Size errors mean an optional guard rail
+is set: `MAX_UPLOAD_MB` (unlimited unless you set it) or `MAX_MULTIPART_MB` for the
+single-request endpoint (scripts only).
 
 **Upload stops at a certain percentage / the connection drops mid-upload**
-Nothing is lost. The chunk that was in flight is re-sent from the last byte the server
-confirmed, and the uploader retries automatically. If the page was reloaded or the dev
-server restarted, press **Resume upload** — it continues from the server's byte count
-instead of starting over. Chunks are written to `uploads/.upload-sessions/<id>/data`;
-unfinished sessions are deleted after `UPLOAD_SESSION_TTL_HOURS` (24 h default).
+Nothing is lost: the in-flight chunk is re-sent from the last confirmed byte, and
+the uploader retries automatically. If the page reloaded or the dev server
+restarted, press **Resume upload** — it continues from the server's byte count.
+Chunks live in `uploads/.upload-sessions/<id>/`; unfinished sessions are deleted
+after `UPLOAD_SESSION_TTL_HOURS` (24 h default).
 
 **The dev server gets slow or OOMs during a large upload**
-It should not: bytes are streamed to disk with backpressure, so memory stays flat (a
-1.5 GB upload keeps the server around ~100 MB RSS). The one buffered path left is the
-single-shot `POST /api/upload`, which is exactly why it is capped at `MAX_MULTIPART_MB`
-and why the UI always uses the chunked endpoint.
+It should not: bytes stream to disk with backpressure, so memory stays flat. The
+one buffered path left is the single-shot `POST /api/upload` — which is exactly why
+it is capped and why the UI always uses the chunked endpoint.
 
 **Video stuck in `transcribing` forever**
-The worker is not running (`npm run worker`), or Redis is unreachable. Transcription no
-longer happens inside the HTTP request, so a page refresh can no longer orphan it.
+The worker is not running (`npm run worker`), or Redis is unreachable.
+Transcription happens in the queue, not the HTTP request — a page refresh can no
+longer orphan it.
 
 **MongoDB/Redis connection refused on Windows + Docker Desktop**
-Use `127.0.0.1` instead of `localhost` in `.env.local`. If Docker runs inside WSL2, make
-sure the ports are published (they are, in `docker-compose.yml`).
+Use `127.0.0.1` instead of `localhost` in `.env.local`. If Docker runs inside WSL2,
+make sure the ports are published (they are, in `docker-compose.yml`).
 
 **`ffmpeg-static` binary missing after install**
-Its postinstall download was blocked. Set `FFMPEG_PATH` to your own `ffmpeg.exe`, or run
-`npm rebuild ffmpeg-static`.
+Its postinstall download was blocked. Set `FFMPEG_PATH` to your own `ffmpeg.exe`
+(any FFmpeg 5+ build works), or run `npm rebuild ffmpeg-static`.
 
 **Port 3000 already in use**
 `set PORT=3001` (PowerShell: `$env:PORT=3001`) before `npm run dev`.
@@ -306,23 +309,18 @@ Its postinstall download was blocked. Set `FFMPEG_PATH` to your own `ffmpeg.exe`
 
 ## 8b. Known harmless warnings
 
-**`next build` prints "Static analysis determined that this filesystem access causes the whole project to be traced"**
-Expected. `lib/ffmpeg.ts`, `lib/whisper.ts` and `app/api/media/[...path]/route.ts` resolve
-paths at runtime (`uploads/`, `generated-clips/`, `models/`, `bin/`) — that is exactly
-what this app has to do. Turbopack warns because it matters for a Vercel deployment, and
-this project is explicitly **not** deployed (see `README.md` → HARD CONSTRAINTS). The
-build still finishes successfully.
+**`next build` prints "Static analysis determined that this filesystem access
+causes the whole project to be traced"**
+Expected. `lib/ffmpeg.ts`, `lib/whisper.ts` and `app/api/media/[...path]/route.ts`
+resolve paths at runtime (`uploads/`, `generated-clips/`, `models/`, `bin/`) —
+exactly what a local app has to do. The build still finishes successfully; the
+warning matters only for a Vercel deployment, which this project is explicitly not.
 
 **First render downloads a headless browser**
-Remotion fetches its headless Chrome/Chromium shell on the first `renderMedia` call (and
-`npm run studio` needs it too). That is a one-time download of a few hundred MB. If your
-network blocks it, the render fails with a browser-download error — allow
-`remotion.media` / the Google Chrome-for-Testing CDN, or run `npx remotion browser ensure`.
-
-**`ffmpeg-static` binary missing after `npm install`**
-Its postinstall downloads the binary from GitHub releases. If that was blocked, set
-`FFMPEG_PATH` to your own `ffmpeg.exe` in `.env.local` (any FFmpeg 5+ build works) — the
-`/startup-validation` page tells you which path was resolved.
+Remotion fetches its headless Chrome shell on the first `renderMedia` call (and
+`npm run studio` needs it too) — a one-time download of a few hundred MB. If your
+network blocks it, allow the Chrome-for-Testing CDN, or run
+`npx remotion browser ensure`.
 
 ---
 
@@ -333,61 +331,58 @@ npm run db:up            # start MongoDB + Redis
 npm run worker           # BullMQ worker (transcription + rendering)
 npm run dev              # Next.js dev server
 npm run studio           # Remotion Studio — inspect CaptionComposition frame by frame
+npm run setup:whisper    # whisper.cpp binary (non-Windows) + ggml model
+npm run setup:yunet      # (re)download + verify the YuNet face model
 npm run typecheck        # tsc --noEmit
+npm run test:worker      # node:test unit tests (tsx --test tests/*.test.ts)
 npm run lint             # eslint
 npm run build            # production build
 ```
 
 ---
 
-## 9b. What was verified automatically
-
-```
-npx tsc --noEmit     -> 0 errors   (worker/, remotion/, lib/ and app/ all type-check)
-npx eslint .         -> 0 problems
-npx next build       -> compiled successfully, all 16 routes generated
-@remotion/bundler    -> remotion/index.tsx bundles cleanly (webpack resolves every import)
-```
-
-Plus unit-level smoke tests over the pure logic: `evenSize`, `normalizeFps`,
-`computeOutputSize`, `buildCaptionChunks`, the CTA window / caption-lift maths, the
-preset ids the app hard-codes (`vibrant`, `preset-bold-yellow`), the LLM model defaults
-and the whisper.cpp binary/model discovery. Those caught two real bugs while the fixes
-were being written: `computeOutputSize(0, 0)` returned a 2x2 canvas instead of falling
-back to 1080x1920, and the face-detector computed a sampling fps it never applied to
-`-vf` (so it decoded every frame of the segment).
-
-What could **not** be verified without your machine: an actual FFmpeg run, a whisper.cpp
-transcription and a full Remotion render (all three need binaries/downloads that are
-blocked in the sandbox). Run one short clip end to end first and read the worker log —
-every stage now logs its inputs, its FFmpeg command and a probe of the file it produced.
-
----
-
 ## 10. Where things live
 
 ```
-app/api/upload/          single-shot multipart upload (small files) + YouTube import
-app/api/upload/session/  resumable chunked upload (no size limit) + finalize/abort
-app/api/media/[...path]/ Range-enabled HTTP file server for uploads/ + generated-clips/
-app/startup-validation/  pre-flight checks UI
-lib/upload.ts            shared upload policy: names, sizes, video record, enqueue
-lib/upload-session.ts    resumable sessions on disk (append, finalize, TTL sweep)
-lib/upload-client.ts     browser chunking, progress, retry + resume
-lib/ffmpeg.ts            ffmpeg-static path resolution + probe + spawn wrapper
-lib/whisper.ts           cross-platform whisper.cpp discovery & transcription
-lib/deepgram.ts          optional cloud STT (REST, no SDK)
-lib/queue.ts             BullMQ queues: clip render + transcription
-lib/llm.ts               LLM fallback chain (config array + plain fetch, no SDKs)
-lib/ai.ts                prompt templates + JSON parsing on top of the fallback chain
-lib/startup-validation.ts the checks behind /startup-validation
-worker/index.ts          both BullMQ workers, graceful shutdown
-worker/processor.ts      per-clip orchestration
-worker/face-detector.ts  mirrored-frame sampling + speaker face track
-worker/ffmpeg-pipeline.ts hflip → animated crop → colour → scale → hook concat (dip-to-black)
-worker/remotion-renderer.ts bundle (cached) → selectComposition → renderMedia
-remotion/                CaptionComposition + AnimatedWord + Hook/CTA overlays
-scripts/setup-whisper.*  binary + ggml model downloader (.mjs and .ps1)
-models/face/             committed tiny_face_detector weights (~200 KB)
-bin/whisper-win-x64/     committed Windows x64 whisper.cpp build
+app/api/videos/            upload, list, probe; [id]/transcript + [id]/detect-viral
+app/api/clips/             list, create/render, [id] (status/file), [id]/cancel
+app/api/upload/            single-shot multipart (capped) + optional YouTube import
+app/api/upload/session/    resumable chunked upload (no limit) + finalize/abort
+app/api/media/[...path]/   Range-enabled HTTP file server for uploads/ + generated-clips/
+app/api/{caption,overlay,text}-presets/ + prompt-templates/ + startup-validation/
+app/caption-presets/       caption style preset manager (live preview)
+app/prompt-templates/      edit the LLM prompt templates
+app/startup-validation/    pre-flight checks UI
+lib/upload.ts              shared upload policy: names, sizes, video record, enqueue
+lib/upload-session.ts      resumable sessions on disk (append, finalize, TTL sweep)
+lib/upload-client.ts       browser chunking, progress, retry + resume
+lib/ffmpeg.ts              ffmpeg-static path resolution + probe + spawn wrapper
+lib/whisper.ts             cross-platform whisper.cpp discovery & transcription
+lib/deepgram.ts            optional cloud STT override (REST, no SDK)
+lib/queue.ts               BullMQ queues: transcription + clip render
+lib/llm.ts                 Gemini fallback chain (config array + plain fetch, no SDKs)
+lib/ai.ts                  prompt templates + JSON parsing + exact-count top-up
+lib/profanity.ts           word masking + render-time mute/beep windows
+lib/overlay-bg.ts          solid/gradient card-background picker helpers
+lib/presets.ts             default caption/overlay/text presets
+lib/startup-validation.ts  the checks behind /startup-validation
+lib/db.ts                  MongoDB client (database: clipcraft)
+worker/index.ts            both BullMQ workers, graceful shutdown
+worker/processor.ts        per-clip orchestration (hook, layout, engines, masking)
+worker/asd/                active-speaker detection: audio.ts, yunet, tracker.ts,
+                           speaker.ts (fusion + timeline)
+worker/yunet-detector.ts   YuNet ONNX detector (OpenCV-exact pre/post-processing)
+worker/frame-sampler.ts    mirrored frame sampling + pan smoothing/decimation
+worker/layout.ts           speaker-focus vs split-grid plans (peak-concurrent cells)
+worker/ffmpeg-pipeline.ts  hflip → animated crop → colour → scale → hook concat
+                           (0.5 s dip-to-black)
+worker/remotion-renderer.ts  "remotion" caption engine (bundle → renderMedia)
+worker/native-captions.ts  "native" engine: PNG-sequence hook/CTA overlays
+worker/captions-ass.ts     ASS caption generation (karaoke fill, word pop, CTA lift)
+worker/clip-http-server.ts throwaway 127.0.0.1 HTTP server for Remotion
+remotion/                  CaptionComposition + AnimatedWord + Hook/CTA overlays
+scripts/setup-whisper.*    binary + ggml model downloader (.mjs and .ps1)
+scripts/setup-yunet.mjs    YuNet model downloader with SHA-256 verification
+models/yunet/              committed YuNet face-detection model (232 KB)
+bin/whisper-win-x64/       committed Windows x64 whisper.cpp build (whisper-cli + DLLs)
 ```

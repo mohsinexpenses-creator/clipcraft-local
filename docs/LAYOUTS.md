@@ -50,14 +50,18 @@ The worker pipeline (`worker/asd/` + `worker/layout.ts`):
    stays inside Windows' command-line limit (the old 200-branch expressions broke with
    `ENAMETOOLONG`).
 
-### Fallbacks (a render never dies on bad detection)
+### Failure behaviour (no fallbacks by design)
+
+There is deliberately **no fallback detector** (no skin-tone heuristic, no
+"pretend tracking"): a clip whose speaker cannot be determined is a clip that
+would be badly framed, so the render stops with a clear error instead of
+guessing.
 
 | Situation | Behaviour |
 | --- | --- |
-| YuNet model missing / ONNX runtime broken | The legacy skin-tone heuristic track (`worker/frame-sampler.ts`), then a static center crop. Startup check + worker log explain `npm run setup:yunet`. |
-| Very short clip / no faces found | Deterministic most-visible-person or center crop. |
-| One face | Always active (no scoring). |
-| ASD throws (bad audio, undecodable frames) | Legacy face track fallback in the render job. |
+| YuNet model missing / ONNX runtime broken | The render job fails with "YuNet face detection is unavailable - run `npm run setup:yunet`" (the `/startup-validation` page shows the same warning before you start). |
+| One face visible | Always active (no scoring). |
+| A frame YuNet misses | The tracker's keep-alive grace period carries the last known position; nothing is guessed. |
 
 ## FFmpeg plumbing (for the curious)
 
