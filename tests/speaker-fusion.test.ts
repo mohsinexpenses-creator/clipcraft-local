@@ -159,6 +159,42 @@ test('mouth-open cue drives the decision when it is available (second method)', 
   assert.equal(winner?.trackId, 1, 'the person articulating with the audio wins');
 });
 
+test('reactive turn change: a new speaker takes the frame within ~1.5s of starting', () => {
+  // The reported bug: A talks, B starts talking, and the frame lingers on A
+  // for seconds (or never moves). With voice-gated motion + the reactive
+  // switch the label must follow B promptly and STAY with B.
+  const voice = patternVoice();
+  const half = (DURATION * FPS) / 2; // 6s
+  const a = makeTrack(1, {
+    cx: 500,
+    w: 300, // A is ALSO the bigger face (the prominence bias case)
+    motion: (i) => (i < half ? (voice[i] > 0.5 ? 0.9 : 0.1) : 0.03),
+  });
+  const b = makeTrack(2, {
+    cx: 1400,
+    w: 200,
+    motion: (i) => (i >= half ? (voice[i] > 0.5 ? 0.9 : 0.1) : 0.03),
+  });
+  const { segments } = buildSpeakerTimeline({
+    duration: DURATION,
+    fps: FPS,
+    voice,
+    tracks: [a, b],
+    frameWidth: FRAME_WIDTH,
+  });
+
+  const sw = switches(segments).find((s) => s.to === 2);
+  assert.ok(sw, `B never gets the frame: ${JSON.stringify(segments)}`);
+  assert.ok(sw.t <= half + 1.5, `switch to B at ${sw.t}s is too late (B started at ${half}s)`);
+
+  // Once B has the frame it keeps it for the rest of the clip.
+  for (const s of segments) {
+    if (s.t0 >= half + 1.5 && s.trackId !== null) {
+      assert.equal(s.trackId, 2, `frame left B at t=${s.t0}s: ${JSON.stringify(segments)}`);
+    }
+  }
+});
+
 test('hysteresis: a marginal challenger cannot flip the frame every window', () => {
   // Alternating near-tie scores: the 1.3x margin + 0.8s hold must keep the
   // number of switches small and well-spaced.

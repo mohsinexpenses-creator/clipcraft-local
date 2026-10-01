@@ -28,7 +28,9 @@ detection are fully local (whisper.cpp + OpenCV YuNet).
    fusion, `worker/asd/`) drives the 9:16 crop:
    - **Speaker focus** — one window that glides to follow whoever is talking.
    - **Split screen** — an adaptive 2/3/4-cell grid where each pane tracks a person
-     and the active speaker's cell gets a red emphasis frame.
+     and the active speaker's cell gets a red emphasis frame. Two people = two stacked
+     halves with a **stable** assignment (left person always the top pane, right person
+     the bottom) — it never swaps mid-clip.
    There is **no fallback detector**: if no face can be found, the render fails
    with a clear explanation instead of guessing.
 6. **Render** — FFmpeg (mirror → animated crop → colour → hook concat) plus one of

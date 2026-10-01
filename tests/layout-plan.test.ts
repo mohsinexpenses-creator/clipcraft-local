@@ -188,6 +188,54 @@ test('split grid size follows PEAK concurrent faces, not raw track count', () =>
   }
 });
 
+test('two people co-existing still get two panes when only ONE is judged the speaker', () => {
+  // The reported bug: the speaker timeline (a heuristic) labelled only person
+  // A as speaker, and the split grid collapsed to a single full-screen cell.
+  // A 2-person conversation must be a 2-pane split regardless.
+  const a = panTrack(1, Array.from({ length: 40 }, () => 400));
+  const b = panTrack(2, Array.from({ length: 40 }, () => 1500));
+  const plan = buildLayoutPlan(
+    asd([a, b], [{ trackId: 1, t0: 0, t1: 10 }]),
+    'split-screen',
+    1920,
+    1080
+  );
+  assert.equal(plan.mode, 'split');
+  if (plan.mode === 'split') {
+    assert.equal(plan.cells.length, 2, 'two co-existing people -> two panes');
+    const cellIds = plan.cells.map((c) => c.trackId);
+    assert.ok(cellIds.includes(1) && cellIds.includes(2), 'both people are shown');
+  }
+});
+
+test('2-person split: the left person gets the TOP pane, the right person the bottom (stable)', () => {
+  // The requested 2-person layout: one person centred in the upper half, the
+  // other in the lower half, with a STABLE assignment (it must not swap
+  // mid-clip as the speaker changes).
+  const a = panTrack(1, Array.from({ length: 40 }, () => 400)); // left person
+  const b = panTrack(2, Array.from({ length: 40 }, () => 1500)); // right person
+  const plan = buildLayoutPlan(
+    asd([a, b], [
+      { trackId: 2, t0: 0, t1: 5 }, // the RIGHT person speaks first
+      { trackId: 1, t0: 5, t1: 10 }, // ...then the left one takes over
+    ]),
+    'split-screen',
+    1920,
+    1080
+  );
+  assert.equal(plan.mode, 'split');
+  if (plan.mode === 'split') {
+    assert.equal(plan.cells.length, 2);
+    const top = plan.cells.find((c) => c.cellY === 0);
+    const bottom = plan.cells.find((c) => c.cellY === 960);
+    assert.ok(top && bottom, 'two stacked 1080x960 halves');
+    assert.equal(top!.trackId, 1, 'left person is always the top pane');
+    assert.equal(bottom!.trackId, 2, 'right person is always the bottom pane');
+    // Each cell is a 9:16-ish window centred on its person (anchor 0.5).
+    assert.ok(top!.cropW > 0 && top!.cropH > 0);
+  }
+});
+
 test('a 2-person conversation never becomes a 4-cell grid', () => {
   const a = panTrack(1, Array.from({ length: 40 }, () => 400));
   const b = panTrack(2, Array.from({ length: 40 }, () => 1500));

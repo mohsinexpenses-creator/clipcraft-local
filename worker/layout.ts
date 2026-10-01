@@ -412,17 +412,34 @@ function buildSplitPlan(asd: AsdResult, srcW: number, srcH: number): SplitPlan {
       emphasis: [],
     };
   }
-  // Cap the grid by how many people actually spoke: a single presenter gets a
-  // full-screen cell, a 2-person conversation stays at 2 cells. peakConcurrent
-  // is an extra guard - never more panes than the busiest frame had faces on
-  // screen, so fragmented track ids can never inflate 2 people into 3-4 cells.
+  // Size the grid by how many people SHARE THE SCREEN at the busiest moment -
+  // never more panes than that, so fragmented track ids can never inflate 2
+  // people into 3-4 cells. But the speaker timeline is a heuristic: when two
+  // people clearly co-exist, BOTH get a pane even if only one was ever judged
+  // the speaker (a 2-person conversation must be a 2-pane split, not a
+  // full-screen single cell). One person on screen gets the full-screen cell.
+  const coexisting = Math.max(1, peakConcurrent(candidateTracks));
   const count = Math.min(
     4,
-    Math.max(speakerIds.size, 1),
-    relevant.length,
-    Math.max(1, peakConcurrent(candidateTracks))
+    coexisting,
+    Math.max(speakerIds.size, Math.min(2, coexisting)),
+    relevant.length
   );
   relevant = relevant.slice(0, count);
+
+  // Two panes: a stable spatial assignment - the person sitting LEFT (mirrored
+  // source space) always gets the TOP pane, the right person the bottom one.
+  // The order never swaps mid-clip, no matter who is talking; the red
+  // emphasis frame is what shows the active speaker. (3+ panes keep the
+  // score order: speakers first, then screen-time × face size.)
+  if (count === 2) {
+    const medianX = (track: Track): number => {
+      const xs = track.points.map((p) => p.cx).sort((a, b) => a - b);
+      const mid = Math.floor(xs.length / 2);
+      return xs.length % 2 === 1 ? xs[mid] : (xs[mid - 1] + xs[mid]) / 2;
+    };
+    relevant.sort((a, b) => medianX(a) - medianX(b));
+  }
 
   // Adaptive 9:16 grids (1080x1920 canvas) - all tile the canvas exactly.
   const grids: Array<Array<[number, number, number, number]>> = [

@@ -7,20 +7,31 @@ import { Track } from './tracker';
  *
  * Cues (multi-method on purpose - a handheld mic, mask or hand can cover the
  * mouth and kill any single visual cue):
- *   - audio↔motion correlation: whoever is talking moves when the voice
- *     envelope rises (mouth, jaw, cheek, whole-face motion - region-agnostic);
+ *   - **voice-gated motion** (the strongest speaker-specific cue): motion that
+ *     happens WHILE the shared audio is loud. The speaker's face moves in
+ *     lockstep with their own speech, so their voice-gated motion is high and
+ *     reactive; a non-speaker's random gestures land at uncorrelated times and
+ *     their voice-gated motion stays low. It is a sum of products (not Pearson
+ *     correlation), so it is stable even on the few samples a 0.6 s window
+ *     holds at 4-8 fps - where raw correlation is essentially noise.
+ *   - audio↔motion correlation (Pearson) - a secondary confirmation cue;
  *   - motion energy of the face region vs the other faces;
  *   - mouth-opening variance (only when a landmark cue exists - YuNet has no
  *     mouth landmarks, so this simply contributes 0 there);
  *   - prominence (face size) and continuity (incumbent keeps the frame).
  *
  * When mouths are covered the correlation and mouth terms flatten toward 0 and
- * the worst-case cues (continuity, prominence, full-face motion) decide - which
- * is exactly the desired behaviour. When audio is missing/unvoiced the weights
- * shift to the visual-only mix.
+ * the worst-case cues (continuity, prominence, voice-gated motion) decide -
+ * which is exactly the desired behaviour. When audio is missing/unvoiced the
+ * weights shift to the visual-only mix.
  *
  * Hysteresis + a minimum hold stop two people's scores from trading the label
- * back and forth on borderline windows.
+ * back and forth on borderline windows. One REACTIVE override breaks that
+ * stickiness exactly when it must: when the incumbent has clearly stopped
+ * moving with the audio and the challenger is clearly moving with it, the
+ * label flips on the next held window instead of waiting for the score margin
+ * that prominence/continuity biases can eat up (the "frame lingers on the
+ * non-speaker after a turn change" bug).
  */
 
 export interface SpeakerSegment {
@@ -57,12 +68,27 @@ const STEP_SECONDS = 0.25;
 /** A window is "voiced" when the mean voice energy is at least this. */
 const VOICE_THRESHOLD = 0.18;
 /**
+ * Voice level below which motion does NOT count as "while talking" for the
+ * voice-gated motion cue (speech sits well above this after normalisation).
+ */
+const VOICE_GATE = 0.15;
+/**
  * A challenger must beat the current speaker's score by this factor to take
  * over (anti-flicker hysteresis).
  */
-const SWITCH_MARGIN = 1.15;
+const SWITCH_MARGIN = 1.1;
 /** Once a speaker is chosen, they are kept for at least this long. */
 const MIN_HOLD_SECONDS = 0.4;
+/**
+ * Reactive switch: below this normalised voice-gated motion an incumbent has
+ * clearly STOPPED talking...
+ */
+const REACTIVE_INCUMBENT_CEILING = 0.25;
+/**
+ * ...and above this a challenger has clearly STARTED talking, so the label
+ * flips on the next held window even without the full SWITCH_MARGIN.
+ */
+const REACTIVE_CHALLENGER_FLOOR = 0.45;
 /** Mouth-opening std-dev that counts as "clearly articulating". */
 const MOUTH_STD_SPEAKING = 0.05;
 /** Face width (fraction of frame width) that counts as "maximally prominent". */
@@ -72,6 +98,8 @@ interface Candidate {
   trackId: number;
   score: number;
   motion: number;
+  /** Voice-gated motion, normalised 0..1 across the candidates of this window. */
+  vm: number;
   prominence: number;
   corr: number;
   mouth: number;
@@ -106,6 +134,27 @@ function meanFaceWidth(track: Track, i0: number, i1: number, fps: number): numbe
     }
   }
   return n > 0 ? sum / n : null;
+}
+
+/**
+ * Voice-GATED motion of a track within a sample range: the sum of motion
+ * weighted by how loud the voice is at that instant (below `VOICE_GATE` it
+ * contributes 0). This is the cue that actually separates speakers: it is high
+ * when a face articulates in step with the shared audio, and stays near zero
+ * for a silent face no matter how big it is. Sum-of-products on purpose -
+ * robust where Pearson correlation on 3-7 samples is not.
+ */
+function voicedMotion(track: Track, i0: number, i1: number, fps: number, voice: number[]): number {
+  const t0 = i0 / fps;
+  const t1 = (i1 + 1) / fps;
+  let sum = 0;
+  for (const p of track.points) {
+    if (p.t < t0 || p.t > t1 || p.motion === null) continue;
+    const frameIdx = Math.max(0, Math.min(voice.length - 1, Math.round(p.t * fps)));
+    const v = voice[frameIdx] ?? 0;
+    if (v > VOICE_GATE) sum += (v - VOICE_GATE) * p.motion;
+  }
+  return sum;
 }
 
 /**
@@ -192,8 +241,9 @@ export function buildSpeakerTimeline(input: SpeakerTimelineInput): SpeakerTimeli
 
     // 2) Multi-cue candidates: everyone on screen during (or just before/after)
     //    the window.
-    const raw: Array<{ track: Track; corr: number; mean: number; prominence: number; mouth: number }> = [];
+    const raw: Array<{ track: Track; vm: number; corr: number; mean: number; prominence: number; mouth: number }> = [];
     let maxMotion = 1e-6;
+    let maxVm = 1e-9;
     for (const track of visibleTracks) {
       const width = meanFaceWidth(track, i0 - fps, i1 + fps, fps);
       if (width === null) continue;
@@ -201,20 +251,24 @@ export function buildSpeakerTimeline(input: SpeakerTimelineInput): SpeakerTimeli
       const mouthRaw = mouthStd(track, i0 - fps, i1 + fps, fps);
       const mouth = mouthRaw === null ? 0 : Math.max(0, Math.min(1, mouthRaw / MOUTH_STD_SPEAKING));
       const { mean, corr } = motionCues(track, i0 - fps, i1 + fps, fps, voice);
+      const vm = voicedMotion(track, i0 - fps, i1 + fps, fps, voice);
       maxMotion = Math.max(maxMotion, mean);
-      raw.push({ track, corr, mean, prominence, mouth });
+      maxVm = Math.max(maxVm, vm);
+      raw.push({ track, vm, corr, mean, prominence, mouth });
     }
 
-    const candidates: Candidate[] = raw.map(({ track, corr, mean, prominence, mouth }) => {
+    const candidates: Candidate[] = raw.map(({ track, vm, corr, mean, prominence, mouth }) => {
       const energy = Math.max(0, Math.min(1, mean / maxMotion));
+      const vmNorm = maxVm > 1e-9 ? vm / maxVm : 0;
       const continuity = state.current && state.current.trackId === track.id ? 1 : 0;
-      // Voiced: the talking face moves WITH the audio. Unvoiced / no-audio: the
-      // correlation is meaningless, so size + continuity + plain motion carry it
-      // (the covered-mic / masked / hand-covered-face case).
+      // Voiced: the voice-gated motion dominates - it is the only cue that
+      // says "this face moved because the audio is loud". Unvoiced / no-audio:
+      // nobody is talking, so size + continuity + plain motion carry the
+      // decision (the covered-mic / masked / hand-covered-face case).
       const score = voiced
-        ? 0.4 * corr + 0.25 * energy + 0.1 * mouth + 0.15 * prominence + 0.1 * continuity
-        : 0.45 * prominence + 0.25 * energy + 0.1 * mouth + 0.2 * continuity;
-      return { trackId: track.id, score, motion: energy, prominence, corr, mouth };
+        ? 0.4 * vmNorm + 0.15 * corr + 0.15 * energy + 0.1 * prominence + 0.15 * continuity + 0.05 * mouth
+        : 0.3 * continuity + 0.3 * prominence + 0.2 * energy + 0.15 * vmNorm + 0.05 * corr;
+      return { trackId: track.id, score, motion: energy, vm: vmNorm, prominence, corr, mouth };
     });
 
     if (candidates.length === 0) {
@@ -234,7 +288,12 @@ export function buildSpeakerTimeline(input: SpeakerTimelineInput): SpeakerTimeli
     if (prev && prev.trackId !== best.trackId) {
       const heldEnough = t0 - (state.current?.t0 ?? 0) >= MIN_HOLD_SECONDS;
       const beatsByMargin = best.score >= prev.score * SWITCH_MARGIN;
-      if (!heldEnough || !beatsByMargin) {
+      // Reactive turn-change: the incumbent clearly stopped talking and the
+      // challenger clearly started - flip without waiting for the margin
+      // (prominence + continuity bias the raw scores toward the incumbent).
+      const reactive =
+        voiced && prev.vm < REACTIVE_INCUMBENT_CEILING && best.vm >= REACTIVE_CHALLENGER_FLOOR;
+      if (!heldEnough || (!beatsByMargin && !reactive)) {
         chosen = prev; // hysteresis: the current speaker keeps the label
       }
     }

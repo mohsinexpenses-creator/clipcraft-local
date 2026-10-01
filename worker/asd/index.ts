@@ -30,8 +30,12 @@ import { SpeakerSegment, buildSpeakerTimeline } from './speaker';
  * optional mouth cue, prominence, continuity - see ./speaker.ts), and the
  * tracker is identity-free nearest-neighbour - no face recognition, no cloud.
  *
- * Cost model: frames are sampled at <= 4 fps (bounded by frame budget), so a
- * 90 s clip runs at most ~240 neural inferences instead of 2,700.
+ * Cost model: frames are sampled at <= 8 fps (bounded by a 480-frame budget),
+ * so a 90 s clip runs at most ~480 YuNet inferences on 640px frames (a few
+ * seconds of CPU time) instead of 2,700. The higher rate matters for the
+ * speaker decision: the audio↔motion cues need several samples per 0.6 s
+ * window to be statistically meaningful at 4 fps, and it is what lets the
+ * label flip promptly when the turn changes.
  */
 
 export interface AsdResult {
@@ -56,14 +60,14 @@ export interface AsdResult {
 export interface AsdOptions {
   /** False when the source has no audio stream. */
   hasAudio: boolean;
-  /** Upper bound on the frame-sampling fps (default 4). */
+  /** Upper bound on the frame-sampling fps (default 8). */
   maxSampleFps?: number;
-  /** Upper bound on sampled frames (default 240). */
+  /** Upper bound on sampled frames (default 480). */
   maxFrames?: number;
 }
 
-const DEFAULT_MAX_SAMPLE_FPS = 4;
-const DEFAULT_MAX_FRAMES = 240;
+const DEFAULT_MAX_SAMPLE_FPS = 8;
+const DEFAULT_MAX_FRAMES = 480;
 const THUMB = 16;
 
 /** 16x16 grayscale thumbnail of a face region (scale-invariant motion cue). */
