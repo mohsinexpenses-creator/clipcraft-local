@@ -8,6 +8,7 @@ import {
   buildLayoutPlan,
   buildPanExpression,
   buildSinglePlan,
+  buildSplitFilterComplex,
   flattenAndDecimate,
   PanPoint,
 } from '../worker/layout';
@@ -233,6 +234,62 @@ test('2-person split: the left person gets the TOP pane, the right person the bo
     assert.equal(bottom!.trackId, 2, 'right person is always the bottom pane');
     // Each cell is a 9:16-ish window centred on its person (anchor 0.5).
     assert.ok(top!.cropW > 0 && top!.cropH > 0);
+  }
+});
+
+test('split filter graph never consumes a pad label twice (FFmpeg rejects that)', () => {
+  // Regression: every cell used to reference [base] directly. A filtergraph
+  // pad label can be consumed exactly ONCE, so FFmpeg rejected the whole
+  // graph ("Invalid stream specifier: base") and wrote an empty file - the
+  // split screen never rendered. The base must be fanned out with split=N.
+  const a = panTrack(1, Array.from({ length: 40 }, () => 400));
+  const b = panTrack(2, Array.from({ length: 40 }, () => 1500));
+  const c = panTrack(3, Array.from({ length: 40 }, () => 960));
+  const plan = buildLayoutPlan(
+    asd([a, b, c], [
+      { trackId: 1, t0: 0, t1: 4 },
+      { trackId: 2, t0: 4, t1: 8 },
+      { trackId: 3, t0: 8, t1: 10 },
+    ]),
+    'split-screen',
+    1920,
+    1080
+  );
+  assert.equal(plan.mode, 'split');
+  if (plan.mode !== 'split') return;
+  const graph = buildSplitFilterComplex(plan, 1920, 1080, 30, 10, '');
+  assert.ok(
+    graph.includes(`split=${plan.cells.length}`),
+    `base fanned out with split=${plan.cells.length}: ${graph.slice(0, 120)}...`
+  );
+  // A label may appear at most TWICE in the whole graph string: once where it
+  // is PRODUCED (end of a chain) and once where it is CONSUMED (start of a
+  // chain). Three occurrences = a pad consumed twice = broken graph.
+  const labels = graph.match(/\[[a-z0-9]+\]/gi) ?? [];
+  const counts = new Map<string, number>();
+  for (const l of labels) counts.set(l, (counts.get(l) ?? 0) + 1);
+  for (const [label, count] of counts) {
+    assert.ok(count <= 2, `pad ${label} appears ${count} times (max 2)`);
+  }
+});
+
+test('small faces in a wide shot still get their panes (no silent centre crop)', () => {
+  // Two real people whose YuNet faces are only ~30px wide in source space
+  // (below the candidate threshold, e.g. a wide shot). The split must NOT
+  // silently degrade to a single static centred crop - it shows the most
+  // visible people anyway.
+  const a = panTrack(1, Array.from({ length: 40 }, () => 400), 0.25, 30);
+  const b = panTrack(2, Array.from({ length: 40 }, () => 1500), 0.25, 30);
+  const plan = buildLayoutPlan(
+    asd([a, b], [{ trackId: null, t0: 0, t1: 10 }]), // nobody judged speaker
+    'split-screen',
+    1920,
+    1080
+  );
+  assert.equal(plan.mode, 'split');
+  if (plan.mode === 'split') {
+    assert.equal(plan.cells.length, 2, 'two small faces -> two panes, not a centre crop');
+    assert.ok(plan.cells.every((c) => c.trackId !== -1), 'cells track real people');
   }
 });
 

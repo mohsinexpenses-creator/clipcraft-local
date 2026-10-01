@@ -363,9 +363,12 @@ function buildSplitPlan(asd: AsdResult, srcW: number, srcH: number): SplitPlan {
 
   // A track counts as a real on-screen person when it has enough sightings
   // AND a big-enough average face (source px) - this kills the tiny YuNet
-  // false positives (walls, doors, posters, hands, background faces).
+  // false positives (walls, doors, posters, hands, background faces). 48px is
+  // deliberately low: a genuinely detected person's face is normally well
+  // above this even in a wide shot, while flickering false faces are already
+  // killed by the tracker's grace period.
   const candidateTracks = asd.tracks.filter(
-    (track) => track.points.length >= 3 && track.avgW >= 80
+    (track) => track.points.length >= 2 && track.avgW >= 48
   );
 
   // Score: speakers ALWAYS beat non-speakers (1e6 bonus), then screen-time*size.
@@ -390,10 +393,10 @@ function buildSplitPlan(asd: AsdResult, srcW: number, srcH: number): SplitPlan {
     )
     .map((s) => s.track);
 
-  // No faces at all (detector found nothing): a single static centred 9:16
-  // crop. (An empty cell list would build a filter graph with no cells, which
-  // FFmpeg rejects.)
-  if (relevant.length === 0) {
+  // No faces at all (defensive - detectSpeakerTimeline normally throws when
+  // nothing is detected): a single static centred 9:16 crop. (An empty cell
+  // list would build a filter graph with no cells, which FFmpeg rejects.)
+  if (relevant.length === 0 && asd.tracks.length === 0) {
     const { w: cropW, h: cropH } = largest916Window(srcW, srcH);
     return {
       mode: 'split',
@@ -412,13 +415,23 @@ function buildSplitPlan(asd: AsdResult, srcW: number, srcH: number): SplitPlan {
       emphasis: [],
     };
   }
+  // People ARE on screen but none passed the candidate/visibility filters
+  // (small faces in a wide shot, fragmented short tracks, ...). Show the most
+  // visible people anyway - never silently degrade to a static centred crop,
+  // which is exactly what made the "split screen" look like a plain crop.
+  if (relevant.length === 0) {
+    relevant = [...asd.tracks]
+      .filter((track) => track.points.length > 0)
+      .sort((x, y) => y.visibleTime * y.avgW - x.visibleTime * x.avgW)
+      .slice(0, 2);
+  }
   // Size the grid by how many people SHARE THE SCREEN at the busiest moment -
   // never more panes than that, so fragmented track ids can never inflate 2
   // people into 3-4 cells. But the speaker timeline is a heuristic: when two
   // people clearly co-exist, BOTH get a pane even if only one was ever judged
   // the speaker (a 2-person conversation must be a 2-pane split, not a
   // full-screen single cell). One person on screen gets the full-screen cell.
-  const coexisting = Math.max(1, peakConcurrent(candidateTracks));
+  const coexisting = Math.max(1, peakConcurrent(relevant));
   const count = Math.min(
     4,
     coexisting,
@@ -572,12 +585,20 @@ export function buildSplitFilterComplex(
     : `[0:v]hflip,format=yuv420p[base];`;
   chains.push(baseChain);
 
+  // Fan the base out with `split`: a filtergraph pad label can be consumed
+  // exactly ONCE, so every cell must get its own pad. (Referencing [base] for
+  // every cell makes FFmpeg reject the WHOLE graph with "Invalid stream
+  // specifier: base" and write an empty file - which is why the split screen
+  // never rendered.)
+  const n = plan.cells.length;
+  chains.push(`[base]split=${n}${plan.cells.map((_, i) => `[s${i}]`).join('')};`);
+
   // One crop+scale per person.
   plan.cells.forEach((cell, i) => {
     const xExpr = buildPanExpression(cell.points, 'x', srcW, cell.cropW, 0.5);
     const yExpr = buildPanExpression(cell.points, 'y', srcH, cell.cropH, 0.5);
     chains.push(
-      `[base]crop=${cell.cropW}:${cell.cropH}:'${xExpr}':'${yExpr}',` +
+      `[s${i}]crop=${cell.cropW}:${cell.cropH}:'${xExpr}':'${yExpr}',` +
       `scale=${cell.cellW}:${cell.cellH}:flags=bicubic,format=yuv420p[c${i}];`
     );
   });
