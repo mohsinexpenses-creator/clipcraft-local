@@ -55,6 +55,12 @@ export interface AsdResult {
   sampleFps: number;
   /** Share of sampled frames that were voiced (0..1). */
   voicedRatio: number;
+  /** Sampled frames in which TWO OR MORE faces were detected at once. */
+  framesWithMultipleFaces?: number;
+  /** Median detected face width over all sightings, in SOURCE pixels. */
+  medianFaceWidth?: number;
+  /** Width (px) of the frames the detector saw. */
+  sampleWidth?: number;
 }
 
 export interface AsdOptions {
@@ -68,6 +74,13 @@ export interface AsdOptions {
 
 const DEFAULT_MAX_SAMPLE_FPS = 8;
 const DEFAULT_MAX_FRAMES = 480;
+/**
+ * Width of the frames the detector sees. 640px (the old value) leaves a host in
+ * a 1080p wide shot ~35px wide; 960px keeps ~50px of real detail per face (and
+ * sharper face-motion thumbnails) for ~25ms of extra JPEG decode per frame.
+ * Never larger than the source itself.
+ */
+export const ASD_SAMPLE_WIDTH = 960;
 const THUMB = 16;
 
 /** 16x16 grayscale thumbnail of a face region (scale-invariant motion cue). */
@@ -103,6 +116,13 @@ function thumbDiff(a: number[] | null, b: number[]): number {
   let sum = 0;
   for (let i = 0; i < a.length; i += 1) sum += Math.abs(a[i] - b[i]);
   return Math.min(1, Math.max(0, sum / a.length / 255));
+}
+
+function medianOf(values: number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
 /** Two tracks "co-exist" when both are seen around the same sampled frame. */
@@ -205,7 +225,16 @@ export async function detectSpeakerTimeline(
     );
 
     // 1) Frames and audio can be extracted independently - run them together.
-    const sampled = await sampleSegmentFrames(videoPath, start, duration, maxFps, maxFrames);
+    const sampleWidth = Math.max(160, Math.min(ASD_SAMPLE_WIDTH, Math.floor(videoWidth / 2) * 2));
+    const sampled = await sampleSegmentFrames(
+      videoPath,
+      start,
+      duration,
+      maxFps,
+      maxFrames,
+      'frames',
+      sampleWidth
+    );
     frames = sampled.frames;
     sampleFps = sampled.fps;
 
@@ -231,6 +260,8 @@ export async function detectSpeakerTimeline(
     const tracker = new Tracker();
     let maxFacesSeen = 0;
     let framesUsed = 0;
+    let framesWithMultipleFaces = 0;
+    const faceWidthsSource: number[] = [];
     let prevThumbs: Array<{ cx: number; cy: number; w: number; full: number[]; mouth: number[] }> = [];
 
     for (let i = 0; i < frames.length; i += 1) {
@@ -256,6 +287,8 @@ export async function detectSpeakerTimeline(
       // window yields no face, detectSpeakerTimeline throws and the render
       // stops with an informative error instead of faking a pan.
       maxFacesSeen = Math.max(maxFacesSeen, faces.length);
+      if (faces.length > 1) framesWithMultipleFaces += 1;
+      for (const f of faces) faceWidthsSource.push(f.w);
       if (faces.length === 0) {
         // Still feed an empty frame so the tracker ages its grace periods.
         tracker.update(t, []);
@@ -316,13 +349,12 @@ export async function detectSpeakerTimeline(
         `No faces were detected in this clip window (0 of ${frames.length} sampled frames contained a face).`,
         {
           details:
-            'The 9:16 speaker layout crops and pans around a detected face, and no fallback detector is used - the render stops here instead of producing a static centre crop.',
+            'The 9:16 layouts crop and pan around detected faces, and no fallback detector is used - the render stops here instead of producing a static centre crop.',
           resolution:
-            'Make sure a face is visible, reasonably large and well lit in this part of the video (avoid extreme angles, heavy occlusion or a very small face), or pick a different window, then re-render the clip.',
+            'Make sure a face is visible and well lit in this part of the video (avoid extreme angles, heavy occlusion or a tiny face in a very wide shot), or pick a different window, then re-render the clip.',
         }
       );
     }
-
 
     const { segments, speakerCount } = buildSpeakerTimeline({
       duration,
@@ -335,12 +367,30 @@ export async function detectSpeakerTimeline(
     const voicedRatio =
       voice.length > 0 ? voice.filter((v) => v >= 0.18).length / voice.length : 0;
 
+    const medianFaceWidth = medianOf(faceWidthsSource);
+    const facePct = frames.length > 0 ? Math.round((framesUsed / frames.length) * 100) : 0;
+
     log.ok(
       `ASD: ${tracks.length} person(s) tracked${maxFacesSeen > 1 ? `, ${maxFacesSeen} on screen at once` : ''}, ` +
       `${speakerCount} active speaker(s), ${Math.round(voicedRatio * 100)}% voiced, ` +
       `frames=${framesUsed}/${frames.length}, fps=${sampleFps.toFixed(2)}, ` +
       `cue=multi-cue (audio↔motion + energy + prominence + continuity)`
     );
+    log.detail(
+      `  detection: faces in ${facePct}% of sampled frames` +
+      (framesWithMultipleFaces > 0
+        ? `, 2+ faces together in ${Math.round((framesWithMultipleFaces / Math.max(1, frames.length)) * 100)}%`
+        : '') +
+      `, median face ${Math.round(medianFaceWidth)}px ` +
+      `(${((medianFaceWidth / videoWidth) * 100).toFixed(1)}% of the ${videoWidth}px frame), ` +
+      `scanned on ${sampleWidth}px frames`
+    );
+    if (frames.length >= 8 && framesUsed / frames.length < 0.25) {
+      log.warn(
+        `Faces were found in only ${framesUsed} of ${frames.length} sampled frames - the framing will ` +
+        `be unreliable. The people may be very small, dark, turned away or covered in this window.`
+      );
+    }
 
     if (tracks.length > 0) {
       for (const track of tracks) {
@@ -373,6 +423,9 @@ export async function detectSpeakerTimeline(
       framesTotal: frames.length,
       sampleFps,
       voicedRatio,
+      framesWithMultipleFaces,
+      medianFaceWidth,
+      sampleWidth,
     };
   } catch (error) {
     if (error instanceof AppError) throw error;

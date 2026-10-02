@@ -200,7 +200,9 @@ export function buildFfmpegArgs(input: FfmpegBuildInput): string[] {
 
   args.push('-filter_complex', filter.join(';'), '-map', '[vout]');
   if (hasAudio) args.push('-map', audioPlan ? audioPlan.audioLabel : '0:a');
-  args.push('-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p');
+  // FINAL deliverable: CRF 18 (visually lossless for most content; CRF 20 left
+  // visible softening once the footage had been through three encodes).
+  args.push('-c:v', 'libx264', '-preset', 'medium', '-crf', '18', '-pix_fmt', 'yuv420p');
   if (hasAudio) args.push('-c:a', 'aac', '-b:a', '192k');
   args.push('-movflags', '+faststart', outputPath);
   return args;

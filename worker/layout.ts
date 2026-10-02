@@ -43,6 +43,12 @@ export interface SinglePlan {
   points: PanPoint[];
   /** Where the tracked face sits inside the window (0.5 = centred, <0.5 = higher). */
   faceAnchorY: number;
+  /**
+   * Set ONLY when the user asked for a split screen but this single window was
+   * rendered instead (fewer than two people could be found). Says why, so the
+   * worker log / clip card can tell the user rather than silently degrading.
+   */
+  splitFallbackReason?: string;
 }
 
 export interface CellPlan {
@@ -71,8 +77,35 @@ export type LayoutPlan = SinglePlan | SplitPlan;
 const SPEAKER_FACE_ANCHOR_Y = 0.32;
 /** A face box is roughly 80% as wide as it is tall. */
 const FACE_BOX_ASPECT = 0.8;
-/** Split-cell crop shows ~2.2x the face height (head + upper body). */
-const CELL_FACE_HEIGHT_FACTOR = 2.2;
+/**
+ * Preferred split-pane framing: the crop is ~2.8x the face-box height (head,
+ * shoulders and some chest). A tighter crop than that only helps when the face
+ * is big - for the small faces of a wide shot it just magnifies mush, which is
+ * what MAX_CELL_UPSCALE below prevents.
+ */
+const CELL_FACE_HEIGHT_FACTOR = 2.8;
+/**
+ * QUALITY GUARD: a pane's source crop is never magnified by more than this.
+ * The old planner cropped as little as 35% of the frame height (212x378 px for
+ * a single full-screen pane = 5.1x enlargement) which is the blur the user saw;
+ * 2x is the same ballpark as the speaker-focus window (607x1080 -> 1080x1920 is
+ * 1.78x). For small faces this - not the face height - decides the crop.
+ */
+export const MAX_CELL_UPSCALE = 2.0;
+/** Face centre inside a pane (0.5 = middle; lower leaves more torso below the face). */
+const CELL_FACE_ANCHOR_Y = 0.45;
+/**
+ * A track must be at least this wide (fraction of the source width) to count as
+ * a real on-screen PERSON in the split planner (speaker or not). Kills specks
+ * the detector keeps (it only drops < 1.4%).
+ */
+const MIN_PERSON_FACE_FRACTION = 0.02;
+/**
+ * A person who never speaks needs a face at least this fraction of the biggest
+ * speaker's - a much smaller "face" is a poster / screen / passer-by, not the
+ * second person of the conversation.
+ */
+const MIN_LISTENER_SIZE_RATIO = 0.45;
 
 /**
  * Generalised pan expression: piecewise-linear window POSITION over time for
@@ -193,12 +226,12 @@ export function flattenAndDecimate(points: PanPoint[], maxPoints = 24, deadZoneP
   ).map((p) => ({ t: p.t, x: p.x, y: p.y }));
 }
 
-function trackToPanPoints(track: Track, srcW: number): PanPoint[] {
+function trackToPanPoints(track: Track, srcW: number, deadZonePx = 6): PanPoint[] {
   if (track.points.length === 0) return [];
   const asFace: FaceTrackPoint[] = track.points.map((p) => ({ t: p.t, x: p.cx, y: p.cy }));
   const smoothed = smoothTrack(asFace, srcW);
   const points = smoothed.map((p) => ({ t: p.t, x: p.x, y: p.y }));
-  return flattenAndDecimate(points);
+  return flattenAndDecimate(points, 24, deadZonePx);
 }
 
 /** How long (s) the crop window glides from one speaker to the next. */
@@ -351,7 +384,44 @@ function peakConcurrent(tracks: Track[]): number {
   return peak;
 }
 
-function buildSplitPlan(asd: AsdResult, srcW: number, srcH: number): SplitPlan {
+/**
+ * Source-pixel crop window for ONE split pane.
+ *
+ * Preferred framing is CELL_FACE_HEIGHT_FACTOR x the face height, but the crop
+ * is never allowed to magnify the source by more than MAX_CELL_UPSCALE - for the
+ * small faces of a wide shot THAT limit (not the face height) sets the crop, so
+ * the pane stays sharp instead of becoming a 5x enlargement of a few pixels. The
+ * window always matches the pane's aspect and always fits inside the source.
+ */
+export function cellCropSize(
+  faceW: number,
+  cellW: number,
+  cellH: number,
+  srcW: number,
+  srcH: number
+): { cropW: number; cropH: number } {
+  const aspect = cellW / cellH;
+  const faceH = Math.max(40, faceW / FACE_BOX_ASPECT);
+
+  let cropH = Math.max(faceH * CELL_FACE_HEIGHT_FACTOR, cellH / MAX_CELL_UPSCALE);
+  // Largest window of this aspect that fits in the source.
+  cropH = Math.min(cropH, srcH, srcW / aspect);
+
+  const h = evenSize(cropH);
+  const w = Math.min(evenSize(h * aspect), evenSize(srcW));
+  return { cropW: w, cropH: Math.min(h, evenSize(srcH)) };
+}
+
+/**
+ * Split-screen plan.
+ *
+ * Returns a SplitPlan (2-4 panes) when at least two people can be shown. With
+ * only ONE person it returns the single speaker window (the same full-height 9:16
+ * framing as speaker-focus, ~1.8x magnification) with `splitFallbackReason` set -
+ * NOT a one-cell "split": that used to crop 212x378 px and blow it up 5x, i.e.
+ * a single blurry face filling the frame, which is what a failed split looked like.
+ */
+function buildSplitPlan(asd: AsdResult, srcW: number, srcH: number): LayoutPlan {
   // Who was EVER the active speaker - those people always win a cell, and
   // their count caps the grid (a 2-person conversation must never grow a 3rd/
   // 4th cell from a briefly-glimpsed false face).
@@ -361,15 +431,18 @@ function buildSplitPlan(asd: AsdResult, srcW: number, srcH: number): SplitPlan {
       .filter((id): id is number => id !== null)
   );
 
-  // A track counts as a real on-screen person when it has enough sightings
-  // AND a big-enough average face (source px) - this kills the tiny YuNet
-  // false positives (walls, doors, posters, hands, background faces). 48px is
-  // deliberately low: a genuinely detected person's face is normally well
-  // above this even in a wide shot, while flickering false faces are already
-  // killed by the tracker's grace period.
+  // A track counts as a real on-screen person when it has a few sightings AND a
+  // big-enough average face (relative to the frame, so the bar means the same
+  // on 720p and 4K) - this kills specks and tiny false positives.
+  const minPersonW = Math.max(24, srcW * MIN_PERSON_FACE_FRACTION);
   const candidateTracks = asd.tracks.filter(
-    (track) => track.points.length >= 2 && track.avgW >= 48
+    (track) => track.points.length >= 2 && track.avgW >= minPersonW
   );
+
+  // The biggest face among the speakers: listeners must be comparable in size.
+  const biggestSpeakerW = candidateTracks
+    .filter((track) => speakerIds.has(track.id))
+    .reduce((max, track) => Math.max(max, track.avgW), 0);
 
   // Score: speakers ALWAYS beat non-speakers (1e6 bonus), then screen-time*size.
   const scored = candidateTracks
@@ -384,73 +457,72 @@ function buildSplitPlan(asd: AsdResult, srcW: number, srcH: number): SplitPlan {
     .sort((a, b) => b.score - a.score);
 
   // Relevant = every actual speaker (no minimum screen time for them) plus
-  // non-speaker co-participants who were on screen for at least 3 seconds.
+  // non-speaker co-participants who were on screen for at least 3 seconds AND
+  // whose face is comparable to the speaker's (not a poster / screen / passer-by).
   const MIN_CO_PARTICIPANT_VISIBLE_SECONDS = 3;
   let relevant = scored
     .filter(
       (s) =>
-        s.isSpeaker || s.track.visibleTime >= MIN_CO_PARTICIPANT_VISIBLE_SECONDS
+        s.isSpeaker ||
+        (s.track.visibleTime >= MIN_CO_PARTICIPANT_VISIBLE_SECONDS &&
+          (biggestSpeakerW === 0 || s.track.avgW >= biggestSpeakerW * MIN_LISTENER_SIZE_RATIO))
     )
     .map((s) => s.track);
 
-  // No faces at all (defensive - detectSpeakerTimeline normally throws when
-  // nothing is detected): a single static centred 9:16 crop. (An empty cell
-  // list would build a filter graph with no cells, which FFmpeg rejects.)
-  if (relevant.length === 0 && asd.tracks.length === 0) {
-    const { w: cropW, h: cropH } = largest916Window(srcW, srcH);
-    return {
-      mode: 'split',
-      cells: [
-        {
-          trackId: -1,
-          cellX: 0,
-          cellY: 0,
-          cellW: OUTPUT_WIDTH,
-          cellH: OUTPUT_HEIGHT,
-          cropW,
-          cropH,
-          points: [],
-        },
-      ],
-      emphasis: [],
-    };
-  }
-  // People ARE on screen but none passed the candidate/visibility filters
-  // (small faces in a wide shot, fragmented short tracks, ...). Show the most
-  // visible people anyway - never silently degrade to a static centred crop,
-  // which is exactly what made the "split screen" look like a plain crop.
-  if (relevant.length === 0) {
+  // People ARE on screen but none passed the filters (tiny faces in a wide
+  // shot, fragmented short tracks, ...). Show the most visible people anyway -
+  // never silently degrade to a static centred crop.
+  if (relevant.length === 0 && asd.tracks.length > 0) {
     relevant = [...asd.tracks]
       .filter((track) => track.points.length > 0)
       .sort((x, y) => y.visibleTime * y.avgW - x.visibleTime * x.avgW)
       .slice(0, 2);
   }
+
   // Size the grid by how many people SHARE THE SCREEN at the busiest moment -
   // never more panes than that, so fragmented track ids can never inflate 2
   // people into 3-4 cells. But the speaker timeline is a heuristic: when two
   // people clearly co-exist, BOTH get a pane even if only one was ever judged
-  // the speaker (a 2-person conversation must be a 2-pane split, not a
-  // full-screen single cell). One person on screen gets the full-screen cell.
+  // the speaker (a 2-person conversation must be a 2-pane split).
   const coexisting = Math.max(1, peakConcurrent(relevant));
   const count = Math.min(
     4,
     coexisting,
-    Math.max(speakerIds.size, Math.min(2, coexisting)),
+    Math.max(
+      relevant.filter((track) => speakerIds.has(track.id)).length,
+      Math.min(2, coexisting)
+    ),
     relevant.length
   );
+
+  // Fewer than two people to show: a split screen is impossible. Render the
+  // proper full-height speaker window and SAY so (see the doc comment).
+  if (count < 2) {
+    const single = buildSinglePlan(asd, srcW, srcH, SPEAKER_FACE_ANCHOR_Y);
+    const seen = asd.tracks.length;
+    single.splitFallbackReason =
+      relevant.length >= 2 && coexisting < 2
+        ? // Two real people, but a camera that cuts between them: there is never a
+          // frame with both on screen, so there is nothing to stack.
+          `Split screen needs two people on screen at the same time, but the ${relevant.length} ` +
+          `people found in this window are never visible together (the camera cuts between them). ` +
+          `Rendered a single speaker window that follows the active speaker instead.`
+        : `Split screen needs two people on screen at the same time, but ` +
+          `${count === 0 ? 'none' : 'only one'} could be confirmed in this window ` +
+          `(${seen} face track${seen === 1 ? '' : 's'}, ` +
+          `faces in ${asd.framesUsed}/${asd.framesTotal} sampled frames). ` +
+          `Rendered a single full-height speaker window instead.`;
+    return single;
+  }
   relevant = relevant.slice(0, count);
 
   // Two panes: a stable spatial assignment - the person sitting LEFT (mirrored
   // source space) always gets the TOP pane, the right person the bottom one.
   // The order never swaps mid-clip, no matter who is talking; the red
   // emphasis frame is what shows the active speaker. (3+ panes keep the
-  // score order: speakers first, then screen-time × face size.)
+  // score order: speakers first, then screen-time x face size.)
   if (count === 2) {
-    const medianX = (track: Track): number => {
-      const xs = track.points.map((p) => p.cx).sort((a, b) => a - b);
-      const mid = Math.floor(xs.length / 2);
-      return xs.length % 2 === 1 ? xs[mid] : (xs[mid - 1] + xs[mid]) / 2;
-    };
+    const medianX = (track: Track): number => median(track.points.map((p) => p.cx));
     relevant.sort((a, b) => medianX(a) - medianX(b));
   }
 
@@ -479,21 +551,7 @@ function buildSplitPlan(asd: AsdResult, srcW: number, srcH: number): SplitPlan {
   for (let i = 0; i < count; i += 1) {
     const [cellX, cellY, cellW, cellH] = grids[count][i];
     const track = relevant[i];
-    const cellAspect = cellW / cellH;
-
-    // Crop window: ~2.2x the face height (head + upper body), matched to the
-    // cell aspect, clamped to the source.
-    const faceH = Math.max(40, track.avgW / FACE_BOX_ASPECT);
-    let cropH = Math.round(Math.min(srcH, Math.max(srcH * 0.35, faceH * CELL_FACE_HEIGHT_FACTOR)) / 2) * 2;
-    let cropW = Math.round((cropH * cellAspect) / 2) * 2;
-    if (cropW > srcW) {
-      cropW = evenSize(srcW);
-      cropH = evenSize(cropW / cellAspect);
-    }
-    cropH = Math.min(cropH, evenSize(srcH));
-    cropW = Math.min(cropW, evenSize(srcW));
-
-    const points = trackToPanPoints(track, srcW);
+    const { cropW, cropH } = cellCropSize(track.avgW, cellW, cellH, srcW, srcH);
 
     cells.push({
       trackId: track.id,
@@ -503,13 +561,14 @@ function buildSplitPlan(asd: AsdResult, srcW: number, srcH: number): SplitPlan {
       cellH,
       cropW,
       cropH,
-      points,
+      // Detection noise on a ~100px face is several px; at a 2x pane
+      // magnification the crop would visibly jitter. The dead zone therefore
+      // grows with the face (>= 6px, up to 24px).
+      points: trackToPanPoints(track, srcW, Math.min(24, Math.max(6, track.avgW * 0.1))),
     });
   }
 
   // Emphasis: red frame on the cell of whoever the timeline says is speaking.
-  // - With a single cell there is nothing to highlight (the whole canvas IS
-  //   the person), so the frame would only add a distracting border.
   // - Speaking runs from the timeline are fragmented (silence pauses, track
   //   switches): runs of the same cell closer than 0.6s are merged, and the
   //   result is capped - a 60s clip must not turn into 120 drawbox clauses
@@ -517,25 +576,23 @@ function buildSplitPlan(asd: AsdResult, srcW: number, srcH: number): SplitPlan {
   const trackToCell = new Map<number, number>();
   cells.forEach((cell, index) => trackToCell.set(cell.trackId, index));
   const emphasis: SplitPlan['emphasis'] = [];
-  if (cells.length > 1) {
-    for (const seg of asd.speakerSegments) {
-      if (seg.trackId === null) continue;
-      const cellIndex = trackToCell.get(seg.trackId);
-      if (cellIndex === undefined) continue;
-      if (emphasis.length > 0) {
-        const last = emphasis[emphasis.length - 1];
-        if (last.cellIndex === cellIndex && seg.t0 - last.t1 < 0.6) {
-          last.t1 = seg.t1;
-          continue;
-        }
+  for (const seg of asd.speakerSegments) {
+    if (seg.trackId === null) continue;
+    const cellIndex = trackToCell.get(seg.trackId);
+    if (cellIndex === undefined) continue;
+    if (emphasis.length > 0) {
+      const last = emphasis[emphasis.length - 1];
+      if (last.cellIndex === cellIndex && seg.t0 - last.t1 < 0.6) {
+        last.t1 = seg.t1;
+        continue;
       }
-      emphasis.push({ cellIndex, t0: seg.t0, t1: seg.t1 });
     }
-    if (emphasis.length > 12) {
-      emphasis.sort((a, b) => (b.t1 - b.t0) - (a.t1 - a.t0));
-      emphasis.length = 12;
-      emphasis.sort((a, b) => a.t0 - b.t0);
-    }
+    emphasis.push({ cellIndex, t0: seg.t0, t1: seg.t1 });
+  }
+  if (emphasis.length > 12) {
+    emphasis.sort((a, b) => (b.t1 - b.t0) - (a.t1 - a.t0));
+    emphasis.length = 12;
+    emphasis.sort((a, b) => a.t0 - b.t0);
   }
 
   return { mode: 'split', cells, emphasis };
@@ -593,10 +650,12 @@ export function buildSplitFilterComplex(
   const n = plan.cells.length;
   chains.push(`[base]split=${n}${plan.cells.map((_, i) => `[s${i}]`).join('')};`);
 
-  // One crop+scale per person.
+  // One crop+scale per person. (Measured: bicubic and lanczos reconstruct an
+  // enlarged photo equally well - SSIM 0.834 vs 0.831 at 2x - so the scaler is
+  // not what matters here; the MAGNIFICATION is, and cellCropSize() caps that.)
   plan.cells.forEach((cell, i) => {
     const xExpr = buildPanExpression(cell.points, 'x', srcW, cell.cropW, 0.5);
-    const yExpr = buildPanExpression(cell.points, 'y', srcH, cell.cropH, 0.5);
+    const yExpr = buildPanExpression(cell.points, 'y', srcH, cell.cropH, CELL_FACE_ANCHOR_Y);
     chains.push(
       `[s${i}]crop=${cell.cropW}:${cell.cropH}:'${xExpr}':'${yExpr}',` +
       `scale=${cell.cellW}:${cell.cellH}:flags=bicubic,format=yuv420p[c${i}];`

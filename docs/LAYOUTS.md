@@ -18,14 +18,22 @@ in-flight jobs keep the layout they were created with.
 
 The worker pipeline (`worker/asd/` + `worker/layout.ts`):
 
-1. **Samples** the clip window at ≤8 fps (mirrored + downscaled to 640px, capped at
+1. **Samples** the clip window at ≤8 fps (mirrored + downscaled to **960px**, capped at
    480 frames) and extracts an audio **voice envelope** per sample from the segment
    PCM (`worker/asd/audio.ts`). The 8 fps rate matters: the audio↔motion cues need
    several samples per decision window to be meaningful, and it is what lets the
    label flip promptly on a turn change.
 2. **Detects faces** with OpenCV **YuNet** (`face_detection_yunet_2023mar.onnx`, run via
    `onnxruntime-node` — download with `npm run setup:yunet`) — this replaced the old
-   face-api / tiny_face_detector pipeline.
+   face-api / tiny_face_detector pipeline. The model input is a fixed 640×640 square,
+   so `worker/yunet-detector.ts` feeds it the way OpenCV does — **letterboxed, never
+   stretched** — and scans a wide frame with **overlapping square tiles plus one
+   full-frame pass** (merged with NMS; a face cut in half by a tile seam is discarded
+   because the neighbouring tile sees it whole). A tile is enlarged to fill the model
+   input, which is what lets it find the small faces of a podcast **wide shot**: a
+   ~100 px host in a 1080p frame scores ~0.9 (a full-frame pass sees it at ~0.7, and
+   faces under ~60 px not at all). The only size filter is a speck floor of 1.4 % of
+   the frame width — *who counts as a person* is decided later, by the layout planner.
 3. **Tracks** detections across samples with an identity-free constant-velocity
    nearest-neighbour tracker (`worker/asd/tracker.ts`): stable "Person A/B/C" ids with a
    keep-alive grace period so a person survives a mic swing, a hand, or a brief overlap
@@ -68,17 +76,40 @@ The worker pipeline (`worker/asd/` + `worker/layout.ts`):
    cell is a per-person crop path, dead-zone filtered + decimated (≤24 keyframes) so
    the FFmpeg command stays inside Windows' command-line limit.
 
-### Failure behaviour (no fallbacks by design)
+   **Pane sizing (quality guard).** A pane's source crop is ~2.8× the face height
+   (head, shoulders, some chest) **but never magnified by more than 2×**
+   (`MAX_CELL_UPSCALE`): for the small faces of a wide shot the cap — not the face
+   size — sets the crop, e.g. a 1080p two-host shot becomes two 540×480 → 1080×960
+   panes. (Measured on a real photo: reconstruction fidelity falls from SSIM 0.83 at
+   2× to 0.77 at 2.5× and 0.66 at 5×; the old planner cropped as little as 35 % of the
+   frame height — 212×378 px for a single full-screen pane, a 5× enlargement.) Faces
+   sit at 45 % of the pane height, leaving room for the torso.
+
+   **Who gets a pane.** Every active speaker, plus any other face that stays on screen
+   ≥ 3 s *and* is at least 45 % as wide as the biggest speaker's (a much smaller
+   "face" is a poster / screen / passer-by). A track must be ≥ 2 % of the frame width
+   to count as a person at all.
+
+### Failure behaviour (no *silent* fallbacks)
 
 There is deliberately **no fallback detector** (no skin-tone heuristic, no
 "pretend tracking"): a clip whose speaker cannot be determined is a clip that
 would be badly framed, so the render stops with a clear error instead of
 guessing.
 
+The one degradation that exists is **split screen → single window when fewer than two
+people can be confirmed** (a split of one person is meaningless). It renders the
+proper full-height 9:16 speaker window (the same ~1.8× framing as speaker focus —
+never a zoomed-in one-cell "split"), and it is **never silent**: the worker log
+prints `SPLIT SCREEN NOT APPLIED - <reason>` and the reason is stored on the clip
+(`clip.layoutNote`) and shown on the clip card.
+
 | Situation | Behaviour |
 | --- | --- |
 | YuNet model missing / ONNX runtime broken | The render job fails with "YuNet face detection is unavailable - run `npm run setup:yunet`" (the `/startup-validation` page shows the same warning before you start). |
-| One face visible | Always active (no scoring). |
+| One face visible | Always active (no scoring). With **split screen** selected: single speaker window + the `layoutNote` above. |
+| No face at all in the window | The render stops with "No faces were detected in this clip window (0 of N sampled frames…)". |
+| Faces in < 25 % of the sampled frames | The log warns that framing will be unreliable (people very small, dark, turned away or covered). |
 | A frame YuNet misses | The tracker's keep-alive grace period carries the last known position; nothing is guessed. |
 
 ## FFmpeg plumbing (for the curious)
@@ -88,8 +119,13 @@ guessing.
   then colour filter + scale to 1080×1920.
 - **Split screen** — per-cell crops laid out on the 1080×1920 canvas (2/3/4-adaptive),
   with an emphasis layer for the active speaker's cell.
+- **Encoding.** The base, hook and concat passes are *intermediates* and run near-lossless
+  (`libx264 -preset veryfast -crf 14` — faster and higher quality than the previous
+  `fast`/CRF 20, temp files are deleted after the render); the final caption burn
+  (native or Remotion) writes the deliverable at **CRF 18**.
 - All crop coordinates live in **mirrored space** (the chain flips first) and `t` is
   0-based within the segment.
 
-Layout choice is stored on the clip record (`clip.layout`) alongside `captionEngine` and
+Layout choice is stored on the clip record (`clip.layout`; `clip.layoutNote` when it
+could not be applied) alongside `captionEngine` and
 `hookStylePresetId` / `ctaStylePresetId` (see [OVERLAYS.md](./OVERLAYS.md)).

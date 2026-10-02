@@ -9,13 +9,10 @@ import { log } from '../lib/logger';
  * model zoo) running on onnxruntime-node.
  *
  * This replaces the old face-api/tfjs detector (tiny_face_detector) which was
- * unreliable. The pre/post-processing below mirrors OpenCV's own
- * `FaceDetectorYNImpl` (modules/objdetect/src/face_detect.cpp) EXACTLY so the
- * detections match what cv::FaceDetectorYN produces:
+ * unreliable. The decode math below mirrors OpenCV's own `FaceDetectorYNImpl`
+ * (modules/objdetect/src/face_detect.cpp) EXACTLY so the detections match what
+ * cv::FaceDetectorYN produces:
  *
- *   - the caller resizes the frame; we bilinearly resample it to the model's
- *     STATIC 640x640 input (the 2023mar ONNX rejects any other size), then
- *     scale the decoded boxes/landmarks back to the frame's pixel space,
  *   - blobFromImage defaults: float32 NCHW, RGB (swapRB), NO mean/std scaling
  *     (raw 0-255 pixel values),
  *   - the 2023mar (v2) model returns 12 feature maps:
@@ -26,8 +23,29 @@ import { log } from '../lib/logger';
  *     landmark n = (kps[n] + (c or r)) * stride,
  *   - greedy NMS (IoU 0.3, topK 5000).
  *
+ * PRE-PROCESSING (what differs from a naive port - and why it matters):
+ *
+ *   The 2023mar ONNX has a STATIC 640x640 input, so every image the model sees
+ *   is exactly that size. OpenCV pads (never stretches) the frame to fit; the
+ *   old code here SQUASHED a 16:9 frame into the square, which distorts faces
+ *   (1.78x taller) and shrinks them further - and a podcast wide shot has faces
+ *   only ~35px wide in a 640px sample. The model then scored them poorly (or the
+ *   old 40px size filter threw them away), the tracker saw "1 person" and the
+ *   split screen silently collapsed.
+ *
+ *   Now each detection region is LETTERBOXED (uniform scale, zero padding), and
+ *   wide frames are scanned with several overlapping square TILES (side = frame
+ *   height) plus one full-frame pass:
+ *     - a tile is upscaled to fill the 640x640 input, so a small face lands in
+ *       the model's sweet spot (a 100px face in 1080p detects at 0.9 instead of
+ *       0.7, and 45px faces that a full-frame pass cannot see at all are found),
+ *     - the full-frame pass still catches big faces / close-ups that straddle a
+ *       tile seam.
+ *   Duplicates across passes are merged with NMS (+ containment), and faces cut
+ *   by an inner tile seam are discarded (another pass sees them whole).
+ *
  * The model file is downloaded by `npm run setup:yunet`
- * (scripts/setup-yunet.mjs) into models/yunet/ - it is NOT committed to git.
+ * (scripts/setup-yunet.mjs) into models/yunet/.
  */
 
 function projectRequire(): NodeJS.Require {
@@ -46,24 +64,37 @@ export const YUNET_MODEL_SHA256 = '8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f
 const STRIDES = [8, 16, 32] as const;
 /**
  * The 2023mar ONNX has a STATIC 640x640 input (onnxruntime rejects 640x384 /
- * 320x192 with "Got invalid dimensions for input ... Expected: 640"). OpenCV's
- * FaceDetectorYN resizes internally; here we bilinearly resample every frame
- * to this size and rescale the decoded coordinates back to the frame space.
+ * 320x192 with "Got invalid dimensions for input ... Expected: 640"). Every
+ * detection region is letterboxed into this square.
  */
 const YUNET_INPUT_SIZE = 640;
 /**
- * Raised from 0.55: YuNet rejects most wall/hand/low-confidence "faces" at
- * 0.7, while real faces almost always score above 0.8.
+ * Score gate. YuNet rejects walls/hands/textures well below real faces: on
+ * square tiles real faces score 0.8-0.95 even when small, so 0.65 keeps
+ * profile / slightly turned faces (0.65-0.75) that 0.7 used to lose, without
+ * letting low-confidence junk through (the tracker + layout re-filter anyway).
  */
-const CONF_THRESHOLD = 0.7;
+const CONF_THRESHOLD = 0.65;
 const NMS_THRESHOLD = 0.3;
 const TOP_K = 5000;
 /**
- * Minimum face box width, measured in the model's 640px input space (~80px+
- * in a typical 1280px source). Tiny detections are almost never real faces in
- * this use case (walls, posters, hands, background people).
+ * Smallest face the DETECTOR keeps, as a fraction of the frame width.
+ *
+ * This used to be an absolute 40px in the 640px model space - i.e. 120px in a
+ * 1920px source. Hosts in a podcast wide shot have faces of 80-120px, so the
+ * filter silently deleted the very people the split screen needs ("frames=2/480").
+ * 1.4% (27px of 1920) only removes specks; deciding who is a real on-screen
+ * person is the layout planner's job (it sees screen time + speaker data).
  */
-const MIN_FACE_WIDTH_640 = 40;
+const MIN_FACE_FRACTION = 0.014;
+/** Frames at least this wide (long side / short side) are scanned with tiles. */
+const TILE_MIN_ASPECT = 1.4;
+/** Neighbouring tiles overlap by at least 20% of the tile side. */
+const TILE_MAX_STEP = 0.8;
+/** A tile detection that touches an INNER seam within this fraction is a cut-off face. */
+const SEAM_MARGIN = 0.02;
+/** A box mostly inside a higher-scoring box is the same face seen at another scale. */
+const CONTAINMENT_THRESHOLD = 0.8;
 
 export interface FaceBox {
   x: number;
@@ -208,66 +239,141 @@ export interface RawFrame {
   height: number;
 }
 
-/**
- * Detect faces in one frame. Coordinates are returned in the FRAME's own pixel
- * space (the caller is responsible for any prior scaling of the frame).
- */
-export async function detectFacesYunet(
-  runtime: YuNetRuntime,
-  frame: RawFrame,
-  options?: { confThreshold?: number }
-): Promise<DetectedFace[]> {
-  const ort = optionalRequire('onnxruntime-node') as OrtModule;
-  const { width: inputW, height: inputH, data } = frame;
-  if (inputW < 16 || inputH < 16) return [];
+export interface DetectOptions {
+  /** Score gate (default 0.65). */
+  confThreshold?: number;
+  /** Smallest face to keep, as a fraction of the frame width (default 1.4%). */
+  minFaceFraction?: number;
+  /**
+   * `auto` (default): wide/tall frames are scanned with overlapping square tiles
+   * plus a full-frame pass. `off`: a single letterboxed full-frame pass.
+   */
+  tiling?: 'auto' | 'off';
+}
 
-  // Bilinearly resample the frame to the model's static 640x640 input
-  // (pixel-centre mapping, clamped edges - same spirit as OpenCV's resize).
-  // blobFromImage defaults: NCHW float32, RGB (swapRB=true), no normalization.
+/** One rectangle of the frame that is fed to the model as a 640x640 letterboxed image. */
+export interface DetectRegion {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** Which sides of this region are INTERNAL seams (a face touching one is cut off). */
+  seams: { left: boolean; right: boolean; top: boolean; bottom: boolean };
+}
+
+/**
+ * The regions the model scans for a frame: always the whole frame, plus - for
+ * wide (or tall) frames - overlapping SQUARE tiles whose side is the frame's
+ * short side. A tile is upscaled to the model input, so small faces become
+ * large enough for YuNet to score them confidently; neighbouring tiles overlap
+ * by >= 20% so a face is whole in at least one of them.
+ */
+export function planDetectionRegions(
+  frameW: number,
+  frameH: number,
+  tiling: 'auto' | 'off' = 'auto'
+): DetectRegion[] {
+  const noSeams = { left: false, right: false, top: false, bottom: false };
+  const regions: DetectRegion[] = [{ x: 0, y: 0, w: frameW, h: frameH, seams: noSeams }];
+  if (tiling === 'off') return regions;
+
+  const long = Math.max(frameW, frameH);
+  const short = Math.min(frameW, frameH);
+  if (short <= 0 || long / short < TILE_MIN_ASPECT) return regions;
+
+  const count = Math.max(2, Math.ceil((long - short) / (TILE_MAX_STEP * short)) + 1);
+  const span = long - short;
+  const horizontal = frameW >= frameH;
+  for (let i = 0; i < count; i += 1) {
+    const offset = Math.round((span * i) / (count - 1));
+    regions.push(
+      horizontal
+        ? {
+            x: offset,
+            y: 0,
+            w: short,
+            h: short,
+            seams: { left: i > 0, right: i < count - 1, top: false, bottom: false },
+          }
+        : {
+            x: 0,
+            y: offset,
+            w: short,
+            h: short,
+            seams: { left: false, right: false, top: i > 0, bottom: i < count - 1 },
+          }
+    );
+  }
+  return regions;
+}
+
+/** Bilinear sample positions along one axis (pixel-centre mapping, clamped edges). */
+function axisTable(
+  origin: number,
+  scale: number,
+  outLen: number,
+  srcLen: number
+): { i0: Int32Array; i1: Int32Array; f: Float32Array } {
+  const i0 = new Int32Array(outLen);
+  const i1 = new Int32Array(outLen);
+  const f = new Float32Array(outLen);
+  for (let o = 0; o < outLen; o += 1) {
+    const s = origin + (o + 0.5) / scale - 0.5;
+    const base = Math.floor(s);
+    i0[o] = Math.min(srcLen - 1, Math.max(0, base));
+    i1[o] = Math.min(srcLen - 1, i0[o] + 1);
+    f[o] = s - base;
+  }
+  return { i0, i1, f };
+}
+
+/**
+ * Letterbox a region of the frame into the model's 640x640 NCHW float32 blob:
+ * uniform scale (aspect preserved), content in the top-left, zero padding - the
+ * same thing OpenCV's FaceDetectorYN does (it pads, it never stretches).
+ * blobFromImage defaults: RGB (swapRB), raw 0-255 values, no normalisation.
+ */
+function buildBlob(frame: RawFrame, region: DetectRegion): { blob: Float32Array; scale: number } {
+  const { width: frameW, height: frameH, data } = frame;
   const size = YUNET_INPUT_SIZE;
   const plane = size * size;
   const blob = new Float32Array(3 * plane);
-  const xRatio = inputW / size;
-  const yRatio = inputH / size;
-  for (let y = 0; y < size; y += 1) {
-    const sy = (y + 0.5) * yRatio - 0.5;
-    const y0 = Math.min(inputH - 1, Math.max(0, Math.floor(sy)));
-    const y1 = Math.min(inputH - 1, y0 + 1);
-    const fy = sy - Math.floor(sy);
-    const rowTop = y0 * inputW * 4;
-    const rowBot = y1 * inputW * 4;
+
+  const scale = Math.min(size / region.w, size / region.h);
+  const outW = Math.min(size, Math.max(1, Math.round(region.w * scale)));
+  const outH = Math.min(size, Math.max(1, Math.round(region.h * scale)));
+  const xs = axisTable(region.x, scale, outW, frameW);
+  const ys = axisTable(region.y, scale, outH, frameH);
+
+  for (let y = 0; y < outH; y += 1) {
+    const rowTop = ys.i0[y] * frameW * 4;
+    const rowBot = ys.i1[y] * frameW * 4;
+    const fy = ys.f[y];
     let dst = y * size;
-    for (let x = 0; x < size; x += 1) {
-      const sx = (x + 0.5) * xRatio - 0.5;
-      const x0 = Math.min(inputW - 1, Math.max(0, Math.floor(sx)));
-      const x1 = Math.min(inputW - 1, x0 + 1);
-      const fx = sx - Math.floor(sx);
-      const srcTop = rowTop + x0 * 4;
-      const srcTop1 = rowTop + x1 * 4;
-      const srcBot = rowBot + x0 * 4;
-      const srcBot1 = rowBot + x1 * 4;
-      const top = data[srcTop] * (1 - fx) + data[srcTop1] * fx;
-      const bottom = data[srcBot] * (1 - fx) + data[srcBot1] * fx;
-      blob[dst] = top * (1 - fy) + bottom * fy; // R
-      const topG = data[srcTop + 1] * (1 - fx) + data[srcTop1 + 1] * fx;
-      const bottomG = data[srcBot + 1] * (1 - fx) + data[srcBot1 + 1] * fx;
-      blob[plane + dst] = topG * (1 - fy) + bottomG * fy; // G
-      const topB = data[srcTop + 2] * (1 - fx) + data[srcTop1 + 2] * fx;
-      const bottomB = data[srcBot + 2] * (1 - fx) + data[srcBot1 + 2] * fx;
-      blob[2 * plane + dst] = topB * (1 - fy) + bottomB * fy; // B
+    for (let x = 0; x < outW; x += 1) {
+      const x0 = xs.i0[x] * 4;
+      const x1 = xs.i1[x] * 4;
+      const fx = xs.f[x];
+      for (let c = 0; c < 3; c += 1) {
+        const top = data[rowTop + x0 + c] * (1 - fx) + data[rowTop + x1 + c] * fx;
+        const bottom = data[rowBot + x0 + c] * (1 - fx) + data[rowBot + x1 + c] * fx;
+        blob[c * plane + dst] = top * (1 - fy) + bottom * fy;
+      }
       dst += 1;
     }
   }
+  return { blob, scale };
+}
 
-  const tensor = new ort.Tensor('float32', blob, [1, 3, size, size]);
-  const outputs = await runtime.session.run({ [runtime.inputName]: tensor });
-
-  // The model decodes in 640x640 space; map back to the frame's own pixels.
-  const scaleX = inputW / size;
-  const scaleY = inputH / size;
-
-  const confThreshold = options?.confThreshold ?? CONF_THRESHOLD;
-  const faces: Array<{ face: DetectedFace; score: number }> = [];
+/** Decode the 12 YuNet feature maps of ONE region into faces in FRAME pixel space. */
+function decodeRegion(
+  outputs: Record<string, OrtTensor>,
+  region: DetectRegion,
+  scale: number,
+  confThreshold: number
+): DetectedFace[] {
+  const size = YUNET_INPUT_SIZE;
+  const faces: DetectedFace[] = [];
 
   for (let level = 0; level < STRIDES.length; level += 1) {
     const stride = STRIDES[level];
@@ -297,55 +403,105 @@ export async function detectFacesYunet(
         const score = Math.sqrt(clsScore * objScore);
         if (score < confThreshold) continue;
 
-        // Decode in model space (640x640), then map to frame pixels.
-        const cx = (c + bboxV[idx * 4 + 0]) * stride * scaleX;
-        const cy = (r + bboxV[idx * 4 + 1]) * stride * scaleY;
-        const w = Math.exp(bboxV[idx * 4 + 2]) * stride * scaleX;
-        const h = Math.exp(bboxV[idx * 4 + 3]) * stride * scaleY;
+        // Decode in model space (640x640), then map to FRAME pixels:
+        // undo the letterbox scale and add the region's offset.
+        const cx = region.x + ((c + bboxV[idx * 4 + 0]) * stride) / scale;
+        const cy = region.y + ((r + bboxV[idx * 4 + 1]) * stride) / scale;
+        const w = (Math.exp(bboxV[idx * 4 + 2]) * stride) / scale;
+        const h = (Math.exp(bboxV[idx * 4 + 3]) * stride) / scale;
 
         const points: Array<{ x: number; y: number }> = [];
         for (let n = 0; n < 5; n += 1) {
           points.push({
-            x: (kpsV[idx * 10 + 2 * n] + c) * stride * scaleX,
-            y: (kpsV[idx * 10 + 2 * n + 1] + r) * stride * scaleY,
+            x: region.x + ((kpsV[idx * 10 + 2 * n] + c) * stride) / scale,
+            y: region.y + ((kpsV[idx * 10 + 2 * n + 1] + r) * stride) / scale,
           });
         }
 
         faces.push({
           score,
-          face: {
-            score,
-            box: { x: cx - w / 2, y: cy - h / 2, width: w, height: h },
-            landmarks: { points },
-          },
+          box: { x: cx - w / 2, y: cy - h / 2, width: w, height: h },
+          landmarks: { points },
         });
       }
     }
   }
+  return faces;
+}
 
-  // Greedy NMS with the model's IoU threshold. Decoded coordinates are already
-  // in frame pixel space (scaled above), so only clipping is needed.
-  faces.sort((a, b) => b.score - a.score);
+/**
+ * A detection from a TILE that touches one of the tile's INNER seams is a face
+ * the seam cut in half (YuNet happily boxes a partial face). Drop it: the
+ * neighbouring tile (they overlap) or the full-frame pass sees it whole.
+ */
+function isCutBySeam(face: DetectedFace, region: DetectRegion): boolean {
+  const { seams } = region;
+  if (!seams.left && !seams.right && !seams.top && !seams.bottom) return false;
+  const marginX = region.w * SEAM_MARGIN;
+  const marginY = region.h * SEAM_MARGIN;
+  const { x, y, width, height } = face.box;
+  if (seams.left && x <= region.x + marginX) return true;
+  if (seams.right && x + width >= region.x + region.w - marginX) return true;
+  if (seams.top && y <= region.y + marginY) return true;
+  if (seams.bottom && y + height >= region.y + region.h - marginY) return true;
+  return false;
+}
+
+/**
+ * Detect faces in one frame. Coordinates are returned in the FRAME's own pixel
+ * space (the caller is responsible for any prior scaling of the frame).
+ */
+export async function detectFacesYunet(
+  runtime: YuNetRuntime,
+  frame: RawFrame,
+  options?: DetectOptions
+): Promise<DetectedFace[]> {
+  const ort = optionalRequire('onnxruntime-node') as OrtModule;
+  const { width: inputW, height: inputH } = frame;
+  if (inputW < 16 || inputH < 16) return [];
+
+  const confThreshold = options?.confThreshold ?? CONF_THRESHOLD;
+  const minWidth = inputW * (options?.minFaceFraction ?? MIN_FACE_FRACTION);
+  const regions = planDetectionRegions(inputW, inputH, options?.tiling ?? 'auto');
+  const size = YUNET_INPUT_SIZE;
+
+  const candidates: DetectedFace[] = [];
+  for (const region of regions) {
+    const { blob, scale } = buildBlob(frame, region);
+    const tensor = new ort.Tensor('float32', blob, [1, 3, size, size]);
+    const outputs = await runtime.session.run({ [runtime.inputName]: tensor });
+    for (const face of decodeRegion(outputs, region, scale, confThreshold)) {
+      if (!isCutBySeam(face, region)) candidates.push(face);
+    }
+  }
+
+  // Greedy NMS across ALL passes: highest score first; a candidate is a
+  // duplicate when it overlaps a kept face (IoU) or sits mostly inside it
+  // (the same face seen at another scale / a partial box).
+  candidates.sort((a, b) => b.score - a.score);
   const kept: DetectedFace[] = [];
 
-  for (const candidate of faces) {
+  for (const candidate of candidates) {
     if (kept.length >= TOP_K) break;
-    let overlaps = false;
+    let duplicate = false;
     for (const existing of kept) {
-      if (iou(candidate.face.box, existing.box) > NMS_THRESHOLD) {
-        overlaps = true;
+      if (
+        iou(candidate.box, existing.box) > NMS_THRESHOLD ||
+        containment(candidate.box, existing.box) > CONTAINMENT_THRESHOLD
+      ) {
+        duplicate = true;
         break;
       }
     }
-    if (overlaps) continue;
+    if (duplicate) continue;
 
-    const clipped = clipToFrame(candidate.face, inputW, inputH);
+    const clipped = clipToFrame(candidate, inputW, inputH);
     if (!clipped) continue;
 
-    // Minimum face size (measured in the 640px model input space, so the
-    // threshold is the same no matter what size the frame was resampled from):
-    // tiny boxes are almost never real faces in this use case.
-    if (clipped.box.width / scaleX < MIN_FACE_WIDTH_640) continue;
+    // Specks are never real faces. The bar is RELATIVE to the frame (a face
+    // narrower than ~1.4% of the frame width), not a fixed pixel size: an
+    // absolute floor in model space used to delete the hosts of a wide shot.
+    if (clipped.box.width < minWidth) continue;
 
     kept.push(clipped);
   }
@@ -374,12 +530,23 @@ function clipToFrame(face: DetectedFace, frameW: number, frameH: number): Detect
   };
 }
 
-function iou(a: FaceBox, b: FaceBox): number {
+function intersection(a: FaceBox, b: FaceBox): number {
   const x1 = Math.max(a.x, b.x);
   const y1 = Math.max(a.y, b.y);
   const x2 = Math.min(a.x + a.width, b.x + b.width);
   const y2 = Math.min(a.y + a.height, b.y + b.height);
-  const inter = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+  return Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+}
+
+function iou(a: FaceBox, b: FaceBox): number {
+  const inter = intersection(a, b);
   if (inter <= 0) return 0;
   return inter / (a.width * a.height + b.width * b.height - inter);
+}
+
+/** Share of the SMALLER box that lies inside the other one (1 = fully contained). */
+function containment(a: FaceBox, b: FaceBox): number {
+  const inter = intersection(a, b);
+  if (inter <= 0) return 0;
+  return inter / Math.max(1e-6, Math.min(a.width * a.height, b.width * b.height));
 }

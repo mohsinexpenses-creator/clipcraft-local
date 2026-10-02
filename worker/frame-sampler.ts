@@ -33,6 +33,13 @@ export interface SampledFrames {
   fps: number;
 }
 
+/**
+ * Width (px) of the sampled frames when the caller does not say otherwise. The
+ * speaker pipeline asks for more (see `ASD_SAMPLE_WIDTH` in `./asd`): faces in a
+ * wide shot are tiny, and the sample is all the detector ever sees.
+ */
+export const DEFAULT_SAMPLE_WIDTH = 640;
+
 export async function sampleSegmentFrames(
   videoPath: string,
   start: number,
@@ -40,6 +47,7 @@ export async function sampleSegmentFrames(
   targetFps: number,
   maxFrames: number,
   tmpPrefix = "frames",
+  sampleWidth = DEFAULT_SAMPLE_WIDTH,
 ): Promise<SampledFrames> {
   const safeDuration = Math.max(0.5, duration);
   const fps = Math.max(0.5, Math.min(targetFps, maxFrames / safeDuration));
@@ -62,13 +70,18 @@ export async function sampleSegmentFrames(
     safeDuration.toFixed(3),
     "-i",
     videoPath,
-    // hflip FIRST: sample exactly what the crop filter will see.
-    // fps=<fps> limits the decode work - without it ffmpeg decodes every
-    // frame of the segment and only -frames:v caps the output (slow).
+    // Sample exactly what the crop filter will see (mirrored).
+    // fps=<fps> FIRST: frames we do not keep are dropped before the (costly)
+    // flip + scale instead of after it, and -frames:v only caps the output.
+    // `area` is the right downscale filter for detection (no aliasing/ringing).
     "-vf",
-    `hflip,scale=640:-2,fps=${fps.toFixed(3)}`,
+    `fps=${fps.toFixed(3)},hflip,scale=${evenSize(sampleWidth)}:-2:flags=area`,
     "-frames:v",
     String(maxFrames),
+    // q:v 3 (~Q90): the default JPEG quality smears small faces, which is
+    // exactly what the detector and the face-motion cue depend on.
+    "-q:v",
+    "3",
     path.join(tempFramesDir, "frame_%03d.jpg"),
   ];
 

@@ -285,7 +285,8 @@ export async function renderCaptionsAndOverlays(
         outputLocation: outputPath,
         codec: 'h264',
         pixelFormat: 'yuv420p',
-        crf: 20,
+        // FINAL deliverable - keep in step with the native caption burn (CRF 18).
+        crf: 18,
         audioBitrate: '192k',
         /**
          * Without an audio *source* in the composition Remotion omits the audio track

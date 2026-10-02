@@ -379,6 +379,13 @@ export const ClipCard: React.FC<ClipCardProps> = ({
               </p>
             )}
 
+          {clip.layoutNote && (
+            <p className="mt-2 rounded-lg bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:text-amber-400">
+              <span className="font-medium">Layout: </span>
+              {clip.layoutNote}
+            </p>
+          )}
+
           {clip.error && (
             <p className="mt-3 rounded-lg bg-destructive/5 px-3 py-2 text-xs leading-relaxed text-destructive">
               {clip.error}

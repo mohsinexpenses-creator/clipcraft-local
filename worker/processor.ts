@@ -252,6 +252,26 @@ export async function processClipJob(
     const plan = buildLayoutPlan(asd, layout, sourceMeta.width, sourceMeta.height);
     checkCancelled();
 
+    // Say what was ACTUALLY produced. A split request must never quietly turn
+    // into something else: when only one person is found the planner renders a
+    // single speaker window, and that is reported loudly here and on the clip.
+    // ('' rather than undefined: saveClip() does a $set, which would otherwise
+    // keep a stale note from a previous render.)
+    clip.layoutNote = '';
+    if (layout === 'split-screen') {
+      if (plan.mode === 'split') {
+        log.ok(
+          `Split screen: ${plan.cells.length} panes - ` +
+          plan.cells
+            .map((cell, i) => `pane ${i + 1} = person#${cell.trackId}`)
+            .join(', ')
+        );
+      } else {
+        clip.layoutNote = plan.splitFallbackReason ?? 'Split screen could not be applied; rendered a single speaker window.';
+        log.warn(`SPLIT SCREEN NOT APPLIED - ${clip.layoutNote}`);
+      }
+    }
+
     if (plan.mode === 'single') {
       clip.cropData = {
         x: 0,

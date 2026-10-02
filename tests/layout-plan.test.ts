@@ -9,7 +9,9 @@ import {
   buildPanExpression,
   buildSinglePlan,
   buildSplitFilterComplex,
+  cellCropSize,
   flattenAndDecimate,
+  MAX_CELL_UPSCALE,
   PanPoint,
 } from '../worker/layout';
 import { AsdResult } from '../worker/asd/index';
@@ -309,5 +311,182 @@ test('a 2-person conversation never becomes a 4-cell grid', () => {
   if (plan.mode === 'split') {
     assert.equal(plan.cells.length, 2, 'two tracks -> two stacked panes (1080x960 each)');
     assert.ok(plan.cells.every((c) => c.cellW === 1080 && c.cellH === 960));
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Quality + "split screen must really split" regressions
+// ---------------------------------------------------------------------------
+
+test('regression: ONE detected person never becomes a one-cell 5x zoom "split"', () => {
+  // The reported failure: a split-screen render found a single face (121px
+  // wide) and built a one-cell "split" that cropped ~212x378px and enlarged it
+  // 5x to 1080x1920 - one blurry face filling the whole frame, no split.
+  const only = panTrack(1, Array.from({ length: 40 }, () => 1400), 0.25, 121);
+  const plan = buildLayoutPlan(asd([only], [{ trackId: 1, t0: 0, t1: 10 }]), 'split-screen', 1920, 1080);
+
+  assert.equal(plan.mode, 'single', 'one person cannot be a split');
+  if (plan.mode === 'single') {
+    assert.equal(plan.cropH, 1080, 'the proper full-height 9:16 window');
+    assert.ok(1080 / plan.cropW <= 1.8, `magnification ${(1080 / plan.cropW).toFixed(2)}x stays at the speaker-focus level`);
+    assert.match(plan.splitFallbackReason ?? '', /two people/i, 'the fallback explains itself');
+    assert.match(plan.splitFallbackReason ?? '', /only one/i);
+  }
+});
+
+test('split with no tracks at all: a static centred single window with a reason (never a crash)', () => {
+  const plan = buildLayoutPlan(asd([], [{ trackId: null, t0: 0, t1: 10 }]), 'split-screen', 1920, 1080);
+  assert.equal(plan.mode, 'single');
+  if (plan.mode === 'single') {
+    assert.equal(plan.points.length, 0, 'static crop');
+    assert.match(plan.splitFallbackReason ?? '', /none could be confirmed/i);
+  }
+});
+
+test('speaker-focus never carries a split fallback reason', () => {
+  const only = panTrack(1, Array.from({ length: 40 }, () => 1400), 0.25, 121);
+  const plan = buildLayoutPlan(asd([only], [{ trackId: 1, t0: 0, t1: 10 }]), 'speaker-focus', 1920, 1080);
+  assert.equal(plan.mode, 'single');
+  if (plan.mode === 'single') assert.equal(plan.splitFallbackReason, undefined);
+});
+
+test('cellCropSize: small faces are capped at 2x magnification; big faces get the preferred framing', () => {
+  // 100px face, 1080p wide shot, stacked pane 1080x960: the 2x cap decides.
+  assert.deepEqual(cellCropSize(100, 1080, 960, 1920, 1080), { cropW: 540, cropH: 480 });
+
+  // 200px face: preferred framing = 2.8 x faceH (250px) = 700px -> only 1.37x.
+  const big = cellCropSize(200, 1080, 960, 1920, 1080);
+  assert.equal(big.cropH, 700);
+  assert.ok(Math.abs(big.cropW / big.cropH - 1080 / 960) < 0.01, 'keeps the pane aspect');
+
+  // Enormous face (close-up): never larger than the source.
+  const huge = cellCropSize(900, 1080, 960, 1920, 1080);
+  assert.ok(huge.cropH <= 1080 && huge.cropW <= 1920);
+
+  // Narrow 9:16 pane of a 3/4-person grid keeps ITS aspect (540x960).
+  const narrow = cellCropSize(100, 540, 960, 1920, 1080);
+  assert.deepEqual(narrow, { cropW: 270, cropH: 480 });
+
+  // A source too small to honour the cap still yields a crop INSIDE the frame.
+  const tiny = cellCropSize(30, 1080, 960, 640, 360);
+  assert.ok(tiny.cropW <= 640 && tiny.cropH <= 360, `${tiny.cropW}x${tiny.cropH}`);
+});
+
+test('split panes never magnify the source by more than MAX_CELL_UPSCALE, whatever the face size or grid', () => {
+  for (const faceW of [45, 60, 100, 140, 220, 320]) {
+    for (const people of [2, 3, 4]) {
+      const tracks = Array.from({ length: people }, (_, i) =>
+        panTrack(i + 1, Array.from({ length: 40 }, () => 300 + i * 450), 0.25, faceW)
+      );
+      const plan = buildLayoutPlan(
+        asd(tracks, tracks.map((t, i) => ({ trackId: t.id, t0: i * 3, t1: i * 3 + 3 }))),
+        'split-screen',
+        1920,
+        1080
+      );
+      assert.equal(plan.mode, 'split', `${people} people, face ${faceW}px`);
+      if (plan.mode !== 'split') continue;
+      assert.equal(plan.cells.length, people);
+      for (const cell of plan.cells) {
+        const zoomX = cell.cellW / cell.cropW;
+        const zoomY = cell.cellH / cell.cropH;
+        assert.ok(
+          zoomX <= MAX_CELL_UPSCALE + 0.01 && zoomY <= MAX_CELL_UPSCALE + 0.01,
+          `face ${faceW}px, ${people} panes: ${zoomX.toFixed(2)}x / ${zoomY.toFixed(2)}x exceeds ${MAX_CELL_UPSCALE}x`
+        );
+        assert.ok(cell.cropW <= 1920 && cell.cropH <= 1080, 'crop fits inside the source');
+        assert.ok(Math.abs(cell.cropW / cell.cropH - cell.cellW / cell.cellH) < 0.02, 'crop matches the pane aspect');
+      }
+    }
+  }
+});
+
+test('2 hosts with ~100px faces in 1080p: two stacked 1080x960 panes at exactly 2x (the reported scenario)', () => {
+  // Shape of the reported clip after the detector fix: two hosts, ~100px faces.
+  const left = panTrack(1, Array.from({ length: 60 }, () => 650), 0.125, 100);
+  const right = panTrack(2, Array.from({ length: 60 }, () => 1270), 0.125, 100);
+  const plan = buildLayoutPlan(
+    asd([left, right], [
+      { trackId: 1, t0: 0, t1: 4 },
+      { trackId: 2, t0: 4, t1: 7.5 },
+    ]),
+    'split-screen',
+    1920,
+    1080
+  );
+  assert.equal(plan.mode, 'split');
+  if (plan.mode !== 'split') return;
+  assert.equal(plan.cells.length, 2);
+  assert.deepEqual(plan.cells.map((c) => [c.cellX, c.cellY, c.cellW, c.cellH]), [
+    [0, 0, 1080, 960],
+    [0, 960, 1080, 960],
+  ]);
+  assert.deepEqual(plan.cells.map((c) => [c.cropW, c.cropH]), [
+    [540, 480],
+    [540, 480],
+  ]);
+  assert.equal(plan.cells[0].trackId, 1, 'left person on top');
+});
+
+test('a tiny background face (poster / screen) does not steal the second pane from a real listener', () => {
+  const speaker = panTrack(1, Array.from({ length: 60 }, () => 600), 0.25, 110);
+  const poster = panTrack(2, Array.from({ length: 60 }, () => 1500), 0.25, 42); // 38% of the speaker's face
+  const speakerOnly = buildLayoutPlan(
+    asd([speaker, poster], [{ trackId: 1, t0: 0, t1: 15 }]),
+    'split-screen',
+    1920,
+    1080
+  );
+  assert.equal(speakerOnly.mode, 'single', 'the poster is not a person: only ONE real person -> explained fallback');
+
+  const listener = panTrack(2, Array.from({ length: 60 }, () => 1500), 0.25, 80); // 73% of the speaker's face
+  const conversation = buildLayoutPlan(
+    asd([speaker, listener], [{ trackId: 1, t0: 0, t1: 15 }]),
+    'split-screen',
+    1920,
+    1080
+  );
+  assert.equal(conversation.mode, 'split', 'a comparable-size listener does get a pane');
+  if (conversation.mode === 'split') assert.equal(conversation.cells.length, 2);
+});
+
+test('split panes frame the face a little ABOVE centre (more torso, not dead centre)', () => {
+  // Static people at cy=400 in 480px-high crops: y = 400 - 0.45*480 = 184
+  // (dead centre would be 160).
+  const a = panTrack(1, Array.from({ length: 40 }, () => 600), 0.25, 100);
+  const b = panTrack(2, Array.from({ length: 40 }, () => 1300), 0.25, 100);
+  const plan = buildLayoutPlan(
+    asd([a, b], [
+      { trackId: 1, t0: 0, t1: 5 },
+      { trackId: 2, t0: 5, t1: 10 },
+    ]),
+    'split-screen',
+    1920,
+    1080
+  );
+  assert.equal(plan.mode, 'split');
+  if (plan.mode !== 'split') return;
+  const graph = buildSplitFilterComplex(plan, 1920, 1080, 30, 10, '');
+  assert.ok(/crop=540:480:'[^']*':'(min\(max\()?184/.test(graph), `y offset 184 in: ${graph.slice(0, 400)}`);
+});
+
+test('two people who never share the screen (camera cuts): single window, and the reason says so', () => {
+  // Host A on screen 0-10s, host B 12-22s - never together, so there is nothing
+  // to stack. The reason must not claim "only one person" (there are two).
+  const a = panTrack(1, Array.from({ length: 40 }, () => 600), 0.25, 140, 0);
+  const b = panTrack(2, Array.from({ length: 40 }, () => 1300), 0.25, 140, 12);
+  const plan = buildLayoutPlan(
+    asd([a, b], [
+      { trackId: 1, t0: 0, t1: 10 },
+      { trackId: 2, t0: 12, t1: 22 },
+    ]),
+    'split-screen',
+    1920,
+    1080
+  );
+  assert.equal(plan.mode, 'single');
+  if (plan.mode === 'single') {
+    assert.match(plan.splitFallbackReason ?? '', /never visible together/i);
+    assert.ok(plan.points.length > 0, 'still follows the active speaker across the cuts');
   }
 });

@@ -228,6 +228,12 @@ export interface ClipRecord {
    * - `split-screen`: everyone relevant is shown in an adaptive grid (2/3/4).
    */
   layout?: ClipLayout;
+  /**
+   * Set by the worker when the render did NOT use the requested layout (e.g. a
+   * split screen was asked for but only one person could be found, so a single
+   * speaker window was rendered). Empty/absent when the layout was applied.
+   */
+  layoutNote?: string;
   /** Caption pass: `remotion` (default, smoothest) or `native` (FFmpeg ASS burn, ~10x faster). */
   captionEngine?: CaptionEngine;
   /** Overlay STYLE presets (font/colors/animation) chosen per clip. */
