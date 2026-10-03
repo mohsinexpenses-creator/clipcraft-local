@@ -149,47 +149,30 @@ prints `SPLIT SCREEN NOT APPLIED - <reason>` and the reason is stored on the cli
 
 ## FFmpeg plumbing (for the curious)
 
-Everything before the captions — cut, mirror, crop, colour, hook intro, dip-to-black — is
-**one** FFmpeg pass (`processVideoSegment`). The hook intro is a second, independent seek
-into the same source, so no frames are buffered and nothing is re-encoded twice.
+The worker first prepares transparent PNG overlay sequences, then
+`processVideoSegment()` makes the deliverable in **one FFmpeg video-encoding pass**.
+The source is not encoded to an intermediate MP4 and decoded/re-encoded for captions:
+the final graph applies the crop, colour treatment, hook intro, caption/card overlays,
+and output scaling together. The output canvas is always 1080×1920.
 
 - **Speaker focus** — `setpts=PTS-STARTPTS,hflip,crop=W:H:x='EXPR':y='EXPR2'` with
-  piecewise-linear `EXPR` (nested `if(gte(t,…)…)` over the pan keyframes, clamped to the
-  source), then colour filter + scale to 1080×1920.
-- **Split screen** — per-pane crops (the locked camera's constant or eased-glide
-  expressions) laid out on the 1080×1920 canvas (2/3/4-adaptive). The canvas is the first
-  pane **padded** to 1080×1920 with the others overlaid on it.
-- **Frame-exact.** The clip's frames are the source's frames, at the source's frame rate:
-  - each cut is snapped to the first real frame at/after the requested time (a quick
-    first-frame probe), so picture and sound start together — lip-sync is within ±2 ms
-    — and the clock restarts at 0 (`setpts`/`asetpts`);
-  - the split canvas is built from the first pane rather than a free-running black
-    `color` source. That is what used to give split-screen clips a **black first frame
-    and a repeated last frame** (2 extra frames), while speaker focus repeated its first
-    frame whenever the cut fell more than half a frame past a boundary;
-  - the NTSC rates are passed as exact fractions (`24000/1001`, `30000/1001`,
-    `60000/1001`), 25/30/50/60 as they are.
-  Verified on 23.976 (two time bases), 29.97, 25 and 60 fps sources with a burned-in frame
-  counter and a beep track: zero duplicated, dropped or reordered frames, exact frame
-  counts, and the right first/last frame (`tests/pipeline-frames.test.ts` pins this).
-- **Encoding.** The pass writes an *intermediate* (`libx264 -preset veryfast -crf 10`,
-  AAC 256k at the **source's sample rate**, deleted after the render); the final caption
-  burn (native or Remotion) writes the deliverable at **CRF 18**, and the native burn
-  **copies the audio** untouched unless a profane word has to be muted. Measured against
-  a lossless render of the same split graph (VMAF / PSNR, final file at CRF 18):
-
-  | chain | VMAF | PSNR | final file |
-  | --- | --- | --- | --- |
-  | previous: CRF 14 → 14 → 18 (3 lossy generations) | 96.8 | 47.3 dB | 7.25 MB |
-  | one generation less: CRF 14 → 18 | 97.2 | 47.9 dB | 7.79 MB |
-  | **now: CRF 10 → 18** | **97.5** | **48.5 dB** | 7.98 MB |
-  | one CRF-18 encode straight from lossless (the ceiling) | 97.9 | 49.5 dB | 7.06 MB |
-
-  Lowering the *final* CRF buys almost nothing (CRF 16: +0.2 dB for +30 % size): the loss
-  is set by the first encode, so that is where the bits go. The split panes are enlarged at
-  most 2× (see *Pane sizing*) — that, not the encoder, is what limits sharpness.
-- All crop coordinates live in **mirrored space** (the chain flips first) and `t` is
-  0-based within the segment.
+  source-clamped, piecewise smoothstep coordinates. `crop` uses `exact=1` so chroma
+  subsampling does not force even-coordinate rounding; the final scale uses Lanczos.
+- **Split screen** — each locked camera uses a static crop except for an eased glide
+  when the head leaves its safe zone. Per-pane crops use `exact=1` and Lanczos scaling,
+  then compose onto the 1080×1920 canvas. Cell assignment is stable across the clip.
+- **Overlays** — the Remotion engine paints a full-timeline transparent PNG sequence;
+  the native engine rasterizes ASS captions and paints hook/CTA PNGs. FFmpeg composites
+  those layers directly over the source-derived video frames before the final encode.
+- **Encoding.** The final encode uses libx264 at CRF 17 and preset `slow` by default.
+  `VIDEO_CRF` is configurable from 16 to 18; `VIDEO_PRESET` accepts a libx264 preset
+  (default `slow`, or `medium` for faster output). This avoids a low-quality early
+  encode followed by another generation loss. No quality metric or real-source A/V
+  result is claimed here; verify with an actual source clip before judging quality.
+- Crop coordinates are evaluated in **mirrored space** (the chain flips before crop).
+  The normal clip trim and hook replay are derived from the same source; timestamp/VFR
+  normalization and offset controls are documented with the pipeline diagnostics in
+  [SETUP.md](../SETUP.md).
 
 Layout choice is stored on the clip record (`clip.layout`; `clip.layoutNote` when it
 could not be applied) alongside `captionEngine` and

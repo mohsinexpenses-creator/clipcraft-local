@@ -7,17 +7,10 @@ import { HookOverlay } from './HookOverlay';
 
 export interface CaptionCompositionProps {
   /**
-   * http(s) URL of the processed clip, served by the worker's throwaway
-   * loopback media server during rendering (worker/clip-http-server.ts).
-   *
-   * Remotion renders in headless Chrome, which cannot read the filesystem:
-   * a raw absolute path (or file:// URL) reaches Remotion's asset downloader,
-   * which only accepts http(s)/data: URLs, and the render fails.
-   *
-   * Not supported in the in-app <Player> preview (that runs fully in the
-   * browser on the user's machine, where the worker's server does not exist),
-   * which is why the preview page simply does not pass this prop and gets the
-   * gradient placeholder below instead.
+   * Optional http(s) source used by the Studio/standalone composition preview.
+   * The worker does not render this composition: it paints transparent overlay
+   * PNGs, then composites those with the source in the final FFmpeg pass. The
+   * in-app Player also omits this prop and displays the gradient placeholder.
    */
   videoSrc?: string;
   /** Keep the clip's own audio. Always true for real renders. */

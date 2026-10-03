@@ -11,8 +11,11 @@ import { buildLayoutPlan } from './layout';
 import { adaptOverlaysToLayout, describePlacements } from './overlay-layout';
 import { color, log } from '../lib/logger';
 import { HOOK_TRANSITION_SECONDS, normalizeFps, processVideoSegment } from './ffmpeg-pipeline';
-import { renderNativeCaptions } from './native-captions';
-import { renderCaptionsAndOverlays, type RenderCaptionsResult } from './remotion-renderer';
+import { prepareNativeCaptionOverlays } from './native-captions';
+import {
+  prepareRemotionCaptionOverlays,
+  type PreparedCaptionOverlays,
+} from './remotion-renderer';
 
 /** How far either side of the window we still accept transcript words. */
 const WORD_SLACK_SECONDS = 0.5;
@@ -121,9 +124,9 @@ export async function processClipJob(
   // pre-convention uploads fall back to the video id.
   const outputBase = video.fileBase || videoId;
   const outputDir = path.join(process.cwd(), 'generated-clips', outputBase);
-  // Intermediate keeps the stable clip id; the FINAL file is named after the
-  // clip's title: generated-clips/001_my_recording/<clip title>.mp4
-  const intermediateVideoPath = path.join(outputDir, `${clipId}_processed.mp4`);
+  // Optional pre-caption diagnostic branch (SAVE_PRECAPTION_DEBUG=1). The normal
+  // final render goes directly from the source into the title-named deliverable.
+  const intermediateVideoPath = path.join(outputDir, `${clipId}_precaption.mp4`);
   const clipFileBase = sanitizeClipFileName(clip.title) || clipId;
   const finalVideoPath = uniqueClipPath(outputDir, clipFileBase);
 
@@ -285,39 +288,6 @@ export async function processClipJob(
     await saveClip(clip);
     await reportProgress(20);
 
-    log.step(
-      `Step 2/3 · FFmpeg mirror + ${plan.mode === 'split' ? `split-screen (${plan.cells.length})` : 'speaker crop'} + colour + hook intro`
-    );
-    checkCancelled();
-    await processVideoSegment({
-      sourceVideoPath: video.filePath,
-      outputPath: intermediateVideoPath,
-      start,
-      end,
-      hookDuration: safeHookDuration,
-      hookStart,
-      filterPresetId: filterPreset,
-      plan,
-      sourceWidth: sourceMeta.width,
-      sourceHeight: sourceMeta.height,
-      targetFps: renderFps,
-      sourceHasAudio: sourceMeta.hasAudio,
-      isCancelled: () => cancelFlag,
-      onProgress: (progress) => {
-        // ffmpeg stage owns 20% -> 80% of the overall bar.
-        const scaled = 20 + Math.max(0, Math.min(80, progress)) * 0.75;
-        clip.progress = Math.round(scaled);
-        // Deliberately not awaited: this fires many times per second and the DB write
-        // must never slow the encode down. Errors are logged, not thrown.
-        void saveClip(clip).catch((error) =>
-          log.warn('progress save failed: ' + toErrorMessage(error))
-        );
-        void reportProgress(scaled);
-      },
-    });
-
-    await reportProgress(80);
-
     const preset = await getCaptionPreset(captionPresetId);
     if (!preset) {
       throw new AppError(`Caption preset ${captionPresetId} was not found.`, {
@@ -405,57 +375,107 @@ export async function processClipJob(
     const ctaStyleForRender = overlayLayout.ctaStyle ?? ctaStyle;
 
     log.step(
-      `Step 3/3 · Captions & overlays  ${color.gray(`(${engine === 'native' ? 'native FFmpeg ASS burn' : 'Remotion'}, ` +
+      `Step 2/3 · Render transparent overlays  ${color.gray(`(${engine === 'native' ? 'native ASS + Remotion cards' : 'Remotion'}, ` +
       `${clipWords.length} words, preset "${preset.name}")`)}`
     );
-    const progressSink = (progress: number): void => {
-      clip.progress = Math.max(clip.progress ?? 0, Math.round(progress));
-      void saveClip(clip).catch((error) =>
-        log.warn('progress save failed: ' + toErrorMessage(error))
-      );
-      void reportProgress(progress);
+    const overlayProgressSink = (progress: number): void => {
+      const scaled = 20 + Math.max(0, Math.min(100, progress)) * 0.1;
+      clip.progress = Math.max(clip.progress ?? 0, Math.round(scaled));
+      void saveClip(clip).catch((error) => log.warn('progress save failed: ' + toErrorMessage(error)));
+      void reportProgress(scaled);
     };
 
     checkCancelled();
-    const renderResult: RenderCaptionsResult =
-      engine === 'native'
-        ? await renderNativeCaptions({
-            videoPath: intermediateVideoPath,
-            outputPath: finalVideoPath,
-            hookText: resolvedHookText,
-            hookDuration: safeHookDuration,
-            hookStart,
-            ctaText: resolvedCtaText,
-            ctaDuration: resolvedCtaDuration,
-            words: clipWords,
-            preset: captionPresetForRender,
-            hookStyle: hookStyleForRender,
-            ctaStyle: ctaStyleForRender,
-            captionLiftScale: overlayLayout.captionLiftScale,
-            onProgress: progressSink,
-            isCancelled: () => cancelFlag,
-          })
-        : await renderCaptionsAndOverlays({
-            videoPath: intermediateVideoPath,
-            outputPath: finalVideoPath,
-            hookText: resolvedHookText,
-            hookDuration: safeHookDuration,
-            hookStart,
-            ctaText: resolvedCtaText,
-            ctaDuration: resolvedCtaDuration,
-            words: clipWords,
-            preset: captionPresetForRender,
-            hookStyle: hookStyleForRender,
-            ctaStyle: ctaStyleForRender,
-            captionLiftScale: overlayLayout.captionLiftScale,
-            onProgress: progressSink,
-            isCancelled: () => cancelFlag,
-          });
+    const totalDuration = segmentDuration + safeHookDuration;
+    const preparedOverlays: PreparedCaptionOverlays = engine === 'native'
+      ? await prepareNativeCaptionOverlays({
+          fps: renderFps,
+          totalDuration,
+          hookText: resolvedHookText,
+          hookDuration: safeHookDuration,
+          hookStart,
+          ctaText: resolvedCtaText,
+          ctaDuration: resolvedCtaDuration,
+          words: clipWords,
+          preset: captionPresetForRender,
+          hookStyle: hookStyleForRender,
+          ctaStyle: ctaStyleForRender,
+          captionLiftScale: overlayLayout.captionLiftScale,
+          onProgress: overlayProgressSink,
+          isCancelled: () => cancelFlag,
+        })
+      : await prepareRemotionCaptionOverlays({
+          fps: renderFps,
+          totalDuration,
+          hookText: resolvedHookText,
+          hookDuration: safeHookDuration,
+          hookStart,
+          hookTransitionDuration: safeHookDuration > 0
+            ? Math.min(HOOK_TRANSITION_SECONDS, safeHookDuration / 2)
+            : 0,
+          ctaText: resolvedCtaText,
+          ctaDuration: resolvedCtaDuration,
+          words: clipWords,
+          preset: captionPresetForRender,
+          hookStyle: hookStyleForRender,
+          ctaStyle: ctaStyleForRender,
+          captionLiftScale: overlayLayout.captionLiftScale,
+          onProgress: overlayProgressSink,
+          isCancelled: () => cancelFlag,
+        });
 
+    let renderResult: {
+      fps: number;
+      width: number;
+      height: number;
+      durationSeconds: number;
+      fileSizeBytes: number;
+    };
     try {
-      if (fs.existsSync(intermediateVideoPath)) fs.unlinkSync(intermediateVideoPath);
-    } catch {
-      // Ignore cleanup errors - a leftover intermediate is not worth failing a render.
+      checkCancelled();
+      log.step(
+        `Step 3/3 · FFmpeg crop + hook + overlays + one final encode ` +
+        color.gray(`(${preparedOverlays.sequences.length} transparent layer(s))`)
+      );
+      const progressSink = (progress: number): void => {
+        const scaled = 30 + Math.max(0, Math.min(80, progress)) * 0.85;
+        clip.progress = Math.max(clip.progress ?? 0, Math.round(scaled));
+        void saveClip(clip).catch((error) => log.warn('progress save failed: ' + toErrorMessage(error)));
+        void reportProgress(scaled);
+      };
+
+      await processVideoSegment({
+        sourceVideoPath: video.filePath,
+        outputPath: finalVideoPath,
+        start,
+        end,
+        hookDuration: safeHookDuration,
+        hookStart,
+        filterPresetId: filterPreset,
+        plan,
+        sourceWidth: sourceMeta.width,
+        sourceHeight: sourceMeta.height,
+        targetFps: renderFps,
+        sourceHasAudio: sourceMeta.hasAudio,
+        overlays: preparedOverlays.sequences,
+        words: clipWords,
+        debugOutputPath: process.env.SAVE_PRECAPTION_DEBUG?.trim() === '1'
+          ? intermediateVideoPath
+          : undefined,
+        isCancelled: () => cancelFlag,
+        onProgress: progressSink,
+      });
+
+      const outputMeta = await getVideoMetadata(finalVideoPath);
+      renderResult = {
+        fps: outputMeta.fps,
+        width: outputMeta.width,
+        height: outputMeta.height,
+        durationSeconds: outputMeta.duration,
+        fileSizeBytes: fs.statSync(finalVideoPath).size,
+      };
+    } finally {
+      try { fs.rmSync(preparedOverlays.workDir, { recursive: true, force: true }); } catch { /* best-effort */ }
     }
 
     clip.status = 'done';

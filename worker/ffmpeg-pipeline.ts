@@ -2,6 +2,11 @@ import fs from 'fs';
 import path from 'path';
 import { AppError, toErrorMessage } from '../lib/errors';
 import { DEFAULT_FILTER_PRESETS } from '../lib/presets';
+import {
+  buildProfanityAudioFilter,
+  buildProfanityWindows,
+  getProfanityAudioMode,
+} from '../lib/profanity';
 import { getVideoMetadata, runFfmpeg } from '../lib/ffmpeg';
 import { log } from '../lib/logger';
 import {
@@ -12,8 +17,18 @@ import {
   buildSplitFilterStatements,
 } from './layout';
 
+export interface OverlayFrameSequence {
+  /** Short label used in FFmpeg diagnostics. */
+  name: string;
+  /** Image2 input pattern, e.g. `/tmp/clip/ov_%05d.png`. */
+  inputPattern: string;
+  /** Time on the final output timeline where frame 1 appears. */
+  startAtSeconds: number;
+}
+
 export interface ProcessSegmentOptions {
   sourceVideoPath: string;
+  /** Final deliverable path: crop, captions, overlays and audio are encoded in this one pass. */
   outputPath: string;
   start: number;
   end: number;
@@ -24,16 +39,22 @@ export interface ProcessSegmentOptions {
   /**
    * The rendering plan built from the ASD result: either a single time-varying
    * 9:16 window following the active speaker, or an adaptive 2/3/4-person
-   * split-screen grid. Drives the pass-1 filter chain.
+   *  split-screen grid. Drives the final FFmpeg filter graph.
    */
   plan: LayoutPlan;
   /** Mirrored source size (expression clamping bounds). */
   sourceWidth: number;
   sourceHeight: number;
-  /** fps the Remotion composition will use; the intermediate is normalised to it. */
+  /** Output frame rate (CFR). */
   targetFps: number;
   /** False when the source has no audio stream -> a silent track is muxed in. */
   sourceHasAudio: boolean;
+  /** Transparent PNG overlays composited before the final H.264 encode. */
+  overlays?: OverlayFrameSequence[];
+  /** Original segment-relative words, used only for render-time profanity audio handling. */
+  words?: Array<{ word: string; start: number; end: number }>;
+  /** Keep a pre-caption/pre-overlay debug encode when SAVE_PRECAPTION_DEBUG=1. */
+  debugOutputPath?: string;
   onProgress?: (progress: number) => void;
   /** Poll for a user-requested cancel; the running FFmpeg child is killed. */
   isCancelled?: () => boolean;
@@ -97,6 +118,54 @@ export function ffmpegFpsArg(fps: number): string {
     if (Math.abs(fps - value) < 0.0005) return fraction;
   }
   return String(fps);
+}
+
+const VIDEO_PRESETS = new Set([
+  'ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium',
+  'slow', 'slower', 'veryslow', 'placebo',
+]);
+
+/** Final-output H.264 settings. Invalid env values fall back to quality-first defaults. */
+export function getVideoEncodeSettings(
+  env: Record<string, string | undefined> = process.env
+): { crf: number; preset: string } {
+  const rawCrf = Number(env.VIDEO_CRF?.trim());
+  const crf = Number.isFinite(rawCrf) && rawCrf >= 16 && rawCrf <= 18
+    ? Math.round(rawCrf)
+    : 17;
+  const rawPreset = env.VIDEO_PRESET?.trim().toLowerCase();
+  const preset = rawPreset && VIDEO_PRESETS.has(rawPreset) ? rawPreset : 'slow';
+  return { crf, preset };
+}
+
+/** Pure overlay filter builder shared by both caption engines and unit tests. */
+export function buildOverlayFilterStatements(
+  overlays: OverlayFrameSequence[],
+  inputIndices: number[],
+  baseLabel = 'vbase'
+): string[] {
+  if (overlays.length !== inputIndices.length) {
+    throw new Error(`Overlay input mismatch: ${overlays.length} sequences, ${inputIndices.length} input indices.`);
+  }
+  let lastVideoLabel = baseLabel;
+  const statements: string[] = [];
+  overlays.forEach((overlay, index) => {
+    const input = inputIndices[index];
+    const overlayLabel = `overlay${index}`;
+    const outputLabel = index === overlays.length - 1 ? 'v' : `vcomp${index}`;
+    const start = Math.max(0, overlay.startAtSeconds);
+    statements.push(
+      start > 0
+        ? `[${input}:v]setpts=PTS+${start.toFixed(4)}/TB,format=rgba[${overlayLabel}]`
+        : `[${input}:v]format=rgba[${overlayLabel}]`
+    );
+    statements.push(
+      `[${lastVideoLabel}][${overlayLabel}]overlay=0:0:format=auto:eof_action=pass:repeatlast=0:shortest=0[${outputLabel}]`
+    );
+    lastVideoLabel = outputLabel;
+  });
+  if (overlays.length === 0) statements.push(`[${baseLabel}]null[v]`);
+  return statements;
 }
 
 /**
@@ -192,6 +261,9 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
     sourceHeight,
     targetFps,
     sourceHasAudio,
+    overlays = [],
+    words = [],
+    debugOutputPath,
     onProgress,
     isCancelled,
   } = options;
@@ -215,8 +287,8 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
 
   const segmentDuration = end - start;
   const fps = normalizeFps(targetFps);
-  // The output canvas is ALWAYS the full 1080x1920 composition canvas - both
-  // layout modes tile it exactly, so Remotion does a 1:1 blit with no bars.
+  // The output canvas is ALWAYS 1080x1920; both layout modes tile it exactly
+  // before the final H.264 output pass.
   const outWidth = OUTPUT_WIDTH;
   const outHeight = OUTPUT_HEIGHT;
 
@@ -237,35 +309,24 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
   const fadeSt = Math.max(0, actualHookDur - fadeDur);
   const totalDuration = segmentDuration + (hookEnabled ? actualHookDur : 0);
 
-  // QUALITY: this is an INTERMEDIATE - the caption burn encodes the footage once more -
-  // so it runs at CRF 10 (`veryfast`; a temp file that is deleted after the render).
-  // Everything - cut, mirror, crop, colour, hook intro, dip-to-black - happens in ONE
-  // pass, so the footage is encoded exactly once before the final deliverable (it used
-  // to be three times, four for the hook). Measured against a lossless render of the
-  // same split graph (VMAF / PSNR, final file at CRF 18):
-  //   old  CRF 14 -> 14 -> 18 (3 generations)  96.8 / 47.3 dB
-  //   one generation less, CRF 14 -> 18        97.2 / 47.9 dB
-  //   CRF 10 -> 18 (this)                      97.5 / 48.5 dB   (final file no bigger)
-  // Lowering the FINAL crf instead buys almost nothing (CRF 16: +0.2 dB for +30% size) -
-  // the loss is set by the first encode, so that is where the bits go.
-  // `-r` is the source's own frame rate (the NTSC rates as exact fractions).
+  // Captions, hook and CTA are transparent PNG overlays composited below; the
+  // deliverable therefore sees exactly ONE H.264 generation, straight from the
+  // source frames. Defaults target high quality without forcing placebo-speed
+  // encoding; VIDEO_CRF (16-18) and VIDEO_PRESET can be tuned in .env.local.
+  const encodeSettings = getVideoEncodeSettings();
   const videoArgs = [
     '-c:v', 'libx264',
-    '-preset', 'veryfast',
-    '-crf', '10',
+    '-preset', encodeSettings.preset,
+    '-crf', String(encodeSettings.crf),
     '-pix_fmt', 'yuv420p',
     '-profile:v', 'high',
     '-r', ffmpegFpsArg(fps),
-    // FFmpeg 7 REMOVED -vsync (deprecated alias since 5.1) - the equivalent is
-    // -fps_mode. ffmpeg-static bundles FFmpeg 7.x, so '-vsync cfr' died with
-    // "Unrecognized option 'vsync'". (-fps_mode exists since FFmpeg 5.1.)
+    // FFmpeg 7 removed the old -vsync alias; -fps_mode is supported since 5.1.
     '-fps_mode', 'cfr',
     '-movflags', '+faststart',
     '-flags', '+global_header',
   ];
-  // The source's sample rate is kept (the old fixed 44.1 kHz resampled the usual
-  // 48 kHz audio); 256k because the caption pass encodes it once more.
-  const audioArgs = ['-c:a', 'aac', '-b:a', '256k', '-ac', '2'];
+  const audioArgs = ['-c:a', 'aac', '-b:a', '192k', '-ac', '2'];
 
   // `-ss` before `-i` seeks by timestamp; pair it with `-t` (duration), NOT `-to`
   // (ffmpeg warns that "-to and -t are mutually exclusive and -to takes precedence"
@@ -289,6 +350,16 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
   }
   const mainInput = nextInput++;
   inputArgs.push('-ss', snap(start, mainPhase), '-t', segmentDuration.toFixed(3), '-i', sourceVideoPath);
+
+  const overlayInputIndices: number[] = [];
+  for (const overlay of overlays) {
+    overlayInputIndices.push(nextInput++);
+    inputArgs.push(
+      '-framerate', ffmpegFpsArg(fps),
+      '-start_number', '1',
+      '-i', overlay.inputPattern
+    );
+  }
 
   try {
     let colorFilterStr = filterPreset.ffmpegFilter.trim();
@@ -353,6 +424,16 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
       }
     };
 
+    // Audio profanity handling is part of the same output graph. It must not
+    // trigger a later audio-only remux (or alter the video encode a second time).
+    const profanityWindows = sourceHasAudio
+      ? buildProfanityWindows(words, hookOffset, actualHookDur, segmentDuration)
+      : [];
+    const profanityMode = getProfanityAudioMode();
+    const audioPlan = sourceHasAudio
+      ? buildProfanityAudioFilter(profanityWindows, profanityMode, totalDuration, nextInput, 'a')
+      : null;
+
     if (hookEnabled) {
       videoBranch(hookInput, 'h_', 'hv', hookOffset, actualHookDur);
       statements.push(`[hv]fade=t=out:st=${fadeSt.toFixed(3)}:d=${fadeDur.toFixed(3)},format=yuv420p[v0]`);
@@ -360,16 +441,31 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
       statements.push(`[bv]fade=t=in:st=0:d=${fadeDur.toFixed(3)}[v1]`);
       // A dip - not a crossfade - keeps the total duration EXACTLY hook + clip, so the
       // caption timeline (which assumes that sum) stays in sync.
-      statements.push('[v0][v1]concat=n=2:v=1:a=0[v]');
+      statements.push('[v0][v1]concat=n=2:v=1:a=0[vbase]');
       // afade out reaches 0 gain exactly at the join and afade in starts from 0, so both
       // sides are fully silent across the whole dip - no floating audio under the black.
       audioBranch(hookInput, 'a0', actualHookDur, `afade=t=out:st=${fadeSt.toFixed(3)}:d=${fadeDur.toFixed(3)}`);
       audioBranch(mainInput, 'a1', segmentDuration, `afade=t=in:st=0:d=${fadeDur.toFixed(3)}`);
       statements.push('[a0][a1]concat=n=2:v=0:a=1[a]');
     } else {
-      videoBranch(mainInput, 'b_', 'v', 0);
+      videoBranch(mainInput, 'b_', 'vbase', 0);
       audioBranch(mainInput, 'a', segmentDuration, '');
     }
+
+    if (audioPlan) statements.push(...audioPlan.filters);
+
+    // A diagnostic output and the final video both need the pre-overlay base.
+    // Split pads explicitly rather than consuming one labeled pad twice (which
+    // FFmpeg rejects). Audio is split the same way after profanity processing.
+    const overlayBaseLabel = debugOutputPath ? 'vforoverlay' : 'vbase';
+    const debugVideoLabel = debugOutputPath ? '[vprecap]' : '';
+    if (debugOutputPath) statements.push('[vbase]split=2[vprecap][vforoverlay]');
+    statements.push(...buildOverlayFilterStatements(overlays, overlayInputIndices, overlayBaseLabel));
+
+    const sourceAudioLabel = audioPlan?.audioLabel ?? '[a]';
+    const debugAudioLabel = debugOutputPath ? '[adebug]' : '';
+    const finalAudioLabel = debugOutputPath ? '[afinal]' : sourceAudioLabel;
+    if (debugOutputPath) statements.push(`${sourceAudioLabel}asplit=2[adebug][afinal]`);
 
     const args = [
       '-y',
@@ -377,16 +473,32 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
       '-loglevel', 'error',
       '-stats',
       ...inputArgs,
+      ...(audioPlan?.extraArgs ?? []),
       '-filter_complex', statements.join(';'),
-      '-map', '[v]',
-      '-map', '[a]',
-      ...videoArgs,
-      ...audioArgs,
-      outputPath,
     ];
 
+    // Optional diagnostic output is a side branch from the SAME filter graph.
+    // The deliverable below is still encoded once from the original sources;
+    // this extra file exists only when SAVE_PRECAPTION_DEBUG=1 is requested.
+    if (debugOutputPath) {
+      args.push(
+        '-map', debugVideoLabel,
+        '-map', debugAudioLabel,
+        ...videoArgs,
+        ...audioArgs,
+        debugOutputPath
+      );
+    }
+    args.push(
+      '-map', '[v]',
+      '-map', finalAudioLabel,
+      ...videoArgs,
+      ...audioArgs,
+      outputPath
+    );
+
     await runFfmpeg(args, {
-      label: 'trim+mirror+crop+color+hook',
+      label: 'trim+mirror+crop+color+overlays+encode',
       totalDurationSeconds: totalDuration,
       isCancelled,
       onProgress: (progress) => {
@@ -394,9 +506,9 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
       },
     });
 
-    assertUsableFile(outputPath, 'final processed clip');
+    assertUsableFile(outputPath, 'final rendered clip');
+    if (debugOutputPath) assertUsableFile(debugOutputPath, 'pre-caption debug clip');
 
-    // Fail loudly here instead of handing Remotion a broken file.
     const meta = await getVideoMetadata(outputPath);
     log.ok(
       `Processed clip ready: ${meta.width}x${meta.height} @ ${meta.fps}fps, ` +

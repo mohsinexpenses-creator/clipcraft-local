@@ -164,7 +164,8 @@ export function buildProfanityAudioFilter(
   windows: [number, number][],
   mode: ProfanityAudioMode,
   totalDurationSeconds: number,
-  toneInputIndex: number
+  toneInputIndex: number,
+  baseAudioLabel = '0:a'
 ): ProfanityAudioFilter | null {
   if (mode === 'off' || windows.length === 0) return null;
 
@@ -182,7 +183,7 @@ export function buildProfanityAudioFilter(
   if (mode === 'mute') {
     return {
       extraArgs: [],
-      filters: [`[0:a]${windows.map(muteIn).join(',')}[pa]`],
+      filters: [`[${baseAudioLabel}]${windows.map(muteIn).join(',')}[pa]`],
       audioLabel: '[pa]',
     };
   }
@@ -195,7 +196,7 @@ export function buildProfanityAudioFilter(
   for (let i = 0; i < k; i += 1) {
     filters.push(`[s${i}]${gateOut(windows[i])}[g${i}]`);
   }
-  filters.push(`[0:a]${windows.map(muteIn).join(',')}[base]`);
+  filters.push(`[${baseAudioLabel}]${windows.map(muteIn).join(',')}[base]`);
   filters.push(
     `[base]${Array.from({ length: k }, (_, i) => `[g${i}]`).join('')}` +
     `amix=inputs=${k + 1}:normalize=0:dropout_transition=0[pa]`

@@ -17,11 +17,12 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { getFfmpegPath, getVideoMetadata } from '../lib/ffmpeg';
 import {
+  buildOverlayFilterStatements,
   ffmpegFpsArg,
+  getVideoEncodeSettings,
   normalizeFps,
   processVideoSegment,
 } from '../worker/ffmpeg-pipeline';
-import { buildFfmpegArgs } from '../worker/native-captions';
 import { buildSingleFilterParts, buildSplitFilterComplex, LayoutPlan, SinglePlan, SplitPlan } from '../worker/layout';
 
 test('ffmpegFpsArg: NTSC rates are exact fractions, everything else is the plain number', () => {
@@ -54,6 +55,16 @@ function twoPanePlan(): SplitPlan {
 function singlePlan(): SinglePlan {
   return { mode: 'single', cropW: 606, cropH: 1080, points: [], faceAnchorY: 0.32 };
 }
+
+test('speaker and split crops keep exact coordinates and use Lanczos for final scaling', () => {
+  const single = buildSingleFilterParts(singlePlan(), 1920, 1080, 1080, 1920, '').join(',');
+  assert.ok(single.includes(':exact=1'), single);
+  assert.ok(single.includes('scale=1080:1920:flags=lanczos'), single);
+
+  const split = buildSplitFilterComplex(twoPanePlan(), 1920, 1080, '');
+  assert.equal((split.match(/:exact=1/g) ?? []).length, 2, split);
+  assert.equal((split.match(/flags=lanczos/g) ?? []).length, 2, split);
+});
 
 test('split graph: the canvas is built from the first pane - no free-running black source', () => {
   const graph = buildSplitFilterComplex(twoPanePlan(), 1920, 1080, '');
@@ -124,7 +135,7 @@ function evalPanExpr(expr: string, t: number): number {
 test('speaker focus hook branch: keyframes outside the hook window are pruned, positions are unchanged', () => {
   const points = Array.from({ length: 30 }, (_, i) => ({ t: i * 2, x: 400 + 25 * i * (i % 2 === 0 ? 1 : 0.5), y: 540 }));
   const plan = { ...singlePlan(), points };
-  const crop = (parts: string[]): string => /crop=\d+:\d+:'(.*)':'.*'$/.exec(parts.find((p) => p.startsWith('crop='))!)![1];
+  const crop = (parts: string[]): string => /crop=\d+:\d+:'(.*)':'.*'(?::exact=1)?$/.exec(parts.find((p) => p.startsWith('crop='))!)![1];
   const full = buildSingleFilterParts(plan, 1920, 1080, 1080, 1920, '', 20);
   const windowed = buildSingleFilterParts(plan, 1920, 1080, 1080, 1920, '', 20, 3);
   assert.ok(crop(windowed).length < crop(full).length / 3, `pruned: ${crop(windowed).length} chars vs ${crop(full).length}`);
@@ -133,34 +144,30 @@ test('speaker focus hook branch: keyframes outside the hook window are pruned, p
   }
 });
 
-test('native caption pass: audio is COPIED unless something has to be muted; fps is the exact fraction', () => {
-  const base = {
-    videoPath: 'in.mp4',
-    outputPath: 'out.mp4',
-    workDir: os.tmpdir(),
-    assFile: 'captions.ass',
-    fps: 23.976,
-    totalDuration: 20,
-    hookEnabled: true,
-    hookDuration: 3,
-    hookOverlayEnd: 2.5,
-    ctaEnabled: true,
-    ctaStart: 17.5,
-    hasAudio: true,
-    profanityWindows: [] as [number, number][],
-    profanityMode: 'mute' as const,
-  };
-  const clean = buildFfmpegArgs(base);
-  assert.ok(clean.join(' ').includes('-c:a copy'), 'no profanity: the AAC passes through untouched');
-  assert.ok(clean.join(' ').includes('-framerate 24000/1001'), 'overlay sequences use the exact NTSC rate');
-  assert.ok(clean.includes('-crf') && clean[clean.indexOf('-crf') + 1] === '18', 'final deliverable is CRF 18');
+test('final H.264 settings default to quality-first and accept safe env overrides', () => {
+  assert.deepEqual(getVideoEncodeSettings({}), { crf: 17, preset: 'slow' });
+  assert.deepEqual(getVideoEncodeSettings({ VIDEO_CRF: '16', VIDEO_PRESET: 'medium' }), {
+    crf: 16,
+    preset: 'medium',
+  });
+  assert.deepEqual(getVideoEncodeSettings({ VIDEO_CRF: '30', VIDEO_PRESET: 'unknown' }), {
+    crf: 17,
+    preset: 'slow',
+  });
+});
 
-  const muted = buildFfmpegArgs({ ...base, profanityWindows: [[4, 4.4]] });
-  assert.ok(muted.join(' ').includes('-c:a aac'), 'a muted window needs the audio re-encoded');
-  assert.ok(!muted.join(' ').includes('-c:a copy'));
-
-  const silent = buildFfmpegArgs({ ...base, hasAudio: false });
-  assert.ok(!silent.join(' ').includes('-c:a'), 'no audio stream, no audio arguments');
+test('transparent overlays are composited into the base filter graph before the only final encode', () => {
+  const graph = buildOverlayFilterStatements([
+    { name: 'captions', inputPattern: '/tmp/captions_%05d.png', startAtSeconds: 0 },
+    { name: 'cta', inputPattern: '/tmp/cta_%05d.png', startAtSeconds: 17.5 },
+  ], [2, 3]);
+  assert.ok(graph[0].includes('[2:v]format=rgba[overlay0]'));
+  assert.ok(graph[1].includes('[vbase][overlay0]overlay='));
+  assert.ok(graph[2].includes('[3:v]setpts=PTS+17.5000/TB,format=rgba[overlay1]'));
+  assert.ok(graph[3].includes('[vcomp0][overlay1]overlay=') && graph[3].endsWith('[v]'));
+  assert.ok(graph.filter((statement) => statement.includes('overlay=')).every((statement) =>
+    statement.includes('eof_action=pass:repeatlast=0')
+  ));
 });
 
 // ---------------------------------------------------------------------------

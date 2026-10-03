@@ -1,9 +1,10 @@
 /**
  * Pure ASS (Advanced SubStation Alpha) generation for the NATIVE caption engine.
  *
- * The ASS file is burned into the processed clip with a single FFmpeg `ass=`
- * filter pass, which runs at native speed instead of rendering every frame
- * through headless Chrome. The visual language mirrors remotion/AnimatedWord:
+ * The ASS file is rasterized onto a transparent PNG sequence by FFmpeg, which
+ * runs at native speed instead of painting caption pixels in headless Chrome.
+ * The final source video and these overlays are composited in one FFmpeg encode.
+ * The visual language mirrors remotion/AnimatedWord:
  *
  * - 4-word caption chunks (same buildCaptionChunks logic)
  * - line pop-in / fade-in entrances (ASS \t transforms, per animation style)

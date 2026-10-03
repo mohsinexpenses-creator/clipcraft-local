@@ -1,21 +1,96 @@
 import React from 'react';
 import { AbsoluteFill, useCurrentFrame, useVideoConfig } from 'remotion';
-import { OverlayStylePreset } from '../lib/types';
+import { CaptionPreset, OverlayStylePreset, WordTimestamp } from '../lib/types';
+import { getCtaBottomLiftPercent } from './CTAOverlay';
+import { AnimatedWord } from './AnimatedWord';
+import { buildFinalCaptionChunks } from './CaptionComposition';
 import { CTAOverlay } from './CTAOverlay';
 import { HookOverlay } from './HookOverlay';
 
 /**
- * Transparent overlay compositions for the NATIVE caption engine.
- *
- * The native path burns captions with FFmpeg (no Chrome), but the hook text
- * and CTA card keep their Remotion design. To avoid forcing the whole video
- * through headless Chrome again, each overlay is rendered on its OWN as a
- * short transparent PNG sequence (90 frames for a 3s hook, ~75 for a 2.5s CTA
- * - no video decode, so it takes seconds), then FFmpeg overlays the sequence
- * onto the caption-burned clip at the right time.
- *
- * The roots deliberately paint NO background, so the PNGs carry an alpha
- * channel.
+ * One transparent, full-duration overlay layer for the Remotion caption engine.
+ * The base video and audio are deliberately absent: FFmpeg composites this PNG
+ * sequence with the source crop and performs the only final video encode.
+ */
+export interface CaptionOverlayCompositionProps extends Record<string, unknown> {
+  hookText: string;
+  hookDuration: number;
+  hookStart: number;
+  hookTransitionDuration: number;
+  ctaText: string;
+  ctaDuration: number;
+  totalDuration: number;
+  words: WordTimestamp[];
+  preset: CaptionPreset;
+  hookStyle?: OverlayStylePreset;
+  ctaStyle?: OverlayStylePreset;
+  captionLiftScale?: number;
+}
+
+export const CaptionOverlayComposition: React.FC<CaptionOverlayCompositionProps> = ({
+  hookText,
+  hookDuration,
+  hookStart,
+  hookTransitionDuration,
+  ctaText,
+  ctaDuration,
+  totalDuration,
+  words,
+  preset,
+  hookStyle,
+  ctaStyle,
+  captionLiftScale = 1,
+}) => {
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  const currentTime = frame / fps;
+  const transition = hookDuration > 0
+    ? Math.max(0, Math.min(hookTransitionDuration, hookDuration / 2))
+    : 0;
+  const hookVisibleDuration = Math.max(0, hookDuration - transition);
+  const transitionStart = hookDuration - transition;
+  const transitionEnd = hookDuration + transition;
+  const chunks = buildFinalCaptionChunks(words, hookStart, hookDuration).filter((chunk) =>
+    transition <= 0 || chunk.end <= transitionStart || chunk.start >= transitionEnd
+  );
+  const captionLift =
+    getCtaBottomLiftPercent(ctaDuration, totalDuration, currentTime) * Math.max(0, captionLiftScale);
+
+  return (
+    <AbsoluteFill>
+      {hookVisibleDuration > 0.05 && hookText.trim() ? (
+        <HookOverlay
+          hookText={hookText}
+          hookDurationInSeconds={hookVisibleDuration}
+          frame={frame}
+          fps={fps}
+          style={hookStyle}
+        />
+      ) : null}
+      <AnimatedWord
+        chunks={chunks}
+        frame={frame}
+        fps={fps}
+        preset={preset}
+        bottomLiftPercent={captionLift}
+      />
+      {ctaDuration > 0 && ctaText.trim() ? (
+        <CTAOverlay
+          ctaText={ctaText}
+          ctaDurationInSeconds={ctaDuration}
+          totalDurationInSeconds={totalDuration}
+          frame={frame}
+          fps={fps}
+          style={ctaStyle}
+        />
+      ) : null}
+    </AbsoluteFill>
+  );
+};
+
+/**
+ * Transparent hook-only composition used by the native engine. The root paints
+ * no background so the rendered PNGs retain alpha and can be composited by FFmpeg.
  */
 export const HookOverlayComposition: React.FC<{
   hookText: string;
@@ -46,11 +121,7 @@ export const CtaOverlayComposition: React.FC<{
   const { fps } = useVideoConfig();
   return (
     <AbsoluteFill>
-      {/*
-        Standalone: the card's window covers the whole composition, and the
-        worker overlays it at totalDuration - ctaDuration, so timing in the
-        final clip matches the main composition exactly.
-      */}
+      {/* The card's window covers the whole composition; FFmpeg shifts it to the end. */}
       <CTAOverlay
         ctaText={ctaText}
         ctaDurationInSeconds={ctaDuration}

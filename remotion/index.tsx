@@ -2,15 +2,17 @@ import React from 'react';
 import { Composition, registerRoot } from 'remotion';
 import { DEFAULT_CAPTION_PRESETS, DEFAULT_OVERLAY_STYLE_PRESETS } from '../lib/presets';
 import { CaptionComposition, CaptionCompositionProps } from './CaptionComposition';
-import { CtaOverlayComposition, HookOverlayComposition } from './OverlayCompositions';
+import {
+  CaptionOverlayComposition,
+  type CaptionOverlayCompositionProps,
+  CtaOverlayComposition,
+  HookOverlayComposition,
+} from './OverlayCompositions';
 
 /**
- * fps / durationInFrames here are STUDIO/PREVIEW defaults only.
- *
- * The worker (worker/remotion-renderer.ts) derives the real values from the
- * processed clip with ffprobe and passes them to renderMedia(), because the old
- * hard-coded `30fps` desynced captions and changed clip speed whenever the source
- * was 24/25/50/60fps.
+ * fps / durationInFrames here are STUDIO/PREVIEW defaults only. The worker
+ * supplies the source-derived FPS and actual overlay duration when it paints
+ * transparent frames; the source video is composed later by FFmpeg.
  */
 const PREVIEW_FPS = 30;
 const PREVIEW_DURATION_SECONDS = 30;
@@ -55,10 +57,38 @@ export const RemotionRoot: React.FC = () => {
           } satisfies CaptionCompositionProps
         }
       />
+      <Composition
+        id="CaptionOverlayComposition"
+        component={CaptionOverlayComposition as unknown as React.ComponentType<Record<string, unknown>>}
+        durationInFrames={PREVIEW_FPS * PREVIEW_DURATION_SECONDS}
+        fps={PREVIEW_FPS}
+        width={1080}
+        height={1920}
+        defaultProps={
+          {
+            hookText: 'THE 1 SECRET YOU WERE NEVER TOLD',
+            hookDuration: 3,
+            hookStart: 0,
+            hookTransitionDuration: 0.5,
+            ctaText: 'FOLLOW FOR MORE CLIPS LIKE THIS',
+            ctaDuration: 2.5,
+            totalDuration: PREVIEW_DURATION_SECONDS,
+            words: [
+              { word: 'Welcome', start: 0.2, end: 0.7 },
+              { word: 'to', start: 0.8, end: 1.0 },
+              { word: 'this', start: 1.1, end: 1.3 },
+              { word: 'game', start: 1.4, end: 1.8 },
+            ],
+            preset: DEFAULT_CAPTION_PRESETS[0],
+            hookStyle: DEFAULT_OVERLAY_STYLE_PRESETS.find((p) => p.kind === 'hook'),
+            ctaStyle: DEFAULT_OVERLAY_STYLE_PRESETS.find((p) => p.kind === 'cta'),
+          } satisfies CaptionOverlayCompositionProps
+        }
+      />
       {/*
-        Transparent overlay compositions for the native caption engine
-        (worker/native-captions.ts renders them as short PNG sequences and
-        FFmpeg composites them onto the caption-burned clip).
+        Transparent PNG compositions. The native engine uses the short hook/CTA
+        layers plus an ASS-generated caption layer; the Remotion engine renders a
+        single full-timeline sequence. FFmpeg composites them with the base crop.
       */}
       <Composition
         id="HookOverlayComposition"

@@ -89,13 +89,16 @@ covers the least, and the log line says so.
 
 ## Rendering
 
-Both caption engines honour the style presets:
+Both caption engines honour the style presets and prepare transparent frames that
+FFmpeg composites with the source crop in the single final video pass:
 
-- **Remotion** — `CaptionComposition` → `HookOverlay` / `CTAOverlay` receives the
-  resolved preset as `hookStyle` / `ctaStyle`.
-- **Native (fast)** — `renderNativeCaptions` renders the transparent
-  `HookOverlayComposition` / `CtaOverlayComposition` PNG sequences with the same
-  `hookStyle` / `ctaStyle` input props, so style changes show up in both engines.
+- **Remotion** — `CaptionOverlayComposition` paints the full-timeline captions,
+  hook and CTA into one transparent PNG sequence.
+- **Native (fast)** — ASS subtitles are rasterized to transparent caption PNGs;
+  `HookOverlayComposition` / `CtaOverlayComposition` paint the hook/CTA layers.
+
+Neither engine encodes the source video, so switching engines does not introduce
+an extra lossy video generation.
 
 The worker resolves the clip's `hookStylePresetId` / `ctaStylePresetId` (defaults
 `hook-bold-yellow` / `cta-gradient-green`). Each clip can pick its own pair — see

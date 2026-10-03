@@ -152,12 +152,12 @@ export interface OverlayStylePreset {
 }
 
 /**
- * How the caption pass is produced:
- * - `remotion`: every frame rendered through headless Chrome (smoothest spring
- *   animations, but slow on long clips).
- * - `native`: captions burned with FFmpeg (ASS) in a single fast pass; hook/CTA
- *   cards are still designed in Remotion but rendered as tiny transparent
- *   frame sequences.
+ * How transparent caption/overlay frames are prepared before the final FFmpeg
+ * video pass:
+ * - `remotion`: the full caption + hook + CTA timeline is painted by headless
+ *   Chrome (smooth spring animations, slower on long clips).
+ * - `native`: ASS captions are rasterized to PNGs; hook/CTA cards are still
+ *   designed in Remotion and painted as transparent frame sequences.
  */
 export type CaptionEngine = 'remotion' | 'native';
 

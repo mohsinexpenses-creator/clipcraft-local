@@ -35,13 +35,12 @@ detection are fully local (whisper.cpp + OpenCV YuNet).
      hook text and the CTA card are placed so they never cover a face.
    There is **no fallback detector**: if no face can be found, the render fails
    with a clear explanation instead of guessing.
-6. **Render** — FFmpeg (mirror → crop → colour → hook intro, in **one** frame-exact pass
-   that keeps the source's frame rate and audio) plus one of
-   two per-clip caption engines:
-   - `remotion` (default, "Premium") — every frame painted in headless Chrome;
-     spring-smooth but slow on long clips.
-   - `native` ("Fast") — captions burned in from an ASS file in one near-real-time
-     FFmpeg pass; hook/CTA cards render as PNG sequences composited by the same pass.
+6. **Render** — the selected caption engine prepares transparent overlay frames,
+   then one FFmpeg filter graph performs the mirror/crop/colour work, hook intro,
+   caption + card compositing, and the single final H.264 encode. The `remotion`
+   engine (default, “Premium”) paints animated overlays in headless Chrome; `native`
+   (“Fast”) rasterizes ASS captions and uses Remotion only for the hook/CTA cards.
+   Both produce the same 1080×1920 output path without a lossy intermediate video.
    On-screen hook/CTA text comes from user-editable **style presets** (font,
    colours, position, animation, solid or **gradient** card background).
 7. **Mask profanity** — captions and overlay text are always masked on screen
@@ -64,7 +63,7 @@ detection are fully local (whisper.cpp + OpenCV YuNet).
 | Speech-to-text | whisper.cpp (local binary + ggml model; optional Deepgram override) |
 | Face detection | OpenCV **YuNet** ONNX on `onnxruntime-node` (no face-api, no vision APIs) |
 | LLM | Google AI Studio only — a 5-slot Gemini fallback chain in `lib/llm.ts` (plain `fetch`, no SDKs) |
-| Captions | Remotion (per-frame, default) or native ASS burn-in (fast) |
+| Caption overlays | Remotion transparent frames (default) or native ASS rasterization (fast) |
 
 ## Quickstart
 
@@ -120,10 +119,9 @@ worker/                 the long-running BullMQ consumer
   asd/                  active-speaker detection (audio, YuNet, tracker, scoring)
   yunet-detector.ts     YuNet ONNX pre/post-processing (OpenCV-exact)
   layout.ts             speaker-focus vs split-grid plans (peak-concurrent cells)
-  ffmpeg-pipeline.ts    hflip → animated crop → colour → hook concat (dip-to-black)
-  remotion-renderer.ts  "remotion" caption engine
-  native-captions.ts    "native" engine (ASS + PNG-sequence overlays)
-  clip-http-server.ts   throwaway HTTP server so Remotion can read the clip
+  ffmpeg-pipeline.ts    crop/overlay graph and single final H.264 encode
+  remotion-renderer.ts  "remotion" transparent overlay-frame renderer
+  native-captions.ts    "native" ASS caption PNGs + hook/CTA overlay frames
 remotion/               compositions: captions, hook overlay, CTA overlay
 scripts/                setup-whisper.{mjs,ps1}, setup-yunet.mjs
 bin/whisper-win-x64/    committed Windows whisper.cpp build (whisper-cli + DLLs)

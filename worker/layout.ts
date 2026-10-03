@@ -162,7 +162,7 @@ function tMinus(time: number): string {
 }
 
 /**
- * Generalised pan expression: piecewise-linear window POSITION over time for
+ * Generalised pan expression: piecewise-smooth window POSITION over time for
  * one axis (X or Y), given face CENTRES and the anchor fraction of the window
  * that the centre should sit at. Clamped so the window never leaves the frame.
  * (This is a generalisation of the original buildCropXExpression - pass
@@ -202,7 +202,11 @@ export function buildPanExpression(
     const segLen = Math.max(1e-3, b.t - a.t);
     const pa = posFor(a[axis]).toFixed(1);
     const pb = posFor(b[axis]).toFixed(1);
-    const interp = `(${pa}+(${pb}-${pa})*(${tMinus(a.t)})/${segLen.toFixed(3)})`;
+    const u = `(${tMinus(a.t)})/${segLen.toFixed(3)}`;
+    // Smoothstep the interval so the window eases in/out instead of producing
+    // a linear crawl that is especially visible after crop-coordinate rounding.
+    const eased = `((${u})*(${u})*(3-2*(${u})))`;
+    const interp = `(${pa}+(${pb}-${pa})*${eased})`;
     expr = `if(gte(t,${a.t.toFixed(3)})*lte(t,${b.t.toFixed(3)}),${interp},${expr})`;
   }
   if (points[0].t > 0) {
@@ -222,7 +226,7 @@ export function buildPanExpression(
  * 2. Deviation decimation (decimateTrack): collinear points are removed
  *    without changing the path, and a hard cap (24) keeps the generated
  *    FFmpeg expressions inside command-line limits - 24 keyframes over 60s
- *    is one every 2.5s, which is still smooth as piecewise-linear motion.
+ *    is one every 2.5s; the FFmpeg expression smoothstep-eases between them.
  */
 export function flattenAndDecimate(points: PanPoint[], maxPoints = 24, deadZonePx = 6): PanPoint[] {
   if (points.length === 0) return points;
@@ -307,7 +311,7 @@ function median(values: number[]): number {
  * body movement) is gone. The MEDIAN (not the mean) rejects outliers from
  * brief occlusions and head turns.
  *
- * The crop filter is piecewise-linear over keyframes, so "lock on A until B is
+ * The crop filter smoothstep-eases between keyframes, so "lock on A until B is
  * judged the speaker, then a fast glide to B" needs explicit keyframes:
  *   - at seg.t0       : the previous speaker's anchor (still locked on A at the
  *                      exact moment B starts - no creeping toward B early),
@@ -824,7 +828,7 @@ export function buildSingleFilterParts(
   const parts: string[] = [
     'setpts=PTS-STARTPTS',
     'hflip',
-    `crop=${plan.cropW}:${plan.cropH}:'${xExpr}':'${yExpr}'`,
+    `crop=${plan.cropW}:${plan.cropH}:'${xExpr}':'${yExpr}':exact=1`,
   ];
   if (colorFilter) parts.push(colorFilter);
   parts.push(`scale=${outW}:${outH}:flags=lanczos`);
@@ -880,14 +884,13 @@ export function buildSplitFilterStatements(
     : `[${input}]setpts=PTS-STARTPTS,hflip,format=yuv420p`;
   out.push(`${pre},split=${n}${plan.cells.map((_, i) => `[${prefix}s${i}]`).join('')}`);
 
-  // One crop+scale per person. (Measured: bicubic and lanczos reconstruct an
-  // enlarged photo equally well - SSIM 0.834 vs 0.831 at 2x - so the scaler is
-  // not what matters here; the MAGNIFICATION is, and cellCropSize() caps that.)
+  // One crop+scale per person. Use Lanczos for the final resize; pane crop size
+  // still controls magnification so small source faces are not enlarged too far.
   plan.cells.forEach((cell, i) => {
     const expr = cameraExpressions(cell.camera, srcW, srcH, cell.cropW, cell.cropH, timeOffset, io.windowSeconds);
     const scaled =
-      `[${prefix}s${i}]crop=${cell.cropW}:${cell.cropH}:'${expr.x}':'${expr.y}',` +
-      `scale=${cell.cellW}:${cell.cellH}:flags=bicubic,format=yuv420p`;
+      `[${prefix}s${i}]crop=${cell.cropW}:${cell.cropH}:'${expr.x}':'${expr.y}':exact=1,` +
+      `scale=${cell.cellW}:${cell.cellH}:flags=lanczos,format=yuv420p`;
     if (i === 0) {
       out.push(`${scaled},pad=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:${cell.cellX}:${cell.cellY}:color=black[${n === 1 ? output : `${prefix}o0`}]`);
     } else {

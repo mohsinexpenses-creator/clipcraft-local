@@ -37,9 +37,10 @@ npm install
 
 `npm install` fetches:
 
-- `ffmpeg-static` → the FFmpeg binary used for cutting/mirroring/cropping/concat
+- `ffmpeg-static` → the FFmpeg binary used for trimming, cropping, compositing,
+  and the one final H.264 encode
 - `@remotion/bundler` + `@remotion/renderer` → the headless browser Remotion needs
-  to render captions (first render downloads Chromium automatically)
+  to paint transparent caption / hook / CTA frames (first render downloads Chromium automatically)
 - `onnxruntime-node` → the ONNX runtime that runs the committed YuNet face model
   (fully local, no vision API)
 
@@ -74,15 +75,17 @@ Both `npm run dev` and `npm run worker` load `.env.local` (via `@next/env`'s
 | `WHISPER_MODEL_PATH` | auto-detect | Overrides model discovery (`models/ggml-*.bin`). |
 | `WHISPER_LANGUAGE` | `auto` | e.g. `ur`, `hi`, `en`. `auto` detects the spoken language (needed for Urdu/Hindi/Punjabi). |
 | `WHISPER_THREADS` | half your cores (2–8) | CPU threads for whisper. |
-| `FFMPEG_PATH` | `ffmpeg-static` | Point at your own `ffmpeg.exe` if the npm download failed. Must be FFmpeg ≥ 5.1 (the pipeline uses `-fps_mode`; `-vsync` was removed in 7). |
+| `FFMPEG_PATH` | `ffmpeg-static` | Point at your own FFmpeg binary if the npm download failed. Must be FFmpeg ≥ 5.1 (`-fps_mode` is used). |
+| `VIDEO_CRF` | `17` | Final libx264 quality; accepted range is 16–18 (lower means larger, higher-quality files). |
+| `VIDEO_PRESET` | `slow` | libx264 speed/efficiency preset. Use `medium` to trade compression efficiency for faster renders. |
 | `PORT` | `3000` | Next.js port. |
 | `ALLOWED_DEV_ORIGINS` | `*.e2b.app` (built in) | Extra hostnames allowed for dev assets (tunnels, LAN). Comma-separated, no scheme/port. |
-| `WORKER_CONCURRENCY` | `1` | Clips rendered in parallel. Keep at 1 on a normal PC: each job runs FFmpeg + a headless Chrome render. |
-| `REMOTION_CONCURRENCY` | auto (half the cores) | Chrome tabs Remotion uses per render. |
+| `WORKER_CONCURRENCY` | `1` | Clips rendered in parallel. Keep at 1 on a normal PC: each job runs FFmpeg plus transparent overlay-frame generation. |
+| `REMOTION_CONCURRENCY` | auto | Chrome tabs Remotion uses while painting transparent overlays. |
 | `REMOTION_LOG_LEVEL` | `info` | `verbose` when debugging a render. |
 | `REMOTION_TIMEOUT_MINUTES` | `60` | Per-render ceiling. |
-| `OFFTHREAD_VIDEO_CACHE_MB` | Remotion default | Raise (e.g. `2048`) only if a render fails with "No frame found at position" on a machine with plenty of RAM. |
-| `OFFTHREAD_VIDEO_THREADS` | Remotion default | Compositor frame-extraction threads. |
+
+
 | `ENABLE_YT_IMPORT` | off | Set `1` to re-enable the (fragile) YouTube download path on the upload page. |
 | `PROFANITY_AUDIO_MODE` | `mute` | Render-time audio handling of profane words from the transcript: `mute` (silence the word), `beep` (1 kHz tone), `off` (leave audio alone). Captions/overlay text are masked **regardless**; the stored transcript keeps the original words, so changing this only needs a re-render. |
 | `UPLOAD_DIR` | `uploads` | Where source videos + in-progress upload sessions are stored. |
@@ -201,10 +204,10 @@ you exactly what to fix.
 5. **Render** (per clip): a second LLM pass picks the most gripping moment in the
    clip → it is duplicated to the **start** as a **fixed 3 s hook** with a 0.5 s
    dip-to-black → active-speaker layout planning (`worker/asd/` +
-   `worker/layout.ts`) → FFmpeg (mirror + animated crop + colour + hook concat) →
-   captions via the clip's **caption engine** (`remotion` default, or `native`
-   fast ASS burn-in) → on-screen hook/CTA cards from your style presets
-   (solid or **gradient** backgrounds).
+   `worker/layout.ts`) → transparent caption / hook / CTA frames are prepared by
+   the selected **caption engine** (`remotion` default, or native ASS for captions)
+   → one FFmpeg graph does the source trim, mirror, crop, colour, hook intro, overlay
+   compositing, audio handling and the single final H.264 encode (1080×1920).
 6. Output: `generated-clips/001_my_recording/<clip title>.mp4`, tracked in
    MongoDB. The dashboard plays it through `/api/media/...` (Range-enabled, so
    seeking works).
@@ -218,36 +221,24 @@ Speaker layouts have no fallback detector by design: run `npm run setup:yunet`
 (model), and if a face genuinely can't be found, pick a window where the speaker
 is visible, reasonably large and well lit — then re-render.
 
-**"Compositor error: No frame found at position N"**
-Two known causes, both handled: (1) the hook+base clip used to be stitched with
-FFmpeg `-c copy`, leaving the second segment's timestamps unusable for Remotion's
-compositor — the concat step now re-encodes into one clean CFR file; (2) a
-too-small offthread video frame cache on low-memory machines — raise
-`OFFTHREAD_VIDEO_CACHE_MB`. If it still happens, post the processed clip and
-`npx remotion versions` output at https://remotion.dev/report.
-
-**"Not allowed to load local resource: file:///…" / "Can only download URLs
-starting with http:// or https://"**
-Remotion renders inside headless Chrome, which **cannot read the filesystem** —
-video sources must be http(s)/data: URLs (or `staticFile()`). The worker serves the
-processed clip from a throwaway `127.0.0.1` HTTP server for the duration of the
-render (`worker/clip-http-server.ts`) and passes that URL as `videoSrc`. The worker
-logs the served URL: `[Remotion Renderer] Serving clip to Remotion via
-http://127.0.0.1:PORT/clip.mp4`.
+**Remotion overlay-frame rendering fails**
+The worker uses Remotion only to paint transparent PNG overlays; the source video
+never enters Chrome. On the first run Remotion downloads its browser shell. Check
+the `[Remotion Renderer]` log for bundle/browser errors, then retry with a lower
+`REMOTION_CONCURRENCY` if memory is constrained. Increase
+`REMOTION_TIMEOUT_MINUTES` only for legitimately long overlay sequences.
 
 **Rendered clip has no video / black frames**
-Check the worker log line `[Remotion Renderer] Source: WxH @ Nfps …` — if the
-source probe failed, the FFmpeg stage produced a bad intermediate. If it looks
-correct, confirm the "Serving clip" line appears right after it and the URL is
-reachable in a browser tab on the same machine.
+The source crop and overlays are composed in the final FFmpeg pass. Check the
+`[FFmpeg]` log for the filter/encode error and verify `FFMPEG_PATH` points to a
+build with libx264; the transparent overlay render cannot replace or decode the
+source video.
 
 **Rendered clip is silent**
-The renderer sets `enforceAudioTrack: true` and the FFmpeg stage muxes a silent
-`anullsrc` track when the source has no audio, so the track always exists. (Note:
-profanity `mute` mode intentionally silences short windows — see
-`PROFANITY_AUDIO_MODE`.) If the log prints `WARNING: the rendered clip has no audio
-stream`, the processed clip lost its audio — check the `-map` output in the worker
-log.
+The final FFmpeg pass maps the source audio (or creates a silent `anullsrc` track
+when the source has none) and encodes it as AAC. `PROFANITY_AUDIO_MODE=mute`
+intentionally silences transcript windows; check the `[FFmpeg]` mapping/filter log
+if other audio is missing.
 
 **Captions out of sync / clip plays at the wrong speed**
 fps is derived from the source (`normalizeFps`) and passed to both the FFmpeg stage
@@ -317,7 +308,7 @@ exactly what a local app has to do. The build still finishes successfully; the
 warning matters only for a Vercel deployment, which this project is explicitly not.
 
 **First render downloads a headless browser**
-Remotion fetches its headless Chrome shell on the first `renderMedia` call (and
+Remotion fetches its headless Chrome shell on the first `renderFrames` call (and
 `npm run studio` needs it too) — a one-time download of a few hundred MB. If your
 network blocks it, allow the Chrome-for-Testing CDN, or run
 `npx remotion browser ensure`.
@@ -376,12 +367,10 @@ worker/frame-sampler.ts    mirrored frame sampling + pan smoothing/decimation
 worker/layout.ts           speaker-focus vs split-grid plans (peak-concurrent cells)
 worker/camera-lock.ts      locked split-pane camera (hold still, re-centre only when the head leaves)
 worker/overlay-layout.ts   layout-aware caption / hook / CTA placement (off the faces in a split)
-worker/ffmpeg-pipeline.ts  ONE frame-exact pass: hflip → crop → colour → scale → hook intro
-                           (0.5 s dip-to-black)
-worker/remotion-renderer.ts  "remotion" caption engine (bundle → renderMedia)
-worker/native-captions.ts  "native" engine: PNG-sequence hook/CTA overlays
+worker/ffmpeg-pipeline.ts  One final FFmpeg graph: hflip → crop → colour → hook → overlays → H.264
+worker/remotion-renderer.ts  "remotion" engine: transparent full-timeline overlay PNG sequence
+worker/native-captions.ts  "native" engine: ASS caption PNGs + Remotion hook/CTA sequences
 worker/captions-ass.ts     ASS caption generation (karaoke fill, word pop, CTA lift)
-worker/clip-http-server.ts throwaway 127.0.0.1 HTTP server for Remotion
 remotion/                  CaptionComposition + AnimatedWord + Hook/CTA overlays
 scripts/setup-whisper.*    binary + ggml model downloader (.mjs and .ps1)
 scripts/setup-yunet.mjs    YuNet model downloader with SHA-256 verification
