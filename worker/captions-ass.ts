@@ -38,6 +38,12 @@ export interface AssGenerationInput {
    * fading and the audio is silent there).
    */
   hookTransitionDuration?: number;
+  /**
+   * Scale of the usual "lift the captions while the CTA card is on screen" (1 =
+   * the default 15% lift, 0 = captions never move). The split-screen layout places
+   * the CTA clear of the captions (worker/overlay-layout.ts), so it passes 0.
+   */
+  captionLiftScale?: number;
 }
 
 /** Keep in sync with AnimatedWord's HOLD_AFTER_SECONDS. */
@@ -191,7 +197,9 @@ function buildDialogue(
 
   // Caption lift while the CTA card is on screen (evaluated at the chunk centre).
   const chunkCenter = (start + chunk.end) / 2;
-  const liftPercent = getCtaBottomLiftPercent(ctaDuration, totalDurationSeconds, chunkCenter);
+  const liftPercent =
+    getCtaBottomLiftPercent(ctaDuration, totalDurationSeconds, chunkCenter) *
+    Math.max(0, input.captionLiftScale ?? 1);
   const y = Math.round(baseYFor(positionY, size) - (liftPercent / 100) * PLAY_RES_Y);
 
   const wordsShown = chunk.words.map((w) => {

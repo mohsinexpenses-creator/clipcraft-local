@@ -136,7 +136,7 @@ test('speaker-focus plan follows the talking person and glides at the change', (
   assert.ok(lastX > 1100, `ends on the right speaker (x=${lastX})`);
 });
 
-test('split-screen plan builds adaptive cells with active-speaker emphasis', () => {
+test('split-screen plan builds adaptive cells (one per person, no emphasis layer)', () => {
   const a = panTrack(1, Array.from({ length: 40 }, () => 400));
   const b = panTrack(2, Array.from({ length: 40 }, () => 1500));
   const plan = buildLayoutPlan(
@@ -152,10 +152,55 @@ test('split-screen plan builds adaptive cells with active-speaker emphasis', () 
   assert.equal(plan.mode, 'split');
   if (plan.mode === 'split') {
     assert.equal(plan.cells.length, 2, 'two people -> two cells');
-    // Active-speaker emphasis follows the speaker timeline.
-    assert.ok(plan.emphasis.length >= 1, 'emphasis timeline present');
     const cellIds = plan.cells.map((c) => c.trackId);
     assert.ok(cellIds.includes(1) && cellIds.includes(2));
+    // The red "active speaker" frame is gone for good - the plan has no such layer.
+    assert.equal('emphasis' in plan, false, 'no emphasis layer in the plan');
+  }
+});
+
+test('split filter graph draws NOTHING on top of the panes (no red frame)', () => {
+  const a = panTrack(1, Array.from({ length: 40 }, () => 400));
+  const b = panTrack(2, Array.from({ length: 40 }, () => 1500));
+  const plan = buildLayoutPlan(
+    // Both people speak, in turns - the old planner drew a red box on whoever talked.
+    asd([a, b], [
+      { trackId: 1, t0: 0, t1: 5 },
+      { trackId: 2, t0: 5, t1: 10 },
+    ]),
+    'split-screen',
+    1920,
+    1080
+  );
+  assert.equal(plan.mode, 'split');
+  if (plan.mode === 'split') {
+    const graph = buildSplitFilterComplex(plan, 1920, 1080, '');
+    assert.ok(!/drawbox/i.test(graph), 'no drawbox filter');
+    assert.ok(!/ef4444|0xef|red/i.test(graph), 'no red colour anywhere in the graph');
+    assert.ok(graph.includes('[vout]'), 'still ends in [vout]');
+  }
+});
+
+test('split panes of people who sit still get CONSTANT crop expressions (no per-frame motion)', () => {
+  const a = panTrack(1, Array.from({ length: 40 }, (_, i) => 400 + (i % 2 === 0 ? 3 : -3)));
+  const b = panTrack(2, Array.from({ length: 40 }, (_, i) => 1500 + (i % 3 === 0 ? 4 : -2)));
+  const plan = buildLayoutPlan(
+    asd([a, b], [{ trackId: 1, t0: 0, t1: 10 }]),
+    'split-screen',
+    1920,
+    1080
+  );
+  assert.equal(plan.mode, 'split');
+  if (plan.mode === 'split') {
+    for (const cell of plan.cells) {
+      assert.equal(cell.camera.moves.length, 0, `pane of person ${cell.trackId} never moves`);
+    }
+    const graph = buildSplitFilterComplex(plan, 1920, 1080, '');
+    const crops = graph.match(/crop=\d+:\d+:'[^']*':'[^']*'/g) ?? [];
+    assert.equal(crops.length, 2);
+    for (const crop of crops) {
+      assert.ok(!/\bt\b/.test(crop.replace(/crop=\d+:\d+/, '')), `no time variable in ${crop}`);
+    }
   }
 });
 
@@ -259,7 +304,7 @@ test('split filter graph never consumes a pad label twice (FFmpeg rejects that)'
   );
   assert.equal(plan.mode, 'split');
   if (plan.mode !== 'split') return;
-  const graph = buildSplitFilterComplex(plan, 1920, 1080, 30, 10, '');
+  const graph = buildSplitFilterComplex(plan, 1920, 1080, '');
   assert.ok(
     graph.includes(`split=${plan.cells.length}`),
     `base fanned out with split=${plan.cells.length}: ${graph.slice(0, 120)}...`
@@ -450,9 +495,9 @@ test('a tiny background face (poster / screen) does not steal the second pane fr
   if (conversation.mode === 'split') assert.equal(conversation.cells.length, 2);
 });
 
-test('split panes frame the face a little ABOVE centre (more torso, not dead centre)', () => {
-  // Static people at cy=400 in 480px-high crops: y = 400 - 0.45*480 = 184
-  // (dead centre would be 160).
+test('split panes centre the HEAD (hair to chin) in the pane, which leaves free bands for overlays', () => {
+  // Static people at cy=400 in 480px-high crops: the face centre sits at 55% of the window,
+  // y = 400 - 0.55*480 = 136 (the head reaches higher above the face centre than below it).
   const a = panTrack(1, Array.from({ length: 40 }, () => 600), 0.25, 100);
   const b = panTrack(2, Array.from({ length: 40 }, () => 1300), 0.25, 100);
   const plan = buildLayoutPlan(
@@ -466,8 +511,22 @@ test('split panes frame the face a little ABOVE centre (more torso, not dead cen
   );
   assert.equal(plan.mode, 'split');
   if (plan.mode !== 'split') return;
-  const graph = buildSplitFilterComplex(plan, 1920, 1080, 30, 10, '');
-  assert.ok(/crop=540:480:'[^']*':'(min\(max\()?184/.test(graph), `y offset 184 in: ${graph.slice(0, 400)}`);
+  const graph = buildSplitFilterComplex(plan, 1920, 1080, '');
+  assert.ok(/crop=540:480:'[^']*':'136\.0'/.test(graph), `y offset 136 in: ${graph.slice(0, 400)}`);
+
+  // The zones the overlay planner works from: 2x magnification (960/480), face centre at
+  // 55% of the pane, face = 125px tall -> 250px on the canvas.
+  for (const cell of plan.cells) {
+    const faceCentre = cell.cellY + 0.55 * 960;
+    assert.ok(Math.abs((cell.faceZone.top + cell.faceZone.bottom) / 2 - faceCentre) < 6, 'face at 55% of the pane');
+    assert.ok(Math.abs(cell.faceZone.bottom - cell.faceZone.top - 250) < 6, 'face is ~250px tall on the canvas');
+    assert.ok(cell.headZone.top < cell.faceZone.top, 'head zone reaches above the face (hair)');
+    assert.ok(cell.headZone.bottom >= cell.faceZone.bottom, 'head zone covers the chin');
+    // head box centred in the pane: about as much room above the hair as below the chin
+    const above = cell.headZone.top - cell.cellY;
+    const below = cell.cellY + 960 - cell.headZone.bottom;
+    assert.ok(Math.abs(above - below) < 60, `head centred in the pane (room above ${above.toFixed(0)}, below ${below.toFixed(0)})`);
+  }
 });
 
 test('two people who never share the screen (camera cuts): single window, and the reason says so', () => {

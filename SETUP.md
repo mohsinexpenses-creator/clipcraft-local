@@ -154,7 +154,7 @@ Hugging Face mirrors, and refuses a file that doesn't match the official
 "pretend tracking"). If the model is missing or the ONNX runtime fails, speaker
 layout renders **stop with a clear error** telling you to run
 `npm run setup:yunet` — see [docs/LAYOUTS.md](./docs/LAYOUTS.md) for the full
-tracking design (audio↔motion fusion, hysteresis, split-grid emphasis).
+tracking design (audio↔motion fusion, hysteresis, the locked split-screen panes).
 
 ---
 
@@ -374,7 +374,9 @@ worker/asd/                active-speaker detection: audio.ts, yunet, tracker.ts
 worker/yunet-detector.ts   YuNet ONNX detector (OpenCV-exact pre/post-processing)
 worker/frame-sampler.ts    mirrored frame sampling + pan smoothing/decimation
 worker/layout.ts           speaker-focus vs split-grid plans (peak-concurrent cells)
-worker/ffmpeg-pipeline.ts  hflip → animated crop → colour → scale → hook concat
+worker/camera-lock.ts      locked split-pane camera (hold still, re-centre only when the head leaves)
+worker/overlay-layout.ts   layout-aware caption / hook / CTA placement (off the faces in a split)
+worker/ffmpeg-pipeline.ts  ONE frame-exact pass: hflip → crop → colour → scale → hook intro
                            (0.5 s dip-to-black)
 worker/remotion-renderer.ts  "remotion" caption engine (bundle → renderMedia)
 worker/native-captions.ts  "native" engine: PNG-sequence hook/CTA overlays

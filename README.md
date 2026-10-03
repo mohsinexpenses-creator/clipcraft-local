@@ -27,13 +27,16 @@ detection are fully local (whisper.cpp + OpenCV YuNet).
 5. **Frame the speaker** — active-speaker detection (YuNet faces + audio/motion
    fusion, `worker/asd/`) drives the 9:16 crop:
    - **Speaker focus** — one window that glides to follow whoever is talking.
-   - **Split screen** — an adaptive 2/3/4-cell grid where each pane tracks a person
-     and the active speaker's cell gets a red emphasis frame. Two people = two stacked
-     halves with a **stable** assignment (left person always the top pane, right person
-     the bottom) — it never swaps mid-clip.
+   - **Split screen** — an adaptive 2/3/4-cell grid with one pane per person. Each pane
+     is a **locked** camera: placed on the person once, perfectly still while their
+     head stays in frame, and it only glides to re-centre them if they actually leave
+     it. Two people = two stacked halves with a **stable** assignment (left person
+     always the top pane, right person the bottom) — it never swaps mid-clip. Captions,
+     hook text and the CTA card are placed so they never cover a face.
    There is **no fallback detector**: if no face can be found, the render fails
    with a clear explanation instead of guessing.
-6. **Render** — FFmpeg (mirror → animated crop → colour → hook concat) plus one of
+6. **Render** — FFmpeg (mirror → crop → colour → hook intro, in **one** frame-exact pass
+   that keeps the source's frame rate and audio) plus one of
    two per-clip caption engines:
    - `remotion` (default, "Premium") — every frame painted in headless Chrome;
      spring-smooth but slow on long clips.

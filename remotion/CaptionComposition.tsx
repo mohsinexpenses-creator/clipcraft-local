@@ -51,6 +51,12 @@ export interface CaptionCompositionProps {
   hookStyle?: OverlayStylePreset;
   /** Visual style of the end-of-clip CTA overlay (style preset). */
   ctaStyle?: OverlayStylePreset;
+  /**
+   * Scale of the usual caption lift while the CTA card is on screen (1 = default,
+   * 0 = captions stay put). The split-screen layout places the CTA clear of the
+   * captions, so it passes 0.
+   */
+  captionLiftScale?: number;
 }
 
 /**
@@ -164,6 +170,7 @@ export const CaptionComposition: React.FC<CaptionCompositionProps> = ({
   preset,
   hookStyle,
   ctaStyle,
+  captionLiftScale = 1,
 }) => {
   const frame = useCurrentFrame();
   const { fps, durationInFrames } = useVideoConfig();
@@ -199,7 +206,8 @@ export const CaptionComposition: React.FC<CaptionCompositionProps> = ({
 
   const currentTime = frame / fps;
   // Lift the captions while the end CTA card occupies the same bottom area.
-  const captionLiftPercent = getCtaBottomLiftPercent(ctaDuration, totalDurationInSeconds, currentTime);
+  const captionLiftPercent =
+    getCtaBottomLiftPercent(ctaDuration, totalDurationInSeconds, currentTime) * Math.max(0, captionLiftScale);
 
   // The FFmpeg stage outputs the processed clip at exactly the composition canvas
   // (1080x1920), so the video FILLS the frame - no black bars, and the hook/CTA/

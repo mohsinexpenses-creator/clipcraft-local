@@ -28,6 +28,8 @@ export interface RenderCaptionsOptions {
   hookStyle: OverlayStylePreset;
   /** Visual style of the end-of-clip CTA overlay. */
   ctaStyle: OverlayStylePreset;
+  /** 1 = lift the captions while the CTA shows (default); 0 = they stay put (split screen). */
+  captionLiftScale?: number;
   onProgress?: (progress: number) => void;
   /** Poll for a user-requested cancel; the in-flight render is abandoned. */
   isCancelled?: () => boolean;
@@ -125,7 +127,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 export async function renderCaptionsAndOverlays(
   options: RenderCaptionsOptions
 ): Promise<RenderCaptionsResult> {
-  const { videoPath, outputPath, hookText, hookDuration, hookStart, ctaText, ctaDuration, words, preset, hookStyle, ctaStyle, onProgress, isCancelled } =
+  const { videoPath, outputPath, hookText, hookDuration, hookStart, ctaText, ctaDuration, words, preset, hookStyle, ctaStyle, captionLiftScale, onProgress, isCancelled } =
     options;
 
   log.detail(`Captions & overlays for ${color.bold(path.basename(videoPath))}`);
@@ -241,6 +243,7 @@ export async function renderCaptionsAndOverlays(
       preset,
       hookStyle,
       ctaStyle,
+      captionLiftScale: captionLiftScale ?? 1,
     };
 
     const composition = await withTimeout(

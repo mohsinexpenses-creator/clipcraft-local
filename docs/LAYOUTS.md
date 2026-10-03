@@ -8,7 +8,7 @@ is a per-clip choice with two options — plus automatic tracking of **who is ta
 | Layout | What it looks like | Best for |
 | --- | --- | --- |
 | **Speaker focus** | A single full-height 9:16 window slides along the source and **follows the active speaker**. When the speaker changes, the frame glides to the new person (~0.6s camera-like pan). | Podcasts, interviews, one dominant talker. |
-| **Split screen (multi-person split)** | An adaptive grid of stacked crops (up to 4 people — a 2-person clip gets two stacked 1080×960 panes: the person sitting **left** is always the **top** pane, the **right** person the **bottom** one, so the layout never swaps mid-clip). Each pane tracks its person; the **active speaker's pane gets a red emphasis frame** that follows the speaker timeline. | Two-person conversations, panels. |
+| **Split screen (multi-person split)** | An adaptive grid of stacked crops (up to 4 people — a 2-person clip gets two stacked 1080×960 panes: the person sitting **left** is always the **top** pane, the **right** person the **bottom** one, so the layout never swaps mid-clip). Each pane is a **locked camera**: it is placed on its person at the start and then holds perfectly still — it only glides to re-centre them if their head actually leaves the frame. Nothing is drawn over the panes (no speaker highlight frame), and the captions / hook / CTA are placed so they never cover a face ([details](./OVERLAYS.md#overlays-follow-the-layout)). | Two-person conversations, panels. |
 
 Pick the layout per clip in **Generate → clip card → "Layout (9:16 output)"**, or send
 `layout: 'speaker-focus' | 'split-screen'` to `POST /api/clips`. Renders are queued —
@@ -73,8 +73,8 @@ The worker pipeline (`worker/asd/` + `worker/layout.ts`):
    fragmented track ids can't inflate 2 people into 3–4), but **two co-existing people
    always get two panes even if only one was judged the speaker** — the split is a
    statement about who is on screen, not about the (heuristic) speaker timeline. Each
-   cell is a per-person crop path, dead-zone filtered + decimated (≤24 keyframes) so
-   the FFmpeg command stays inside Windows' command-line limit.
+   pane is a **locked camera** (next section), whose handful of glides is encoded as a
+   short FFmpeg expression so the command stays far inside Windows' command-line limit.
 
    **Pane sizing (quality guard).** A pane's source crop is ~2.8× the face height
    (head, shoulders, some chest) **but never magnified by more than 2×**
@@ -82,13 +82,48 @@ The worker pipeline (`worker/asd/` + `worker/layout.ts`):
    size — sets the crop, e.g. a 1080p two-host shot becomes two 540×480 → 1080×960
    panes. (Measured on a real photo: reconstruction fidelity falls from SSIM 0.83 at
    2× to 0.77 at 2.5× and 0.66 at 5×; the old planner cropped as little as 35 % of the
-   frame height — 212×378 px for a single full-screen pane, a 5× enlargement.) Faces
-   sit at 45 % of the pane height, leaving room for the torso.
+   frame height — 212×378 px for a single full-screen pane, a 5× enlargement.) The person's
+   *head* (hair to chin) is centred in the pane — the face centre sits at 55 % of the pane
+   height, because hair reaches higher above the face box than the chin does below it. That
+   gives the locked camera equal room above and below, and leaves a free band above the
+   upper head (for the hook text) and between the two heads (for the captions).
 
    **Who gets a pane.** Every active speaker, plus any other face that stays on screen
    ≥ 3 s *and* is at least 45 % as wide as the biggest speaker's (a much smaller
    "face" is a poster / screen / passer-by). A track must be ≥ 2 % of the frame width
    to count as a person at all.
+
+### Locked panes — no shake (`worker/camera-lock.ts`)
+
+A podcast wide shot has a perfectly static background, so *any* movement of a pane's crop
+window shows as a shimmer of the whole background. The old planner chased the face (a
+6–24 px dead zone, then a keyframe at every drift), and because FFmpeg's `crop` snaps the
+window to whole even pixels, a slow creep turned into 2 px steps — "the frame is trying
+to keep the face in the centre". Each pane now behaves like a camera on a tripod:
+
+1. **Lock** — the window is placed on the person's *median* position over the first
+   second they are seen, and then does not move at all.
+2. **Hold** — while the head (face box + hair, `HEAD_*` constants) stays inside the
+   window minus an 8 % safety margin, nothing happens. Nodding, swaying, gesturing and
+   detector jitter are all absorbed by the margin.
+3. **Re-centre** — only if the head has stayed outside that safe zone for ≥ 0.3 s (so
+   one bad detection cannot trigger it) the window **glides** — smoothstep-eased,
+   0.6–1.3 s depending on distance, starting ~0.15 s before the head reaches the edge —
+   to put the person back in the middle, and locks again. A person who is already as
+   close to the frame edge as the window can get does not make it twitch; at most 10
+   re-centres are planned per clip.
+
+Detections are median-filtered (5 samples) first. The glides are written as a sum of
+eased steps, `x0 + d1*S((t-t1)/g1) + …`, not an `if()` chain, so even ten of them are a
+few hundred characters. The same maths runs in JavaScript to know where each face lands
+on the canvas (used by the overlay placement) and is unit-tested against the FFmpeg
+expression.
+
+*Measured on a 32 s two-host test video with realistic head sway and one person leaning
+out of frame* (global background motion of each rendered pane, outside deliberate glides):
+old planner — mean 0.50 px/frame, p99 8 px, 9 % of frames with a ≥ 1 px jump;
+locked camera — mean 0.00–0.05 px/frame, p99 ≤ 0.4 px, one single glide when the person
+really left.
 
 ### Failure behaviour (no *silent* fallbacks)
 
@@ -114,15 +149,45 @@ prints `SPLIT SCREEN NOT APPLIED - <reason>` and the reason is stored on the cli
 
 ## FFmpeg plumbing (for the curious)
 
-- **Speaker focus** — `hflip,crop=W:H:x='EXPR':y='EXPR2'` with piecewise-linear `EXPR`
-  (nested `if(gte(t,…)…)` over the decimated pan keyframes, clamped to the source),
-  then colour filter + scale to 1080×1920.
-- **Split screen** — per-cell crops laid out on the 1080×1920 canvas (2/3/4-adaptive),
-  with an emphasis layer for the active speaker's cell.
-- **Encoding.** The base, hook and concat passes are *intermediates* and run near-lossless
-  (`libx264 -preset veryfast -crf 14` — faster and higher quality than the previous
-  `fast`/CRF 20, temp files are deleted after the render); the final caption burn
-  (native or Remotion) writes the deliverable at **CRF 18**.
+Everything before the captions — cut, mirror, crop, colour, hook intro, dip-to-black — is
+**one** FFmpeg pass (`processVideoSegment`). The hook intro is a second, independent seek
+into the same source, so no frames are buffered and nothing is re-encoded twice.
+
+- **Speaker focus** — `setpts=PTS-STARTPTS,hflip,crop=W:H:x='EXPR':y='EXPR2'` with
+  piecewise-linear `EXPR` (nested `if(gte(t,…)…)` over the pan keyframes, clamped to the
+  source), then colour filter + scale to 1080×1920.
+- **Split screen** — per-pane crops (the locked camera's constant or eased-glide
+  expressions) laid out on the 1080×1920 canvas (2/3/4-adaptive). The canvas is the first
+  pane **padded** to 1080×1920 with the others overlaid on it.
+- **Frame-exact.** The clip's frames are the source's frames, at the source's frame rate:
+  - each cut is snapped to the first real frame at/after the requested time (a quick
+    first-frame probe), so picture and sound start together — lip-sync is within ±2 ms
+    — and the clock restarts at 0 (`setpts`/`asetpts`);
+  - the split canvas is built from the first pane rather than a free-running black
+    `color` source. That is what used to give split-screen clips a **black first frame
+    and a repeated last frame** (2 extra frames), while speaker focus repeated its first
+    frame whenever the cut fell more than half a frame past a boundary;
+  - the NTSC rates are passed as exact fractions (`24000/1001`, `30000/1001`,
+    `60000/1001`), 25/30/50/60 as they are.
+  Verified on 23.976 (two time bases), 29.97, 25 and 60 fps sources with a burned-in frame
+  counter and a beep track: zero duplicated, dropped or reordered frames, exact frame
+  counts, and the right first/last frame (`tests/pipeline-frames.test.ts` pins this).
+- **Encoding.** The pass writes an *intermediate* (`libx264 -preset veryfast -crf 10`,
+  AAC 256k at the **source's sample rate**, deleted after the render); the final caption
+  burn (native or Remotion) writes the deliverable at **CRF 18**, and the native burn
+  **copies the audio** untouched unless a profane word has to be muted. Measured against
+  a lossless render of the same split graph (VMAF / PSNR, final file at CRF 18):
+
+  | chain | VMAF | PSNR | final file |
+  | --- | --- | --- | --- |
+  | previous: CRF 14 → 14 → 18 (3 lossy generations) | 96.8 | 47.3 dB | 7.25 MB |
+  | one generation less: CRF 14 → 18 | 97.2 | 47.9 dB | 7.79 MB |
+  | **now: CRF 10 → 18** | **97.5** | **48.5 dB** | 7.98 MB |
+  | one CRF-18 encode straight from lossless (the ceiling) | 97.9 | 49.5 dB | 7.06 MB |
+
+  Lowering the *final* CRF buys almost nothing (CRF 16: +0.2 dB for +30 % size): the loss
+  is set by the first encode, so that is where the bits go. The split panes are enlarged at
+  most 2× (see *Pane sizing*) — that, not the encoder, is what limits sharpness.
 - All crop coordinates live in **mirrored space** (the chain flips first) and `t` is
   0-based within the segment.
 

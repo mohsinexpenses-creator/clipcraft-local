@@ -10,9 +10,10 @@
  *    the head plus upper body instead of an unnaturally zoomed face.
  *
  *  - `split-screen`: an adaptive grid (2 stacked / 3 adaptive / 2x2) that
- *    keeps every relevant person visible at all times. Each cell is its own
- *    time-varying crop that follows that person's track, and a red frame
- *    highlights whichever cell holds the active speaker.
+ *    keeps every relevant person visible at all times. Each pane is a LOCKED
+ *    crop of its person (worker/camera-lock.ts): it is placed on the person once,
+ *    holds perfectly still while the head stays inside it, and only glides to
+ *    re-centre them when the head leaves the frame. No emphasis frame is drawn.
  *
  * Pure logic (no I/O) - the plan builders and filter-graph strings are
  * unit-testable without FFmpeg.
@@ -21,6 +22,17 @@
 import { AsdResult } from './asd';
 import { FaceTrackPoint, decimateTrack, evenSize, smoothTrack } from './frame-sampler';
 import { Track } from './asd/tracker';
+import {
+  CameraMove,
+  CameraPath,
+  CameraSample,
+  FACE_HALF_HEIGHT,
+  HEAD_DOWN,
+  HEAD_UP,
+  buildLockedCamera,
+  cameraPositionAt,
+  filterSamples,
+} from './camera-lock';
 
 export const OUTPUT_WIDTH = 1080;
 export const OUTPUT_HEIGHT = 1920;
@@ -51,6 +63,22 @@ export interface SinglePlan {
   splitFallbackReason?: string;
 }
 
+/** A vertical band of the 1080x1920 canvas (output pixels, top < bottom). */
+export interface CanvasZone {
+  top: number;
+  bottom: number;
+}
+
+/** Where one person's face / head are on the canvas at one sampled moment. */
+export interface FaceTraceSample {
+  /** Seconds from the clip start (base clip, before the hook intro is prepended). */
+  t: number;
+  faceTop: number;
+  faceBottom: number;
+  headTop: number;
+  headBottom: number;
+}
+
 export interface CellPlan {
   trackId: number;
   /** Position/size on the 1080x1920 canvas. */
@@ -61,15 +89,29 @@ export interface CellPlan {
   /** Crop window in source pixels (matches the cell aspect). */
   cropW: number;
   cropH: number;
-  /** Smoothed per-person camera path. */
-  points: PanPoint[];
+  /**
+   * The locked camera: where the window starts and the (usually zero) eased
+   * glides that re-centre the person. See worker/camera-lock.ts.
+   */
+  camera: CameraPath;
+  /**
+   * Where this person's FACE (detector box) appears on the canvas over the whole
+   * clip - the area no overlay may cover.
+   */
+  faceZone: CanvasZone;
+  /** The same for the whole HEAD (hair included) - overlays avoid it when they can. */
+  headZone: CanvasZone;
+  /**
+   * The same thing moment by moment, so an overlay that is only on screen for part
+   * of the clip (the hook intro, the end CTA) can be placed against where the face
+   * is THEN rather than everywhere it ever goes. See `zonesBetween`.
+   */
+  trace: FaceTraceSample[];
 }
 
 export interface SplitPlan {
   mode: 'split';
   cells: CellPlan[];
-  /** Red-frame emphasis on the active speaker's cell, per timeline run. */
-  emphasis: Array<{ cellIndex: number; t0: number; t1: number }>;
 }
 
 export type LayoutPlan = SinglePlan | SplitPlan;
@@ -92,8 +134,15 @@ const CELL_FACE_HEIGHT_FACTOR = 2.8;
  * 1.78x). For small faces this - not the face height - decides the crop.
  */
 export const MAX_CELL_UPSCALE = 2.0;
-/** Face centre inside a pane (0.5 = middle; lower leaves more torso below the face). */
-const CELL_FACE_ANCHOR_Y = 0.45;
+/**
+ * Face centre inside a pane, as a fraction of the pane height. The person's HEAD (hair
+ * to chin) reaches ~1.15 face-widths above the face centre but only ~0.69 below it, so
+ * putting the face centre a little BELOW the middle (0.55) is what centres the head -
+ * and gives the locked camera equal room (~100px for a 110px face) above and below
+ * before it has to move. It also leaves a free band above the upper head for the hook
+ * text and a free band between the two heads for the captions (worker/overlay-layout.ts).
+ */
+const CELL_FACE_ANCHOR_Y = 0.55;
 /**
  * A track must be at least this wide (fraction of the source width) to count as
  * a real on-screen PERSON in the split planner (speaker or not). Kills specks
@@ -106,6 +155,11 @@ const MIN_PERSON_FACE_FRACTION = 0.02;
  * second person of the conversation.
  */
 const MIN_LISTENER_SIZE_RATIO = 0.45;
+
+/** `t-5.000` / `t+1.500` - never `t--1.500` (a keyframe time can be negative once shifted for the hook branch). */
+function tMinus(time: number): string {
+  return time < 0 ? `t+${(-time).toFixed(3)}` : `t-${time.toFixed(3)}`;
+}
 
 /**
  * Generalised pan expression: piecewise-linear window POSITION over time for
@@ -148,7 +202,7 @@ export function buildPanExpression(
     const segLen = Math.max(1e-3, b.t - a.t);
     const pa = posFor(a[axis]).toFixed(1);
     const pb = posFor(b[axis]).toFixed(1);
-    const interp = `(${pa}+(${pb}-${pa})*(t-${a.t.toFixed(3)})/${segLen.toFixed(3)})`;
+    const interp = `(${pa}+(${pb}-${pa})*(${tMinus(a.t)})/${segLen.toFixed(3)})`;
     expr = `if(gte(t,${a.t.toFixed(3)})*lte(t,${b.t.toFixed(3)}),${interp},${expr})`;
   }
   if (points[0].t > 0) {
@@ -413,6 +467,154 @@ export function cellCropSize(
 }
 
 /**
+ * Where one person's FACE and HEAD appear on the 1080x1920 canvas over the whole
+ * clip, given the pane they are shown in and its camera. The overlay planner
+ * (worker/overlay-layout.ts) keeps the hook / captions / CTA out of these bands.
+ * Detections are median-filtered first so one bad box can't inflate a zone.
+ */
+export function paneZones(
+  samples: CameraSample[],
+  camera: CameraPath,
+  pane: { cellY: number; cellH: number; cropH: number }
+): { face: CanvasZone; head: CanvasZone; trace: FaceTraceSample[] } {
+  const scale = pane.cellH / pane.cropH;
+  const lo = pane.cellY;
+  const hi = pane.cellY + pane.cellH;
+  const clamp = (y: number): number => Math.max(lo, Math.min(y, hi));
+
+  const trace: FaceTraceSample[] = [];
+  for (const s of filterSamples(samples)) {
+    const win = cameraPositionAt(camera, s.t);
+    const toCanvas = (srcY: number): number => clamp(pane.cellY + (srcY - win.y) * scale);
+    trace.push({
+      t: s.t,
+      faceTop: toCanvas(s.cy - FACE_HALF_HEIGHT * s.w),
+      faceBottom: toCanvas(s.cy + FACE_HALF_HEIGHT * s.w),
+      headTop: toCanvas(s.cy - HEAD_UP * s.w),
+      headBottom: toCanvas(s.cy + HEAD_DOWN * s.w),
+    });
+  }
+  if (trace.length === 0) {
+    // No samples (never planned on purpose): assume a face in the middle of the pane.
+    const mid = pane.cellY + pane.cellH * CELL_FACE_ANCHOR_Y;
+    const half = pane.cellH * 0.15;
+    return {
+      face: { top: mid - half, bottom: mid + half },
+      head: { top: mid - half * 1.6, bottom: mid + half * 1.1 },
+      trace,
+    };
+  }
+  return { ...unionOf(trace), trace };
+}
+
+function unionOf(trace: FaceTraceSample[]): { face: CanvasZone; head: CanvasZone } {
+  return {
+    face: {
+      top: Math.min(...trace.map((p) => p.faceTop)),
+      bottom: Math.max(...trace.map((p) => p.faceBottom)),
+    },
+    head: {
+      top: Math.min(...trace.map((p) => p.headTop)),
+      bottom: Math.max(...trace.map((p) => p.headBottom)),
+    },
+  };
+}
+
+/**
+ * The face / head bands of a pane restricted to the base-clip seconds [t0, t1] -
+ * where the person is while an overlay that only shows for that long is on screen.
+ * Falls back to the whole-clip zones when the person was not detected in that window.
+ */
+export function zonesBetween(
+  cell: Pick<CellPlan, 'trace' | 'faceZone' | 'headZone'>,
+  t0: number,
+  t1: number
+): { face: CanvasZone; head: CanvasZone } {
+  const inside = cell.trace.filter((p) => p.t >= t0 && p.t <= t1);
+  if (inside.length === 0) return { face: cell.faceZone, head: cell.headZone };
+  return unionOf(inside);
+}
+
+/**
+ * FFmpeg expression for ONE axis of a locked camera: the start position plus one
+ * eased (smoothstep) glide per move,
+ *
+ *   x0 + d1*S((t-t1)/g1) + d2*S((t-t2)/g2) + ...      S(u) = u*u*(3-2*u), u clipped to 0..1
+ *
+ * S is 0 before its glide and 1 after it, so the terms simply add up - no nested
+ * if() chains, which keeps the expression a few hundred characters even with ten
+ * re-centres (Windows' command line is limited to ~32k characters). A window that
+ * never moves is just a constant.
+ */
+export function buildGlideExpression(
+  start: number,
+  moves: Array<{ t: number; duration: number; pos: number }>,
+  maxPos: number
+): string {
+  if (maxPos <= 0) return '0';
+  const terms: string[] = [];
+  let prev = start;
+  for (const move of moves) {
+    const delta = move.pos - prev;
+    prev = move.pos;
+    if (Math.abs(delta) < 0.05) continue;
+    const u = `clip((${tMinus(move.t)})/${Math.max(0.05, move.duration).toFixed(3)},0,1)`;
+    terms.push(`(${delta.toFixed(2)})*(3-2*${u})*pow(${u},2)`);
+  }
+  const base = Math.max(0, Math.min(start, maxPos)).toFixed(1);
+  if (terms.length === 0) return base;
+  return `min(max(${base}+${terms.join('+')},0),${maxPos})`;
+}
+
+/**
+ * The X / Y expressions of a pane's camera, ready for `crop=w:h:'X':'Y'`.
+ *
+ * `timeOffset` is for a branch that replays a LATER part of the clip (the hook
+ * intro): its frames start at t=0 but belong to clip time `timeOffset`, so every
+ * glide is shifted earlier by that much. With `windowSeconds` too, only the glides
+ * that touch [timeOffset, timeOffset + windowSeconds] are kept - those already
+ * finished are folded into the start position and later ones dropped - so the hook
+ * branch's copy of the camera is usually a plain constant instead of a second long
+ * expression on the command line.
+ */
+export function cameraExpressions(
+  camera: CameraPath,
+  srcW: number,
+  srcH: number,
+  cropW: number,
+  cropH: number,
+  timeOffset = 0,
+  windowSeconds?: number
+): { x: string; y: string } {
+  let start = { x: camera.x0, y: camera.y0 };
+  let moves: CameraMove[] = camera.moves;
+  if (windowSeconds !== undefined) {
+    const windowEnd = timeOffset + windowSeconds;
+    const kept: CameraMove[] = [];
+    for (const move of camera.moves) {
+      if (move.t + move.duration <= timeOffset) {
+        start = { x: move.x, y: move.y }; // finished before the window opens
+      } else if (move.t < windowEnd) {
+        kept.push(move);
+      } // else: starts after the window closes - not needed
+    }
+    moves = kept;
+  }
+  return {
+    x: buildGlideExpression(
+      start.x,
+      moves.map((m) => ({ t: m.t - timeOffset, duration: m.duration, pos: m.x })),
+      Math.max(0, srcW - cropW)
+    ),
+    y: buildGlideExpression(
+      start.y,
+      moves.map((m) => ({ t: m.t - timeOffset, duration: m.duration, pos: m.y })),
+      Math.max(0, srcH - cropH)
+    ),
+  };
+}
+
+/**
  * Split-screen plan.
  *
  * Returns a SplitPlan (2-4 panes) when at least two people can be shown. With
@@ -518,9 +720,8 @@ function buildSplitPlan(asd: AsdResult, srcW: number, srcH: number): LayoutPlan 
 
   // Two panes: a stable spatial assignment - the person sitting LEFT (mirrored
   // source space) always gets the TOP pane, the right person the bottom one.
-  // The order never swaps mid-clip, no matter who is talking; the red
-  // emphasis frame is what shows the active speaker. (3+ panes keep the
-  // score order: speakers first, then screen-time x face size.)
+  // The order never swaps mid-clip, no matter who is talking. (3+ panes keep
+  // the score order: speakers first, then screen-time x face size.)
   if (count === 2) {
     const medianX = (track: Track): number => median(track.points.map((p) => p.cx));
     relevant.sort((a, b) => medianX(a) - medianX(b));
@@ -553,6 +754,18 @@ function buildSplitPlan(asd: AsdResult, srcW: number, srcH: number): LayoutPlan 
     const track = relevant[i];
     const { cropW, cropH } = cellCropSize(track.avgW, cellW, cellH, srcW, srcH);
 
+    // The pane is a LOCKED crop: placed on the person once, still while their
+    // head stays inside it, gliding to re-centre them only when it leaves.
+    const samples: CameraSample[] = track.points.map((p) => ({ t: p.t, cx: p.cx, cy: p.cy, w: p.w }));
+    const camera = buildLockedCamera(samples, {
+      srcW,
+      srcH,
+      cropW,
+      cropH,
+      anchorY: CELL_FACE_ANCHOR_Y,
+    });
+    const zones = paneZones(samples, camera, { cellY, cellH, cropH });
+
     cells.push({
       trackId: track.id,
       cellX,
@@ -561,46 +774,26 @@ function buildSplitPlan(asd: AsdResult, srcW: number, srcH: number): LayoutPlan 
       cellH,
       cropW,
       cropH,
-      // Detection noise on a ~100px face is several px; at a 2x pane
-      // magnification the crop would visibly jitter. The dead zone therefore
-      // grows with the face (>= 6px, up to 24px).
-      points: trackToPanPoints(track, srcW, Math.min(24, Math.max(6, track.avgW * 0.1))),
+      camera,
+      faceZone: zones.face,
+      headZone: zones.head,
+      trace: zones.trace,
     });
   }
 
-  // Emphasis: red frame on the cell of whoever the timeline says is speaking.
-  // - Speaking runs from the timeline are fragmented (silence pauses, track
-  //   switches): runs of the same cell closer than 0.6s are merged, and the
-  //   result is capped - a 60s clip must not turn into 120 drawbox clauses
-  //   (that is what blew past Windows' command-line limit).
-  const trackToCell = new Map<number, number>();
-  cells.forEach((cell, index) => trackToCell.set(cell.trackId, index));
-  const emphasis: SplitPlan['emphasis'] = [];
-  for (const seg of asd.speakerSegments) {
-    if (seg.trackId === null) continue;
-    const cellIndex = trackToCell.get(seg.trackId);
-    if (cellIndex === undefined) continue;
-    if (emphasis.length > 0) {
-      const last = emphasis[emphasis.length - 1];
-      if (last.cellIndex === cellIndex && seg.t0 - last.t1 < 0.6) {
-        last.t1 = seg.t1;
-        continue;
-      }
-    }
-    emphasis.push({ cellIndex, t0: seg.t0, t1: seg.t1 });
-  }
-  if (emphasis.length > 12) {
-    emphasis.sort((a, b) => (b.t1 - b.t0) - (a.t1 - a.t0));
-    emphasis.length = 12;
-    emphasis.sort((a, b) => a.t0 - b.t0);
-  }
-
-  return { mode: 'split', cells, emphasis };
+  return { mode: 'split', cells };
 }
 
 /**
- * `-vf` chain for the single-window mode (speaker focus):
- *   hflip -> time-varying crop (X and Y expressions) -> colour -> scale -> yuv420p
+ * Filter chain for the single-window mode (speaker focus):
+ *   setpts reset -> hflip -> time-varying crop (X and Y expressions) -> colour -> scale -> yuv420p
+ *
+ * The timestamp reset matters: after `-ss` the first decoded frame sits a fraction
+ * of a frame past 0, and the constant-frame-rate encoder answers that gap by
+ * repeating the first frame. Starting the clock at exactly 0 means no frame is
+ * duplicated or invented, whatever the cut point.
+ *
+ * `timeOffset`: see `cameraExpressions` (the hook branch replays a later part).
  */
 export function buildSingleFilterParts(
   plan: SinglePlan,
@@ -608,87 +801,122 @@ export function buildSingleFilterParts(
   srcH: number,
   outW: number,
   outH: number,
-  colorFilter: string
+  colorFilter: string,
+  timeOffset = 0,
+  windowSeconds?: number
 ): string[] {
-  const xExpr = buildPanExpression(plan.points, 'x', srcW, plan.cropW, 0.5);
-  const yExpr = buildPanExpression(plan.points, 'y', srcH, plan.cropH, plan.faceAnchorY);
+  let source = plan.points;
+  if (windowSeconds !== undefined && source.length > 2) {
+    // Only the keyframes around the replayed window matter (plus one on each side, so the
+    // interpolation across its edges is unchanged).
+    const t0 = timeOffset;
+    const t1 = timeOffset + windowSeconds;
+    let first = 0;
+    while (first + 1 < source.length && source[first + 1].t <= t0) first += 1;
+    let last = source.length - 1;
+    while (last - 1 > first && source[last - 1].t >= t1) last -= 1;
+    source = source.slice(first, last + 1);
+  }
+  const points = timeOffset ? source.map((p) => ({ ...p, t: p.t - timeOffset })) : source;
+  const xExpr = buildPanExpression(points, 'x', srcW, plan.cropW, 0.5);
+  const yExpr = buildPanExpression(points, 'y', srcH, plan.cropH, plan.faceAnchorY);
 
-  const parts: string[] = ['hflip', `crop=${plan.cropW}:${plan.cropH}:'${xExpr}':'${yExpr}'`];
+  const parts: string[] = [
+    'setpts=PTS-STARTPTS',
+    'hflip',
+    `crop=${plan.cropW}:${plan.cropH}:'${xExpr}':'${yExpr}'`,
+  ];
   if (colorFilter) parts.push(colorFilter);
   parts.push(`scale=${outW}:${outH}:flags=lanczos`);
   parts.push('format=yuv420p');
   return parts;
 }
 
+/** Where a split graph reads from, what it is called and how its labels are namespaced. */
+export interface SplitGraphIo {
+  /** Input stream specifier, e.g. `0:v`. */
+  input: string;
+  /** Label of the finished 1080x1920 stream (no brackets). */
+  output: string;
+  /** Prefix for every intermediate label, so two branches can live in one graph. */
+  prefix: string;
+  /** See `cameraExpressions`. */
+  timeOffset?: number;
+  /** See `cameraExpressions`: how long the branch lasts (the hook intro's length). */
+  windowSeconds?: number;
+}
+
 /**
- * `-filter_complex` graph for the split-screen mode:
- *   one blurred full-frame base is NOT used - each cell is a time-varying crop
- *   of its person, scaled to the cell, overlaid onto a black canvas, and the
- *   active speaker's cell gets a red frame via drawbox with per-run enable.
+ * Filter statements (to be joined with `;`) for the split-screen mode: each pane is
+ * a crop of its person (a locked camera - see worker/camera-lock.ts), scaled to the
+ * pane, and the panes are laid onto the 1080x1920 canvas. Nothing is drawn on top of
+ * them.
+ *
+ * The canvas is made by PADDING the first pane, not by overlaying onto a free-running
+ * black `color` source. That distinction is what keeps the footage frame-exact: a
+ * generated canvas has its own clock, so the output got a black first frame (the
+ * overlay had nothing to show yet) and a repeated last one, and every source frame
+ * was re-timed onto the canvas's grid. Padding keeps the source's own timestamps.
  */
-export function buildSplitFilterComplex(
+export function buildSplitFilterStatements(
   plan: SplitPlan,
   srcW: number,
   srcH: number,
-  fps: number,
-  duration: number,
-  colorFilter: string
-): string {
-  const chains: string[] = [];
-
-  // Mirrored + colour-corrected base (shared by every cell).
-  const baseChain = colorFilter
-    ? `[0:v]hflip,${colorFilter},format=yuv420p[base];`
-    : `[0:v]hflip,format=yuv420p[base];`;
-  chains.push(baseChain);
-
-  // Fan the base out with `split`: a filtergraph pad label can be consumed
-  // exactly ONCE, so every cell must get its own pad. (Referencing [base] for
-  // every cell makes FFmpeg reject the WHOLE graph with "Invalid stream
-  // specifier: base" and write an empty file - which is why the split screen
-  // never rendered.)
+  colorFilter: string,
+  io: SplitGraphIo
+): string[] {
+  const { input, output, prefix } = io;
+  const timeOffset = io.timeOffset ?? 0;
   const n = plan.cells.length;
-  chains.push(`[base]split=${n}${plan.cells.map((_, i) => `[s${i}]`).join('')};`);
+  const out: string[] = [];
+
+  // Reset the clock, mirror, colour-correct, then fan out with `split`: a filtergraph
+  // pad label can be consumed exactly ONCE, so every cell needs its own pad.
+  // (Referencing one [base] label for every cell makes FFmpeg reject the WHOLE graph
+  // with "Invalid stream specifier" and write an empty file - the original bug that
+  // stopped the split screen from rendering at all.)
+  const pre = colorFilter
+    ? `[${input}]setpts=PTS-STARTPTS,hflip,${colorFilter},format=yuv420p`
+    : `[${input}]setpts=PTS-STARTPTS,hflip,format=yuv420p`;
+  out.push(`${pre},split=${n}${plan.cells.map((_, i) => `[${prefix}s${i}]`).join('')}`);
 
   // One crop+scale per person. (Measured: bicubic and lanczos reconstruct an
   // enlarged photo equally well - SSIM 0.834 vs 0.831 at 2x - so the scaler is
   // not what matters here; the MAGNIFICATION is, and cellCropSize() caps that.)
   plan.cells.forEach((cell, i) => {
-    const xExpr = buildPanExpression(cell.points, 'x', srcW, cell.cropW, 0.5);
-    const yExpr = buildPanExpression(cell.points, 'y', srcH, cell.cropH, CELL_FACE_ANCHOR_Y);
-    chains.push(
-      `[s${i}]crop=${cell.cropW}:${cell.cropH}:'${xExpr}':'${yExpr}',` +
-      `scale=${cell.cellW}:${cell.cellH}:flags=bicubic,format=yuv420p[c${i}];`
-    );
+    const expr = cameraExpressions(cell.camera, srcW, srcH, cell.cropW, cell.cropH, timeOffset, io.windowSeconds);
+    const scaled =
+      `[${prefix}s${i}]crop=${cell.cropW}:${cell.cropH}:'${expr.x}':'${expr.y}',` +
+      `scale=${cell.cellW}:${cell.cellH}:flags=bicubic,format=yuv420p`;
+    if (i === 0) {
+      out.push(`${scaled},pad=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:${cell.cellX}:${cell.cellY}:color=black[${n === 1 ? output : `${prefix}o0`}]`);
+    } else {
+      out.push(`${scaled}[${prefix}c${i}]`);
+    }
   });
 
-  // Black canvas, then overlay every cell (they tile the canvas exactly).
-  chains.push(
-    `color=c=black:s=${OUTPUT_WIDTH}x${OUTPUT_HEIGHT}:r=${fps}:d=${duration.toFixed(3)}[bg];`
-  );
-  let prev = 'bg';
-  plan.cells.forEach((cell, i) => {
-    const label = `o${i}`;
-    chains.push(`[${prev}][c${i}]overlay=${cell.cellX}:${cell.cellY}[${label}];`);
-    prev = label;
-  });
-
-  // Active-speaker emphasis: one drawbox per (cell, speaking run).
-  const emphasisBoxes: string[] = [];
-  for (const e of plan.emphasis) {
-    const cell = plan.cells[e.cellIndex];
-    if (!cell) continue;
-    emphasisBoxes.push(
-      `drawbox=x=${cell.cellX + 2}:y=${cell.cellY + 2}:w=${cell.cellW - 4}:h=${cell.cellH - 4}` +
-      `:color=0xef4444@0.9:t=8:enable='between(t,${e.t0.toFixed(3)},${e.t1.toFixed(3)})'`
-    );
+  // Lay the remaining panes onto the padded first one (they tile the canvas exactly).
+  for (let i = 1; i < n; i += 1) {
+    const cell = plan.cells[i];
+    const label = i === n - 1 ? output : `${prefix}o${i}`;
+    out.push(`[${prefix}o${i - 1}][${prefix}c${i}]overlay=${cell.cellX}:${cell.cellY}[${label}]`);
   }
+  return out;
+}
 
-  if (emphasisBoxes.length > 0) {
-    chains.push(`[${prev}]${emphasisBoxes.join(',')}[vout];`);
-  } else {
-    chains.push(`[${prev}]null[vout];`);
-  }
-
-  return chains.join('');
+/** The split graph as one `-filter_complex` string (one input, `[vout]` output). */
+export function buildSplitFilterComplex(
+  plan: SplitPlan,
+  srcW: number,
+  srcH: number,
+  colorFilter: string,
+  io: Partial<SplitGraphIo> = {}
+): string {
+  return buildSplitFilterStatements(plan, srcW, srcH, colorFilter, {
+    input: io.input ?? '0:v',
+    output: io.output ?? 'vout',
+    prefix: io.prefix ?? '',
+    timeOffset: io.timeOffset,
+    windowSeconds: io.windowSeconds,
+  }).join(';');
 }

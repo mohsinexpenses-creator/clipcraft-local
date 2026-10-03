@@ -25,7 +25,7 @@ import {
   getProfanityAudioMode,
   maskProfanity,
 } from '../lib/profanity';
-import { HOOK_TRANSITION_SECONDS, normalizeFps } from './ffmpeg-pipeline';
+import { HOOK_TRANSITION_SECONDS, ffmpegFpsArg, normalizeFps } from './ffmpeg-pipeline';
 import { color, log } from '../lib/logger';
 import { OverlayStylePreset, CaptionPreset, WordTimestamp } from '../lib/types';
 import { generateAssFile } from './captions-ass';
@@ -45,6 +45,8 @@ export interface RenderNativeCaptionsOptions {
   /** Overlay STYLE presets (font/colors/card/animation) for the hook/CTA cards. */
   hookStyle?: OverlayStylePreset;
   ctaStyle?: OverlayStylePreset;
+  /** 1 = lift the captions while the CTA shows (default); 0 = they stay put (split screen). */
+  captionLiftScale?: number;
   onProgress?: (progress: number) => void;
   /** Poll for a user-requested cancel; the running FFmpeg child is killed. */
   isCancelled?: () => boolean;
@@ -156,11 +158,11 @@ export function buildFfmpegArgs(input: FfmpegBuildInput): string[] {
 
   const args: string[] = ['-hide_banner', '-loglevel', 'error', '-y', '-i', videoPath];
   if (hookEnabled) {
-    args.push('-framerate', String(fps), '-start_number', '1', '-i', path.join(workDir, 'hook', 'ov_%05d.png'));
+    args.push('-framerate', ffmpegFpsArg(fps), '-start_number', '1', '-i', path.join(workDir, 'hook', 'ov_%05d.png'));
   }
   const ctaInputIndex = hookEnabled ? 2 : 1;
   if (ctaEnabled) {
-    args.push('-framerate', String(fps), '-start_number', '1', '-i', path.join(workDir, 'cta', 'ov_%05d.png'));
+    args.push('-framerate', ffmpegFpsArg(fps), '-start_number', '1', '-i', path.join(workDir, 'cta', 'ov_%05d.png'));
   }
 
   // Profanity audio (mute/beep) - the 1 kHz tone (beep mode) becomes the LAST
@@ -203,7 +205,10 @@ export function buildFfmpegArgs(input: FfmpegBuildInput): string[] {
   // FINAL deliverable: CRF 18 (visually lossless for most content; CRF 20 left
   // visible softening once the footage had been through three encodes).
   args.push('-c:v', 'libx264', '-preset', 'medium', '-crf', '18', '-pix_fmt', 'yuv420p');
-  if (hasAudio) args.push('-c:a', 'aac', '-b:a', '192k');
+  // Audio: re-encoded only when something has to be muted/bleeped. Otherwise the
+  // processed clip's AAC is COPIED, so the sound goes through this pass untouched
+  // (one less lossy generation).
+  if (hasAudio) args.push(...(audioPlan ? ['-c:a', 'aac', '-b:a', '192k'] : ['-c:a', 'copy']));
   args.push('-movflags', '+faststart', outputPath);
   return args;
 }
@@ -218,7 +223,7 @@ export interface RenderNativeCaptionsResult {
 }
 
 export async function renderNativeCaptions(options: RenderNativeCaptionsOptions): Promise<RenderNativeCaptionsResult> {
-  const { videoPath, outputPath, hookText, hookDuration, hookStart, ctaText, ctaDuration, words, preset, hookStyle, ctaStyle, onProgress, isCancelled } = options;
+  const { videoPath, outputPath, hookText, hookDuration, hookStart, ctaText, ctaDuration, words, preset, hookStyle, ctaStyle, captionLiftScale, onProgress, isCancelled } = options;
 
   log.detail(`Native captions (FFmpeg ASS) for ${color.bold(path.basename(videoPath))}`);
   if (onProgress) onProgress(82);
@@ -290,6 +295,7 @@ export async function renderNativeCaptions(options: RenderNativeCaptionsOptions)
       hookStart: Math.max(0, Number(hookStart) || 0),
       ctaDuration,
       hookTransitionDuration: transitionDur,
+      captionLiftScale,
     }), 'utf8');
 
     // 2. Transparent overlay sequences (only when the overlays are on).

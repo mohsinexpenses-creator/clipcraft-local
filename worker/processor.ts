@@ -8,8 +8,9 @@ import { CaptionEngine, ClipLayout, ClipRecord, JobData, OverlayStylePreset } fr
 import { DEFAULT_OVERLAY_STYLE_PRESETS } from '../lib/presets';
 import { detectSpeakerTimeline } from './asd';
 import { buildLayoutPlan } from './layout';
+import { adaptOverlaysToLayout, describePlacements } from './overlay-layout';
 import { color, log } from '../lib/logger';
-import { normalizeFps, processVideoSegment } from './ffmpeg-pipeline';
+import { HOOK_TRANSITION_SECONDS, normalizeFps, processVideoSegment } from './ffmpeg-pipeline';
 import { renderNativeCaptions } from './native-captions';
 import { renderCaptionsAndOverlays, type RenderCaptionsResult } from './remotion-renderer';
 
@@ -376,6 +377,33 @@ export async function processClipJob(
       'cta'
     );
 
+    // Where the captions / hook / CTA go depends on the layout. In a split screen
+    // the preset positions would land on the two faces, so they are re-placed from
+    // where the heads really are (speaker focus keeps the presets unchanged).
+    const overlayLayout = adaptOverlaysToLayout({
+      plan,
+      engine,
+      // When the timed overlays are on screen (base-clip seconds): the hook card
+      // shows over the replayed hook moment, minus the dip-to-black window; the CTA
+      // over the last seconds of the clip.
+      timing: {
+        clipDuration: segmentDuration,
+        hookStart,
+        hookVisibleSeconds: Math.max(0, safeHookDuration - Math.min(HOOK_TRANSITION_SECONDS, safeHookDuration / 2)),
+        ctaDuration: resolvedCtaDuration,
+      },
+      caption: preset,
+      hook: hookOverlayEnabled ? { style: hookStyle, text: resolvedHookText } : null,
+      cta: ctaOverlayEnabled ? { style: ctaStyle, text: resolvedCtaText } : null,
+    });
+    if (overlayLayout.adapted) {
+      log.detail(`Overlay layout (split screen): ${describePlacements(overlayLayout)}`);
+      for (const note of overlayLayout.notes) log.detail(`  · ${note}`);
+    }
+    const captionPresetForRender = overlayLayout.caption;
+    const hookStyleForRender = overlayLayout.hookStyle ?? hookStyle;
+    const ctaStyleForRender = overlayLayout.ctaStyle ?? ctaStyle;
+
     log.step(
       `Step 3/3 · Captions & overlays  ${color.gray(`(${engine === 'native' ? 'native FFmpeg ASS burn' : 'Remotion'}, ` +
       `${clipWords.length} words, preset "${preset.name}")`)}`
@@ -400,9 +428,10 @@ export async function processClipJob(
             ctaText: resolvedCtaText,
             ctaDuration: resolvedCtaDuration,
             words: clipWords,
-            preset,
-            hookStyle,
-            ctaStyle,
+            preset: captionPresetForRender,
+            hookStyle: hookStyleForRender,
+            ctaStyle: ctaStyleForRender,
+            captionLiftScale: overlayLayout.captionLiftScale,
             onProgress: progressSink,
             isCancelled: () => cancelFlag,
           })
@@ -415,9 +444,10 @@ export async function processClipJob(
             ctaText: resolvedCtaText,
             ctaDuration: resolvedCtaDuration,
             words: clipWords,
-            preset,
-            hookStyle,
-            ctaStyle,
+            preset: captionPresetForRender,
+            hookStyle: hookStyleForRender,
+            ctaStyle: ctaStyleForRender,
+            captionLiftScale: overlayLayout.captionLiftScale,
             onProgress: progressSink,
             isCancelled: () => cancelFlag,
           });
