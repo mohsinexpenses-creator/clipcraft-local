@@ -106,7 +106,7 @@ lib/                    shared server logic
   llm.ts                Gemini fallback chain (config array, plain fetch)
   ai.ts                 prompt templates, JSON parsing, exact-count top-up
   whisper.ts            whisper.cpp discovery + transcription
-  ffmpeg.ts             ffmpeg-static resolution + spawn wrapper
+  ffmpeg.ts             FFmpeg/ffprobe resolution, stream probing + spawn wrapper
   queue.ts              BullMQ queues (transcription + clip render)
   profanity.ts          word masking + render-time mute/beep windows
   overlay-bg.ts         solid/gradient card-background picker helpers
@@ -123,7 +123,7 @@ worker/                 the long-running BullMQ consumer
   remotion-renderer.ts  "remotion" transparent overlay-frame renderer
   native-captions.ts    "native" ASS caption PNGs + hook/CTA overlay frames
 remotion/               compositions: captions, hook overlay, CTA overlay
-scripts/                setup-whisper.{mjs,ps1}, setup-yunet.mjs
+scripts/                setup-whisper.{mjs,ps1}, setup-yunet.mjs, verify-clip.ts
 bin/whisper-win-x64/    committed Windows whisper.cpp build (whisper-cli + DLLs)
 models/yunet/           committed YuNet face-detection model (232 KB)
 tests/                  node:test unit tests (tsx --test)

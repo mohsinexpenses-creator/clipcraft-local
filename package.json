@@ -16,7 +16,8 @@
     "setup:whisper:ps": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-whisper.ps1",
     "typecheck": "tsc --noEmit",
     "setup:yunet": "node scripts/setup-yunet.mjs",
-    "test:worker": "tsx --test tests/*.test.ts"
+    "test:worker": "tsx --test tests/*.test.ts",
+    "verify:clip": "tsx scripts/verify-clip.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",

@@ -4,6 +4,7 @@ import { getCaptionPreset, getClip, getOverlayStylePreset, getVideo, saveClip } 
 import { AppError, RenderCancelledError, toErrorMessage } from '../lib/errors';
 
 import { getVideoMetadata } from '../lib/ffmpeg';
+import { getCaptionOffsetMs, shiftCaptionWords } from './caption-timing';
 import { CaptionEngine, ClipLayout, ClipRecord, JobData, OverlayStylePreset } from '../lib/types';
 import { DEFAULT_OVERLAY_STYLE_PRESETS } from '../lib/presets';
 import { detectSpeakerTimeline } from './asd';
@@ -150,16 +151,27 @@ export async function processClipJob(
     if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
 
     /**
-     * Probe the SOURCE once: fps decides the composition fps (a hard-coded 30fps
-     * desynced captions on 25/50/60fps sources) and hasAudio decides whether the
-     * FFmpeg stage must mux in a silent track.
+     * Probe the SOURCE once: FFprobe's average/base rates identify VFR inputs,
+     * the stream starts keep audio aligned to video, and fps selects the CFR
+     * overlay/output cadence. Missing ffprobe is reported by getVideoMetadata().
      */
     const sourceMeta = await getVideoMetadata(video.filePath);
     const renderFps = normalizeFps(sourceMeta.fps);
+    const sourceVariableFrameRate = sourceMeta.isVariableFrameRate === true;
+    const audioStartOffsetSeconds = sourceMeta.audioStartTime === null
+      ? 0
+      : sourceMeta.audioStartTime - sourceMeta.videoStartTime;
+    const rateDetail = sourceMeta.averageFrameRate && sourceMeta.nominalFrameRate
+      ? `avg/r=${sourceMeta.averageFrameRate}/${sourceMeta.nominalFrameRate}`
+      : 'FFprobe frame rates unavailable';
     log.detail(
       `Source ${sourceMeta.width}x${sourceMeta.height} @ ${sourceMeta.fps}fps ` +
-      `(render @ ${renderFps}fps), audio=${sourceMeta.hasAudio ? 'yes' : 'no'}, ${sourceMeta.duration.toFixed(1)}s`
+      `(${rateDetail}${sourceVariableFrameRate ? ', VFR → CFR normalize' : ''}; render @ ${renderFps}fps), ` +
+      `audio=${sourceMeta.hasAudio ? 'yes' : 'no'}, ${sourceMeta.duration.toFixed(1)}s`
     );
+    if (sourceMeta.hasAudio && Math.abs(audioStartOffsetSeconds) > 0.001) {
+      log.detail(`Audio stream starts ${audioStartOffsetSeconds >= 0 ? '+' : ''}${audioStartOffsetSeconds.toFixed(3)}s from video; preserving this offset.`);
+    }
 
     const segmentDuration = Math.max(0.1, end - start);
 
@@ -186,6 +198,14 @@ export async function processClipJob(
         resolution:
           'Re-run transcription, or pick a segment that overlaps spoken audio - captions need word timings.',
       });
+    }
+
+    // This adjustment is deliberately caption-only. The audio filter and profanity
+    // windows below continue to use the original transcript timestamps.
+    const captionOffsetMs = getCaptionOffsetMs();
+    const captionWords = shiftCaptionWords(clipWords, captionOffsetMs);
+    if (captionOffsetMs !== 0) {
+      log.detail(`Caption offset ${captionOffsetMs > 0 ? '+' : ''}${captionOffsetMs}ms (positive = captions later; audio unchanged).`);
     }
 
     // hookDuration/ctaDuration are optional on the job payload; never pass undefined
@@ -396,7 +416,7 @@ export async function processClipJob(
           hookStart,
           ctaText: resolvedCtaText,
           ctaDuration: resolvedCtaDuration,
-          words: clipWords,
+          words: captionWords,
           preset: captionPresetForRender,
           hookStyle: hookStyleForRender,
           ctaStyle: ctaStyleForRender,
@@ -415,7 +435,7 @@ export async function processClipJob(
             : 0,
           ctaText: resolvedCtaText,
           ctaDuration: resolvedCtaDuration,
-          words: clipWords,
+          words: captionWords,
           preset: captionPresetForRender,
           hookStyle: hookStyleForRender,
           ctaStyle: ctaStyleForRender,
@@ -463,6 +483,9 @@ export async function processClipJob(
           ? intermediateVideoPath
           : undefined,
         isCancelled: () => cancelFlag,
+        sourceIsVariableFrameRate: sourceVariableFrameRate,
+        videoStartTimeSeconds: sourceMeta.videoStartTime,
+        audioStartOffsetSeconds,
         onProgress: progressSink,
       });
 

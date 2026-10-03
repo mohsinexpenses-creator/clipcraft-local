@@ -98,6 +98,47 @@ export function getFfmpegPath(): string {
   return isWin ? "ffmpeg.exe" : "ffmpeg";
 }
 
+let ffprobeWarnedOnce = false;
+function warnFfprobeOnce(message: string): void {
+  if (ffprobeWarnedOnce) return;
+  ffprobeWarnedOnce = true;
+  log.warn(message);
+}
+
+function findExecutableOnPath(command: string): string | null {
+  const extension = process.platform === "win32" && !/\.exe$/i.test(command) ? ".exe" : "";
+  for (const directory of (process.env.PATH ?? "").split(path.delimiter)) {
+    if (!directory) continue;
+    const candidate = path.join(directory, `${command}${extension}`);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+/** Resolve ffprobe from an explicit setting, beside FFmpeg, or from PATH. */
+export function getFfprobePath(): string {
+  const isWin = process.platform === "win32";
+  const executable = isWin ? "ffprobe.exe" : "ffprobe";
+  const configured = process.env.FFPROBE_PATH?.trim();
+  if (configured && configured.toLowerCase() !== "your_ffprobe_path") {
+    if (fs.existsSync(configured) || !/[\\/]/.test(configured)) return configured;
+    warnFfprobeOnce(`FFPROBE_PATH="${configured}" does not exist - searching beside FFmpeg and on PATH.`);
+  }
+
+  const siblingDirs: string[] = [];
+  const ffmpegOverride = process.env.FFMPEG_PATH?.trim();
+  if (ffmpegOverride && /[\\/]/.test(ffmpegOverride)) siblingDirs.push(path.dirname(ffmpegOverride));
+  if (typeof ffmpegStaticPath === "string" && ffmpegStaticPath) siblingDirs.push(path.dirname(ffmpegStaticPath));
+  siblingDirs.push(path.join(process.cwd(), "bin", "ffmpeg"));
+  siblingDirs.push(path.join(process.cwd(), "node_modules", "ffmpeg-static"));
+  for (const directory of siblingDirs) {
+    const candidate = path.join(directory, executable);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+
+  return findExecutableOnPath("ffprobe") ?? executable;
+}
+
 export interface FfmpegProgress {
   frame?: number;
   fps?: number;
@@ -272,149 +313,293 @@ export function runFfmpeg(
   });
 }
 
+export interface FfprobeStreamMetadata {
+  index: number | null;
+  codecType: string | null;
+  codecName: string | null;
+  width: number | null;
+  height: number | null;
+  averageFrameRate: string | null;
+  nominalFrameRate: string | null;
+  startTime: number | null;
+  duration: number | null;
+  bitRate: number | null;
+  sampleRate: number | null;
+  channels: number | null;
+  rotation: number | null;
+}
+
+export interface FfprobeMetadata {
+  formatDuration: number | null;
+  formatStartTime: number | null;
+  formatBitRate: number | null;
+  streams: FfprobeStreamMetadata[];
+}
+
 export interface VideoMetadata {
   duration: number;
   width: number;
   height: number;
+  /** Average frame rate, which is the correct nominal output rate for VFR input. */
   fps: number;
   /** True when the file has at least one audio stream. */
   hasAudio: boolean;
   /** Display rotation in degrees (0/90/180/270) when the container stores one. */
   rotation: number;
+  averageFrameRate: string | null;
+  nominalFrameRate: string | null;
+  /** Null means ffprobe was unavailable or did not report both rates. */
+  isVariableFrameRate: boolean | null;
+  videoStartTime: number;
+  videoDuration: number;
+  audioStartTime: number | null;
+  audioDuration: number | null;
+  formatBitRate: number | null;
+  videoBitRate: number | null;
+  audioBitRate: number | null;
+}
+
+interface RawFfprobeStream {
+  index?: number | string;
+  codec_type?: string;
+  codec_name?: string;
+  width?: number | string;
+  height?: number | string;
+  avg_frame_rate?: string;
+  r_frame_rate?: string;
+  start_time?: string;
+  duration?: string;
+  bit_rate?: string;
+  sample_rate?: string;
+  channels?: number | string;
+  tags?: { rotate?: string };
+  side_data_list?: Array<{ rotation?: number }>;
+}
+
+interface RawFfprobeOutput {
+  streams?: RawFfprobeStream[];
+  format?: { duration?: string; start_time?: string; bit_rate?: string };
+}
+
+function nullableNumber(value: number | string | undefined): number | null {
+  if (value === undefined || value === null || value === "N/A") return null;
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/** Parse a rational or decimal FFprobe frame-rate field. */
+export function parseFrameRate(value: string | null | undefined): number | null {
+  if (!value || value === "N/A") return null;
+  const parts = value.split("/");
+  const numerator = Number(parts[0]);
+  const denominator = parts.length > 1 ? Number(parts[1]) : 1;
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator === 0) return null;
+  const rate = numerator / denominator;
+  return Number.isFinite(rate) && rate > 0 ? rate : null;
 }
 
 /**
- * Parse `ffmpeg -i` stderr.
- *
- * The old implementation matched the FIRST `, WxH` in the whole output, which
- * picks up audio/sample-rate lines or a second stream on some files. We now
- * anchor on the `Video:` line, fall back to `tbr` when `fps` is absent, and also
- * report whether an audio stream exists (the render pipeline needs that to decide
- * whether to mux in silence).
+ * FFprobe reports the average and nominal/base rates. A material difference is
+ * evidence of variable frame pacing; the 1% tolerance avoids classifying small
+ * container/time-base rounding differences (for example 29.97 vs 30) as VFR.
  */
+export function detectVariableFrameRate(
+  averageFrameRate: string | null | undefined,
+  nominalFrameRate: string | null | undefined,
+  relativeTolerance = 0.01
+): boolean | null {
+  const average = parseFrameRate(averageFrameRate);
+  const nominal = parseFrameRate(nominalFrameRate);
+  if (average === null || nominal === null) return null;
+  return Math.abs(average - nominal) / Math.max(average, nominal) > relativeTolerance;
+}
+
+export function parseFfprobeJsonOutput(stdout: string): FfprobeMetadata {
+  const raw = JSON.parse(stdout) as RawFfprobeOutput;
+  const streams = (raw.streams ?? []).map((stream): FfprobeStreamMetadata => {
+    const sideDataRotation = stream.side_data_list?.find((item) => Number.isFinite(item.rotation))?.rotation;
+    const taggedRotation = nullableNumber(stream.tags?.rotate);
+    const rawRotation = sideDataRotation ?? taggedRotation;
+    return {
+      index: nullableNumber(stream.index),
+      codecType: stream.codec_type ?? null,
+      codecName: stream.codec_name ?? null,
+      width: nullableNumber(stream.width),
+      height: nullableNumber(stream.height),
+      averageFrameRate: stream.avg_frame_rate ?? null,
+      nominalFrameRate: stream.r_frame_rate ?? null,
+      startTime: nullableNumber(stream.start_time),
+      duration: nullableNumber(stream.duration),
+      bitRate: nullableNumber(stream.bit_rate),
+      sampleRate: nullableNumber(stream.sample_rate),
+      channels: nullableNumber(stream.channels),
+      rotation: rawRotation === null || rawRotation === undefined
+        ? null
+        : Math.abs(Math.round(rawRotation)) % 360,
+    };
+  });
+  return {
+    formatDuration: nullableNumber(raw.format?.duration),
+    formatStartTime: nullableNumber(raw.format?.start_time),
+    formatBitRate: nullableNumber(raw.format?.bit_rate),
+    streams,
+  };
+}
+
+export function parseVideoMetadataFromFfprobe(probe: FfprobeMetadata): VideoMetadata {
+  const video = probe.streams.find((stream) => stream.codecType === "video");
+  if (!video) throw new Error("ffprobe reported no video stream.");
+  const audio = probe.streams.find((stream) => stream.codecType === "audio") ?? null;
+  const averageFrameRate = video.averageFrameRate;
+  const nominalFrameRate = video.nominalFrameRate;
+  const fps = parseFrameRate(averageFrameRate) ?? parseFrameRate(nominalFrameRate) ?? 0;
+  const duration = probe.formatDuration ?? video.duration ?? 0;
+  return {
+    duration,
+    width: video.width ?? 0,
+    height: video.height ?? 0,
+    fps,
+    hasAudio: audio !== null,
+    rotation: video.rotation ?? 0,
+    averageFrameRate,
+    nominalFrameRate,
+    isVariableFrameRate: detectVariableFrameRate(averageFrameRate, nominalFrameRate),
+    videoStartTime: video.startTime ?? probe.formatStartTime ?? 0,
+    videoDuration: video.duration ?? duration,
+    audioStartTime: audio?.startTime ?? null,
+    audioDuration: audio?.duration ?? null,
+    formatBitRate: probe.formatBitRate,
+    videoBitRate: video.bitRate,
+    audioBitRate: audio?.bitRate ?? null,
+  };
+}
+
+/** Parse `ffmpeg -i` stderr for installations without a standalone ffprobe. */
 export function parseFfmpegProbeOutput(stderr: string): Partial<VideoMetadata> {
   const videoLine = stderr.match(/Stream[^\n]*?\bVideo:[^\n]*/i)?.[0] ?? "";
   const audioLine = stderr.match(/Stream[^\n]*?\bAudio:[^\n]*/i)?.[0] ?? "";
-
   const durationMatch = stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
-  let duration: number | undefined;
-  if (durationMatch) {
-    duration =
-      parseInt(durationMatch[1], 10) * 3600 +
+  const duration = durationMatch
+    ? parseInt(durationMatch[1], 10) * 3600 +
       parseInt(durationMatch[2], 10) * 60 +
-      parseFloat(durationMatch[3]);
-  }
-
-  // 1920x1080 [SAR 1:1 DAR 16:9]  |  1080x1920, yuv420p  |  720x1280 (320x568)
+      parseFloat(durationMatch[3])
+    : undefined;
   const resolutionMatch =
     videoLine.match(/(\d{2,5})x(\d{2,5})(?![\dx])/) ??
     stderr.match(/,\s*(\d{2,5})x(\d{2,5})[\s,(]/);
-
   const fpsMatch =
     videoLine.match(/(\d+(?:\.\d+)?)\s+fps/i) ??
     videoLine.match(/(\d+(?:\.\d+)?)\s+tbr/i) ??
     stderr.match(/(\d+(?:\.\d+)?)\s+fps/i);
-
   const rotationMatch =
     stderr.match(/rotate\s*:\s*(-?\d+)/i) ??
     stderr.match(/displaymatrix:[^\n]*?(-?\d+(?:\.\d+)?)\s*degrees/i);
-
   return {
     duration,
     width: resolutionMatch ? parseInt(resolutionMatch[1], 10) : undefined,
     height: resolutionMatch ? parseInt(resolutionMatch[2], 10) : undefined,
     fps: fpsMatch ? parseFloat(fpsMatch[1]) : undefined,
     hasAudio: Boolean(audioLine),
-    rotation: rotationMatch
-      ? Math.abs(Math.round(parseFloat(rotationMatch[1]))) % 360
-      : 0,
+    rotation: rotationMatch ? Math.abs(Math.round(parseFloat(rotationMatch[1]))) % 360 : 0,
   };
 }
 
-export async function getVideoMetadata(
-  inputPath: string,
-): Promise<VideoMetadata> {
+/** Capture a structured FFprobe report for a local media file. */
+export async function probeMediaWithFfprobe(inputPath: string): Promise<FfprobeMetadata> {
+  if (!fs.existsSync(inputPath)) throw new Error(`Media file does not exist: ${inputPath}`);
+  const ffprobeBin = getFfprobePath();
+  return new Promise((resolve, reject) => {
+    const child = spawn(ffprobeBin, [
+      "-v", "error",
+      "-show_streams",
+      "-show_format",
+      "-of", "json",
+      inputPath,
+    ], { windowsHide: true });
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (data) => { stdout += data.toString(); });
+    child.stderr?.on("data", (data) => { stderr += data.toString(); });
+    child.on("error", (error) => reject(new Error(`${ffprobeBin}: ${toErrorMessage(error)}`)));
+    child.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(`ffprobe exited with status ${String(code)}: ${stderr.slice(-1500)}`));
+        return;
+      }
+      try {
+        resolve(parseFfprobeJsonOutput(stdout));
+      } catch (error) {
+        reject(new Error(`Could not parse ffprobe JSON: ${toErrorMessage(error)}`));
+      }
+    });
+  });
+}
+
+function isValidVideoMetadata(metadata: VideoMetadata): boolean {
+  return Number.isFinite(metadata.duration) && metadata.duration > 0 &&
+    Number.isFinite(metadata.width) && metadata.width > 0 &&
+    Number.isFinite(metadata.height) && metadata.height > 0 &&
+    Number.isFinite(metadata.fps) && metadata.fps > 0 && metadata.fps <= 240;
+}
+
+export async function getVideoMetadata(inputPath: string): Promise<VideoMetadata> {
   if (!fs.existsSync(inputPath)) {
-    throw new AppError(
-      "Video metadata could not be read because the file does not exist.",
-      {
-        status: 404,
-        details: inputPath,
-        resolution: "Upload the source video again and retry.",
-      },
+    throw new AppError("Video metadata could not be read because the file does not exist.", {
+      status: 404,
+      details: inputPath,
+      resolution: "Upload the source video again and retry.",
+    });
+  }
+
+  try {
+    const metadata = parseVideoMetadataFromFfprobe(await probeMediaWithFfprobe(inputPath));
+    if (!isValidVideoMetadata(metadata)) throw new Error("ffprobe returned incomplete video metadata.");
+    return metadata;
+  } catch (error) {
+    warnFfprobeOnce(
+      `ffprobe metadata unavailable (${toErrorMessage(error)}). VFR detection and stream timing diagnostics are unavailable; install a full FFmpeg build with ffprobe or set FFPROBE_PATH. Falling back to FFmpeg text probing.`
     );
   }
 
   const ffmpegBin = getFfmpegPath();
-
   return new Promise((resolve, reject) => {
-    // `ffmpeg -i` with no output always exits non-zero, so we parse stderr on close.
-    const child = spawn(ffmpegBin, ["-hide_banner", "-i", inputPath], {
-      windowsHide: true,
-    });
+    const child = spawn(ffmpegBin, ["-hide_banner", "-i", inputPath], { windowsHide: true });
     let stderr = "";
-
-    child.stderr?.on("data", (data) => {
-      stderr += data.toString();
-    });
-
+    child.stderr?.on("data", (data) => { stderr += data.toString(); });
     child.on("error", (error) => {
-      reject(
-        new AppError("FFmpeg failed while probing video metadata.", {
-          details: `${ffmpegBin}: ${toErrorMessage(error)}`,
-          resolution:
-            "Install ffmpeg (`winget install Gyan.FFmpeg` on Windows) or set FFMPEG_PATH in .env.local.",
-        }),
-      );
+      reject(new AppError("FFmpeg failed while probing video metadata.", {
+        details: `${ffmpegBin}: ${toErrorMessage(error)}`,
+        resolution: "Install FFmpeg and ffprobe or set FFMPEG_PATH / FFPROBE_PATH in .env.local.",
+      }));
     });
-
     child.on("close", () => {
-      try {
-        const parsed = parseFfmpegProbeOutput(stderr);
-
-        if (!parsed.duration || parsed.duration <= 0) {
-          throw new AppError("FFmpeg could not detect the video duration.", {
-            details: stderr.slice(-1000),
-            resolution:
-              "Confirm the uploaded file is a valid readable video and retry.",
-          });
-        }
-
-        if (
-          !parsed.width ||
-          !parsed.height ||
-          parsed.width <= 0 ||
-          parsed.height <= 0
-        ) {
-          throw new AppError("FFmpeg could not detect the video resolution.", {
-            details: stderr.slice(-1000),
-            resolution:
-              "Confirm the uploaded file is a valid readable video and retry.",
-          });
-        }
-
-        if (!parsed.fps || parsed.fps <= 0 || parsed.fps > 240) {
-          throw new AppError(
-            "FFmpeg could not detect a sane video frame rate.",
-            {
-              details: `fps=${String(parsed.fps)} | ${stderr.slice(-600)}`,
-              resolution:
-                "Use a standard video file with a detectable frame rate and retry.",
-            },
-          );
-        }
-
-        resolve({
-          duration: parsed.duration,
-          width: parsed.width,
-          height: parsed.height,
-          fps: parsed.fps,
-          hasAudio: Boolean(parsed.hasAudio),
-          rotation: parsed.rotation ?? 0,
-        });
-      } catch (error) {
-        reject(error);
+      const parsed = parseFfmpegProbeOutput(stderr);
+      const metadata: VideoMetadata = {
+        duration: parsed.duration ?? 0,
+        width: parsed.width ?? 0,
+        height: parsed.height ?? 0,
+        fps: parsed.fps ?? 0,
+        hasAudio: Boolean(parsed.hasAudio),
+        rotation: parsed.rotation ?? 0,
+        averageFrameRate: null,
+        nominalFrameRate: null,
+        isVariableFrameRate: null,
+        videoStartTime: 0,
+        videoDuration: parsed.duration ?? 0,
+        audioStartTime: parsed.hasAudio ? 0 : null,
+        audioDuration: parsed.hasAudio ? parsed.duration ?? null : null,
+        formatBitRate: null,
+        videoBitRate: null,
+        audioBitRate: null,
+      };
+      if (!isValidVideoMetadata(metadata)) {
+        reject(new AppError("FFmpeg could not detect complete video metadata.", {
+          details: `duration=${metadata.duration}, size=${metadata.width}x${metadata.height}, fps=${metadata.fps} | ${stderr.slice(-1000)}`,
+          resolution: "Confirm the uploaded file is a valid readable video and retry.",
+        }));
+        return;
       }
+      resolve(metadata);
     });
   });
 }

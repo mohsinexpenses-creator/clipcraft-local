@@ -47,6 +47,12 @@ export interface ProcessSegmentOptions {
   sourceHeight: number;
   /** Output frame rate (CFR). */
   targetFps: number;
+  /** True when ffprobe rates show VFR; branches are normalized before hook concat. */
+  sourceIsVariableFrameRate?: boolean;
+  /** Input video's ffprobe start_time, used to interpret preserved probe PTS. */
+  videoStartTimeSeconds?: number;
+  /** Audio stream start time relative to the video stream, seconds. */
+  audioStartOffsetSeconds?: number;
   /** False when the source has no audio stream -> a silent track is muxed in. */
   sourceHasAudio: boolean;
   /** Transparent PNG overlays composited before the final H.264 encode. */
@@ -139,6 +145,18 @@ export function getVideoEncodeSettings(
 }
 
 /** Pure overlay filter builder shared by both caption engines and unit tests. */
+export function buildVfrNormalizationFilters(targetFps: number): string[] {
+  return [`fps=fps=${ffmpegFpsArg(normalizeFps(targetFps))}:round=near`, 'setpts=PTS-STARTPTS'];
+}
+
+export function buildAudioTimestampReset(audioStartOffsetSeconds = 0): string {
+  const offset = Number.isFinite(audioStartOffsetSeconds) ? audioStartOffsetSeconds : 0;
+  const shift = Math.abs(offset) < 0.000001 ? '' : `${offset >= 0 ? '+' : ''}${offset.toFixed(6)}/TB`;
+  // Rebase to the video clock, then let libswresample insert/drop leading
+  // samples as needed so every concat segment begins at PTS 0.
+  return `asetpts=PTS-STARTPTS${shift},aresample=async=1000:first_pts=0`;
+}
+
 export function buildOverlayFilterStatements(
   overlays: OverlayFrameSequence[],
   inputIndices: number[],
@@ -177,12 +195,25 @@ export function buildOverlayFilterStatements(
  * start together (lip-sync is exact) and no frame has to be invented or duplicated to
  * fill the gap. Any failure returns 0 - the caller then just cuts where it was told to.
  */
-export async function probeFirstFrameOffset(sourceVideoPath: string, seekTo: number): Promise<number> {
+export function computeSeekPhase(firstFramePts: number, requestedTime: number, videoStartTime = 0): number {
+  const offset = firstFramePts - (requestedTime + videoStartTime);
+  // A VFR source can have a longer-than-average frame interval, so do not cap
+  // this at 1 / nominal-fps. A grossly different PTS means the probe was rebased.
+  return Number.isFinite(offset) && offset >= 0 && offset < 1 ? offset : 0;
+}
+
+export async function probeFirstFrameOffset(
+  sourceVideoPath: string,
+  seekTo: number,
+  videoStartTime = 0
+): Promise<number> {
   try {
     const { stderr } = await runFfmpeg(
       [
         '-hide_banner',
         '-nostats',
+        '-copyts',
+        '-accurate_seek',
         '-ss', Math.max(0, seekTo).toFixed(3),
         '-i', sourceVideoPath,
         '-an',
@@ -195,8 +226,8 @@ export async function probeFirstFrameOffset(sourceVideoPath: string, seekTo: num
       { label: 'probe-first-frame', timeoutMs: 120_000 }
     );
     const match = stderr.match(/pts_time:\s*(-?\d+(?:\.\d+)?)/);
-    const offset = match ? Number(match[1]) : Number.NaN;
-    return Number.isFinite(offset) && offset >= 0 && offset < 0.25 ? offset : 0;
+    const firstFramePts = match ? Number(match[1]) : Number.NaN;
+    return computeSeekPhase(firstFramePts, seekTo, videoStartTime);
   } catch {
     return 0;
   }
@@ -260,6 +291,9 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
     sourceWidth,
     sourceHeight,
     targetFps,
+    sourceIsVariableFrameRate = false,
+    videoStartTimeSeconds = 0,
+    audioStartOffsetSeconds = 0,
     sourceHasAudio,
     overlays = [],
     words = [],
@@ -336,8 +370,10 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
   // Each cut is snapped to the first frame at/after the requested time (see
   // probeFirstFrameOffset). The clip then begins at most one frame later than asked.
   const [mainPhase, hookPhase] = await Promise.all([
-    probeFirstFrameOffset(sourceVideoPath, start),
-    hookEnabled ? probeFirstFrameOffset(sourceVideoPath, start + hookOffset) : Promise.resolve(0),
+    probeFirstFrameOffset(sourceVideoPath, start, videoStartTimeSeconds),
+    hookEnabled
+      ? probeFirstFrameOffset(sourceVideoPath, start + hookOffset, videoStartTimeSeconds)
+      : Promise.resolve(0),
   ]);
   const snap = (time: number, phase: number): string =>
     Math.max(0, time + phase - SEEK_GUARD_SECONDS).toFixed(4);
@@ -346,10 +382,10 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
   let nextInput = 0;
   const hookInput = hookEnabled ? nextInput++ : -1;
   if (hookEnabled) {
-    inputArgs.push('-ss', snap(start + hookOffset, hookPhase), '-t', actualHookDur.toFixed(3), '-i', sourceVideoPath);
+    inputArgs.push('-accurate_seek', '-ss', snap(start + hookOffset, hookPhase), '-t', actualHookDur.toFixed(3), '-i', sourceVideoPath);
   }
   const mainInput = nextInput++;
-  inputArgs.push('-ss', snap(start, mainPhase), '-t', segmentDuration.toFixed(3), '-i', sourceVideoPath);
+  inputArgs.push('-accurate_seek', '-ss', snap(start, mainPhase), '-t', segmentDuration.toFixed(3), '-i', sourceVideoPath);
 
   const overlayInputIndices: number[] = [];
   for (const overlay of overlays) {
@@ -396,17 +432,22 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
         const parts = buildSingleFilterParts(
           plan, sourceWidth, sourceHeight, outWidth, outHeight, colorFilterStr, timeOffset, windowSeconds
         );
+        if (sourceIsVariableFrameRate) parts.push(...buildVfrNormalizationFilters(fps));
         statements.push(`[${input}:v]${parts.join(',')}[${label}]`);
       } else {
+        const splitOutput = sourceIsVariableFrameRate ? `${prefix}vfrraw` : label;
         statements.push(
           ...buildSplitFilterStatements(plan, sourceWidth, sourceHeight, colorFilterStr, {
             input: `${input}:v`,
-            output: label,
+            output: splitOutput,
             prefix,
             timeOffset,
             windowSeconds,
           })
         );
+        if (sourceIsVariableFrameRate) {
+          statements.push(`[${splitOutput}]${buildVfrNormalizationFilters(fps).join(',')}[${label}]`);
+        }
       }
     };
     /**
@@ -418,7 +459,10 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
     const audioBranch = (input: number, label: string, seconds: number, tail: string): void => {
       const suffix = tail ? `,${tail}` : '';
       if (sourceHasAudio) {
-        statements.push(`[${input}:a]asetpts=PTS-STARTPTS,aformat=channel_layouts=stereo${suffix}[${label}]`);
+        statements.push(
+          `[${input}:a]${buildAudioTimestampReset(audioStartOffsetSeconds)},` +
+          `aformat=channel_layouts=stereo${suffix}[${label}]`
+        );
       } else {
         statements.push(`anullsrc=channel_layout=stereo:sample_rate=48000:d=${seconds.toFixed(3)}${suffix}[${label}]`);
       }
