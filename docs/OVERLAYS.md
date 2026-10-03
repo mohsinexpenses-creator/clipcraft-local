@@ -59,8 +59,8 @@ placement is recomputed from where the heads really are on the 1080×1920 canvas
 - **A preset position that does not cover a face is kept** — nothing moves unless it has to.
   In a split screen the position setting is therefore a *preference*.
 - Otherwise the **captions** move to the seam between the panes (the free band between the two
-  heads), the **hook** to the nearest free spot (normally above the upper head), and the
-  **CTA** to the nearest free spot (normally just below the captions).
+  heads), the **hook** to the nearest face-safe spot (with the default 38% face target, often
+  below the upper head), and the **CTA** to the nearest free spot (often below the captions).
 - Overlays never cover each other, and the usual "lift the captions while the CTA card is on
   screen" is switched off (the CTA no longer shares their area).
 - The hook and the CTA are only on screen for a few seconds, so each is placed against where
@@ -78,10 +78,10 @@ Chrome renders of the default presets: the estimate is never smaller than the re
 The worker log shows what happened:
 
 ```
-Overlay layout (split screen): captions y 874-1042, hook y 84-266, CTA y 1150-1243
-  · captions moved from y=1345 to y=874 (the preset position covers a face)
-  · hook moved from y=230 to y=84 (the preset position covers a face or the captions)
-  · cta moved from y=1229 to y=1150 (the preset position covers a face or the captions)
+Overlay layout (split screen): captions y 818-986, hook y 588-770, CTA y 1548-1641
+  · captions moved from y=1345 to y=818 (the preset position covers a face)
+  · hook moved from y=230 to y=588 (the preset position covers a face or the captions)
+  · cta moved from y=1229 to y=1548 (the preset position covers a face or the captions)
 ```
 
 If no completely free spot exists (faces filling their panes) the overlay is placed where it

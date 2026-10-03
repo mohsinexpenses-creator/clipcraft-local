@@ -8,7 +8,7 @@ import { getCaptionOffsetMs, shiftCaptionWords } from './caption-timing';
 import { CaptionEngine, ClipLayout, ClipRecord, JobData, OverlayStylePreset } from '../lib/types';
 import { DEFAULT_OVERLAY_STYLE_PRESETS } from '../lib/presets';
 import { detectSpeakerTimeline } from './asd';
-import { buildLayoutPlan } from './layout';
+import { buildLayoutPlan, getSplitFramingSettings } from './layout';
 import { adaptOverlaysToLayout, describePlacements } from './overlay-layout';
 import { color, log } from '../lib/logger';
 import { HOOK_TRANSITION_SECONDS, normalizeFps, processVideoSegment } from './ffmpeg-pipeline';
@@ -273,7 +273,14 @@ export async function processClipJob(
       sourceMeta.height,
       { hasAudio: sourceMeta.hasAudio }
     );
-    const plan = buildLayoutPlan(asd, layout, sourceMeta.width, sourceMeta.height);
+    const splitFraming = getSplitFramingSettings();
+    const plan = buildLayoutPlan(asd, layout, sourceMeta.width, sourceMeta.height, splitFraming);
+    if (layout === 'split-screen') {
+      log.detail(
+        `Split framing: face target ${(splitFraming.faceTargetFrac * 100).toFixed(0)}% of pane height, ` +
+        `maximum crop zoom ${splitFraming.zoom.toFixed(1)}x.`
+      );
+    }
     checkCancelled();
 
     // Say what was ACTUALLY produced. A split request must never quietly turn

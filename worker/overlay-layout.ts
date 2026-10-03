@@ -13,9 +13,9 @@
  *
  *   - the position from the preset is KEPT when it doesn't cover a face (nothing
  *     moves unless it has to);
- *   - otherwise the CAPTIONS move to the seam between the panes, the HOOK moves up
- *     to the nearest free spot (normally above the upper head), the CTA to the
- *     nearest free spot (normally just below the captions);
+ *   - otherwise the CAPTIONS move to the seam between the panes, the HOOK moves
+ *     to the nearest face-safe spot (often below the upper head at the default
+ *     38% face target), the CTA to the nearest free spot (normally below captions);
  *   - overlays never cover each other, and the usual "lift the captions while the
  *     CTA is showing" is switched off (the CTA no longer shares their area);
  *   - the hook and the CTA are only on screen for a few seconds, so each is placed

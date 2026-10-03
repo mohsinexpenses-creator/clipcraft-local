@@ -161,7 +161,7 @@ test('split screen: the preset positions DID land on the faces (so moving them w
   assert.ok(result.notes.some((n) => n.startsWith('hook moved')), result.notes.join('; '));
 });
 
-test('split screen: captions go to the seam between the panes, the hook above the upper head', () => {
+test('split screen: captions go to the seam and the hook moves into the clear band below the upper head', () => {
   const plan = twoHostPlan();
   const result = adapt(plan, 'native');
   const { caption, hook } = result.placements;
@@ -169,7 +169,8 @@ test('split screen: captions go to the seam between the panes, the hook above th
   const lower = plan.cells.find((c) => c.cellY === 960)!;
   const captionMid = (caption!.top + caption!.bottom) / 2;
   assert.ok(captionMid > upper.faceZone.bottom && captionMid < lower.faceZone.top, 'captions sit between the two faces');
-  assert.ok(hook!.bottom <= upper.headZone.top + 60, 'the hook is up above the upper person\'s head');
+  assert.ok(hook!.top >= upper.headZone.bottom, 'the hook sits below the upper person\'s head');
+  assert.ok(hook!.bottom <= result.placements.caption!.top, 'the hook stays above the caption seam');
   assert.ok(hook!.top >= 0);
 });
 
@@ -228,19 +229,20 @@ test('hook / CTA switched off: nothing is placed for them', () => {
 
 test('the hook and the CTA are placed against the faces DURING THEIR OWN seconds, not the whole clip', () => {
   const plan = twoHostPlan();
-  // Doctor the lower person's trace: they sit low in the pane until t=28, then lean far down.
+  // Doctor the lower person's trace: they sit low in the pane until t=28, then lean far enough down to clear the CTA keep-out.
   const lower = plan.cells.find((c) => c.cellY === 960)!;
   for (const p of lower.trace) {
     if (p.t >= 28) {
-      p.faceTop += 220; p.faceBottom += 220; p.headTop += 220; p.headBottom += 220;
+      p.faceTop += 350; p.faceBottom += 350; p.headTop += 350; p.headBottom += 350;
     }
   }
   const col = (key: 'faceTop' | 'faceBottom' | 'headTop' | 'headBottom'): number[] => lower.trace.map((p) => p[key]);
   lower.faceZone = { top: Math.min(...col('faceTop')), bottom: Math.max(...col('faceBottom')) };
   lower.headZone = { top: Math.min(...col('headTop')), bottom: Math.max(...col('headBottom')) };
 
-  // CTA window = the last 2.5 s: there the face is ~220px LOWER than usual, so the preset spot
-  // (1229) is clear. Judged against the whole clip it would be on the face and have to move.
+  // CTA window = the last 2.5 s: there the face is ~350px LOWER than usual, so the preset spot
+  // (1229) is clear even after the forehead/chin safety padding. Judged against the whole clip
+  // it overlaps the face and has to move.
   const windowed = adapt(plan, 'native');
   const whole = adapt(plan, 'native', DEFAULT_CAPTION_PRESETS[0], hookStyle, ctaStyle, false);
   assert.ok(!windowed.notes.some((n) => n.startsWith('cta moved')), `CTA stays put: ${windowed.notes.join('; ')}`);

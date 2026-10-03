@@ -76,17 +76,16 @@ The worker pipeline (`worker/asd/` + `worker/layout.ts`):
    pane is a **locked camera** (next section), whose handful of glides is encoded as a
    short FFmpeg expression so the command stays far inside Windows' command-line limit.
 
-   **Pane sizing (quality guard).** A pane's source crop is ~2.8× the face height
-   (head, shoulders, some chest) **but never magnified by more than 2×**
-   (`MAX_CELL_UPSCALE`): for the small faces of a wide shot the cap — not the face
-   size — sets the crop, e.g. a 1080p two-host shot becomes two 540×480 → 1080×960
-   panes. (Measured on a real photo: reconstruction fidelity falls from SSIM 0.83 at
-   2× to 0.77 at 2.5× and 0.66 at 5×; the old planner cropped as little as 35 % of the
-   frame height — 212×378 px for a single full-screen pane, a 5× enlargement.) The person's
-   *head* (hair to chin) is centred in the pane — the face centre sits at 55 % of the pane
-   height, because hair reaches higher above the face box than the chin does below it. That
-   gives the locked camera equal room above and below, and leaves a free band above the
-   upper head (for the hook text) and between the two heads (for the captions).
+   **Pane framing (target).** Every 2-, 3-, or 4-person cell uses its own aspect-matched
+   source crop. By default, the face-box centre is placed at **38% of that pane's height**
+   and the crop aims to make the face about 38% of the pane height where source resolution
+   allows. `SPLIT_FACE_TARGET_FRAC` configures the vertical centre target (default `0.38`,
+   clamped to `0.25–0.55`). `SPLIT_ZOOM` configures the maximum crop magnification
+   (default `3.5`, clamped to `1–4`). Crops stay inside the source dimensions and use
+   the same framing math for wide top cells and narrow 3/4-grid cells. A source smaller than
+   the requested crop may still need enlargement to fill the 1080×1920 output; zoom cannot
+   restore detail absent from the source. The configured target also informs the locked
+   camera and the overlay-safe face/head zones.
 
    **Who gets a pane.** Every active speaker, plus any other face that stays on screen
    ≥ 3 s *and* is at least 45 % as wide as the biggest speaker's (a much smaller
@@ -109,7 +108,7 @@ to keep the face in the centre". Each pane now behaves like a camera on a tripod
 3. **Re-centre** — only if the head has stayed outside that safe zone for ≥ 0.3 s (so
    one bad detection cannot trigger it) the window **glides** — smoothstep-eased,
    0.6–1.3 s depending on distance, starting ~0.15 s before the head reaches the edge —
-   to put the person back in the middle, and locks again. A person who is already as
+   to restore the configured face target, and locks again. A person who is already as
    close to the frame edge as the window can get does not make it twitch; at most 10
    re-centres are planned per clip.
 
@@ -119,11 +118,9 @@ few hundred characters. The same maths runs in JavaScript to know where each fac
 on the canvas (used by the overlay placement) and is unit-tested against the FFmpeg
 expression.
 
-*Measured on a 32 s two-host test video with realistic head sway and one person leaning
-out of frame* (global background motion of each rendered pane, outside deliberate glides):
-old planner — mean 0.50 px/frame, p99 8 px, 9 % of frames with a ≥ 1 px jump;
-locked camera — mean 0.00–0.05 px/frame, p99 ≤ 0.4 px, one single glide when the person
-really left.
+The camera-lock unit tests check stationary crops, eased non-overlapping glides, and
+face visibility while moving. Rendered quality and timing still need validation with a
+real source clip.
 
 ### Failure behaviour (no *silent* fallbacks)
 
@@ -169,10 +166,14 @@ and output scaling together. The output canvas is always 1080×1920.
   (default `slow`, or `medium` for faster output). This avoids a low-quality early
   encode followed by another generation loss. No quality metric or real-source A/V
   result is claimed here; verify with an actual source clip before judging quality.
+- **Timing.** FFprobe's `avg_frame_rate` / `r_frame_rate` comparison flags VFR sources;
+  those branches are normalized to the average rate before the hook/base concat. Video
+  PTS is reset on each branch, audio PTS is rebased against the reported audio/video
+  start-time difference and resampled to start at zero, and input seeks explicitly use
+  accurate decode/discard seeking. `CAPTION_OFFSET_MS` shifts caption words only. Run
+  `npm run verify:clip -- <file>` for per-stream starts, durations, rates and bitrates;
+  see [SETUP.md](../SETUP.md) for probe availability and the debug output switch.
 - Crop coordinates are evaluated in **mirrored space** (the chain flips before crop).
-  The normal clip trim and hook replay are derived from the same source; timestamp/VFR
-  normalization and offset controls are documented with the pipeline diagnostics in
-  [SETUP.md](../SETUP.md).
 
 Layout choice is stored on the clip record (`clip.layout`; `clip.layoutNote` when it
 could not be applied) alongside `captionEngine` and

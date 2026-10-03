@@ -119,30 +119,47 @@ export type LayoutPlan = SinglePlan | SplitPlan;
 const SPEAKER_FACE_ANCHOR_Y = 0.32;
 /** A face box is roughly 80% as wide as it is tall. */
 const FACE_BOX_ASPECT = 0.8;
-/**
- * Preferred split-pane framing: the crop is ~2.8x the face-box height (head,
- * shoulders and some chest). A tighter crop than that only helps when the face
- * is big - for the small faces of a wide shot it just magnifies mush, which is
- * what MAX_CELL_UPSCALE below prevents.
- */
-const CELL_FACE_HEIGHT_FACTOR = 2.8;
-/**
- * QUALITY GUARD: a pane's source crop is never magnified by more than this.
- * The old planner cropped as little as 35% of the frame height (212x378 px for
- * a single full-screen pane = 5.1x enlargement) which is the blur the user saw;
- * 2x is the same ballpark as the speaker-focus window (607x1080 -> 1080x1920 is
- * 1.78x). For small faces this - not the face height - decides the crop.
- */
-export const MAX_CELL_UPSCALE = 2.0;
-/**
- * Face centre inside a pane, as a fraction of the pane height. The person's HEAD (hair
- * to chin) reaches ~1.15 face-widths above the face centre but only ~0.69 below it, so
- * putting the face centre a little BELOW the middle (0.55) is what centres the head -
- * and gives the locked camera equal room (~100px for a 110px face) above and below
- * before it has to move. It also leaves a free band above the upper head for the hook
- * text and a free band between the two heads for the captions (worker/overlay-layout.ts).
- */
-const CELL_FACE_ANCHOR_Y = 0.55;
+const DEFAULT_SPLIT_FACE_TARGET_FRAC = 0.38;
+const DEFAULT_SPLIT_ZOOM = 3.5;
+const MIN_SPLIT_ZOOM = 1;
+const MAX_SPLIT_ZOOM = 4;
+const MIN_FACE_TARGET_FRAC = 0.25;
+const MAX_FACE_TARGET_FRAC = 0.55;
+/** Preferred output face height (38% of a pane) before zoom/source bounds apply. */
+const SPLIT_FACE_HEIGHT_FRAC = 0.38;
+
+export interface SplitFramingSettings {
+  /** Face-centre target, as a fraction from the top of each pane. */
+  faceTargetFrac: number;
+  /** Maximum crop enlargement; limited further when the source is too small. */
+  zoom: number;
+}
+
+const DEFAULT_SPLIT_FRAMING_SETTINGS: SplitFramingSettings = {
+  faceTargetFrac: DEFAULT_SPLIT_FACE_TARGET_FRAC,
+  zoom: DEFAULT_SPLIT_ZOOM,
+};
+
+/** Parse/clamp split framing environment values; exported for deterministic tests. */
+export function getSplitFramingSettings(
+  env: Record<string, string | undefined> = process.env
+): SplitFramingSettings {
+  const targetRaw = env.SPLIT_FACE_TARGET_FRAC?.trim();
+  const zoomRaw = env.SPLIT_ZOOM?.trim();
+  const targetValue = targetRaw ? Number(targetRaw) : Number.NaN;
+  const zoomValue = zoomRaw ? Number(zoomRaw) : Number.NaN;
+  return {
+    faceTargetFrac: Number.isFinite(targetValue)
+      ? Math.max(MIN_FACE_TARGET_FRAC, Math.min(targetValue, MAX_FACE_TARGET_FRAC))
+      : DEFAULT_SPLIT_FACE_TARGET_FRAC,
+    zoom: Number.isFinite(zoomValue)
+      ? Math.max(MIN_SPLIT_ZOOM, Math.min(zoomValue, MAX_SPLIT_ZOOM))
+      : DEFAULT_SPLIT_ZOOM,
+  };
+}
+
+/** Default max magnification, retained as a named constant for existing consumers/tests. */
+export const MAX_CELL_UPSCALE = DEFAULT_SPLIT_ZOOM;
 /**
  * A track must be at least this wide (fraction of the source width) to count as
  * a real on-screen PERSON in the split planner (speaker or not). Kills specks
@@ -377,10 +394,11 @@ export function buildLayoutPlan(
   asd: AsdResult,
   layout: LayoutMode,
   srcW: number,
-  srcH: number
+  srcH: number,
+  splitFraming: SplitFramingSettings = DEFAULT_SPLIT_FRAMING_SETTINGS
 ): LayoutPlan {
   if (layout === 'split-screen') {
-    return buildSplitPlan(asd, srcW, srcH);
+    return buildSplitPlan(asd, srcW, srcH, splitFraming);
   }
   return buildSinglePlan(asd, srcW, srcH, SPEAKER_FACE_ANCHOR_Y);
 }
@@ -445,23 +463,24 @@ function peakConcurrent(tracks: Track[]): number {
 /**
  * Source-pixel crop window for ONE split pane.
  *
- * Preferred framing is CELL_FACE_HEIGHT_FACTOR x the face height, but the crop
- * is never allowed to magnify the source by more than MAX_CELL_UPSCALE - for the
- * small faces of a wide shot THAT limit (not the face height) sets the crop, so
- * the pane stays sharp instead of becoming a 5x enlargement of a few pixels. The
- * window always matches the pane's aspect and always fits inside the source.
+ * Target a ~38%-pane-height face for ordinary source sizes. SPLIT_ZOOM caps how
+ * tightly small faces may be cropped; source dimensions impose an additional hard
+ * bound so the crop can never extend beyond the actual frame. The window always
+ * matches the pane's aspect, including the wide three-cell top and narrow 3/4 grid
+ * cells.
  */
 export function cellCropSize(
   faceW: number,
   cellW: number,
   cellH: number,
   srcW: number,
-  srcH: number
+  srcH: number,
+  framing: SplitFramingSettings = DEFAULT_SPLIT_FRAMING_SETTINGS
 ): { cropW: number; cropH: number } {
   const aspect = cellW / cellH;
   const faceH = Math.max(40, faceW / FACE_BOX_ASPECT);
 
-  let cropH = Math.max(faceH * CELL_FACE_HEIGHT_FACTOR, cellH / MAX_CELL_UPSCALE);
+  let cropH = Math.max(faceH / SPLIT_FACE_HEIGHT_FRAC, cellH / framing.zoom);
   // Largest window of this aspect that fits in the source.
   cropH = Math.min(cropH, srcH, srcW / aspect);
 
@@ -479,7 +498,7 @@ export function cellCropSize(
 export function paneZones(
   samples: CameraSample[],
   camera: CameraPath,
-  pane: { cellY: number; cellH: number; cropH: number }
+  pane: { cellY: number; cellH: number; cropH: number; faceTargetFrac?: number }
 ): { face: CanvasZone; head: CanvasZone; trace: FaceTraceSample[] } {
   const scale = pane.cellH / pane.cropH;
   const lo = pane.cellY;
@@ -499,8 +518,8 @@ export function paneZones(
     });
   }
   if (trace.length === 0) {
-    // No samples (never planned on purpose): assume a face in the middle of the pane.
-    const mid = pane.cellY + pane.cellH * CELL_FACE_ANCHOR_Y;
+    // No samples (never planned on purpose): keep fallback zones at the configured face target.
+    const mid = pane.cellY + pane.cellH * (pane.faceTargetFrac ?? DEFAULT_SPLIT_FACE_TARGET_FRAC);
     const half = pane.cellH * 0.15;
     return {
       face: { top: mid - half, bottom: mid + half },
@@ -627,7 +646,12 @@ export function cameraExpressions(
  * NOT a one-cell "split": that used to crop 212x378 px and blow it up 5x, i.e.
  * a single blurry face filling the frame, which is what a failed split looked like.
  */
-function buildSplitPlan(asd: AsdResult, srcW: number, srcH: number): LayoutPlan {
+function buildSplitPlan(
+  asd: AsdResult,
+  srcW: number,
+  srcH: number,
+  splitFraming: SplitFramingSettings
+): LayoutPlan {
   // Who was EVER the active speaker - those people always win a cell, and
   // their count caps the grid (a 2-person conversation must never grow a 3rd/
   // 4th cell from a briefly-glimpsed false face).
@@ -756,7 +780,7 @@ function buildSplitPlan(asd: AsdResult, srcW: number, srcH: number): LayoutPlan 
   for (let i = 0; i < count; i += 1) {
     const [cellX, cellY, cellW, cellH] = grids[count][i];
     const track = relevant[i];
-    const { cropW, cropH } = cellCropSize(track.avgW, cellW, cellH, srcW, srcH);
+    const { cropW, cropH } = cellCropSize(track.avgW, cellW, cellH, srcW, srcH, splitFraming);
 
     // The pane is a LOCKED crop: placed on the person once, still while their
     // head stays inside it, gliding to re-centre them only when it leaves.
@@ -766,9 +790,14 @@ function buildSplitPlan(asd: AsdResult, srcW: number, srcH: number): LayoutPlan 
       srcH,
       cropW,
       cropH,
-      anchorY: CELL_FACE_ANCHOR_Y,
+      anchorY: splitFraming.faceTargetFrac,
     });
-    const zones = paneZones(samples, camera, { cellY, cellH, cropH });
+    const zones = paneZones(samples, camera, {
+      cellY,
+      cellH,
+      cropH,
+      faceTargetFrac: splitFraming.faceTargetFrac,
+    });
 
     cells.push({
       trackId: track.id,

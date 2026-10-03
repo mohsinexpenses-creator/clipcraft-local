@@ -23,8 +23,11 @@ what it does, manually.
 | **Microsoft Visual C++ Redistributable (x64)** | `whisper-cli.exe` is a native build and needs `vcruntime140.dll` / `msvcp140.dll` | Install once: <https://aka.ms/vs/17/release/vc_redist.x64.exe> |
 | Google AI Studio API key (`GEMINI_API_KEY`) | Viral-segment detection + hook/CTA text | Free: <https://aistudio.google.com/app/apikey> |
 
-FFmpeg is **not** a manual install — `ffmpeg-static` downloads a binary during
-`npm install` and `lib/ffmpeg.ts` resolves it automatically.
+FFmpeg is normally provided by `ffmpeg-static` during `npm install`. VFR detection
+and `verify:clip` also use **ffprobe**; `ffmpeg-static` does not bundle it, so install
+a full local FFmpeg distribution (which includes ffprobe) or set `FFPROBE_PATH` to
+an existing local executable. If ffprobe is absent, the worker falls back to FFmpeg's
+text probe but marks VFR/stream-start diagnostics as unavailable.
 
 ---
 
@@ -39,6 +42,8 @@ npm install
 
 - `ffmpeg-static` → the FFmpeg binary used for trimming, cropping, compositing,
   and the one final H.264 encode
+- a full local FFmpeg install / `FFPROBE_PATH` → stream rates, start times and
+  durations for VFR detection and `npm run verify:clip`
 - `@remotion/bundler` + `@remotion/renderer` → the headless browser Remotion needs
   to paint transparent caption / hook / CTA frames (first render downloads Chromium automatically)
 - `onnxruntime-node` → the ONNX runtime that runs the committed YuNet face model
@@ -76,8 +81,13 @@ Both `npm run dev` and `npm run worker` load `.env.local` (via `@next/env`'s
 | `WHISPER_LANGUAGE` | `auto` | e.g. `ur`, `hi`, `en`. `auto` detects the spoken language (needed for Urdu/Hindi/Punjabi). |
 | `WHISPER_THREADS` | half your cores (2–8) | CPU threads for whisper. |
 | `FFMPEG_PATH` | `ffmpeg-static` | Point at your own FFmpeg binary if the npm download failed. Must be FFmpeg ≥ 5.1 (`-fps_mode` is used). |
+| `FFPROBE_PATH` | sibling / PATH | Full path to a local ffprobe if it is not beside FFmpeg or on PATH. Needed for VFR detection and clip verification. |
 | `VIDEO_CRF` | `17` | Final libx264 quality; accepted range is 16–18 (lower means larger, higher-quality files). |
 | `VIDEO_PRESET` | `slow` | libx264 speed/efficiency preset. Use `medium` to trade compression efficiency for faster renders. |
+| `CAPTION_OFFSET_MS` | `0` | Caption-only timing adjustment. Positive delays captions; negative advances them. Audio/profanity timing is unchanged. |
+| `SAVE_PRECAPTION_DEBUG` | `0` | Set `1` to keep `<clipId>_precaption.mp4` (video/audio before caption/card overlays) beside the final output. It adds a diagnostic encode only when enabled. |
+| `SPLIT_FACE_TARGET_FRAC` | `0.38` | Split-grid face-box centre as a fraction of pane height; clamped to `0.25–0.55`. Applies consistently to 2/3/4-cell layouts. |
+| `SPLIT_ZOOM` | `3.5` | Maximum split crop magnification; clamped to `1–4`. Crops remain within the source dimensions; low-resolution inputs may still need enlargement to fill output. |
 | `PORT` | `3000` | Next.js port. |
 | `ALLOWED_DEV_ORIGINS` | `*.e2b.app` (built in) | Extra hostnames allowed for dev assets (tunnels, LAN). Comma-separated, no scheme/port. |
 | `WORKER_CONCURRENCY` | `1` | Clips rendered in parallel. Keep at 1 on a normal PC: each job runs FFmpeg plus transparent overlay-frame generation. |
@@ -240,10 +250,13 @@ when the source has none) and encodes it as AAC. `PROFANITY_AUDIO_MODE=mute`
 intentionally silences transcript windows; check the `[FFmpeg]` mapping/filter log
 if other audio is missing.
 
-**Captions out of sync / clip plays at the wrong speed**
-fps is derived from the source (`normalizeFps`) and passed to both the FFmpeg stage
-(`-r` + cfr) and `renderMedia`. If sync is off, check the `[FFmpeg]` probe lines in
-the worker log.
+**Captions out of sync / audio drifts / clip plays at the wrong speed**
+Run `npm run verify:clip -- <file>` to inspect avg/r frame rates, VFR classification,
+stream start times/durations and bitrates. The worker uses the average rate, explicitly
+normalizes VFR branches before hook concatenation, and aligns audio timestamps against
+the video stream start. Use `CAPTION_OFFSET_MS` only for a remaining caption-vs-speech
+latency (`+` delays captions, `-` advances them); it never changes audio. Set
+`SAVE_PRECAPTION_DEBUG=1` to compare the pre-overlay output with the final render.
 
 **Crop is on the wrong side of the speaker**
 Sample frames are extracted with `hflip` applied, because the render chain is
@@ -326,6 +339,7 @@ npm run setup:whisper    # whisper.cpp binary (non-Windows) + ggml model
 npm run setup:yunet      # (re)download + verify the YuNet face model
 npm run typecheck        # tsc --noEmit
 npm run test:worker      # node:test unit tests (tsx --test tests/*.test.ts)
+npm run verify:clip -- generated-clips/<video>/<clip>.mp4  # ffprobe output diagnostics
 npm run lint             # eslint
 npm run build            # production build
 ```
@@ -347,7 +361,7 @@ app/startup-validation/    pre-flight checks UI
 lib/upload.ts              shared upload policy: names, sizes, video record, enqueue
 lib/upload-session.ts      resumable sessions on disk (append, finalize, TTL sweep)
 lib/upload-client.ts       browser chunking, progress, retry + resume
-lib/ffmpeg.ts              ffmpeg-static path resolution + probe + spawn wrapper
+lib/ffmpeg.ts              FFmpeg/ffprobe resolution + structured stream probe + spawn wrapper
 lib/whisper.ts             cross-platform whisper.cpp discovery & transcription
 lib/deepgram.ts            optional cloud STT override (REST, no SDK)
 lib/queue.ts               BullMQ queues: transcription + clip render
@@ -374,6 +388,7 @@ worker/captions-ass.ts     ASS caption generation (karaoke fill, word pop, CTA l
 remotion/                  CaptionComposition + AnimatedWord + Hook/CTA overlays
 scripts/setup-whisper.*    binary + ggml model downloader (.mjs and .ps1)
 scripts/setup-yunet.mjs    YuNet model downloader with SHA-256 verification
+scripts/verify-clip.ts     ffprobe report for resolution, rates, stream timing and bitrates
 models/yunet/              committed YuNet face-detection model (232 KB)
 bin/whisper-win-x64/       committed Windows x64 whisper.cpp build (whisper-cli + DLLs)
 ```

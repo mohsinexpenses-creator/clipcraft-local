@@ -10,6 +10,7 @@ import {
   buildSinglePlan,
   buildSplitFilterComplex,
   cellCropSize,
+  getSplitFramingSettings,
   flattenAndDecimate,
   MAX_CELL_UPSCALE,
   PanPoint,
@@ -279,7 +280,7 @@ test('2-person split: the left person gets the TOP pane, the right person the bo
     assert.ok(top && bottom, 'two stacked 1080x960 halves');
     assert.equal(top!.trackId, 1, 'left person is always the top pane');
     assert.equal(bottom!.trackId, 2, 'right person is always the bottom pane');
-    // Each cell is a 9:16-ish window centred on its person (anchor 0.5).
+    // Each cell uses the same configured 38% face target while pane identity stays fixed.
     assert.ok(top!.cropW > 0 && top!.cropH > 0);
   }
 });
@@ -395,14 +396,17 @@ test('speaker-focus never carries a split fallback reason', () => {
   if (plan.mode === 'single') assert.equal(plan.splitFallbackReason, undefined);
 });
 
-test('cellCropSize: small faces are capped at 2x magnification; big faces get the preferred framing', () => {
-  // 100px face, 1080p wide shot, stacked pane 1080x960: the 2x cap decides.
-  assert.deepEqual(cellCropSize(100, 1080, 960, 1920, 1080), { cropW: 540, cropH: 480 });
+test('cellCropSize targets ~38% face height, caps zoom, and respects source bounds', () => {
+  // 100px face, two-person pane: face height is 125px, so a 329px source crop
+  // enlarges it to about 38% of the 960px output pane.
+  const standard = cellCropSize(100, 1080, 960, 1920, 1080);
+  assert.ok(Math.abs(125 / standard.cropH - 0.38) < 0.005, `${standard.cropW}x${standard.cropH}`);
+  assert.ok(Math.abs(standard.cropW / standard.cropH - 1080 / 960) < 0.02);
 
-  // 200px face: preferred framing = 2.8 x faceH (250px) = 700px -> only 1.37x.
+  // The framing formula also works for a larger face (not an unconditional zoom).
   const big = cellCropSize(200, 1080, 960, 1920, 1080);
-  assert.equal(big.cropH, 700);
-  assert.ok(Math.abs(big.cropW / big.cropH - 1080 / 960) < 0.01, 'keeps the pane aspect');
+  assert.ok(Math.abs(250 / big.cropH - 0.38) < 0.005);
+  assert.ok(Math.abs(big.cropW / big.cropH - 1080 / 960) < 0.02, 'keeps the pane aspect');
 
   // Enormous face (close-up): never larger than the source.
   const huge = cellCropSize(900, 1080, 960, 1920, 1080);
@@ -410,14 +414,54 @@ test('cellCropSize: small faces are capped at 2x magnification; big faces get th
 
   // Narrow 9:16 pane of a 3/4-person grid keeps ITS aspect (540x960).
   const narrow = cellCropSize(100, 540, 960, 1920, 1080);
-  assert.deepEqual(narrow, { cropW: 270, cropH: 480 });
+  assert.ok(Math.abs(narrow.cropW / narrow.cropH - 540 / 960) < 0.02);
+  assert.ok(Math.abs(125 / narrow.cropH - 0.38) < 0.005);
 
-  // A source too small to honour the cap still yields a crop INSIDE the frame.
+  // A source too small to honour the requested zoom still yields a crop INSIDE it.
   const tiny = cellCropSize(30, 1080, 960, 640, 360);
   assert.ok(tiny.cropW <= 640 && tiny.cropH <= 360, `${tiny.cropW}x${tiny.cropH}`);
 });
 
-test('split panes never magnify the source by more than MAX_CELL_UPSCALE, whatever the face size or grid', () => {
+test('split framing settings use defaults, parse overrides, and clamp unsafe values', () => {
+  assert.deepEqual(getSplitFramingSettings({}), { faceTargetFrac: 0.38, zoom: 3.5 });
+  assert.deepEqual(
+    getSplitFramingSettings({ SPLIT_FACE_TARGET_FRAC: '0.42', SPLIT_ZOOM: '3.8' }),
+    { faceTargetFrac: 0.42, zoom: 3.8 }
+  );
+  assert.deepEqual(
+    getSplitFramingSettings({ SPLIT_FACE_TARGET_FRAC: '0.05', SPLIT_ZOOM: '9' }),
+    { faceTargetFrac: 0.25, zoom: 4 }
+  );
+  assert.deepEqual(
+    getSplitFramingSettings({ SPLIT_FACE_TARGET_FRAC: 'invalid', SPLIT_ZOOM: '-2' }),
+    { faceTargetFrac: 0.38, zoom: 1 }
+  );
+});
+
+test('configured split framing is consistent in 2-, 3-, and 4-cell grids', () => {
+  const framing = getSplitFramingSettings({ SPLIT_FACE_TARGET_FRAC: '0.42', SPLIT_ZOOM: '4' });
+  for (const people of [2, 3, 4]) {
+    const xPositions = Array.from({ length: people }, (_, i) => 300 + i * (1300 / Math.max(1, people - 1)));
+    const tracks = xPositions.map((x, i) => panTrack(i + 1, Array.from({ length: 40 }, () => x), 0.25, 100));
+    const speakers = tracks.map((track) => ({ trackId: track.id, t0: 0, t1: 10 }));
+    const plan = buildLayoutPlan(asd(tracks, speakers), 'split-screen', 1920, 1080, framing);
+    assert.equal(plan.mode, 'split', people + ' people');
+    if (plan.mode !== 'split') continue;
+    assert.equal(plan.cells.length, people);
+    for (const cell of plan.cells) {
+      const faceCentre = (cell.faceZone.top + cell.faceZone.bottom) / 2;
+      assert.ok(
+        Math.abs(faceCentre - (cell.cellY + 0.42 * cell.cellH)) < 6,
+        people + ' cells: configured face target for track ' + cell.trackId
+      );
+      assert.ok(cell.camera.moves.length === 0, 'static person remains locked in the same cell');
+      assert.ok(cell.cellW / cell.cropW <= 4.02 && cell.cellH / cell.cropH <= 4.02, 'zoom remains within configured bound');
+      assert.ok(cell.cropW <= 1920 && cell.cropH <= 1080, 'crop respects the source dimensions');
+    }
+  }
+});
+
+test('1080p split panes respect the default zoom cap across face sizes and 2/3/4-cell grids', () => {
   for (const faceW of [45, 60, 100, 140, 220, 320]) {
     for (const people of [2, 3, 4]) {
       const tracks = Array.from({ length: people }, (_, i) =>
@@ -446,7 +490,7 @@ test('split panes never magnify the source by more than MAX_CELL_UPSCALE, whatev
   }
 });
 
-test('2 hosts with ~100px faces in 1080p: two stacked 1080x960 panes at exactly 2x (the reported scenario)', () => {
+test('two ~100px faces get consistent 38% framing and a stable left/right pane assignment', () => {
   // Shape of the reported clip after the detector fix: two hosts, ~100px faces.
   const left = panTrack(1, Array.from({ length: 60 }, () => 650), 0.125, 100);
   const right = panTrack(2, Array.from({ length: 60 }, () => 1270), 0.125, 100);
@@ -467,8 +511,8 @@ test('2 hosts with ~100px faces in 1080p: two stacked 1080x960 panes at exactly 
     [0, 960, 1080, 960],
   ]);
   assert.deepEqual(plan.cells.map((c) => [c.cropW, c.cropH]), [
-    [540, 480],
-    [540, 480],
+    [368, 328],
+    [368, 328],
   ]);
   assert.equal(plan.cells[0].trackId, 1, 'left person on top');
 });
@@ -495,9 +539,7 @@ test('a tiny background face (poster / screen) does not steal the second pane fr
   if (conversation.mode === 'split') assert.equal(conversation.cells.length, 2);
 });
 
-test('split panes centre the HEAD (hair to chin) in the pane, which leaves free bands for overlays', () => {
-  // Static people at cy=400 in 480px-high crops: the face centre sits at 55% of the window,
-  // y = 400 - 0.55*480 = 136 (the head reaches higher above the face centre than below it).
+test('split panes target face centres at 38% and keep head/overlay zones within each cell', () => {
   const a = panTrack(1, Array.from({ length: 40 }, () => 600), 0.25, 100);
   const b = panTrack(2, Array.from({ length: 40 }, () => 1300), 0.25, 100);
   const plan = buildLayoutPlan(
@@ -512,20 +554,17 @@ test('split panes centre the HEAD (hair to chin) in the pane, which leaves free 
   assert.equal(plan.mode, 'split');
   if (plan.mode !== 'split') return;
   const graph = buildSplitFilterComplex(plan, 1920, 1080, '');
-  assert.ok(/crop=540:480:'[^']*':'136\.0'/.test(graph), `y offset 136 in: ${graph.slice(0, 400)}`);
+  assert.ok(/crop=368:328:'[^']*':'[^']*'/.test(graph), 'expected zoomed crop: ' + graph.slice(0, 400));
 
-  // The zones the overlay planner works from: 2x magnification (960/480), face centre at
-  // 55% of the pane, face = 125px tall -> 250px on the canvas.
   for (const cell of plan.cells) {
-    const faceCentre = cell.cellY + 0.55 * 960;
-    assert.ok(Math.abs((cell.faceZone.top + cell.faceZone.bottom) / 2 - faceCentre) < 6, 'face at 55% of the pane');
-    assert.ok(Math.abs(cell.faceZone.bottom - cell.faceZone.top - 250) < 6, 'face is ~250px tall on the canvas');
+    const faceCentre = cell.cellY + 0.38 * cell.cellH;
+    const faceHeight = 125 * cell.cellH / cell.cropH;
+    assert.ok(Math.abs((cell.faceZone.top + cell.faceZone.bottom) / 2 - faceCentre) < 6, 'face at 38% of the pane');
+    assert.ok(Math.abs(cell.faceZone.bottom - cell.faceZone.top - faceHeight) < 6, 'face size follows the zoomed crop');
+    assert.ok(cell.headZone.top >= cell.cellY, 'head zone starts within the cell');
     assert.ok(cell.headZone.top < cell.faceZone.top, 'head zone reaches above the face (hair)');
     assert.ok(cell.headZone.bottom >= cell.faceZone.bottom, 'head zone covers the chin');
-    // head box centred in the pane: about as much room above the hair as below the chin
-    const above = cell.headZone.top - cell.cellY;
-    const below = cell.cellY + 960 - cell.headZone.bottom;
-    assert.ok(Math.abs(above - below) < 60, `head centred in the pane (room above ${above.toFixed(0)}, below ${below.toFixed(0)})`);
+    assert.ok(cell.headZone.bottom <= cell.cellY + cell.cellH, 'head zone stays inside the cell');
   }
 });
 
