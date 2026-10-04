@@ -120,9 +120,9 @@ const SPEAKER_FACE_ANCHOR_Y = 0.32;
 /** A face box is roughly 80% as wide as it is tall. */
 const FACE_BOX_ASPECT = 0.8;
 const DEFAULT_SPLIT_FACE_TARGET_FRAC = 0.38;
-const DEFAULT_SPLIT_ZOOM = 3.5;
+const DEFAULT_SPLIT_ZOOM = 1.5;
 const MIN_SPLIT_ZOOM = 1;
-const MAX_SPLIT_ZOOM = 4;
+const MAX_SPLIT_ZOOM = 2;
 const MIN_FACE_TARGET_FRAC = 0.25;
 const MAX_FACE_TARGET_FRAC = 0.55;
 /** Preferred output face height (38% of a pane) before zoom/source bounds apply. */

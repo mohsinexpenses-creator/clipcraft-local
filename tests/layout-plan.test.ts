@@ -396,14 +396,25 @@ test('speaker-focus never carries a split fallback reason', () => {
   if (plan.mode === 'single') assert.equal(plan.splitFallbackReason, undefined);
 });
 
-test('cellCropSize targets ~38% face height, caps zoom, and respects source bounds', () => {
-  // 100px face, two-person pane: face height is 125px, so a 329px source crop
-  // enlarges it to about 38% of the 960px output pane.
+test('cellCropSize limits default enlargement, keeps pane aspect, and respects source bounds', () => {
+  // Small host face: the default 1.5x cap wins over the tighter 38%-face crop.
   const standard = cellCropSize(100, 1080, 960, 1920, 1080);
-  assert.ok(Math.abs(125 / standard.cropH - 0.38) < 0.005, `${standard.cropW}x${standard.cropH}`);
+  assert.deepEqual(standard, { cropW: 720, cropH: 640 });
+  assert.ok(1080 / standard.cropW <= 1.5 && 960 / standard.cropH <= 1.5);
   assert.ok(Math.abs(standard.cropW / standard.cropH - 1080 / 960) < 0.02);
 
-  // The framing formula also works for a larger face (not an unconditional zoom).
+  // A no-upscale setting uses a crop exactly the size of the output pane.
+  const noUpscale = cellCropSize(
+    100,
+    1080,
+    960,
+    1920,
+    1080,
+    getSplitFramingSettings({ SPLIT_ZOOM: '1.0' })
+  );
+  assert.deepEqual(noUpscale, { cropW: 1080, cropH: 960 });
+
+  // A larger face may reach the preferred 38% size without exceeding the cap.
   const big = cellCropSize(200, 1080, 960, 1920, 1080);
   assert.ok(Math.abs(250 / big.cropH - 0.38) < 0.005);
   assert.ok(Math.abs(big.cropW / big.cropH - 1080 / 960) < 0.02, 'keeps the pane aspect');
@@ -412,10 +423,10 @@ test('cellCropSize targets ~38% face height, caps zoom, and respects source boun
   const huge = cellCropSize(900, 1080, 960, 1920, 1080);
   assert.ok(huge.cropH <= 1080 && huge.cropW <= 1920);
 
-  // Narrow 9:16 pane of a 3/4-person grid keeps ITS aspect (540x960).
+  // Narrow 9:16 pane of a 3/4-person grid keeps its aspect and same zoom cap.
   const narrow = cellCropSize(100, 540, 960, 1920, 1080);
+  assert.deepEqual(narrow, { cropW: 360, cropH: 640 });
   assert.ok(Math.abs(narrow.cropW / narrow.cropH - 540 / 960) < 0.02);
-  assert.ok(Math.abs(125 / narrow.cropH - 0.38) < 0.005);
 
   // A source too small to honour the requested zoom still yields a crop INSIDE it.
   const tiny = cellCropSize(30, 1080, 960, 640, 360);
@@ -423,14 +434,14 @@ test('cellCropSize targets ~38% face height, caps zoom, and respects source boun
 });
 
 test('split framing settings use defaults, parse overrides, and clamp unsafe values', () => {
-  assert.deepEqual(getSplitFramingSettings({}), { faceTargetFrac: 0.38, zoom: 3.5 });
+  assert.deepEqual(getSplitFramingSettings({}), { faceTargetFrac: 0.38, zoom: 1.5 });
   assert.deepEqual(
-    getSplitFramingSettings({ SPLIT_FACE_TARGET_FRAC: '0.42', SPLIT_ZOOM: '3.8' }),
-    { faceTargetFrac: 0.42, zoom: 3.8 }
+    getSplitFramingSettings({ SPLIT_FACE_TARGET_FRAC: '0.42', SPLIT_ZOOM: '1.8' }),
+    { faceTargetFrac: 0.42, zoom: 1.8 }
   );
   assert.deepEqual(
     getSplitFramingSettings({ SPLIT_FACE_TARGET_FRAC: '0.05', SPLIT_ZOOM: '9' }),
-    { faceTargetFrac: 0.25, zoom: 4 }
+    { faceTargetFrac: 0.25, zoom: 2 }
   );
   assert.deepEqual(
     getSplitFramingSettings({ SPLIT_FACE_TARGET_FRAC: 'invalid', SPLIT_ZOOM: '-2' }),
@@ -455,7 +466,7 @@ test('configured split framing is consistent in 2-, 3-, and 4-cell grids', () =>
         people + ' cells: configured face target for track ' + cell.trackId
       );
       assert.ok(cell.camera.moves.length === 0, 'static person remains locked in the same cell');
-      assert.ok(cell.cellW / cell.cropW <= 4.02 && cell.cellH / cell.cropH <= 4.02, 'zoom remains within configured bound');
+      assert.ok(cell.cellW / cell.cropW <= 2.02 && cell.cellH / cell.cropH <= 2.02, 'zoom remains within the 2x safety cap');
       assert.ok(cell.cropW <= 1920 && cell.cropH <= 1080, 'crop respects the source dimensions');
     }
   }
@@ -490,7 +501,7 @@ test('1080p split panes respect the default zoom cap across face sizes and 2/3/4
   }
 });
 
-test('two ~100px faces get consistent 38% framing and a stable left/right pane assignment', () => {
+test('two ~100px faces avoid excessive enlargement and keep a stable left/right pane assignment', () => {
   // Shape of the reported clip after the detector fix: two hosts, ~100px faces.
   const left = panTrack(1, Array.from({ length: 60 }, () => 650), 0.125, 100);
   const right = panTrack(2, Array.from({ length: 60 }, () => 1270), 0.125, 100);
@@ -511,8 +522,8 @@ test('two ~100px faces get consistent 38% framing and a stable left/right pane a
     [0, 960, 1080, 960],
   ]);
   assert.deepEqual(plan.cells.map((c) => [c.cropW, c.cropH]), [
-    [368, 328],
-    [368, 328],
+    [720, 640],
+    [720, 640],
   ]);
   assert.equal(plan.cells[0].trackId, 1, 'left person on top');
 });
@@ -554,7 +565,7 @@ test('split panes target face centres at 38% and keep head/overlay zones within 
   assert.equal(plan.mode, 'split');
   if (plan.mode !== 'split') return;
   const graph = buildSplitFilterComplex(plan, 1920, 1080, '');
-  assert.ok(/crop=368:328:'[^']*':'[^']*'/.test(graph), 'expected zoomed crop: ' + graph.slice(0, 400));
+  assert.ok(/crop=720:640:'[^']*':'[^']*'/.test(graph), 'expected 1.5x-capped crop: ' + graph.slice(0, 400));
 
   for (const cell of plan.cells) {
     const faceCentre = cell.cellY + 0.38 * cell.cellH;

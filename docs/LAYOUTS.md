@@ -77,15 +77,15 @@ The worker pipeline (`worker/asd/` + `worker/layout.ts`):
    short FFmpeg expression so the command stays far inside Windows' command-line limit.
 
    **Pane framing (target).** Every 2-, 3-, or 4-person cell uses its own aspect-matched
-   source crop. By default, the face-box centre is placed at **38% of that pane's height**
-   and the crop aims to make the face about 38% of the pane height where source resolution
-   allows. `SPLIT_FACE_TARGET_FRAC` configures the vertical centre target (default `0.38`,
-   clamped to `0.25–0.55`). `SPLIT_ZOOM` configures the maximum crop magnification
-   (default `3.5`, clamped to `1–4`). Crops stay inside the source dimensions and use
-   the same framing math for wide top cells and narrow 3/4-grid cells. A source smaller than
-   the requested crop may still need enlargement to fill the 1080×1920 output; zoom cannot
-   restore detail absent from the source. The configured target also informs the locked
-   camera and the overlay-safe face/head zones.
+   source crop. By default, the face-box centre is placed at **38% of that pane's height**.
+   `SPLIT_FACE_TARGET_FRAC` configures this vertical centre target (default `0.38`, clamped
+   to `0.25–0.55`). `SPLIT_ZOOM` caps enlargement (default `1.5×`, clamped to `1–2×`;
+   `1.0` means no enlargement). The 38%-of-pane face-size preference is used only when it
+   fits within that cap; smaller source faces stay smaller rather than being heavily
+   upscaled. Crops stay inside source dimensions and use the same math for wide top cells
+   and narrow 3/4-grid cells. Very low-resolution sources may still need some enlargement
+   to fill the 1080×1920 output; scaling cannot restore detail absent from the source. The
+   configured centre target also informs the locked camera and overlay-safe face/head zones.
 
    **Who gets a pane.** Every active speaker, plus any other face that stays on screen
    ≥ 3 s *and* is at least 45 % as wide as the biggest speaker's (a much smaller
