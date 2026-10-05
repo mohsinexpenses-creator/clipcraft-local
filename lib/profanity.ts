@@ -5,7 +5,7 @@
  * demonetized / community-guidelines struck on YouTube, TikTok and Reels. This
  * masks offensive words in the TEXT THAT IS DRAWN ON SCREEN ONLY:
  *
- *   - the stored transcript (Mongo) and the worker log are NEVER touched, so
+ *   - the stored transcript (SQLite) and the worker log are NEVER touched, so
  *     re-renders with different rules never require a re-transcription,
  *   - the mask keeps the FIRST and LAST character and replaces everything
  *     between with `*`, preserving the original casing of those letters:

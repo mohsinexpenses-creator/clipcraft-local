@@ -22,7 +22,7 @@ presets are additive.
 
 Manage them at `/caption-presets` (tabbed: Captions · Hook overlay · CTA overlay) or via
 `GET/POST/PUT/DELETE /api/overlay-presets` (`kind: 'hook' | 'cta'`; `POST {"action":"reset"}`
-restores the four defaults). Presets are stored in Mongo (`overlayStylePresets`) and
+restores the four defaults). Presets are stored in SQLite (`overlay_style_presets`) and
 seeded on first run with four defaults:
 
 | Preset | Kind | Look | Animation |

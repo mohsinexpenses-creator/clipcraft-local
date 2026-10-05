@@ -7,14 +7,14 @@
  * that answers. This file keeps only the ClipCraft-specific parts, which are
  * deliberately provider-agnostic:
  *
- *   - loading the prompt templates from MongoDB ({{transcript}} /
+ *   - loading the prompt templates from SQLite ({{transcript}} /
  *     {{clipTranscript}} placeholders — unchanged),
  *   - filling in the placeholders with the transcript data,
  *   - parsing + validating the model's JSON / short-text output into the
  *     same shapes the rest of the app already consumes (ViralSegment[],
  *     hook text, CTA text).
  *
- * Everything downstream of these functions (clip records, MongoDB, the render
+ * Everything downstream of these functions (clip records, SQLite, the render
  * pipeline) is untouched by which provider answered.
  */
 
@@ -116,10 +116,10 @@ export function extractViralSegmentArray(text: string): unknown[] | null {
 async function requireTemplate(type: string): Promise<PromptTemplate> {
   const templateDoc = await getPromptTemplate(type);
   if (!templateDoc) {
-    throw new AppError(`The ${type} prompt template was not found in MongoDB.`, {
+    throw new AppError(`The ${type} prompt template was not found in SQLite.`, {
       status: 500,
       resolution:
-        'Restart the app so default prompt templates seed into MongoDB, or recreate the template in the Prompt Templates page.',
+        'Restart the app so default prompt templates seed into SQLite, or recreate the template in the Prompt Templates page.',
     });
   }
   return templateDoc;

@@ -19,7 +19,7 @@ Mongo database: `clipcraft`. All documents use Mongo's implicit, unique `_id` in
 
 ## BullMQ / Redis queues
 
-Both queues use Redis and BullMQ defaults of 2 attempts with exponential backoff starting at 2,000 ms (retry delay grows to 4,000 ms). Completed jobs are retained up to 50 jobs / 1 hour; failed jobs up to 200 jobs / 7 days. Stable job IDs are the related record IDs. Before enqueue, a queued/terminal job with that ID is removed; an active job is rejected with HTTP 409. A queued job for a clip is marked `pending`, its progress reset to 0, and its prior error cleared.
+Both queues use Redis and BullMQ defaults of 2 total attempts with exponential backoff starting at 2,000 ms (so the default permits one 2-second retry; additional configured attempts would back off to 4 seconds). Completed jobs are retained up to 50 jobs / 1 hour; failed jobs up to 200 jobs / 7 days. Stable job IDs are the related record IDs. Before enqueue, a queued/terminal job with that ID is removed; an active job is rejected with HTTP 409. A queued job for a clip is marked `pending`, its progress reset to 0, and its prior error cleared.
 
 | Queue name | BullMQ job name / ID | Payload | Worker behavior |
 |---|---|---|---|

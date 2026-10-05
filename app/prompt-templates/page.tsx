@@ -144,7 +144,7 @@ export default function PromptTemplatesPage() {
         ) : (
           <Card>
             <CardContent className="py-10 text-sm text-muted-foreground">
-              No prompt templates were found in MongoDB. Restart the app to seed the default templates.
+              No prompt templates were found in SQLite. Restart the app to seed the default templates.
             </CardContent>
           </Card>
         )}

@@ -198,7 +198,7 @@ export interface PromptTemplate {
 
 /**
  * A reusable on-screen text preset: either an intro HOOK line or an end CTA.
- * Stored in MongoDB (collection "textPresets") and editable in the app - the
+ * Stored in SQLite (table `text_presets`) and editable in the app - the
  * clip card offers them as quick-fill options next to the hook/CTA inputs.
  */
 export interface TextPreset {

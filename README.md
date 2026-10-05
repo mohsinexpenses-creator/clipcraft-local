@@ -5,10 +5,11 @@ A **personal, local-first** AI clip generator: give it one long landscape video
 optimized for social feeds — each with an active-speaker crop, a duplicated 3-second
 "suspense hook" intro, on-screen hook/CTA text, and word-synced animated captions.
 
-Everything heavy runs **on your own machine** (Node.js only, no Python). The only
-network calls are to your local MongoDB/Redis (Docker) and the free **Google AI
-Studio** LLM (viral-segment detection + hook/CTA text). Speech-to-text and face
-detection are fully local (whisper.cpp + OpenCV YuNet).
+Everything heavy runs **on your own machine** (Node.js only, no Python). Videos,
+transcripts, presets, and job state live in a local SQLite file (`./data/clipcraft.db`)
+using `better-sqlite3`; no database service or Docker is needed. The existing viral
+segment and hook/CTA generation calls use Google AI Studio; speech-to-text and face
+detection run locally with whisper.cpp and OpenCV YuNet.
 
 ---
 
@@ -17,7 +18,7 @@ detection are fully local (whisper.cpp + OpenCV YuNet).
 1. **Upload** — resumable, chunked, **no size limit** (a 3-hour podcast is a normal
    input). Files are stored as `uploads/001_my_recording.mp4`.
 2. **Transcribe** — whisper.cpp (local) produces a transcript with **word-level
-   timestamps**, stored in MongoDB. (Optional Deepgram override if you set a key.)
+   timestamps**, stored in SQLite. (Optional Deepgram override if you set a key.)
 3. **Detect viral segments** — the Gemini LLM picks the most promising windows and
    writes `{start, end, hookText, ctaText, reason, score}`. If it returns fewer
    clips than requested, a **top-up pass** tops the list up to the exact count.
@@ -48,7 +49,7 @@ detection are fully local (whisper.cpp + OpenCV YuNet).
    a profane word is muted, beeped, or left alone (`PROFANITY_AUDIO_MODE`) — all at
    render time, so re-rendering after a settings change never re-transcribes.
 8. **Store** — output lands in `generated-clips/001_my_recording/<clip title>.mp4`
-   with a MongoDB record (status, score, layout, engines, presets). The dashboard
+   with a SQLite record (status, score, layout, engines, presets). The dashboard
    streams it back over a Range-enabled HTTP endpoint for preview/download.
 
 ## Tech stack
@@ -56,8 +57,8 @@ detection are fully local (whisper.cpp + OpenCV YuNet).
 | Layer | Choice |
 |---|---|
 | Frontend + API | Next.js 16 (App Router), TypeScript, Tailwind v4, shadcn-style UI |
-| Persistence | MongoDB (Docker) — videos, transcripts, clips, presets, prompt templates |
-| Queue | BullMQ + Redis (Docker) — separate workers for transcription and rendering |
+| Persistence | SQLite via `better-sqlite3` — typed video, clip, preset, template, and job tables |
+| Queue | SQLite jobs table — separate polling loops for transcription and rendering |
 | Worker | long-running `tsx worker/index.ts` process (not serverless) |
 | Video | `ffmpeg-static` + `child_process` (no fluent-ffmpeg), mirrored before face tracking |
 | Speech-to-text | whisper.cpp (local binary + ggml model; optional Deepgram override) |
@@ -74,23 +75,20 @@ Full instructions (env vars, troubleshooting, Windows specifics) live in
 # 1. dependencies
 npm install
 
-# 2. configure
-copy .env.example .env.local   # then set MONGODB_URI, REDIS_URL, GEMINI_API_KEY
+# 2. configure (DATABASE_PATH is optional; this is the default)
+copy .env.example .env.local   # set GEMINI_API_KEY; optionally set DATABASE_PATH
 
-# 3. databases (Docker)
-npm run db:up
-
-# 4. whisper.cpp model (Windows build is committed; this fetches the ggml model)
+# 3. whisper.cpp model (Windows build is committed; this fetches the ggml model)
 npm run setup:whisper
 
-# 5. worker + web (or just double-click start-clipcraft.bat)
+# 4. worker + web (or just double-click start-clipcraft.bat)
 npm run worker
 npm run dev
 ```
 
 Then open <http://localhost:3000> and start at **`/startup-validation`** — it
-checks MongoDB, Redis, FFmpeg, the transcription engine, the LLM chain, and the
-Remotion renderer, and tells you exactly what to fix.
+checks SQLite read/write access, WAL mode, FFmpeg, the transcription engine, the
+LLM chain, and the Remotion renderer, and tells you exactly what to fix.
 
 ## Project structure
 
@@ -107,13 +105,13 @@ lib/                    shared server logic
   ai.ts                 prompt templates, JSON parsing, exact-count top-up
   whisper.ts            whisper.cpp discovery + transcription
   ffmpeg.ts             FFmpeg/ffprobe resolution, stream probing + spawn wrapper
-  queue.ts              BullMQ queues (transcription + clip render)
+  queue.ts              SQLite job queue (transcription + clip render)
   profanity.ts          word masking + render-time mute/beep windows
   overlay-bg.ts         solid/gradient card-background picker helpers
   presets.ts            default caption/overlay/text presets
   upload*.ts            upload policy, resumable sessions, browser client
-  db.ts                 MongoDB (database name: clipcraft)
-worker/                 the long-running BullMQ consumer
+  db.ts                 typed SQLite tables, schema migrations, and prepared CRUD
+worker/                 the long-running SQLite queue consumer
   index.ts              both workers + graceful shutdown
   processor.ts          per-clip orchestration (hook, layout, engines, masking)
   asd/                  active-speaker detection (audio, YuNet, tracker, scoring)
@@ -133,6 +131,7 @@ docs/                   feature guides (layouts, overlays, viral prompt)
 ## Hard constraints (by design)
 
 - **No Python anywhere.** Everything is Node.js/TypeScript.
+- **No database services or Docker.** SQLite and the durable local jobs table replace MongoDB, Redis, and BullMQ.
 - **Local + free.** Single user, runs on one PC, no multi-tenant auth, no billing,
   no cloud media services. The only paid-capable dependency is the Gemini key,
   which is free-tier.
@@ -149,3 +148,4 @@ docs/                   feature guides (layouts, overlays, viral prompt)
   background picker
 - **[docs/VIRAL_PROMPT_GUIDE.md](./docs/VIRAL_PROMPT_GUIDE.md)** — the viral-detection
   prompt, its variables, and how to customize it
+- **[docs/sqlite-migration-inventory.md](./docs/sqlite-migration-inventory.md)** — legacy collections, indexes, queue payloads, and behavior recorded before migration

@@ -1,5 +1,5 @@
 /**
- * Hook / CTA overlay STYLE preset invariants (defaults seeded into Mongo).
+ * Hook / CTA overlay STYLE preset invariants (defaults seeded into SQLite).
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';

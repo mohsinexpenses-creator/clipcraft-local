@@ -365,7 +365,7 @@ async function* webStreamToAsyncIterable(
  * Finish an upload: move the assembled file into UPLOAD_DIR, probe it, store the record
  * and queue transcription.
  *
- * If the record cannot be saved (MongoDB down, ...) the file is moved back into the
+ * If the record cannot be saved (SQLite unavailable, ...) the file is moved back into the
  * session so the user can retry the finish step without re-uploading gigabytes.
  */
 export async function finalizeUploadSession(id: string): Promise<{

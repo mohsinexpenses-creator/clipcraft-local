@@ -3,14 +3,13 @@
 Practical guide to installing and running ClipCraft. The product overview lives in
 [README.md](./README.md); feature guides in [`docs/`](./docs).
 
-Everything runs on your own PC: Next.js + a separate BullMQ worker + MongoDB/Redis in
-Docker. **No Python, no cloud media services** — the only external calls are to your
-local Docker services and the free Google AI Studio LLM. (Deepgram is an *optional*
-paid transcription override, off by default.)
+Everything runs on your own PC: Next.js + a separate worker backed by a local SQLite
+file. **No Python, Docker, MongoDB, or Redis service is needed.** The existing
+viral-analysis and hook/CTA prompts call Google AI Studio; Deepgram is an *optional*
+paid transcription override, off by default.
 
-One-click on Windows: **`start-clipcraft.bat`** starts Docker Desktop, the DB
-containers, the worker and the web app, then opens the browser. The steps below are
-what it does, manually.
+One-click on Windows: **`start-clipcraft.bat`** starts the worker and web app, then
+opens the browser. The steps below are what it does, manually.
 
 ---
 
@@ -18,8 +17,7 @@ what it does, manually.
 
 | Tool | Why | Check |
 |---|---|---|
-| Node.js 20+ (LTS) | Next.js 16 + the worker | `node -v` |
-| Docker Desktop | MongoDB + Redis containers | `docker compose version` |
+| Node.js 20+ (LTS) | Next.js 16, the worker, and `better-sqlite3` | `node -v` |
 | **Microsoft Visual C++ Redistributable (x64)** | `whisper-cli.exe` is a native build and needs `vcruntime140.dll` / `msvcp140.dll` | Install once: <https://aka.ms/vs/17/release/vc_redist.x64.exe> |
 | Google AI Studio API key (`GEMINI_API_KEY`) | Viral-segment detection + hook/CTA text | Free: <https://aistudio.google.com/app/apikey> |
 
@@ -40,6 +38,7 @@ npm install
 
 `npm install` fetches:
 
+- `better-sqlite3` → the native SQLite binding used for local records and the durable jobs table
 - `ffmpeg-static` → the FFmpeg binary used for trimming, cropping, compositing,
   and the one final H.264 encode
 - a full local FFmpeg install / `FFPROBE_PATH` → stream rates, start times and
@@ -57,11 +56,11 @@ npm install
 copy .env.example .env.local
 ```
 
-Then edit `.env.local`. Minimum for a first run:
+Then edit `.env.local`. Set the Google AI key; SQLite creates its database and parent
+directory automatically. Set `DATABASE_PATH` only if you want a non-default location.
 
 ```ini
-MONGODB_URI=mongodb://127.0.0.1:27017
-REDIS_URL=redis://127.0.0.1:6379
+DATABASE_PATH=./data/clipcraft.db
 GEMINI_API_KEY=your-key
 ```
 
@@ -72,8 +71,7 @@ Both `npm run dev` and `npm run worker` load `.env.local` (via `@next/env`'s
 
 | Variable | Default | Notes |
 |---|---|---|
-| `MONGODB_URI` | — | Use `127.0.0.1`, **not** `localhost`, if Docker/WSL2 resolves it to `::1`. Database name is fixed to `clipcraft` (`lib/db.ts`). |
-| `REDIS_URL` | — | Same note as above. BullMQ needs Redis ≥ 6.2. |
+| `DATABASE_PATH` | `./data/clipcraft.db` | Path to the SQLite database, relative to the repository root unless absolute. Parent folders are created automatically. Web and worker processes must use the same path; restart both after changing it. The file is ignored by Git. |
 | `GEMINI_API_KEY` | — | Google AI Studio. The chain is Gemini-only (5 slots, newest-first: `gemini-3.8-flash` → `gemini-3.6-flash` → `gemini-3.5-flash-lite` → `gemini-3.1-flash-lite` → `gemini-2.5-flash-lite`); every slot reads this one key but draws from a separate free daily pool, so it is real 503-redundancy. Model order lives in `LLM_PROVIDER_CHAIN` in `lib/llm.ts` — append an entry there (and set the key) to add a provider back. The other free providers were removed after live testing: Groq 413 (free per-minute INPUT cap) + 429s, Cerebras 402 (paid), Mistral 429 (~1 RPM), NVIDIA NIM 404/410 (retired models) + timeouts. |
 | `DEEPGRAM_API_KEY` / `DEEPGRAM_MODEL` | off (`nova-2`) | **Optional, paid.** If set, Deepgram wins over local whisper.cpp. Leave empty to stay 100 % local/free. |
 | `WHISPER_CLI_PATH` | auto-detect | Overrides binary discovery (searches `.whisper/…`, `bin/whisper-win-x64/whisper-cli.exe`, `bin/whisper-cli`). |
@@ -106,17 +104,25 @@ Both `npm run dev` and `npm run worker` load `.env.local` (via `@next/env`'s
 
 ---
 
-## 4. Start MongoDB + Redis
+## 4. SQLite database and job queue
 
-```powershell
-npm run db:up      # docker compose up -d  (mongo:7 + redis:7-alpine)
-npm run db:logs    # watch the logs
-npm run db:down    # stop
-```
+No separate database or queue process is required. The web server and worker open the
+same file at `DATABASE_PATH` (default `./data/clipcraft.db`). The app creates the
+parent directory and database on first use, enables WAL mode with
+`busy_timeout=5000`, and applies versioned schema migrations. Back up the database
+file while both processes are stopped; in WAL mode, SQLite may also use adjacent
+`-wal` and `-shm` files while running.
 
-Data survives restarts in the named Docker volumes `clipcraft-mongo` /
-`clipcraft-redis`. Neither service has auth — they are for local single-user use
-only. Do not expose these ports to the internet.
+The SQLite `jobs` table replaces BullMQ/Redis. The worker polls independent
+transcription and render queues; keep `npm run worker` running while processing. It
+preserves two total attempts (one retry after 2 seconds by default; the exponential
+backoff doubles for additional configured attempts) and resets interrupted claims on startup. A terminal job row is retained until that
+record is queued again or deleted; deleting a clip/video also removes its job rows.
+
+**Existing MongoDB data is not imported.** This migration intentionally starts with a
+fresh SQLite database; old MongoDB records do not appear automatically. Existing media
+files in `uploads/` remain on disk, but their metadata is not carried over. Back them
+up and re-upload them if they are still needed.
 
 ---
 
@@ -171,25 +177,22 @@ tracking design (audio↔motion fusion, hysteresis, the locked split-screen pane
 
 ---
 
-## 7. Run the app (three processes)
+## 7. Run the app (two processes)
 
 ```powershell
-# 1. databases
-npm run db:up
-
-# 2. worker (transcription + rendering) — leave this running
+# 1. worker (transcription + rendering) — leave this running
 npm run worker
 
-# 3. web app
+# 2. web app
 npm run dev
 ```
 
-(or double-click **`start-clipcraft.bat`** to do all of the above at once)
+(or double-click **`start-clipcraft.bat`** to start both and open the browser)
 
 Open <http://localhost:3000>, then **visit `/startup-validation` first**. That page
-checks MongoDB, Redis, FFmpeg, the transcription engine (using the *same* discovery
-logic as the real run), the AI provider chain, and the Remotion renderer, and tells
-you exactly what to fix.
+checks SQLite open/write/read access, WAL mode and `busy_timeout`, FFmpeg, the
+transcription engine (using the *same* discovery logic as the real run), the AI
+provider chain, and the Remotion renderer, and tells you exactly what to fix.
 
 ### What happens after you upload
 
@@ -205,7 +208,7 @@ you exactly what to fix.
    `001_my_recording.mp4` — 3-digit sequence + original name), probes it with
    FFmpeg and enqueues a **transcription job** — the request returns immediately.
 3. The worker transcribes with whisper.cpp (or Deepgram, if you opted in) and
-   stores word-level timestamps in MongoDB.
+   stores word-level timestamps in SQLite.
 4. **Detect viral segments** asks the Gemini chain (5-slot fallback) for
    `{start, end, hookText, ctaText, reason, score}` — with an automatic **top-up
    pass** if it returns fewer than the requested count. Clip count, minimum clip
@@ -219,7 +222,7 @@ you exactly what to fix.
    → one FFmpeg graph does the source trim, mirror, crop, colour, hook intro, overlay
    compositing, audio handling and the single final H.264 encode (1080×1920).
 6. Output: `generated-clips/001_my_recording/<clip title>.mp4`, tracked in
-   MongoDB. The dashboard plays it through `/api/media/...` (Range-enabled, so
+   SQLite. The dashboard plays it through `/api/media/...` (Range-enabled, so
    seeking works).
 
 ---
@@ -264,9 +267,10 @@ Sample frames are extracted with `hflip` applied, because the render chain is
 pipeline, keep sampling and cropping in the same space.
 
 **Re-rendering a clip does nothing**
-BullMQ silently drops a job when the `jobId` already exists. `lib/queue.ts`
-removes any completed/failed job with the same id first, and returns HTTP 409 if
-that clip is still actively rendering.
+The SQLite queue uses a stable job ID per clip and resets a terminal/queued row when
+re-enqueuing. A render already marked `running` returns HTTP 409; wait for it to finish
+before submitting that clip again. Different clips from the same source video may
+render concurrently.
 
 **`whisper-cli.exe` fails with "VCRUNTIME140.dll was not found"**
 Install the VC++ redistributable (§1).
@@ -293,14 +297,17 @@ It should not: bytes stream to disk with backpressure, so memory stays flat. The
 one buffered path left is the single-shot `POST /api/upload` — which is exactly why
 it is capped and why the UI always uses the chunked endpoint.
 
-**Video stuck in `transcribing` forever**
-The worker is not running (`npm run worker`), or Redis is unreachable.
-Transcription happens in the queue, not the HTTP request — a page refresh can no
-longer orphan it.
+**Video stuck in `transcribing` / clip stuck in `processing`**
+The worker may not be running (`npm run worker`). Transcription and rendering are
+stored in the SQLite jobs table, not tied to the HTTP request; after a worker crash,
+starting it again recovers jobs that were left running. Check the worker log and
+`DATABASE_PATH` if the status does not change.
 
-**MongoDB/Redis connection refused on Windows + Docker Desktop**
-Use `127.0.0.1` instead of `localhost` in `.env.local`. If Docker runs inside WSL2,
-make sure the ports are published (they are, in `docker-compose.yml`).
+**SQLite cannot open the database / reports a lock timeout**
+Confirm `DATABASE_PATH` points to a writable local disk and that both the web app and
+worker use the same value. Stop/restart both processes after changing it. SQLite is
+configured for WAL and waits up to five seconds for a competing writer; do not place
+the file on a network share or sync folder.
 
 **`ffmpeg-static` binary missing after install**
 Its postinstall download was blocked. Set `FFMPEG_PATH` to your own `ffmpeg.exe`
@@ -331,14 +338,13 @@ network blocks it, allow the Chrome-for-Testing CDN, or run
 ## 9. Useful commands
 
 ```powershell
-npm run db:up            # start MongoDB + Redis
-npm run worker           # BullMQ worker (transcription + rendering)
+npm run worker           # SQLite-backed worker (transcription + rendering)
 npm run dev              # Next.js dev server
 npm run studio           # Remotion Studio — inspect CaptionComposition frame by frame
 npm run setup:whisper    # whisper.cpp binary (non-Windows) + ggml model
 npm run setup:yunet      # (re)download + verify the YuNet face model
 npm run typecheck        # tsc --noEmit
-npm run test:worker      # node:test unit tests (tsx --test tests/*.test.ts)
+npm test                 # node:test unit tests (tsx --test tests/*.test.ts)
 npm run verify:clip -- generated-clips/<video>/<clip>.mp4  # ffprobe output diagnostics
 npm run lint             # eslint
 npm run build            # production build
@@ -364,15 +370,15 @@ lib/upload-client.ts       browser chunking, progress, retry + resume
 lib/ffmpeg.ts              FFmpeg/ffprobe resolution + structured stream probe + spawn wrapper
 lib/whisper.ts             cross-platform whisper.cpp discovery & transcription
 lib/deepgram.ts            optional cloud STT override (REST, no SDK)
-lib/queue.ts               BullMQ queues: transcription + clip render
+lib/queue.ts               prepared SQLite jobs: atomic claims, retries, and recovery
 lib/llm.ts                 Gemini fallback chain (config array + plain fetch, no SDKs)
 lib/ai.ts                  prompt templates + JSON parsing + exact-count top-up
 lib/profanity.ts           word masking + render-time mute/beep windows
 lib/overlay-bg.ts          solid/gradient card-background picker helpers
 lib/presets.ts             default caption/overlay/text presets
 lib/startup-validation.ts  the checks behind /startup-validation
-lib/db.ts                  MongoDB client (database: clipcraft)
-worker/index.ts            both BullMQ workers, graceful shutdown
+lib/db.ts                  SQLite schema migrations, prepared helpers, and typed CRUD
+worker/index.ts            SQLite queue loops, recovery, graceful shutdown
 worker/processor.ts        per-clip orchestration (hook, layout, engines, masking)
 worker/asd/                active-speaker detection: audio.ts, yunet, tracker.ts,
                            speaker.ts (fusion + timeline)

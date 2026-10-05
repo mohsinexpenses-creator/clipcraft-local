@@ -12,12 +12,12 @@ customize everything.
 ## 1. Where the prompt lives
 
 - **UI:** `/prompt-templates` → *Viral Short Segments Detection* template.
-- **Storage:** MongoDB, collection `promptTemplates` (document `_id: "prompt-viral-detection"`).
+- **Storage:** SQLite, table `prompt_templates` (row `id: "prompt-viral-detection"`).
 - **Code:** the shipped default is `DEFAULT_PROMPT_TEMPLATES` in [`lib/presets.ts`](../lib/presets.ts);
   the runtime that fills variables, calls the LLM chain, and parses the JSON is
   [`lib/ai.ts`](../lib/ai.ts).
 
-Templates are **seeded once** (`$setOnInsert`) so your edits survive restarts. After an app
+Templates are **seeded once** (insert-if-missing) so your edits survive restarts. After an app
 update that ships a new built-in prompt, press **Reset to defaults** on the Prompt Templates
 page (or `POST /api/prompt-templates` with `{"action":"reset"}`) to load it — this overwrites
 the built-in templates only, never your own custom templates.
