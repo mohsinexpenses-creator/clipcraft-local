@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { NextResponse } from 'next/server';
-import { saveVideo } from './db';
+import { saveVideo, updateVideo } from './db';
 import { AppError, getErrorResponse, toErrorMessage } from './errors';
 import { getVideoMetadata } from './ffmpeg';
 import { enqueueTranscriptionJob } from './queue';
@@ -254,7 +254,7 @@ export async function queueTranscription(video: VideoRecord): Promise<boolean> {
   } catch (error) {
     video.status = 'failed';
     video.error = toErrorMessage(error, 'Could not queue the transcription job.');
-    await saveVideo(video).catch((saveError) =>
+    await updateVideo(video).catch((saveError) =>
       console.error('[Upload] Could not persist the queue failure:', saveError)
     );
     return false;
@@ -264,7 +264,7 @@ export async function queueTranscription(video: VideoRecord): Promise<boolean> {
 /**
  * Probe the finished file, store the record and queue transcription.
  *
- * Throws only when the record cannot be saved (MongoDB down / unreachable), so callers
+ * Throws only when the record cannot be saved (SQLite unavailable), so callers
  * can put the file back and let the user retry the finish step without re-uploading.
  */
 export async function registerUploadedVideo(
@@ -282,7 +282,7 @@ export const QUEUE_MESSAGES = {
   queued:
     'Upload complete. Transcription is queued - refresh the dashboard to follow its progress.',
   notQueued:
-    'Upload complete, but the transcription job could not be queued. Is Redis running?',
+    'Upload complete, but the transcription job could not be queued. Is the worker database path writable?',
 } as const;
 
 /** Error responses must carry the real HTTP status, not a 200 with an error body. */

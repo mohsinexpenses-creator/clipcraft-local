@@ -1,168 +1,373 @@
-import { Queue } from 'bullmq';
-import { getClip, saveClip } from './db';
-import { AppError, ensureEnvVar, toErrorMessage } from './errors';
-import { JobData, TranscriptionJobData } from './types';
+import { randomUUID } from 'crypto';
+import { AppError } from './errors';
+import {
+  getDatabase,
+  getClip,
+  updateClipRecordSync,
+  updateVideoRecordSync,
+} from './db';
+import { JobData, TranscriptionJobData, VideoRecord } from './types';
+import type { SqliteDatabase } from './db';
 
 export const CLIP_QUEUE_NAME = 'clip-processing';
 export const TRANSCRIPTION_QUEUE_NAME = 'transcription';
+export const DEFAULT_MAX_ATTEMPTS = 2;
+export const DEFAULT_RETRY_DELAY_MS = 2000;
+export const QUEUE_POLL_INTERVAL_MS = 1000;
 
-const queueCache = new Map<string, Promise<Queue<unknown>>>();
+export type JobStatus = 'queued' | 'running' | 'done' | 'failed';
 
-function parseRedisUrl(url: string) {
-  try {
-    const parsed = new URL(url);
-    return {
-      host: parsed.hostname || 'localhost',
-      port: parseInt(parsed.port || '6379', 10),
-      password: parsed.password || undefined,
-      username: parsed.username || undefined,
-    };
-  } catch {
-    throw new AppError('REDIS_URL is invalid.', {
-      status: 500,
-      details: url,
-      resolution: 'Set REDIS_URL to a valid redis:// URL, for example redis://127.0.0.1:6379.',
-    });
-  }
+export interface QueueJob<T = unknown> {
+  id: string;
+  type: string;
+  payload: T;
+  status: JobStatus;
+  attempts: number;
+  maxAttempts: number;
+  error?: string;
+  progress: number;
+  result?: unknown;
+  createdAt: string;
+  availableAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+  retryDelayMs: number;
+  videoId?: string;
+  clipId?: string;
 }
 
-function createQueue<T>(name: string): Promise<Queue<T>> {
-  const cached = queueCache.get(name);
-  if (cached) return cached as Promise<Queue<T>>;
+export interface EnqueueOptions {
+  /** Stable IDs let a retry/re-render replace an old terminal row for that item. */
+  id?: string;
+  maxAttempts?: number;
+  retryDelayMs?: number;
+  videoId?: string;
+  clipId?: string;
+}
 
-  const promise = (async () => {
-    const redisUrl = ensureEnvVar('REDIS_URL', 'connect to Redis for background jobs');
-    const connection = parseRedisUrl(redisUrl);
+interface JobRow {
+  id: string;
+  type: string;
+  payload_json: string;
+  status: JobStatus;
+  attempts: number;
+  max_attempts: number;
+  error: string | null;
+  progress: number;
+  result_json: string | null;
+  created_at: string;
+  available_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  retry_delay_ms: number;
+  video_id: string | null;
+  clip_id: string | null;
+}
 
-    try {
-      const queue = new Queue<T>(name, {
-        connection,
-        defaultJobOptions: {
-          attempts: 2,
-          backoff: { type: 'exponential', delay: 2000 },
-          // Keeping the last few completed/failed jobs makes debugging possible in
-          // `redis-cli` / BullMQ dashboards without growing Redis forever.
-          removeOnComplete: { age: 3600, count: 50 },
-          removeOnFail: { age: 7 * 24 * 3600, count: 200 },
-        },
-      });
+function json(value: unknown): string {
+  const encoded = JSON.stringify(value);
+  if (encoded === undefined) throw new Error('Queue payload/result must be JSON serializable.');
+  return encoded;
+}
 
-      queue.on('error', (error) => {
-        console.error(`[BullMQ] Queue "${name}" connection error:`, error.message);
-      });
+function mapJob(row: JobRow): QueueJob {
+  let payload: unknown;
+  let result: unknown;
+  try {
+    payload = JSON.parse(row.payload_json);
+    result = row.result_json === null ? undefined : JSON.parse(row.result_json);
+  } catch (error) {
+    throw new Error(`Job ${row.id} contains invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
 
-      await queue.waitUntilReady();
-      console.log(`[BullMQ] Connected to Redis queue "${name}".`);
-      return queue;
-    } catch (error) {
-      queueCache.delete(name);
-      throw new AppError(`Redis connection failed for the "${name}" queue.`, {
-        status: 500,
-        details: toErrorMessage(error),
-        resolution: 'Start Redis (`docker compose up -d`) and confirm REDIS_URL points to it.',
+  return {
+    id: row.id,
+    type: row.type,
+    payload,
+    status: row.status,
+    attempts: row.attempts,
+    maxAttempts: row.max_attempts,
+    ...(row.error !== null ? { error: row.error } : {}),
+    progress: row.progress,
+    ...(row.result_json !== null ? { result } : {}),
+    createdAt: row.created_at,
+    availableAt: row.available_at,
+    ...(row.started_at !== null ? { startedAt: row.started_at } : {}),
+    ...(row.finished_at !== null ? { finishedAt: row.finished_at } : {}),
+    retryDelayMs: row.retry_delay_ms,
+    ...(row.video_id !== null ? { videoId: row.video_id } : {}),
+    ...(row.clip_id !== null ? { clipId: row.clip_id } : {}),
+  };
+}
+
+function timestampAfter(milliseconds: number): string {
+  return new Date(Date.now() + Math.max(0, milliseconds)).toISOString();
+}
+
+function readPayloadId(payload: unknown, field: 'videoId' | 'clipId'): string | undefined {
+  if (payload && typeof payload === 'object') {
+    const value = (payload as Record<string, unknown>)[field];
+    return typeof value === 'string' && value ? value : undefined;
+  }
+  return undefined;
+}
+
+/** Insert or replace a job row and return its id. */
+export function enqueue<T>(
+  type: string,
+  payload: T,
+  options: EnqueueOptions = {},
+  db: SqliteDatabase = getDatabase()
+): string {
+  if (!type.trim()) throw new Error('Job type is required.');
+  const id = options.id || randomUUID();
+  const now = new Date().toISOString();
+  const maxAttempts = Math.max(1, Math.floor(options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS));
+  const retryDelayMs = Math.max(0, Math.floor(options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS));
+  const videoId = options.videoId ?? readPayloadId(payload, 'videoId') ?? null;
+  const clipId = options.clipId ?? readPayloadId(payload, 'clipId') ?? null;
+  const payloadJson = json(payload);
+  // Render jobs are unique per clip, not per video: different clips from the same
+  // source video may render concurrently. Transcription jobs are unique per video.
+  const identityColumn = clipId ? 'clip_id' : videoId ? 'video_id' : null;
+  const identityValue = clipId ?? videoId;
+
+  const insert = db.transaction(() => {
+    const sameId = db.prepare('SELECT status FROM jobs WHERE id = ?').get(id) as
+      | { status: JobStatus }
+      | undefined;
+    if (sameId?.status === 'running') {
+      throw new AppError(`Job ${id} is already running.`, {
+        status: 409,
+        resolution: 'Wait for the current job to finish before queueing it again.',
       });
     }
-  })();
 
-  queueCache.set(name, promise as Promise<Queue<unknown>>);
-  return promise;
-}
+    if (identityColumn && identityValue) {
+      const existing = db.prepare(`
+        SELECT id, status FROM jobs
+        WHERE type = ? AND status IN ('queued', 'running')
+          AND ${identityColumn} = ? AND id <> ?
+        ORDER BY created_at DESC
+        LIMIT 1
+      `).get(type, identityValue, id) as
+        | { id: string; status: JobStatus }
+        | undefined;
+      if (existing?.status === 'running') {
+        throw new AppError(`A ${type} job for this record is already running.`, {
+          status: 409,
+          resolution: 'Wait for the current job to finish before queueing it again.',
+        });
+      }
+      if (existing?.status === 'queued') {
+        db.prepare(`
+          UPDATE jobs
+          SET status = 'failed', error = 'Superseded by a newer queued job.', finished_at = ?
+          WHERE id = ? AND status = 'queued'
+        `).run(now, existing.id);
+      }
+    }
 
-export async function getClipQueue(): Promise<Queue<JobData>> {
-  return createQueue<JobData>(CLIP_QUEUE_NAME);
-}
+    db.prepare(`
+      INSERT INTO jobs (
+        id, type, payload_json, status, attempts, max_attempts, error, progress,
+        result_json, created_at, available_at, started_at, finished_at,
+        retry_delay_ms, video_id, clip_id
+      ) VALUES (?, ?, ?, 'queued', 0, ?, NULL, 0, NULL, ?, ?, NULL, NULL, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        type = excluded.type,
+        payload_json = excluded.payload_json,
+        status = 'queued',
+        attempts = 0,
+        max_attempts = excluded.max_attempts,
+        error = NULL,
+        progress = 0,
+        result_json = NULL,
+        created_at = excluded.created_at,
+        available_at = excluded.available_at,
+        started_at = NULL,
+        finished_at = NULL,
+        retry_delay_ms = excluded.retry_delay_ms,
+        video_id = excluded.video_id,
+        clip_id = excluded.clip_id
+    `).run(id, type, payloadJson, maxAttempts, now, now, retryDelayMs, videoId, clipId);
+  });
 
-export async function getTranscriptionQueue(): Promise<Queue<TranscriptionJobData>> {
-  return createQueue<TranscriptionJobData>(TRANSCRIPTION_QUEUE_NAME);
+  insert.immediate();
+  return id;
 }
 
 /**
- * BullMQ silently ignores `queue.add()` when a job with the same jobId already
- * exists. Because we use the clipId as jobId and keep failed jobs around
- * (`removeOnFail`), every "Re-render clip" after a failure used to be a no-op:
- * the UI flipped the clip to `pending` and then nothing ever happened.
- *
- * Removing the previous job first makes re-rendering deterministic.
+ * Claim one eligible job with a single atomic UPDATE ... RETURNING statement.
+ * SQLite serializes concurrent writers, so independent worker connections cannot
+ * claim the same row.
  */
-/** Generic so both Queue<JobData> and Queue<TranscriptionJobData> can use it. */
-async function removeStaleJob<T>(
-  queue: Queue<T>,
-  jobId: string,
-  activeMessage: string
-): Promise<void> {
-  try {
-    const existing = await queue.getJob(jobId);
-    if (!existing) return;
+export function claimNextJob(
+  types: string[],
+  db: SqliteDatabase = getDatabase()
+): QueueJob | null {
+  if (types.length === 0) return null;
+  const now = new Date().toISOString();
+  const placeholders = types.map(() => '?').join(', ');
+  const row = db.prepare(`
+    UPDATE jobs
+    SET status = 'running', attempts = attempts + 1, started_at = ?, error = NULL
+    WHERE id = (
+      SELECT id FROM jobs
+      WHERE status = 'queued' AND available_at <= ? AND type IN (${placeholders})
+      ORDER BY created_at ASC, id ASC
+      LIMIT 1
+    ) AND status = 'queued'
+    RETURNING *
+  `).get(now, now, ...types) as JobRow | undefined;
+  return row ? mapJob(row) : null;
+}
 
-    const state = await existing.getState();
-    if (state === 'active') {
-      throw new AppError(activeMessage, {
-        status: 409,
-        resolution:
-          'Wait for the running job to finish (or stop the worker with Ctrl+C) before queueing it again.',
-      });
-    }
+export function updateJobProgress(id: string, progress: number, db: SqliteDatabase = getDatabase()): boolean {
+  const value = Math.max(0, Math.min(100, Math.round(progress)));
+  const result = db.prepare(`
+    UPDATE jobs SET progress = ? WHERE id = ? AND status = 'running'
+  `).run(value, id);
+  return result.changes > 0;
+}
 
-    await existing.remove();
-    console.log(`[Queue] Removed stale ${state} job ${jobId} before re-enqueueing.`);
-  } catch (error) {
-    if (error instanceof AppError) throw error;
-    // A leftover job we cannot remove should not block a fresh render forever.
-    console.warn(`[Queue] Could not remove stale job ${jobId}: ${toErrorMessage(error)}`);
+export function completeJob(id: string, resultValue: unknown, db: SqliteDatabase = getDatabase()): boolean {
+  const now = new Date().toISOString();
+  const result = db.prepare(`
+    UPDATE jobs
+    SET status = 'done', progress = 100, result_json = ?, error = NULL, finished_at = ?
+    WHERE id = ? AND status = 'running'
+  `).run(json(resultValue), now, id);
+  return result.changes > 0;
+}
+
+export type JobFailureOutcome = 'retry' | 'failed' | 'ignored';
+
+export function failJob(
+  id: string,
+  errorMessage: string,
+  db: SqliteDatabase = getDatabase()
+): JobFailureOutcome {
+  const row = db.prepare('SELECT attempts, max_attempts, retry_delay_ms, status FROM jobs WHERE id = ?').get(id) as
+    | { attempts: number; max_attempts: number; retry_delay_ms: number; status: JobStatus }
+    | undefined;
+  if (!row || row.status !== 'running') return 'ignored';
+
+  if (row.attempts < row.max_attempts) {
+    const delay = row.retry_delay_ms * 2 ** Math.max(0, row.attempts - 1);
+    const result = db.prepare(`
+      UPDATE jobs
+      SET status = 'queued', error = ?, available_at = ?, started_at = NULL,
+          finished_at = NULL, progress = 0, result_json = NULL
+      WHERE id = ? AND status = 'running'
+    `).run(errorMessage, timestampAfter(delay), id);
+    return result.changes > 0 ? 'retry' : 'ignored';
   }
+
+  const result = db.prepare(`
+    UPDATE jobs SET status = 'failed', error = ?, finished_at = ?
+    WHERE id = ? AND status = 'running'
+  `).run(errorMessage, new Date().toISOString(), id);
+  return result.changes > 0 ? 'failed' : 'ignored';
+}
+
+/** Requeue claims left running by a process that crashed or was force-stopped. */
+export function recoverRunningJobs(db: SqliteDatabase = getDatabase()): number {
+  const now = new Date().toISOString();
+  const result = db.prepare(`
+    UPDATE jobs
+    SET status = 'queued',
+        attempts = MAX(0, attempts - 1),
+        error = 'Recovered after worker restart; retrying.',
+        progress = 0, result_json = NULL,
+        available_at = ?, started_at = NULL, finished_at = NULL
+    WHERE status = 'running'
+  `).run(now);
+  return result.changes;
+}
+
+export function getJob(id: string, db: SqliteDatabase = getDatabase()): QueueJob | null {
+  const row = db.prepare('SELECT * FROM jobs WHERE id = ?').get(id) as JobRow | undefined;
+  return row ? mapJob(row) : null;
+}
+
+export function listJobs(db: SqliteDatabase = getDatabase()): QueueJob[] {
+  const rows = db.prepare('SELECT * FROM jobs ORDER BY created_at, id').all() as JobRow[];
+  return rows.map(mapJob);
 }
 
 export async function enqueueClipJob(jobData: JobData): Promise<void> {
   const clip = await getClip(jobData.clipId);
-  if (clip) {
-    clip.status = 'pending';
-    clip.progress = 0;
-    clip.error = undefined;
-    await saveClip(clip);
-  }
-
-  try {
-    const queue = await getClipQueue();
-    await removeStaleJob(queue, jobData.clipId, `Clip ${jobData.clipId} is already being rendered.`);
-
-    console.log(`[Queue] Adding clip render job ${jobData.clipId} to "${CLIP_QUEUE_NAME}"...`);
-    await queue.add('process-clip', jobData, { jobId: jobData.clipId });
-  } catch (error) {
-    if (error instanceof AppError) throw error;
-
-    throw new AppError('Failed to enqueue the clip render job.', {
-      status: 500,
-      details: toErrorMessage(error),
-      resolution:
-        'Make sure Redis is running (`docker compose up -d`) and start the worker with `npm run worker`, then retry.',
+  if (!clip) {
+    throw new AppError(`Clip record ${jobData.clipId} was not found.`, {
+      status: 404,
+      resolution: 'Create the clip again from viral detection before attempting to render it.',
     });
   }
+  if (clip.videoId !== jobData.videoId) {
+    throw new AppError(`Clip ${jobData.clipId} does not belong to video ${jobData.videoId}.`, {
+      status: 400,
+    });
+  }
+
+  // Apply request edits and queue reset in one transaction so an active-job
+  // conflict cannot leave the clip row looking pending instead of processing.
+  clip.start = jobData.start;
+  clip.end = jobData.end;
+  clip.hookDuration = jobData.hookDuration;
+  if (jobData.hookText !== undefined) clip.hookText = jobData.hookText;
+  if (jobData.ctaText !== undefined) clip.ctaText = jobData.ctaText;
+  if (jobData.ctaDuration !== undefined) clip.ctaDuration = jobData.ctaDuration;
+  clip.filterPreset = jobData.filterPreset;
+  clip.captionPresetId = jobData.captionPresetId;
+  if (jobData.layout !== undefined) clip.layout = jobData.layout;
+  if (jobData.captionEngine !== undefined) clip.captionEngine = jobData.captionEngine;
+  if (jobData.hookStylePresetId !== undefined) clip.hookStylePresetId = jobData.hookStylePresetId;
+  if (jobData.ctaStylePresetId !== undefined) clip.ctaStylePresetId = jobData.ctaStylePresetId;
+  clip.status = 'pending';
+  clip.progress = 0;
+  clip.error = undefined;
+  clip.cancelling = false;
+  const db = getDatabase();
+  db.transaction(() => {
+    if (!updateClipRecordSync(db, clip)) {
+      throw new AppError(`Clip ${jobData.clipId} was deleted while its render job was being queued.`, {
+        status: 409,
+      });
+    }
+    enqueue(CLIP_QUEUE_NAME, jobData, {
+      id: `clip:${jobData.clipId}`,
+      maxAttempts: DEFAULT_MAX_ATTEMPTS,
+      retryDelayMs: DEFAULT_RETRY_DELAY_MS,
+      clipId: jobData.clipId,
+      videoId: jobData.videoId,
+    }, db);
+  }).immediate();
 }
 
-/**
- * Transcription used to run inside the Next.js request handler as a fire-and-forget
- * promise. A dev-server reload (or a closed browser tab) orphaned it and the video
- * stayed stuck in `transcribing` forever. It now goes through BullMQ like renders do.
- */
-export async function enqueueTranscriptionJob(jobData: TranscriptionJobData): Promise<void> {
-  try {
-    const queue = await getTranscriptionQueue();
-    await removeStaleJob(
-      queue,
-      jobData.videoId,
-      `Video ${jobData.videoId} is already being transcribed.`
-    );
+export async function enqueueTranscriptionJob(
+  jobData: TranscriptionJobData,
+  videoToUpdate?: VideoRecord
+): Promise<void> {
+  const db = getDatabase();
+  const enqueueOptions = {
+    id: `transcription:${jobData.videoId}`,
+    maxAttempts: DEFAULT_MAX_ATTEMPTS,
+    retryDelayMs: DEFAULT_RETRY_DELAY_MS,
+    videoId: jobData.videoId,
+  };
 
-    console.log(`[Queue] Adding transcription job ${jobData.videoId} to "${TRANSCRIPTION_QUEUE_NAME}"...`);
-    await queue.add('transcribe-video', jobData, { jobId: jobData.videoId });
-  } catch (error) {
-    if (error instanceof AppError) throw error;
-
-    throw new AppError('Failed to enqueue the transcription job.', {
-      status: 500,
-      details: toErrorMessage(error),
-      resolution:
-        'Start Redis (`docker compose up -d`) and the worker (`npm run worker`), then use the "Transcribe" button on the dashboard.',
-    });
+  if (!videoToUpdate) {
+    enqueue(TRANSCRIPTION_QUEUE_NAME, jobData, enqueueOptions, db);
+    return;
   }
+
+  db.transaction(() => {
+    if (!updateVideoRecordSync(db, videoToUpdate)) {
+      throw new AppError(`Video ${jobData.videoId} was deleted before transcription could be queued.`, {
+        status: 404,
+      });
+    }
+    enqueue(TRANSCRIPTION_QUEUE_NAME, jobData, enqueueOptions, db);
+  }).immediate();
 }

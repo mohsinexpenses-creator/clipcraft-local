@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getClip, saveClip } from '@/lib/db';
+import { getClip, updateClip } from '@/lib/db';
 import { toErrorMessage, toErrorStatus } from '@/lib/errors';
 
 /**
@@ -26,7 +26,9 @@ export async function POST(
     }
 
     clip.cancelling = true;
-    await saveClip(clip);
+    if (!(await updateClip(clip))) {
+      return NextResponse.json({ error: 'Clip not found' }, { status: 404 });
+    }
 
     return NextResponse.json({ success: true, clip });
   } catch (error) {

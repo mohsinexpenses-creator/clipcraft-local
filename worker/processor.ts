@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { getCaptionPreset, getClip, getOverlayStylePreset, getVideo, saveClip } from '../lib/db';
+import { getCaptionPreset, getClip, getOverlayStylePreset, getVideo, updateClip } from '../lib/db';
 import { AppError, RenderCancelledError, toErrorMessage } from '../lib/errors';
 
 import { getVideoMetadata } from '../lib/ffmpeg';
@@ -90,7 +90,7 @@ export async function processClipJob(
 
   const clip = await getClip(clipId);
   if (!clip) {
-    throw new AppError(`Clip record ${clipId} was not found in MongoDB.`, {
+    throw new AppError(`Clip record ${clipId} was not found in SQLite.`, {
       status: 404,
       resolution: 'Create the clip again from viral detection before attempting to render it.',
     });
@@ -98,7 +98,7 @@ export async function processClipJob(
 
   const video = await getVideo(videoId);
   if (!video) {
-    throw new AppError(`Source video record ${videoId} was not found in MongoDB.`, {
+    throw new AppError(`Source video record ${videoId} was not found in SQLite.`, {
       status: 404,
       resolution: 'Upload the source video again before rendering clips.',
     });
@@ -118,7 +118,9 @@ export async function processClipJob(
   // A re-render starts fresh: a stale cancelling flag (from a previous
   // cancelled render) must not abort this new job on its first poll.
   clip.cancelling = false;
-  await saveClip(clip);
+  if (!(await updateClip(clip))) {
+    throw new RenderCancelledError('Clip was deleted before rendering started.');
+  }
   await reportProgress(5);
 
   // Output folder mirrors the uploaded video's stored name (e.g. 001_my_recording);
@@ -140,7 +142,9 @@ export async function processClipJob(
     cancelWatcher = setInterval(() => {
       void getClip(clipId)
         .then((fresh) => {
-          if (fresh?.cancelling) cancelFlag = true;
+          // A deleted clip is also a cancellation signal; updateClip() is update-only
+          // and prevents this worker from recreating its database row.
+          if (!fresh || fresh.cancelling) cancelFlag = true;
         })
         .catch(() => undefined);
     }, 2000);
@@ -286,8 +290,7 @@ export async function processClipJob(
     // Say what was ACTUALLY produced. A split request must never quietly turn
     // into something else: when only one person is found the planner renders a
     // single speaker window, and that is reported loudly here and on the clip.
-    // ('' rather than undefined: saveClip() does a $set, which would otherwise
-    // keep a stale note from a previous render.)
+    // Persist an empty string to clear any note from a previous render.
     clip.layoutNote = '';
     if (layout === 'split-screen') {
       if (plan.mode === 'split') {
@@ -312,7 +315,9 @@ export async function processClipJob(
       };
     }
     clip.progress = 20;
-    await saveClip(clip);
+    if (!(await updateClip(clip))) {
+      throw new RenderCancelledError('Clip was deleted while render planning was in progress.');
+    }
     await reportProgress(20);
 
     const preset = await getCaptionPreset(captionPresetId);
@@ -408,7 +413,7 @@ export async function processClipJob(
     const overlayProgressSink = (progress: number): void => {
       const scaled = 20 + Math.max(0, Math.min(100, progress)) * 0.1;
       clip.progress = Math.max(clip.progress ?? 0, Math.round(scaled));
-      void saveClip(clip).catch((error) => log.warn('progress save failed: ' + toErrorMessage(error)));
+      void updateClip(clip).catch((error) => log.warn('progress save failed: ' + toErrorMessage(error)));
       void reportProgress(scaled);
     };
 
@@ -467,7 +472,7 @@ export async function processClipJob(
       const progressSink = (progress: number): void => {
         const scaled = 30 + Math.max(0, Math.min(80, progress)) * 0.85;
         clip.progress = Math.max(clip.progress ?? 0, Math.round(scaled));
-        void saveClip(clip).catch((error) => log.warn('progress save failed: ' + toErrorMessage(error)));
+        void updateClip(clip).catch((error) => log.warn('progress save failed: ' + toErrorMessage(error)));
         void reportProgress(scaled);
       };
 
@@ -521,7 +526,9 @@ export async function processClipJob(
     clip.outputFileSize = renderResult.fileSizeBytes;
     clip.outputFps = renderResult.fps;
     clip.error = undefined;
-    await saveClip(clip);
+    if (!(await updateClip(clip))) {
+      throw new RenderCancelledError('Clip was deleted while rendering was finishing.');
+    }
     await reportProgress(100);
 
     log.ok(
@@ -539,7 +546,7 @@ export async function processClipJob(
       clip.status = 'failed';
       clip.error = 'Cancelled by user.';
       clip.cancelling = false;
-      await saveClip(clip).catch((saveError) =>
+      await updateClip(clip).catch((saveError) =>
         log.error('Could not persist the cancelled state: ' + toErrorMessage(saveError))
       );
       return clip;
@@ -548,7 +555,7 @@ export async function processClipJob(
     clip.status = 'failed';
     clip.error = toErrorMessage(error);
     clip.cancelling = false;
-    await saveClip(clip).catch((saveError) =>
+    await updateClip(clip).catch((saveError) =>
       log.error('Could not persist the failure state: ' + toErrorMessage(saveError))
     );
     throw error;

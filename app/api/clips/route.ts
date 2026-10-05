@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getClip, listClips, saveClip } from '@/lib/db';
+import { getClip, listClips, updateClip } from '@/lib/db';
 import { AppError, toErrorMessage, toErrorStatus } from '@/lib/errors';
 import { enqueueClipJob } from '@/lib/queue';
 import { CaptionEngine, ClipLayout, JobData } from '@/lib/types';
@@ -101,8 +101,6 @@ export async function POST(request: Request) {
     existingClip.status = 'pending';
     existingClip.progress = 0;
     existingClip.error = undefined;
-    await saveClip(existingClip);
-
     const jobData: JobData = {
       clipId: existingClip._id,
       videoId: existingClip.videoId,
@@ -121,21 +119,22 @@ export async function POST(request: Request) {
     };
 
     await enqueueClipJob(jobData);
+    const queuedClip = await getClip(existingClip._id);
 
     return NextResponse.json({
       success: true,
-      clip: existingClip,
+      clip: queuedClip ?? existingClip,
     });
   } catch (error) {
     const clipId = typeof body?.clipId === 'string' ? body.clipId : undefined;
 
-    if (clipId) {
+    if (clipId && toErrorStatus(error, 500) !== 409) {
       try {
         const clip = await getClip(clipId);
         if (clip) {
           clip.status = 'failed';
           clip.error = toErrorMessage(error, 'Failed to start render job.');
-          await saveClip(clip);
+          await updateClip(clip);
         }
       } catch (saveError) {
         console.error('[API Clips POST] Failed to persist error state:', saveError);
