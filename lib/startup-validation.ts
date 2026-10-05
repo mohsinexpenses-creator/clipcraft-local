@@ -2,9 +2,7 @@ import { spawn } from 'child_process';
 import { createRequire } from 'module';
 import fs from 'fs';
 import path from 'path';
-import Redis from 'ioredis';
-import { MongoClient } from 'mongodb';
-import { getDb } from './db';
+import { getDatabase, getDatabasePath, listPromptTemplates } from './db';
 import { toErrorMessage } from './errors';
 import { getFfmpegPath } from './ffmpeg';
 import { LLM_PROVIDER_CHAIN, isLlmKeyConfigured } from './llm';
@@ -80,92 +78,46 @@ function spawnForOutput(command: string, args: string[], timeoutMs = 15_000): Pr
   });
 }
 
-async function validateMongo(): Promise<StartupCheck> {
-  const mongoUri = process.env.MONGODB_URI?.trim();
-  if (!mongoUri) {
-    return createCheck({
-      id: 'mongodb',
-      label: 'MongoDB',
-      status: 'error',
-      summary: 'MONGODB_URI is missing.',
-      resolution: 'Copy .env.example to .env.local, set MONGODB_URI, and run `npm run db:up`.',
-    });
-  }
-
-  const client = new MongoClient(mongoUri, { serverSelectionTimeoutMS: 3000 });
-
+async function validateSqlite(): Promise<StartupCheck> {
   try {
-    await client.connect();
-    await client.db('clipcraft').command({ ping: 1 });
+    const db = getDatabase();
+    const journalMode = String(db.pragma('journal_mode', { simple: true })).toLowerCase();
+    const busyTimeout = Number(db.pragma('busy_timeout', { simple: true }));
+    const original = db.prepare('SELECT version, applied_at FROM schema_version WHERE id = 1').get() as
+      | { version: number; applied_at: string }
+      | undefined;
+    if (!original) throw new Error('The schema_version row is missing.');
+
+    const roundTrip = db.transaction(() => {
+      const marker = `startup-check-${Date.now()}`;
+      db.prepare('UPDATE schema_version SET applied_at = ? WHERE id = 1').run(marker);
+      const readBack = db.prepare('SELECT applied_at FROM schema_version WHERE id = 1').get() as
+        | { applied_at: string }
+        | undefined;
+      db.prepare('UPDATE schema_version SET applied_at = ? WHERE id = 1').run(original.applied_at);
+      return readBack?.applied_at === marker;
+    })();
+
+    if (journalMode !== 'wal') throw new Error(`Expected WAL mode, found ${journalMode || 'unknown'}.`);
+    if (busyTimeout !== 5000) throw new Error(`Expected busy_timeout=5000ms, found ${busyTimeout}ms.`);
+    if (!roundTrip) throw new Error('SQLite write/read check did not return the written value.');
 
     return createCheck({
-      id: 'mongodb',
-      label: 'MongoDB',
+      id: 'sqlite',
+      label: 'SQLite database',
       status: 'ok',
-      summary: 'MongoDB connection succeeded.',
-      details: mongoUri,
+      summary: 'SQLite opened successfully; write/read and WAL checks passed.',
+      details: `${getDatabasePath()} • journal_mode=${journalMode} • busy_timeout=${busyTimeout}ms • schema v${original.version}`,
     });
   } catch (error) {
     return createCheck({
-      id: 'mongodb',
-      label: 'MongoDB',
+      id: 'sqlite',
+      label: 'SQLite database',
       status: 'error',
-      summary: 'MongoDB connection failed.',
+      summary: 'SQLite database is not ready.',
       details: toErrorMessage(error),
-      resolution:
-        'Run `npm run db:up` (Docker) or start your local MongoDB. On Windows with Docker Desktop, use 127.0.0.1 - not localhost from inside WSL2.',
+      resolution: `Check DATABASE_PATH (${getDatabasePath()}) and ensure the file's parent directory is writable. Restart the web process and worker after changing it.`,
     });
-  } finally {
-    await client.close().catch(() => undefined);
-  }
-}
-
-async function validateRedis(): Promise<StartupCheck> {
-  const redisUrl = process.env.REDIS_URL?.trim();
-  if (!redisUrl) {
-    return createCheck({
-      id: 'redis',
-      label: 'Redis / BullMQ',
-      status: 'error',
-      summary: 'REDIS_URL is missing.',
-      resolution: 'Set REDIS_URL in .env.local and run `npm run db:up` before rendering clips.',
-    });
-  }
-
-  let redis: Redis | null = null;
-
-  try {
-    redis = new Redis(redisUrl, {
-      lazyConnect: true,
-      maxRetriesPerRequest: 1,
-      enableOfflineQueue: false,
-    });
-
-    await redis.connect();
-    const pong = await redis.ping();
-
-    return createCheck({
-      id: 'redis',
-      label: 'Redis / BullMQ',
-      status: pong === 'PONG' ? 'ok' : 'warning',
-      summary: pong === 'PONG' ? 'Redis connection succeeded.' : 'Redis responded unexpectedly.',
-      details: `REDIS_URL=${redisUrl}`,
-      resolution:
-        pong === 'PONG'
-          ? 'Keep the worker running with `npm run worker` - both the clip and the transcription queues need it.'
-          : 'Verify your Redis instance and retry.',
-    });
-  } catch (error) {
-    return createCheck({
-      id: 'redis',
-      label: 'Redis / BullMQ',
-      status: 'error',
-      summary: 'Redis connection failed.',
-      details: toErrorMessage(error),
-      resolution: 'Run `npm run db:up` and confirm REDIS_URL points at it (redis://127.0.0.1:6379).',
-    });
-  } finally {
-    redis?.disconnect();
   }
 }
 
@@ -305,14 +257,8 @@ async function validatePromptTemplates(): Promise<StartupCheck> {
   ];
 
   try {
-    const db = await getDb();
-    const docs = await db
-      .collection<{ _id: string }>('promptTemplates')
-      .find({ _id: { $in: requiredIds } })
-      .project({ _id: 1 })
-      .toArray();
-
-    const foundIds = new Set(docs.map((doc) => String(doc._id)));
+    const templates = await listPromptTemplates();
+    const foundIds = new Set(templates.map((template) => template._id));
     const missing = requiredIds.filter((id) => !foundIds.has(id));
 
     if (missing.length > 0) {
@@ -320,9 +266,9 @@ async function validatePromptTemplates(): Promise<StartupCheck> {
         id: 'prompt-templates',
         label: 'Prompt templates',
         status: 'warning',
-        summary: 'Some required prompt templates are missing in MongoDB.',
+        summary: 'Some required prompt templates are missing in SQLite.',
         details: `Missing: ${missing.join(', ')}`,
-        resolution: 'Refresh the app or restart the server so the missing default templates can be seeded.',
+        resolution: 'Restart the app or refresh this page so default templates can be seeded into SQLite.',
       });
     }
 
@@ -340,7 +286,7 @@ async function validatePromptTemplates(): Promise<StartupCheck> {
       status: 'warning',
       summary: 'Prompt templates could not be validated.',
       details: toErrorMessage(error),
-      resolution: 'Fix MongoDB connectivity and refresh this page.',
+      resolution: 'Fix SQLite database access and refresh this page.',
     });
   }
 }
@@ -451,8 +397,7 @@ async function validateRemotion(): Promise<StartupCheck> {
 
 export async function runStartupValidation(): Promise<StartupValidationResult> {
   const checks = await Promise.all([
-    validateMongo(),
-    validateRedis(),
+    validateSqlite(),
     validateFfmpeg(),
     validateTranscription(),
     validateAiProvider(),

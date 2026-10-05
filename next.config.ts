@@ -2,18 +2,13 @@ import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
   /**
-   * Native / CJS packages that must never be bundled by webpack or turbopack:
-   * - ffmpeg-static resolves a binary path at runtime and breaks when bundled (this is
-   *   why lib/ffmpeg.ts used to contain an eval'd require). Keeping it external lets
-   *   that file use a plain top-level `import ffmpegStaticPath from 'ffmpeg-static'`.
-   * - mongodb, ioredis, bullmq and onnxruntime-node are CJS/native with dynamic requires.
-   * They are only used from server/worker code, never from the browser bundle.
+   * Native packages used only by server routes and the local worker. Keep them
+   * outside Next's Server Component bundling so their native/dynamic runtime
+   * loading continues to work.
    */
   serverExternalPackages: [
+    'better-sqlite3',
     'ffmpeg-static',
-    'mongodb',
-    'ioredis',
-    'bullmq',
     'onnxruntime-node',
     'ytdl-core',
   ],

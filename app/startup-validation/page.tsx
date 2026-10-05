@@ -121,7 +121,7 @@ export default function StartupValidationPage() {
         <div className="space-y-1">
           <h1 className="text-2xl font-semibold tracking-tight">Startup validation</h1>
           <p className="text-sm text-muted-foreground">
-            Verify MongoDB, Redis, transcription, FFmpeg, and AI provider setup before you start processing videos.
+            Verify SQLite storage, transcription, FFmpeg, and AI provider setup before you start processing videos.
           </p>
         </div>
         <Button onClick={loadValidation} disabled={isLoading}>

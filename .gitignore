@@ -20,7 +20,8 @@
 # production
 /build
 
-# local processing & media storage
+# local SQLite database, processing temp files, and media storage
+/data/
 /.data/
 /.tmp/
 /uploads/
