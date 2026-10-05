@@ -116,8 +116,11 @@ file while both processes are stopped; in WAL mode, SQLite may also use adjacent
 The SQLite `jobs` table replaces BullMQ/Redis. The worker polls independent
 transcription and render queues; keep `npm run worker` running while processing. It
 preserves two total attempts (one retry after 2 seconds by default; the exponential
-backoff doubles for additional configured attempts) and resets interrupted claims on startup. A terminal job row is retained until that
-record is queued again or deleted; deleting a clip/video also removes its job rows.
+backoff doubles if a job is configured for more attempts) and requeues interrupted
+claims on startup. Run exactly one worker process per database: `WORKER_CONCURRENCY`
+controls parallel render slots inside that process, while transcription uses one slot.
+A terminal job row is retained until that record is queued again or deleted; deleting
+a clip/video also removes its job rows.
 
 **Existing MongoDB data is not imported.** This migration intentionally starts with a
 fresh SQLite database; old MongoDB records do not appear automatically. Existing media
