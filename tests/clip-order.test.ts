@@ -5,7 +5,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { sortClipsForDisplay } from '../lib/clip-order';
 
-const clip = (id: string, createdAt: string, rank?: number) => ({ id, createdAt, rank });
+const clip = (id: string, createdAt: string, rank?: number) => ({
+  id,
+  createdAt,
+  aiAnalysis: rank === undefined ? undefined : { rank },
+});
 
 test('inside one detection run the best rank comes first, whatever order the API returned', () => {
   const run = '2026-10-06T08:00:00.000Z';

@@ -16,9 +16,9 @@ customize everything.
 - **Storage:** SQLite, table `prompt_templates` (row `id: "prompt-viral-detection"`).
 - **Code:** the shipped default is `DEFAULT_PROMPT_TEMPLATES` in [`lib/presets.ts`](../lib/presets.ts);
   the runtime that fills variables, calls the LLM chain and applies the clip-count / length /
-  overlap rules is [`lib/ai.ts`](../lib/ai.ts); the **normalization layer** that reads the
-  response (timestamps, JSON extraction, field mapping, validation) is
-  [`lib/viral-response.ts`](../lib/viral-response.ts).
+  overlap rules is [`lib/ai.ts`](../lib/ai.ts); the strict parser for the response is
+  [`lib/viral-response.ts`](../lib/viral-response.ts); the response type is `ViralClip` in
+  [`lib/types.ts`](../lib/types.ts).
 
 Templates are **seeded once** (insert-if-missing) so your edits survive restarts. After an app
 update that ships a new built-in prompt, press **Reset to defaults** on the Prompt Templates
@@ -26,8 +26,9 @@ page (or `POST /api/prompt-templates` with `{"action":"reset"}`) to load it — 
 the built-in templates only, never your own custom templates.
 
 Because templates are seeded only once, an existing database can still hold an **older prompt that
-returns the old flat array**. Both shapes are understood (see §4), so nothing breaks until you
-choose to reset.
+returns the old flat array**. That shape is **not accepted any more**: detection stops with the error
+*The AI response must be a JSON object with a "clips" array* - press **Reset to defaults** to load
+the current prompt.
 
 ---
 
@@ -131,85 +132,58 @@ The prompt demands **one strict JSON object** holding a `clips` array, **sorted 
 }
 ```
 
-### Where each field goes
+### How the response is used
 
-| AI field | App field (`ViralSegment` → `ClipRecord`) | Where it is used |
-| --- | --- | --- |
-| `timestamp.start` / `.end` | `start` / `end` | Render window of the clip |
-| `rank` | `rank` | Dashboard order and the `#n` badge |
-| `why_this_will_go_viral` | `reason` → `viralReason` | Clip card *Why it works* |
-| `scores.viral_score` | `score` → `viralScore` | Clip card flame badge |
-| `hook_line_analysis.hook_line` | `hookLine` | Stored (cold-open reference) |
-| `hook_line_analysis.hook_timestamp.start` / `.end` | `hookLineStart` / `hookLineEnd` | The moment the renderer duplicates as the hook intro |
-| `hook_line_analysis.place_before_clip` | `placeBeforeClip` | **Stored only** - the renderer always prepends the hook intro when hook text is on |
-| `retention_analysis.predicted_retention` | `retentionStrength` | Clip card badge |
-| `psychological_trigger.dominant_trigger` | `psychologicalTrigger` | Clip card badge |
-| `safety_analysis.risk_level` | `safetyRisk` | Clip card badge |
-| `safety_analysis.risky_words` | `safetyNotes` (one-line summary, `word -> replacement (action)`) | Clip card warning box |
-| `viral_packaging.video_title` | `title` | Clip card headline |
-| `viral_packaging.hook_text_on_video` | `hookText` (upper-cased) | On-screen hook overlay (rendered) |
-| `viral_packaging.cta_text` | `ctaText` | End-screen CTA overlay (rendered) |
-| `viral_packaging.hashtags` | `hashtags` | Clip card |
-| the four `scores.*` | `scores` (when all four are valid) | Clip card score line |
-| **every field above, complete** | `analysis` | Collapsible **AI analysis** panel on the clip card |
+The response is validated once and then stored **as it is** on the clip (`ClipRecord.aiAnalysis`,
+inside the existing `clips.record_json` column - no schema change). Nothing is copied into a second
+set of fields; the dashboard and the worker read the same object:
+
+| AI field | Used for |
+| --- | --- |
+| `timestamp.start` / `.end` | The render window (`ClipRecord.start` / `end`, in seconds) |
+| `viral_packaging.hook_text_on_video` | The editable hook text (`ClipRecord.hookText`, upper-cased) - the on-screen hook overlay |
+| `viral_packaging.cta_text` | The editable CTA text (`ClipRecord.ctaText`) - the end-screen CTA overlay |
+| `viral_packaging.video_title` | Clip card headline and the name of the downloaded `.mp4` |
+| `hook_line_analysis.hook_timestamp` | The moment the worker duplicates as the hook intro (converted to seconds there; unreadable or missing -> the clip's first seconds) |
+| `hook_line_analysis.place_before_clip` | **Stored only** - the renderer always prepends the hook intro when hook text is on |
+| `rank` | Dashboard order and the `#n` badge |
+| `scores`, `retention_analysis`, `psychological_trigger`, `safety_analysis`, the rest of `viral_packaging` | Clip card badges and the collapsible **AI analysis** panel |
 
 `hookText` / `ctaText` still obey the *Hook text* / *CTA text* switches (§2, §5) and still fall back
 to the dedicated `hook_generation` / `cta_generation` templates when the AI leaves them empty.
-
-### What is stored with each clip
-
-`rank`, `placeBeforeClip` and `analysis` are ordinary optional fields of the clip record, so they
-travel inside the existing `clips.record_json` column - **no schema change and no new SQL columns**.
-`analysis` is the complete, validated analysis in the app's own shape (camelCase, timestamps as
-seconds): `whyThisWillGoViral`, `duration`, `hookLineAnalysis`, `retentionAnalysis`,
-`psychologicalTrigger`, `safetyAnalysis` (with `riskyWords[]`), `viralPackaging` and `scores`
-(types: `ClipAnalysis` in [`lib/types.ts`](../lib/types.ts)). It keeps the AI's original packaging
-text, so you can still see what the model suggested after you edit a clip's hook or CTA. Clips
-created before this existed simply have no `analysis`; their card looks as it always did.
+Clips created before this schema have no `aiAnalysis`: they keep rendering, with no AI panel, no
+score or rank, a title taken from the hook text, and the hook intro taken from the first seconds.
 
 ### How the response is read (`lib/viral-response.ts`)
 
-This file is the one place that knows the response shape. If the prompt schema changes, change it
-there (the test `the shipped prompt schema has exactly the fields ...` fails until the normalizer
-and the fixtures follow the prompt).
+The detection call asks the provider for raw JSON, so the text is parsed as it is - no code-fence
+stripping, no repair, no coercion. The response must be **exactly** `{ "clips": [ ... ] }` with at
+least one clip, and **every clip must match the schema above**: all fields present, strings /
+numbers / booleans / arrays of the right type, scores from 0 to 10, and the enum fields spelled
+exactly as the project defines them (`predicted_retention`: Weak, Medium, Strong, Extreme;
+`dominant_trigger`: Curiosity, Anger, Inspiration, Shock, Validation, Fear, Controversy, Humor;
+`risk_level`: Low, Medium, High; risky-word `action`: censor, replace, mute, remove).
 
-- **Timestamps** may be seconds (`12.5`, `"12.5"`, `"12.5s"` - the transcript's own style),
-  `"01:23"` (mm:ss), `"00:01:23"` (hh:mm:ss, optional fraction), unit forms (`"1m23s"`), or one
-  `"start - end"` string. A clip is kept only if its window is readable, `start < end`, and it lies
-  inside the video (an end past the video is clamped; a missing end is rebuilt from `duration`).
-- **The hook moment** (`hook_timestamp`) is kept only when it overlaps the clip; otherwise the
-  renderer falls back to the clip's first seconds, and the hook line text is still stored.
-- **Enum fields** (`predicted_retention`, `dominant_trigger`, `risk_level`, `action`) become exactly
-  one allowed value. Any casing works; a value that names *several* options - typically the model
-  echoing the schema placeholder `"Weak | Medium | Strong | Extreme"` - is dropped, never stored
-  as literal text.
-- **Numbers / arrays / objects** are validated before use: scores accept `8`, `"8.5"`, `"8/10"` and
-  are clamped to 0-10; booleans accept `true`/`false`/`"yes"`/`"no"`; hashtags get a missing `#`,
-  duplicates removed; `risky_words` / `words_to_change` accept strings or objects; a block of the
-  wrong type is treated as empty. A bad field is dropped or defaulted (missing viral score = 8) and
-  never fails the run.
-- **A bad clip never fails the run.** Only a clip whose time window cannot be trusted is skipped,
-  with a server-log warning naming the clip and the reason. The run fails only when *no* clip is
-  usable, and the error lists every reason.
-- **Messy output is tolerated**: prose or a ```json fence around the JSON, trailing commas, and a
-  response cut off by the output limit (the clips that finished are kept and the top-up pass asks
-  for the rest). One syntactically broken clip does not discard its neighbours.
-- **The old flat array** (`start`, `end`, `reason`, `hookText`, `hookLine`, `hashtags`,
-  `retentionStrength`, `scores: { viral, ... }`, ...) is upgraded to the new shape first, so
-  databases that still hold the older prompt keep working. It simply has no `rank` (clips are then
-  ordered by score).
+Anything else is rejected with an error that names the field and the value received, e.g.
+`clips[2].retention_analysis.predicted_retention must be one of: Weak, Medium, Strong, Extreme (got "Weak | Medium | Strong | Extreme")`.
+One invalid clip rejects the whole response (retry); a bare array, a single clip object, the old
+flat format and cut-off output are all rejected the same way. Nothing is guessed or skipped.
+
+Timestamps are strings. The clip window accepts seconds (`"125.5s"`, `"125.5"` - the transcript's own
+style) or a clock (`"02:05"`, `"00:02:05"`, `"00:02:05.5"`) and nothing else; it must be readable and
+start before it ends. An end a little past the video is clamped to the video's length; a clip with
+less than a second left inside the video is an error.
 
 ### Rules that are enforced in code (not just in the prompt)
 
 - Clip length must stay within `[minClipDuration, maxClipDuration]`: over-long clips are trimmed to
   the maximum and short ones are extended to the minimum (a clip that cannot reach the minimum
   before the video ends is dropped).
-- Timestamps are clamped to the real video duration - a hallucinated timestamp can never produce a
-  clip outside the source.
-- **No overlapping clips**: clips are taken in the AI's `rank` order (highest score first when
-  there is no rank) and any overlapping lower-ranked clip is dropped.
+- **No overlapping clips**: clips are taken in the AI's `rank` order (viral score breaks ties) and
+  any overlapping lower-ranked clip is dropped.
 - At most `clipCount` clips are created. If the model returns fewer, up to two follow-up passes ask
-  for the missing ones in the same JSON format; their clips are appended after the ones already kept.
+  for the missing ones in the same JSON format (an invalid follow-up answer is ignored with a
+  warning); their clips are appended after the ones already kept.
 - `rank` is renumbered 1, 2, 3 ... over the clips that survive, so it never has gaps. The
   dashboard lists the newest detection run first and, inside a run, rank 1 first.
 
@@ -223,7 +197,7 @@ and the fixtures follow the prompt).
 | Clip record | `hookDuration: 3`, hook text stored | `hookDuration: 0`, `hookText: ""` |
 | Render | 3s duplicated hook intro + on-screen hook overlay | no hook intro, no hook overlay |
 | Clip card | editable hook text field | "Hook overlay off — type text to enable it" (typing text re-enables a 3s hook on render) |
-| AI analysis | the model's `hook_text_on_video` is kept in `analysis.viralPackaging` | kept as well (it is only the overlay that is off) |
+| AI analysis | the model's `hook_text_on_video` stays in `aiAnalysis.viral_packaging` | kept as well (only the overlay is off) |
 
 ---
 
@@ -241,12 +215,10 @@ Tuning tips:
 - **More/fewer clips:** change *Number of clips* in AI clip options — no prompt edit needed.
 - **Different clip length:** change min/max in AI clip options; the placeholders update the
   prompt automatically.
-- **Richer or leaner output:** the per-clip text fields have length caps after parsing (title 160,
-  hook text 200, CTA 120, hook line 220, reason 600, other analysis text 800) — raise them in
-  `LIMITS` at the top of `lib/viral-response.ts` if you want longer fields.
-- **Adding or renaming a schema field:** edit the schema block in the prompt, read the new field in
-  `lib/viral-response.ts` (and add it to `ClipAnalysis` in `lib/types.ts`), and update the fixture in
-  `tests/viral-fixtures.ts`. The route, the database and the renderer need no change.
+- **Adding or renaming a schema field:** edit the schema block in the prompt, then `ViralClip` in
+  `lib/types.ts`, the `FIELDS` list in `lib/viral-response.ts` and the fixture in
+  `tests/viral-fixtures.ts` - a test fails until all four agree. The route and the database need no
+  change; the card and the AI panel read the new field from `aiAnalysis`.
 - **Output token budget** scales with clip count (`3,000 + 2,000 × clipCount`, capped at 40,000 —
   `detectionMaxTokens` in `lib/ai.ts`). Each clip's full analysis is roughly 1,500-2,000 tokens; if
   you add many more fields to the schema, raise the per-clip figure there.

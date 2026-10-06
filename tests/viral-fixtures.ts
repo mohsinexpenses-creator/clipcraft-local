@@ -1,18 +1,18 @@
 /**
- * Shared fixtures for the viral-response tests: a realistic clip in the NEW AI
- * response format (every field filled in), and a transcript to run detection on.
+ * Shared fixtures for the viral-response tests: a realistic clip in the AI
+ * response schema (every field filled in), and a transcript to run detection on.
  * Not a test file itself (no `.test.ts` suffix), like sqlite-test-helpers.ts.
  */
-import type { TranscriptData, VideoRecord } from '../lib/types';
+import type { TranscriptData, VideoRecord, ViralClip } from '../lib/types';
 
 export type RawClip = Record<string, unknown>;
 
 /**
  * One clip exactly as the viral_detection prompt's JSON schema describes it.
- * Window: 00:01:05 -> 00:02:10 (65s - 130s). Pass `overrides` to change any
- * top-level key (nested blocks are replaced as a whole).
+ * Typed as ViralClip, so the compiler proves the type matches this example.
+ * Window: 00:01:05 -> 00:02:10 (65s - 130s).
  */
-export function aiClip(overrides: RawClip = {}): RawClip {
+export function validClip(): ViralClip {
   return {
     rank: 1,
     timestamp: { start: '00:01:05', end: '00:02:10' },
@@ -59,8 +59,12 @@ export function aiClip(overrides: RawClip = {}): RawClip {
       controversy_score: 6,
       shareability_score: 8,
     },
-    ...overrides,
   };
+}
+
+/** validClip() with top-level keys replaced - loosely typed so tests can break the schema on purpose. */
+export function aiClip(overrides: RawClip = {}): RawClip {
+  return { ...validClip(), ...overrides };
 }
 
 /** The response body the prompt asks for: `{ "clips": [...] }`. */

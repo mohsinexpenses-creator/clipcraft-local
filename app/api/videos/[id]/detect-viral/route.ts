@@ -4,7 +4,6 @@ import { detectViralSegments, generateCtaText, generateHookText, resolveViralOpt
 import { AppError, toErrorMessage, toErrorStatus } from '@/lib/errors';
 import { log } from '@/lib/logger';
 import { ClipRecord, DEFAULT_VIRAL_OPTIONS, ViralDetectionOptions } from '@/lib/types';
-import { clipFieldsFromSegment } from '@/lib/viral-response';
 
 /** Hard UI/API bounds for the per-run viral detection options.
  * maxClipDuration is intentionally NOT user-configurable anymore: it is fixed
@@ -163,8 +162,9 @@ export async function POST(
       // Hook text: skipped entirely when the option is off. When on, the viral
       // prompt's own hook text is preferred (it already passed the packaging
       // analysis) and the dedicated hook template is only the fallback.
+      const { hook_text_on_video, cta_text } = segment.clip.viral_packaging;
       const hookText = options.includeHookText
-        ? await resolveOverlayText(segment.hookText, () => generateHookText(overlayTranscript), 'hook')
+        ? await resolveOverlayText(hook_text_on_video.toUpperCase(), () => generateHookText(overlayTranscript), 'hook')
         : '';
 
       // Same idea for the CTA: the viral prompt returns `cta_text` per clip, so
@@ -172,7 +172,7 @@ export async function POST(
       // CTA switch is off we skip generation entirely and mark the clip with
       // ctaDuration 0 (the renderer then skips the CTA overlay).
       const ctaText = options.includeCta
-        ? await resolveOverlayText(segment.ctaText, () => generateCtaText(overlayTranscript), 'CTA')
+        ? await resolveOverlayText(cta_text, () => generateCtaText(overlayTranscript), 'CTA')
         : '';
 
       const clipRecord: ClipRecord = {
@@ -191,10 +191,9 @@ export async function POST(
         ctaDuration: options.includeCta ? 2.5 : 0,
         filterPreset: 'vibrant',
         captionPresetId: 'preset-bold-yellow',
-        // Everything the AI said about the clip (score, rank, title, hook line,
-        // retention/trigger/safety, scores, the complete nested analysis, ...).
-        // Mapped in lib/viral-response.ts so a schema change never touches this route.
-        ...clipFieldsFromSegment(segment),
+        // Everything the AI said about the clip, stored as returned; the card,
+        // the analysis panel and the worker read it from here.
+        aiAnalysis: segment.clip,
         status: 'pending',
         progress: 0,
         error: undefined,

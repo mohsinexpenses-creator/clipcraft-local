@@ -130,6 +130,8 @@ export interface LlmCompletionRequest {
   prompt: string;
   maxTokens?: number;
   temperature?: number;
+  /** Ask the provider for a raw JSON answer (no markdown fences, no prose around it). */
+  json?: boolean;
 }
 
 export interface LlmCompletionResult {
@@ -240,6 +242,7 @@ async function callOpenAiCompatible(
         ],
         max_tokens: maxTokens,
         temperature: request.temperature ?? 0.5,
+        ...(request.json ? { response_format: { type: "json_object" } } : {}),
       }),
       signal: AbortSignal.timeout(LLM_CALL_TIMEOUT_MS),
     });
@@ -299,6 +302,7 @@ async function callGeminiNative(
           generationConfig: {
             temperature: request.temperature ?? 0.5,
             maxOutputTokens: maxTokens,
+            ...(request.json ? { responseMimeType: "application/json" } : {}),
           },
         }),
         signal: AbortSignal.timeout(LLM_CALL_TIMEOUT_MS),

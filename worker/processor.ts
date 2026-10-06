@@ -11,6 +11,7 @@ import { detectSpeakerTimeline } from './asd';
 import { buildLayoutPlan, getSplitFramingSettings } from './layout';
 import { adaptOverlaysToLayout, describePlacements } from './overlay-layout';
 import { color, log } from '../lib/logger';
+import { parseTimestamp } from '../lib/viral-response';
 import { HOOK_TRANSITION_SECONDS, normalizeFps, processVideoSegment } from './ffmpeg-pipeline';
 import { prepareNativeCaptionOverlays } from './native-captions';
 import {
@@ -130,7 +131,7 @@ export async function processClipJob(
   // Optional pre-caption diagnostic branch (SAVE_PRECAPTION_DEBUG=1). The normal
   // final render goes directly from the source into the title-named deliverable.
   const intermediateVideoPath = path.join(outputDir, `${clipId}_precaption.mp4`);
-  const clipFileBase = sanitizeClipFileName(clip.title) || clipId;
+  const clipFileBase = sanitizeClipFileName(clip.aiAnalysis?.viral_packaging.video_title) || clipId;
   const finalVideoPath = uniqueClipPath(outputDir, clipFileBase);
 
   // Cancellation: the UI flips clip.cancelling (POST /api/clips/<id>/cancel).
@@ -239,24 +240,22 @@ export async function processClipJob(
     // back up to it).
     //
     // The moment comes from the VIRAL DETECTION prompt, which already returns
-    // the hook line's transcript timestamps (hookLineStart/hookLineEnd) for
-    // every clip. Calling a second LLM here to "re-discover" the moment was
-    // pure waste (an extra ~10s + tokens per render) and could even pick a
-    // DIFFERENT moment than the one the clip was packaged around - so it is
-    // gone. Clips created before that data existed fall back to the first N
-    // seconds.
-    const hookLineStartAbs = Number.isFinite(clip.hookLineStart)
-      ? (clip.hookLineStart as number)
-      : undefined;
+    // the hook line's timestamps (hook_line_analysis.hook_timestamp) for every
+    // clip. Calling a second LLM here to "re-discover" the moment was pure waste
+    // (an extra ~10s + tokens per render) and could even pick a DIFFERENT moment
+    // than the one the clip was packaged around - so it is gone. Clips without
+    // that data (or with an unreadable timestamp) fall back to the first N seconds.
+    const hook = clip.aiAnalysis?.hook_line_analysis;
+    const hookLineStartAbs = (hook && parseTimestamp(hook.hook_timestamp.start)) ?? undefined;
     const hookStart =
       hookLineStartAbs !== undefined
         ? Math.max(0, Math.min(hookLineStartAbs - start, Math.max(0, segmentDuration - safeHookDuration)))
         : 0;
-    if (hookLineStartAbs !== undefined && hookStart > 0.05) {
-      const hookLineEndAbs = Number.isFinite(clip.hookLineEnd) ? (clip.hookLineEnd as number) : hookLineStartAbs;
+    if (hook && hookLineStartAbs !== undefined && hookStart > 0.05) {
+      const hookLineEndAbs = parseTimestamp(hook.hook_timestamp.end) ?? hookLineStartAbs;
       log.ok(
         `Hook moment (from viral prompt): ${hookLineStartAbs.toFixed(1)}s → ${hookLineEndAbs.toFixed(1)}s` +
-        (clip.hookLine ? `  ("${clip.hookLine}")` : '')
+        (hook.hook_line ? `  ("${hook.hook_line}")` : '')
       );
     } else if (safeHookDuration > 0) {
       log.detail('No hook line timestamps on this clip - duplicating the first N seconds.');

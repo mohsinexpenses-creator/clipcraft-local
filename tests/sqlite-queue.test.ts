@@ -43,7 +43,6 @@ function clip(id: string, videoId: string): ClipRecord {
     hookText: 'Hook',
     filterPreset: 'none',
     captionPresetId: 'preset-bold-yellow',
-    viralScore: 8,
     status: 'done',
     progress: 100,
     createdAt: now,

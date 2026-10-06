@@ -472,7 +472,9 @@ Return ONLY a single valid JSON object. No markdown, no code fences, no explanat
 - Emojis are allowed ONLY inside string values.
 - Use double quotes, escape internal quotes and newlines properly, and use no trailing commas.
 - The "clips" array MUST be sorted by viral ranking (rank 1 = most viral), not by transcript order.
-- Timestamps must be strings in the same format as the transcript. Durations must be calculated from them.
+- Timestamps must be strings in the same format as the transcript (for example "125.5s"). Durations must be calculated from them.
+- "rank", every "duration" value and the four "scores" are plain numbers (scores from 0 to 10, no "/10"). Every other value is a string, a boolean (true or false) or an array, exactly as in the schema.
+- Where the schema lists options separated by "|" (predicted_retention, dominant_trigger, risk_level, action), output exactly ONE of those options, spelled exactly as shown - never the whole list.
 - Never output null. Use "" or [] if something is not applicable.
 
 JSON SCHEMA:

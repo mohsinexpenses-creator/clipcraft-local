@@ -333,7 +333,7 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
   // INSIDE the clip, i.e. the offset is bounded by clip length MINUS the hook length
   // (clamping to the hook length itself used to force every hook onto seconds 0-3
   // regardless of where the gripping moment actually was). `hookStart` is the moment
-  // the clip was built around (the viral prompt's hookLineStart); 0 = the first N seconds.
+  // the clip was built around (the viral prompt's hook_timestamp); 0 = the first N seconds.
   const actualHookDur = Math.min(Math.max(Number(hookDuration) || 0, 0), segmentDuration);
   const hookEnabled = actualHookDur > 0;
   const hookOffset = Math.max(0, Math.min(Number(hookStart) || 0, Math.max(0, segmentDuration - actualHookDur)));

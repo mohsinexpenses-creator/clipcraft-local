@@ -243,6 +243,8 @@ export const ClipCard: React.FC<ClipCardProps> = ({
 
   const mediaUrl = clip.outputPath ? `/api/media${clip.outputPath}` : null;
   const isProcessing = clip.status === "processing";
+  // What the AI said about this clip; absent on clips created before the new schema.
+  const analysis = clip.aiAnalysis;
 
   return (
     <div className="animate-fade-up rounded-xl border bg-card p-5 text-card-foreground shadow-xs transition-colors hover:border-ring/60">
@@ -294,19 +296,17 @@ export const ClipCard: React.FC<ClipCardProps> = ({
             className="absolute top-2.5 left-2.5 gap-1 bg-background/90 backdrop-blur-sm"
           >
             <Flame className="text-orange-500" />
-            {typeof clip.viralScore === "number"
-              ? clip.viralScore.toFixed(1)
-              : "—"}
+            {analysis ? analysis.scores.viral_score.toFixed(1) : "—"}
           </Badge>
 
           {/* AI rank within its detection run (1 = most viral) */}
-          {typeof clip.rank === "number" && (
+          {analysis && (
             <Badge
               variant="secondary"
               className="absolute top-2.5 right-2.5 bg-background/90 backdrop-blur-sm"
               title="Rank among the clips from this detection run (1 = most viral)"
             >
-              #{clip.rank}
+              #{analysis.rank}
             </Badge>
           )}
         </div>
@@ -321,75 +321,74 @@ export const ClipCard: React.FC<ClipCardProps> = ({
                 {Math.round(clip.end - clip.start)}s segment
               </p>
               <h3 className="truncate text-base font-semibold tracking-tight">
-                {clip.title || clip.hookText || "Short clip segment"}
+                {analysis?.viral_packaging.video_title ||
+                  clip.hookText ||
+                  "Short clip segment"}
               </h3>
             </div>
             <ClipStatusBadge status={clip.status} />
           </div>
 
-          {clip.viralReason && (
-            <p className="mt-3 rounded-lg bg-muted/60 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
-              <span className="font-medium text-foreground/80">
-                Why it works:{" "}
-              </span>
-              {clip.viralReason}
-            </p>
-          )}
+          {analysis && (
+            <>
+              {analysis.why_this_will_go_viral && (
+                <p className="mt-3 rounded-lg bg-muted/60 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+                  <span className="font-medium text-foreground/80">
+                    Why it works:{" "}
+                  </span>
+                  {analysis.why_this_will_go_viral}
+                </p>
+              )}
 
-          {(clip.retentionStrength ||
-            clip.psychologicalTrigger ||
-            clip.safetyRisk ||
-            clip.scores) && (
-            <div className="mt-3 flex flex-wrap items-center gap-1.5">
-              {clip.retentionStrength && (
+              <div className="mt-3 flex flex-wrap items-center gap-1.5">
                 <Badge variant="secondary">
-                  🎯 Retention: {clip.retentionStrength}
+                  🎯 Retention: {analysis.retention_analysis.predicted_retention}
                 </Badge>
-              )}
-              {clip.psychologicalTrigger && (
                 <Badge variant="secondary">
-                  🧠 {clip.psychologicalTrigger}
+                  🧠 {analysis.psychological_trigger.dominant_trigger}
                 </Badge>
-              )}
-              {clip.safetyRisk && (
                 <Badge
                   variant={
-                    clip.safetyRisk === "High" ? "destructive" : "outline"
+                    analysis.safety_analysis.risk_level === "High"
+                      ? "destructive"
+                      : "outline"
                   }
                   className={
-                    clip.safetyRisk === "Medium"
+                    analysis.safety_analysis.risk_level === "Medium"
                       ? "border-amber-500/50 text-amber-600 dark:text-amber-400"
                       : undefined
                   }
                 >
-                  {clip.safetyRisk === "Low" ? "✅" : "⚠️"} Safety:{" "}
-                  {clip.safetyRisk}
+                  {analysis.safety_analysis.risk_level === "Low" ? "✅" : "⚠️"}{" "}
+                  Safety: {analysis.safety_analysis.risk_level}
                 </Badge>
-              )}
-              {clip.scores && (
                 <span className="text-[11px] text-muted-foreground">
-                  Viral {clip.scores.viral}/10 · Retention{" "}
-                  {clip.scores.retention}/10 · Controversy{" "}
-                  {clip.scores.controversy}/10 · Shareability{" "}
-                  {clip.scores.shareability}/10
+                  Viral {analysis.scores.viral_score}/10 · Retention{" "}
+                  {analysis.scores.retention_score}/10 · Controversy{" "}
+                  {analysis.scores.controversy_score}/10 · Shareability{" "}
+                  {analysis.scores.shareability_score}/10
                 </span>
+              </div>
+
+              {analysis.viral_packaging.hashtags.length > 0 && (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  {analysis.viral_packaging.hashtags.join(" ")}
+                </p>
               )}
-            </div>
-          )}
 
-          {clip.hashtags && clip.hashtags.length > 0 && (
-            <p className="mt-2 text-xs text-muted-foreground">
-              {clip.hashtags.join(" ")}
-            </p>
+              {analysis.safety_analysis.risky_words.length > 0 && (
+                <p className="mt-2 rounded-lg bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:text-amber-400">
+                  <span className="font-medium">Safety notes: </span>
+                  {analysis.safety_analysis.risky_words
+                    .map(
+                      (word) =>
+                        `${word.word_or_phrase}${word.safer_replacement ? ` → ${word.safer_replacement}` : ""} (${word.action})`,
+                    )
+                    .join("; ")}
+                </p>
+              )}
+            </>
           )}
-
-          {clip.safetyNotes &&
-            clip.safetyNotes !== "No risky wording detected." && (
-              <p className="mt-2 rounded-lg bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:text-amber-400">
-                <span className="font-medium">Safety notes: </span>
-                {clip.safetyNotes}
-              </p>
-            )}
 
           {clip.layoutNote && (
             <p className="mt-2 rounded-lg bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:text-amber-400">
@@ -398,7 +397,7 @@ export const ClipCard: React.FC<ClipCardProps> = ({
             </p>
           )}
 
-          <ClipAnalysisPanel analysis={clip.analysis} />
+          <ClipAnalysisPanel analysis={analysis} />
 
           {clip.error && (
             <p className="mt-3 rounded-lg bg-destructive/5 px-3 py-2 text-xs leading-relaxed text-destructive">

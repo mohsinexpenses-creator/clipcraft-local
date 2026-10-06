@@ -178,16 +178,17 @@ export default function PromptTemplatesPage() {
               {'{{maxClipDuration}}'}
             </code>{' '}
             placeholders are filled from the AI clip options on the dashboard. The model must
-            return a strict JSON array with{' '}
-            <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs text-foreground">start</code>,{' '}
-            <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs text-foreground">end</code>,{' '}
-            <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs text-foreground">score</code>,{' '}
-            <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs text-foreground">reason</code>,{' '}
-            <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs text-foreground">hookText</code> and the
-            optional packaging fields (<code className="rounded bg-muted px-1 py-0.5 font-mono text-xs text-foreground">title</code>,{' '}
-            <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs text-foreground">ctaText</code>,{' '}
-            <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs text-foreground">hashtags</code>,{' '}
-            <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs text-foreground">scores</code>…).
+            return exactly{' '}
+            <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs text-foreground">
+              {'{ "clips": [...] }'}
+            </code>
+            , each clip with the fields of the JSON schema block at the end of the default
+            prompt (<code className="rounded bg-muted px-1 py-0.5 font-mono text-xs text-foreground">rank</code>,{' '}
+            <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs text-foreground">timestamp</code>,{' '}
+            <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs text-foreground">hook_line_analysis</code>,{' '}
+            <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs text-foreground">viral_packaging</code>,{' '}
+            <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs text-foreground">scores</code>…). Keep
+            that schema block when you edit the prompt - any other shape is rejected with an error.
           </p>
           <p>
             <strong className="font-medium text-foreground">Hook text prompt</strong> — must

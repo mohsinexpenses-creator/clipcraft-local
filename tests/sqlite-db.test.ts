@@ -27,6 +27,7 @@ import {
 } from '../lib/db';
 import type { CaptionPreset, ClipRecord, OverlayStylePreset, PromptTemplate, TextPreset, VideoRecord } from '../lib/types';
 import { createTemporaryDatabase } from './sqlite-test-helpers';
+import { validClip } from './viral-fixtures';
 
 function makeVideo(id: string): VideoRecord {
   const now = new Date().toISOString();
@@ -57,7 +58,6 @@ function makeClip(id: string, videoId: string): ClipRecord {
     hookText: 'Watch this moment',
     filterPreset: 'none',
     captionPresetId: 'preset-bold-yellow',
-    viralScore: 8.7,
     status: 'pending',
     progress: 0,
     createdAt: now,
@@ -145,9 +145,11 @@ test('large transcript and clip JSON values round-trip without truncation', asyn
   assert.deepEqual((await getVideo(video._id))?.transcript, video.transcript);
 
   const clip = makeClip('clip-large-json', video._id);
-  clip.viralReason = 'Detailed analysis. '.repeat(5000);
-  clip.hashtags = Array.from({ length: 1500 }, (_, index) => `tag-${index}`);
-  clip.scores = { viral: 8, retention: 7, controversy: 6, shareability: 9 };
+  clip.hookText = 'Detailed analysis. '.repeat(5000);
+  const analysis = validClip();
+  analysis.why_this_will_go_viral = 'Detailed analysis. '.repeat(5000);
+  analysis.viral_packaging.hashtags = Array.from({ length: 1500 }, (_, index) => `tag-${index}`);
+  clip.aiAnalysis = analysis;
   await saveClip(clip);
   assert.deepEqual(await getClip(clip._id), clip);
 

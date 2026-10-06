@@ -10,10 +10,10 @@
  *   - loading the prompt templates from SQLite ({{transcript}} /
  *     {{clipTranscript}} placeholders — unchanged),
  *   - filling in the placeholders with the transcript data,
- *   - handing the model's JSON to the normalization layer
- *     (lib/viral-response.ts - the one place that knows the AI response
- *     shape) and applying the clip-count / length / overlap rules to what
- *     comes back (ViralSegment[]), and validating the short hook / CTA text.
+ *   - handing the model's JSON to lib/viral-response.ts (strict parse of the
+ *     `{ "clips": [...] }` schema) and applying the clip-count / length /
+ *     overlap rules to the validated clips (ViralSegment[]), and validating
+ *     the short hook / CTA text.
  *
  * Everything downstream of these functions (clip records, SQLite, the render
  * pipeline) is untouched by which provider answered.
@@ -30,23 +30,17 @@ import {
   ViralDetectionOptions,
   ViralSegment,
 } from './types';
-import { extractViralClips, normalizeViralClips } from './viral-response';
-
-/**
- * Baseline output budget for viral detection (kept for reference; the real
- * budget comes from `detectionMaxTokens`).
- */
-export const DETECT_VIRAL_MAX_TOKENS = 4096;
+import { parseViralResponse } from './viral-response';
 
 /**
  * Output budget for one detection pass. Every clip in the response carries the
  * full analysis block (hook, retention, trigger, safety incl. risky words,
- * packaging, scores) - roughly 1,500-2,000 tokens per clip, more than twice the
- * old flat format. A response cut off mid-JSON (or Gemini's MAX_TOKENS finish,
- * which spends part of this budget on thinking) fails every provider in the
- * chain, so the budget is generous: it is only an upper bound, never billed
- * unless used. 40K stays well under the 65K max-output of the Flash models; a
- * request for more clips than fit is completed by the top-up passes.
+ * packaging, scores) - roughly 1,500-2,000 tokens per clip. A response cut off
+ * mid-JSON (or Gemini's MAX_TOKENS finish, which spends part of this budget on
+ * thinking) fails every provider in the chain, so the budget is generous: it is
+ * only an upper bound, never billed unless used. 40K stays well under the 65K
+ * max-output of the Flash models; a request for more clips than fit is
+ * completed by the top-up passes.
  */
 export function detectionMaxTokens(clipBudget: number): number {
   return Math.min(40_000, 3_000 + Math.max(1, clipBudget) * 2_000);
@@ -141,8 +135,8 @@ function fillTemplate(template: string, values: Record<string, string | number>)
  *  - clip length stays within [minClipDuration, maxClipDuration] (over-long
  *    clips are trimmed to the max; SHORT clips are EXTENDED to the minimum so
  *    the user gets the exact clip count and the 60s-90s length rule both),
- *  - clips are ordered by the AI's own `rank` (1 = most viral; unranked clips
- *    fall back to highest score first),
+ *  - clips are ordered by the AI's own `rank` (1 = most viral; the viral score
+ *    breaks ties),
  *  - no two clips overlap (and never overlap an already-kept `taken` window),
  *  - at most `options.clipCount` NEW clips survive, and they are numbered
  *    1, 2, 3... (continuing after `taken`) so ranks stay gap-free even when
@@ -187,11 +181,11 @@ function enforceViralConstraints(
     withinBounds.push({ ...segment, end });
   }
 
-  // Order by the AI's rank (score breaks ties and orders unranked clips), then
-  // greedily keep non-overlapping clips so the "no overlapping timestamps" rule
+  // Order by the AI's rank (viral score breaks ties), then greedily keep
+  // non-overlapping clips so the "no overlapping timestamps" rule
   // survives imperfect model output. Already-kept windows (`taken`) always win;
   // new clips must dodge them.
-  const ranked = [...withinBounds].sort(byRankThenScore);
+  const ranked = [...withinBounds].sort(byRank);
   const kept: ViralSegment[] = [...taken];
 
   for (const segment of ranked) {
@@ -208,15 +202,12 @@ function enforceViralConstraints(
 
   return kept
     .slice(taken.length, taken.length + options.clipCount)
-    .map((segment, index) => ({ ...segment, rank: taken.length + index + 1 }));
+    .map((segment, index) => ({ ...segment, clip: { ...segment.clip, rank: taken.length + index + 1 } }));
 }
 
-/** AI rank first (lower = better); clips without one, or tied, go by score. */
-function byRankThenScore(a: ViralSegment, b: ViralSegment): number {
-  const rankA = a.rank ?? Number.POSITIVE_INFINITY;
-  const rankB = b.rank ?? Number.POSITIVE_INFINITY;
-  if (rankA !== rankB) return rankA < rankB ? -1 : 1;
-  return b.score - a.score;
+/** AI rank first (lower = better); the viral score breaks ties. */
+function byRank(a: ViralSegment, b: ViralSegment): number {
+  return a.clip.rank - b.clip.rank || b.clip.scores.viral_score - a.clip.scores.viral_score;
 }
 
 export async function detectViralSegments(
@@ -264,13 +255,10 @@ export async function detectViralSegments(
   });
 
   /**
-   * One LLM detection pass: complete -> extract the clip JSON -> normalize.
-   * `soft` turns model failures into an empty result (used by the top-up
-   * passes, where "no more clips" just means the transcript is exhausted).
-   *
-   * Tolerance: a clip whose time window cannot be trusted is skipped with a
-   * warning and the rest are kept - the pass only throws when NOTHING usable
-   * came back.
+   * One LLM detection pass: ask for raw JSON, then parse + validate it against
+   * the clips schema. Any problem is a clear error; `soft` (the top-up passes)
+   * turns it into an empty result, since "no more clips" just means the
+   * transcript is exhausted.
    */
   const runDetectionPass = async (
     prompt: string,
@@ -278,7 +266,6 @@ export async function detectViralSegments(
     label: string,
     soft: boolean
   ): Promise<ViralSegment[]> => {
-    let contentText: string;
     try {
       const result = await completeWithFallback({
         task: 'viral segment detection',
@@ -286,9 +273,10 @@ export async function detectViralSegments(
         prompt,
         maxTokens: detectionMaxTokens(clipBudget),
         temperature: 0.5,
+        json: true,
       });
-      contentText = result.text;
-      console.log(`[AI] Raw response (${result.entry.provider}/${result.entry.model})${label}:`, contentText);
+      console.log(`[AI] Raw response (${result.entry.provider}/${result.entry.model})${label}:`, result.text);
+      return parseViralResponse(result.text, videoDuration);
     } catch (error) {
       if (soft) {
         log.warn(`Top-up viral pass${label} failed: ${toErrorMessage(error)}`);
@@ -301,58 +289,6 @@ export async function detectViralSegments(
         resolution: 'Check the LLM fallback chain keys in .env.local (see lib/llm.ts) and retry.',
       });
     }
-
-    const extracted = extractViralClips(contentText);
-    if (!extracted) {
-      if (soft) {
-        log.warn(`Top-up viral pass${label} returned no parseable clip JSON.`);
-        return [];
-      }
-      const looksTruncated = /[[{]/.test(contentText) && !/[\]}]\s*$/.test(contentText.trimEnd());
-      throw new AppError(
-        looksTruncated
-          ? 'The model\'s viral clip JSON was cut off before it could be completed (likely the output token budget ran out).'
-          : 'The model did not return viral clips as JSON (expected an object with a "clips" array).',
-        {
-          status: 502,
-          details: contentText,
-          resolution: looksTruncated
-            ? 'Retry the analysis - on repeated failures lower the number of clips in the AI clip options or shorten the transcript window.'
-            : 'Tighten the viral detection prompt so the model returns only strict JSON in the documented { "clips": [...] } shape.',
-        }
-      );
-    }
-
-    if (extracted.clips.length === 0) {
-      if (soft) return [];
-      throw new AppError('The model returned an empty viral clip list.', {
-        status: 502,
-        resolution: 'Adjust the transcript or prompt template and retry viral detection.',
-      });
-    }
-
-    if (extracted.truncated) {
-      log.warn(
-        `Viral response${label} was cut off by the output limit - kept the ${extracted.clips.length} clip(s) that finished.`
-      );
-    }
-
-    const { segments, issues } = normalizeViralClips(extracted.clips, { videoDuration });
-    for (const issue of issues) {
-      log.warn(`Skipping AI clip #${issue.index + 1}${label}: ${issue.message}`);
-    }
-
-    if (!segments.length) {
-      if (soft) return [];
-      throw new AppError(`None of the ${extracted.clips.length} clip(s) the model returned has a usable time window.`, {
-        status: 502,
-        details: issues.map((issue) => `clip #${issue.index + 1}: ${issue.message}`).join(' • '),
-        resolution:
-          'The prompt must use only timestamps taken from the transcript (seconds, mm:ss or hh:mm:ss) - check the viral detection prompt rules.',
-      });
-    }
-
-    return segments;
   };
 
   const enforceOptions = { ...resolved, videoDuration };
