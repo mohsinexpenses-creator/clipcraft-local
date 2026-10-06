@@ -82,8 +82,116 @@ export interface ClipScores {
   shareability: number;
 }
 
-export type RetentionStrength = 'Weak' | 'Medium' | 'Strong' | 'Extreme';
-export type SafetyRisk = 'Low' | 'Medium' | 'High';
+/**
+ * Allowed values of the AI's enum-like fields. The prompt schema writes them as
+ * "Weak | Medium | Strong | Extreme" - the normalizer (lib/viral-response.ts)
+ * turns whatever the model sent into exactly one of these, or drops the field.
+ */
+export const RETENTION_STRENGTHS = ['Weak', 'Medium', 'Strong', 'Extreme'] as const;
+export type RetentionStrength = (typeof RETENTION_STRENGTHS)[number];
+
+export const SAFETY_RISKS = ['Low', 'Medium', 'High'] as const;
+export type SafetyRisk = (typeof SAFETY_RISKS)[number];
+
+export const PSYCHOLOGICAL_TRIGGERS = [
+  'Curiosity',
+  'Anger',
+  'Inspiration',
+  'Shock',
+  'Validation',
+  'Fear',
+  'Controversy',
+  'Humor',
+] as const;
+export type PsychologicalTrigger = (typeof PSYCHOLOGICAL_TRIGGERS)[number];
+
+export const RISKY_WORD_ACTIONS = ['censor', 'replace', 'mute', 'remove'] as const;
+export type RiskyWordAction = (typeof RISKY_WORD_ACTIONS)[number];
+
+/** A start/end pair in seconds (video-relative). */
+export interface TimeRange {
+  start: number;
+  end: number;
+}
+
+/** Clip length as the model reported it (the real window is always `start`/`end`). */
+export interface ClipDuration {
+  minutes?: number;
+  seconds?: number;
+  totalSeconds?: number;
+}
+
+export interface HookLineAnalysis {
+  /** Exact spoken line picked as the cold-open hook. */
+  hookLine?: string;
+  /** Where the hook line is spoken (seconds). Only kept when it lies inside the clip. */
+  hookTimestamp?: TimeRange;
+  whyItWorks?: string;
+  /**
+   * The model's advice on duplicating the hook in front of the clip. Stored only:
+   * the renderer currently always prepends the hook intro when hook text is on.
+   */
+  placeBeforeClip?: boolean;
+}
+
+export interface RetentionAnalysis {
+  curiosityFirst3Seconds?: string;
+  payoffLocation?: string;
+  openLoop?: boolean;
+  likelyToWatchTillEnd?: boolean;
+  predictedRetention?: RetentionStrength;
+}
+
+export interface TriggerAnalysis {
+  dominantTrigger?: PsychologicalTrigger;
+  explanation?: string;
+}
+
+export interface RiskyWord {
+  wordOrPhrase: string;
+  action?: RiskyWordAction;
+  saferReplacement?: string;
+}
+
+export interface SafetyAnalysis {
+  riskLevel?: SafetyRisk;
+  monetizationRisk?: string;
+  reusedContentRisk?: string;
+  algorithmSuppressionRisk?: string;
+  ineligibleForFypRisk?: string;
+  riskyWords: RiskyWord[];
+}
+
+export interface ViralPackaging {
+  /** The AI's suggestions, unedited - the clip's own hookText/ctaText/title can be changed by the user. */
+  hookTextOnVideo?: string;
+  videoTitle?: string;
+  ctaText?: string;
+  hashtags: string[];
+  platformSafe?: boolean;
+  eligibilityOrReachConcerns?: string;
+  wordsToChange: string[];
+}
+
+/**
+ * The complete, validated analysis the AI returned for one clip, in the app's
+ * own (camelCase, seconds-as-numbers) shape. Persisted inside the clip's
+ * `record_json`, so new fields never need a SQLite migration. Every leaf is
+ * optional: a missing or malformed AI field is simply left out.
+ */
+export interface ClipAnalysis {
+  /** Bump when this stored shape changes so older clips stay readable. */
+  schemaVersion: 1;
+  whyThisWillGoViral?: string;
+  duration?: ClipDuration;
+  hookLineAnalysis: HookLineAnalysis;
+  retentionAnalysis: RetentionAnalysis;
+  psychologicalTrigger: TriggerAnalysis;
+  safetyAnalysis: SafetyAnalysis;
+  viralPackaging: ViralPackaging;
+  /** Whichever of the four scores were valid numbers (each 0-10). */
+  scores: Partial<ClipScores>;
+}
 
 export interface ViralSegment {
   start: number;
@@ -91,6 +199,8 @@ export interface ViralSegment {
   hookText: string;
   reason: string;
   score: number;
+  /** 1 = most viral. Set from the AI's own rank, then renumbered after de-duplication. */
+  rank?: number;
   /** Curiosity-driven short-form title from the viral prompt. */
   title?: string;
   /** End-screen call-to-action text. */
@@ -100,13 +210,17 @@ export interface ViralSegment {
   /** Transcript timestamps of the hook line (absolute, video-relative seconds). */
   hookLineStart?: number;
   hookLineEnd?: number;
+  /** The AI's advice to place the hook before the clip (stored; not yet used by the renderer). */
+  placeBeforeClip?: boolean;
   hashtags?: string[];
   retentionStrength?: RetentionStrength;
-  psychologicalTrigger?: string;
+  psychologicalTrigger?: PsychologicalTrigger;
   safetyRisk?: SafetyRisk;
   /** Exact risky words / phrases (or "No risky wording detected."). */
   safetyNotes?: string;
   scores?: ClipScores;
+  /** Everything the AI said about this clip - see ClipAnalysis. */
+  analysis?: ClipAnalysis;
 }
 
 export interface CropWindow {
@@ -253,12 +367,18 @@ export interface ClipRecord {
    */
   hookLineStart?: number;
   hookLineEnd?: number;
+  /** AI advice to place the hook before the clip. Stored only - the renderer does not read it yet. */
+  placeBeforeClip?: boolean;
+  /** 1 = the AI's most viral pick of the detection run that created this clip. */
+  rank?: number;
   hashtags?: string[];
   retentionStrength?: RetentionStrength;
-  psychologicalTrigger?: string;
+  psychologicalTrigger?: PsychologicalTrigger;
   safetyRisk?: SafetyRisk;
   safetyNotes?: string;
   scores?: ClipScores;
+  /** Complete AI analysis for this clip; absent on clips created before it existed. */
+  analysis?: ClipAnalysis;
   // relative path to output mp4, e.g. /generated-clips/001_my_recording/<clip title>.mp4
   outputPath?: string;
   outputFileSize?: number; // bytes, 0/undefined means the render did not produce a usable file

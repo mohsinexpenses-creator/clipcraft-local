@@ -33,6 +33,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { ClipAnalysisPanel } from "@/components/clip-analysis";
 import {
   Tooltip,
   TooltipContent,
@@ -297,6 +298,17 @@ export const ClipCard: React.FC<ClipCardProps> = ({
               ? clip.viralScore.toFixed(1)
               : "—"}
           </Badge>
+
+          {/* AI rank within its detection run (1 = most viral) */}
+          {typeof clip.rank === "number" && (
+            <Badge
+              variant="secondary"
+              className="absolute top-2.5 right-2.5 bg-background/90 backdrop-blur-sm"
+              title="Rank among the clips from this detection run (1 = most viral)"
+            >
+              #{clip.rank}
+            </Badge>
+          )}
         </div>
 
         {/* Details + controls */}
@@ -385,6 +397,8 @@ export const ClipCard: React.FC<ClipCardProps> = ({
               {clip.layoutNote}
             </p>
           )}
+
+          <ClipAnalysisPanel analysis={clip.analysis} />
 
           {clip.error && (
             <p className="mt-3 rounded-lg bg-destructive/5 px-3 py-2 text-xs leading-relaxed text-destructive">

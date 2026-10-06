@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useSearchParams, useRouter } from "next/navigation";
 import { VideoRecord, ClipRecord, CaptionPreset } from "@/lib/types";
 import { ClipCard } from "@/components/clip-card";
+import { sortClipsForDisplay } from "@/lib/clip-order";
 import { ViralDetectOptions } from "@/components/viral-detect-options";
 import { useViralOptions } from "@/components/use-viral-options";
 import { Button } from "@/components/ui/button";
@@ -676,7 +677,7 @@ function DashboardContent() {
                   </Card>
                 ) : (
                   <div className="space-y-4">
-                    {clips.map((clip) => (
+                    {sortClipsForDisplay(clips).map((clip) => (
                       <ClipCard
                         key={clip._id}
                         clip={clip}

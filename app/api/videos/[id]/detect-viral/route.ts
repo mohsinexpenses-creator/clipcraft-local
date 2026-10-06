@@ -2,7 +2,9 @@ import { NextResponse } from 'next/server';
 import { getVideo, saveClip } from '@/lib/db';
 import { detectViralSegments, generateCtaText, generateHookText, resolveViralOptions } from '@/lib/ai';
 import { AppError, toErrorMessage, toErrorStatus } from '@/lib/errors';
+import { log } from '@/lib/logger';
 import { ClipRecord, DEFAULT_VIRAL_OPTIONS, ViralDetectionOptions } from '@/lib/types';
+import { clipFieldsFromSegment } from '@/lib/viral-response';
 
 /** Hard UI/API bounds for the per-run viral detection options.
  * maxClipDuration is intentionally NOT user-configurable anymore: it is fixed
@@ -48,6 +50,30 @@ function readViralOptions(body: Record<string, unknown>): Required<ViralDetectio
     includeCta:
       typeof raw.includeCta === 'boolean' ? raw.includeCta : raw.includeCta === 'false' ? false : true,
   });
+}
+
+/**
+ * On-screen text for one clip: the AI's own suggestion first, then the dedicated
+ * generation template (the existing fallback). If that fails too, the run goes
+ * on with empty text - like the renderer, detection never dies because one
+ * overlay line is missing; the user can type it into the clip card.
+ */
+async function resolveOverlayText(
+  aiText: string | undefined,
+  generate: () => Promise<string>,
+  label: 'hook' | 'CTA'
+): Promise<string> {
+  if (aiText?.trim()) return aiText.trim();
+  try {
+    return (await generate()).trim();
+  } catch (error) {
+    log.warn(
+      `The AI left out the ${label} text and it could not be generated ` +
+        `(${error instanceof AppError ? error.summary : toErrorMessage(error)}). ` +
+        `This clip gets no ${label} text - add one in the clip card.`
+    );
+    return '';
+  }
 }
 
 export async function POST(
@@ -118,6 +144,11 @@ export async function POST(
 
     const createdClips: ClipRecord[] = [];
 
+    // One timestamp for the whole run: the clips of a detection run tie on
+    // createdAt, so the dashboard can show newest run first and, inside a run,
+    // best rank first (see lib/clip-order.ts).
+    const runCreatedAt = new Date().toISOString();
+
     for (const segment of viralSegments) {
       const clipId = `clip_${Date.now()}_${Math.random().toString(36).substring(7)}`;
 
@@ -130,33 +161,19 @@ export async function POST(
       const overlayTranscript = segmentTranscript || video.transcript.text;
 
       // Hook text: skipped entirely when the option is off. When on, the viral
-      // prompt's own hookText is preferred (it already passed the packaging
+      // prompt's own hook text is preferred (it already passed the packaging
       // analysis) and the dedicated hook template is only the fallback.
       const hookText = options.includeHookText
-        ? segment.hookText || (await generateHookText(overlayTranscript))
+        ? await resolveOverlayText(segment.hookText, () => generateHookText(overlayTranscript), 'hook')
         : '';
 
-      if (options.includeHookText && !hookText.trim()) {
-        throw new AppError('AI analysis produced a clip without hook text.', {
-          status: 502,
-          resolution: 'Adjust the hook generation prompt and retry viral analysis.',
-        });
-      }
-
-      // Same idea for the CTA: the viral prompt returns `ctaText` per clip, so
+      // Same idea for the CTA: the viral prompt returns `cta_text` per clip, so
       // the separate CTA call only runs when the model left it out. When the
       // CTA switch is off we skip generation entirely and mark the clip with
       // ctaDuration 0 (the renderer then skips the CTA overlay).
       const ctaText = options.includeCta
-        ? segment.ctaText || (await generateCtaText(overlayTranscript))
+        ? await resolveOverlayText(segment.ctaText, () => generateCtaText(overlayTranscript), 'CTA')
         : '';
-
-      if (options.includeCta && !ctaText.trim()) {
-        throw new AppError('AI analysis produced a clip without CTA text.', {
-          status: 502,
-          resolution: 'Adjust the CTA generation prompt and retry viral analysis.',
-        });
-      }
 
       const clipRecord: ClipRecord = {
         _id: clipId,
@@ -164,31 +181,25 @@ export async function POST(
         videoTitle: video.originalName,
         start: segment.start,
         end: segment.end,
-        // hookDuration 0 means "no hook intro / no hook overlay" downstream.
-        hookDuration: options.includeHookText ? 3 : 0,
+        // hookDuration 0 means "no hook intro / no hook overlay" downstream
+        // (also when no hook text could be produced - the card says so and
+        // typing text re-enables it).
+        hookDuration: options.includeHookText && hookText ? 3 : 0,
         hookText,
         ctaText,
         // 0 = no CTA overlay (CTA switch was off for this run).
         ctaDuration: options.includeCta ? 2.5 : 0,
         filterPreset: 'vibrant',
         captionPresetId: 'preset-bold-yellow',
-        viralScore: segment.score,
-        viralReason: segment.reason,
-        title: segment.title,
-        hookLine: segment.hookLine,
-        hookLineStart: segment.hookLineStart,
-        hookLineEnd: segment.hookLineEnd,
-        hashtags: segment.hashtags,
-        retentionStrength: segment.retentionStrength,
-        psychologicalTrigger: segment.psychologicalTrigger,
-        safetyRisk: segment.safetyRisk,
-        safetyNotes: segment.safetyNotes,
-        scores: segment.scores,
+        // Everything the AI said about the clip (score, rank, title, hook line,
+        // retention/trigger/safety, scores, the complete nested analysis, ...).
+        // Mapped in lib/viral-response.ts so a schema change never touches this route.
+        ...clipFieldsFromSegment(segment),
         status: 'pending',
         progress: 0,
         error: undefined,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
+        createdAt: runCreatedAt,
+        updatedAt: runCreatedAt,
       };
 
       await saveClip(clipRecord);
