@@ -217,9 +217,9 @@ provider chain, and the Remotion renderer, and tells you exactly what to fix.
    pass** if it returns fewer than the requested count. Clip count, minimum clip
    length (max is fixed internally at 90 s), and the hook/CTA switches are
    per-video options persisted in your browser.
-5. **Render** (per clip): a second LLM pass picks the most gripping moment in the
-   clip → it is duplicated to the **start** as a **fixed 3 s hook** with a 0.5 s
-   dip-to-black → active-speaker layout planning (`worker/asd/` +
+5. **Render** (per clip): the complete hook interval returned by viral detection
+   (`hook_timestamp.start`→`hook_timestamp.end`) is duplicated to the **start**, with
+   a 0.5 s dip-to-black → active-speaker layout planning (`worker/asd/` +
    `worker/layout.ts`) → transparent caption / hook / CTA frames are prepared by
    the selected **caption engine** (`remotion` default, or native ASS for captions)
    → one FFmpeg graph does the source trim, mirror, crop, colour, hook intro, overlay

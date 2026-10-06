@@ -11,8 +11,8 @@ import { detectSpeakerTimeline } from './asd';
 import { buildLayoutPlan, getSplitFramingSettings } from './layout';
 import { adaptOverlaysToLayout, describePlacements } from './overlay-layout';
 import { color, log } from '../lib/logger';
-import { parseTimestamp } from '../lib/viral-response';
 import { HOOK_TRANSITION_SECONDS, normalizeFps, processVideoSegment } from './ffmpeg-pipeline';
+import { DEFAULT_HOOK_FALLBACK_SECONDS, resolveHookTiming } from './hook-timing';
 import { prepareNativeCaptionOverlays } from './native-captions';
 import {
   prepareRemotionCaptionOverlays,
@@ -215,50 +215,42 @@ export async function processClipJob(
 
     // hookDuration/ctaDuration are optional on the job payload; never pass undefined
     // into the FFmpeg/Remotion stages or the timeline maths silently breaks.
-    //
-    // The hook intro is ALWAYS exactly 3 seconds when enabled - a platform
-    // constant, not a user-configurable length (longer hooks give away the
-    // punchline, shorter ones don't land). 0 (or ~0) still means "hook off".
-    // On very short clips it clamps to half the clip so the intro still fits.
-    const HOOK_INTRO_SECONDS = 3;
+    // A positive hookDuration means "hook intro enabled". When viral analysis has
+    // a valid hook_timestamp, its complete start→end interval is the actual intro
+    // duration; the 3s value is only a fallback for older/invalid analysis data.
     const rawHookDuration = Number.isFinite(hookDuration) && (hookDuration ?? 0) >= 0
       ? (hookDuration as number)
-      : HOOK_INTRO_SECONDS;
+      : DEFAULT_HOOK_FALLBACK_SECONDS;
     const hookOff = rawHookDuration < 0.15;
-    const safeHookDuration = hookOff
-      ? 0
-      : Math.min(HOOK_INTRO_SECONDS, segmentDuration / 2);
-    if (!hookOff && rawHookDuration > HOOK_INTRO_SECONDS + 0.1) {
-      log.detail(
-        `hookDuration (${rawHookDuration.toFixed(1)}s) normalised to the fixed ` +
-        `${HOOK_INTRO_SECONDS}s hook intro.`
-      );
-    }
 
-    // Suspense hook: duplicate the gripping moment INSIDE the clip to the
-    // start (the viewer sees the best beat first, then watches the clip build
-    // back up to it).
-    //
-    // The moment comes from the VIRAL DETECTION prompt, which already returns
-    // the hook line's timestamps (hook_line_analysis.hook_timestamp) for every
-    // clip. Calling a second LLM here to "re-discover" the moment was pure waste
-    // (an extra ~10s + tokens per render) and could even pick a DIFFERENT moment
-    // than the one the clip was packaged around - so it is gone. Clips without
-    // that data (or with an unreadable timestamp) fall back to the first N seconds.
+    // Replay the exact detected hook interval at the beginning, then play the
+    // complete selected clip. Both timestamps are absolute video times; the
+    // resolver converts the start to the clip-relative FFmpeg/caption timeline.
+    // A valid interval outside the selected clip is an error, not a silently
+    // shifted or truncated intro. Clips without usable timestamps retain the
+    // legacy first-seconds fallback.
     const hook = clip.aiAnalysis?.hook_line_analysis;
-    const hookLineStartAbs = (hook && parseTimestamp(hook.hook_timestamp.start)) ?? undefined;
-    const hookStart =
-      hookLineStartAbs !== undefined
-        ? Math.max(0, Math.min(hookLineStartAbs - start, Math.max(0, segmentDuration - safeHookDuration)))
-        : 0;
-    if (hook && hookLineStartAbs !== undefined && hookStart > 0.05) {
-      const hookLineEndAbs = parseTimestamp(hook.hook_timestamp.end) ?? hookLineStartAbs;
+    const hookTiming = resolveHookTiming({
+      enabled: !hookOff,
+      clipStart: start,
+      clipEnd: end,
+      hookTimestampStart: hook?.hook_timestamp.start,
+      hookTimestampEnd: hook?.hook_timestamp.end,
+      fallbackDuration: rawHookDuration,
+    });
+    const safeHookDuration = hookTiming.duration;
+    const hookStart = hookTiming.start;
+
+    if (hookTiming.source === 'timestamps') {
       log.ok(
-        `Hook moment (from viral prompt): ${hookLineStartAbs.toFixed(1)}s → ${hookLineEndAbs.toFixed(1)}s` +
-        (hook.hook_line ? `  ("${hook.hook_line}")` : '')
+        `Hook moment (from viral prompt): ${hookTiming.startAbsolute!.toFixed(1)}s → ` +
+        `${hookTiming.endAbsolute!.toFixed(1)}s (${safeHookDuration.toFixed(2)}s)` +
+        (hook?.hook_line ? `  ("${hook.hook_line}")` : '')
       );
-    } else if (safeHookDuration > 0) {
-      log.detail('No hook line timestamps on this clip - duplicating the first N seconds.');
+    } else if (hookTiming.source === 'fallback') {
+      log.detail(
+        `No usable hook timestamp range on this clip - using a ${safeHookDuration.toFixed(2)}s fallback.`
+      );
     }
 
     log.step('Step 1/3 · Face tracking + active speaker detection');

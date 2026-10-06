@@ -32,8 +32,9 @@ export interface ProcessSegmentOptions {
   outputPath: string;
   start: number;
   end: number;
+  /** Exact duration of the duplicated hook range, in seconds. */
   hookDuration: number;
-  /** Where in the clip (seconds, relative to the clip start) the hook intro is cut from. 0 = the first N seconds (legacy behaviour). */
+  /** Start of that range relative to the selected clip start. */
   hookStart: number;
   filterPresetId: string;
   /**
@@ -329,14 +330,28 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
   const outputDir = path.dirname(outputPath);
   if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
 
-  // The hook intro replays a moment of the clip. Clamp: the hook window must fit
-  // INSIDE the clip, i.e. the offset is bounded by clip length MINUS the hook length
-  // (clamping to the hook length itself used to force every hook onto seconds 0-3
-  // regardless of where the gripping moment actually was). `hookStart` is the moment
-  // the clip was built around (the viral prompt's hook_timestamp); 0 = the first N seconds.
-  const actualHookDur = Math.min(Math.max(Number(hookDuration) || 0, 0), segmentDuration);
+  // The hook intro replays the complete detected interval, so duration/offset
+  // must fit inside the selected base segment. Do not silently clamp either one:
+  // that would create a partial hook while the timestamp response looked correct.
+  const actualHookDur = Number.isFinite(hookDuration) ? Math.max(0, hookDuration) : 0;
   const hookEnabled = actualHookDur > 0;
-  const hookOffset = Math.max(0, Math.min(Number(hookStart) || 0, Math.max(0, segmentDuration - actualHookDur)));
+  const requestedHookOffset = Number.isFinite(hookStart) ? hookStart : 0;
+  const hookOffset = hookEnabled ? Math.max(0, requestedHookOffset) : 0;
+  const HOOK_WINDOW_EPSILON_SECONDS = 0.001;
+  if (
+    hookEnabled &&
+    (requestedHookOffset < -HOOK_WINDOW_EPSILON_SECONDS ||
+      hookOffset + actualHookDur > segmentDuration + HOOK_WINDOW_EPSILON_SECONDS)
+  ) {
+    throw new AppError('The complete detected hook interval does not fit inside the selected clip window.', {
+      status: 400,
+      details:
+        `hook=${hookOffset.toFixed(3)}s-${(hookOffset + actualHookDur).toFixed(3)}s, ` +
+        `clip=0.000s-${segmentDuration.toFixed(3)}s`,
+      resolution:
+        'Adjust the clip start/end so the complete hook timestamp interval is inside the selected clip, then render again.',
+    });
+  }
   // Dip-to-black at the join (see HOOK_TRANSITION_SECONDS): the last half second of
   // the hook fades to black (+ silence), the first half second of the clip fades in.
   const fadeDur = Math.min(HOOK_TRANSITION_SECONDS, actualHookDur / 2);
@@ -382,7 +397,7 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
   let nextInput = 0;
   const hookInput = hookEnabled ? nextInput++ : -1;
   if (hookEnabled) {
-    inputArgs.push('-accurate_seek', '-ss', snap(start + hookOffset, hookPhase), '-t', actualHookDur.toFixed(3), '-i', sourceVideoPath);
+    inputArgs.push('-accurate_seek', '-ss', snap(start + hookOffset, hookPhase), '-t', actualHookDur.toFixed(6), '-i', sourceVideoPath);
   }
   const mainInput = nextInput++;
   inputArgs.push('-accurate_seek', '-ss', snap(start, mainPhase), '-t', segmentDuration.toFixed(3), '-i', sourceVideoPath);

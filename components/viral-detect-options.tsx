@@ -151,8 +151,8 @@ export const ViralDetectOptions: React.FC<ViralDetectOptionsProps> = ({ value, o
             <div className="space-y-0.5">
               <Label htmlFor="viral-hook-toggle">Hook text</Label>
               <p className="text-xs text-muted-foreground">
-                Generate the on-screen hook text (and the 3s hook intro) for every clip. Turn off to
-                skip hook text entirely.
+                Generate the on-screen hook text and replay the full detected hook interval. Turn off to
+                skip the hook intro and text entirely.
               </p>
             </div>
             <Switch

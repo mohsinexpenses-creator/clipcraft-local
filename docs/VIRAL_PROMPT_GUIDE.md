@@ -144,7 +144,7 @@ set of fields; the dashboard and the worker read the same object:
 | `viral_packaging.hook_text_on_video` | The editable hook text (`ClipRecord.hookText`, upper-cased) - the on-screen hook overlay |
 | `viral_packaging.cta_text` | The editable CTA text (`ClipRecord.ctaText`) - the end-screen CTA overlay |
 | `viral_packaging.video_title` | Clip card headline and the name of the downloaded `.mp4` |
-| `hook_line_analysis.hook_timestamp` | The moment the worker duplicates as the hook intro (converted to seconds there; unreadable or missing -> the clip's first seconds) |
+| `hook_line_analysis.hook_timestamp` | The full `start`→`end` interval duplicated as the hook intro (converted to seconds in the worker; an unreadable/missing range uses the 3s fallback, starting at a readable `start` or the clip's beginning). A valid range outside the selected clip is rejected instead of truncated. |
 | `hook_line_analysis.place_before_clip` | **Stored only** - the renderer always prepends the hook intro when hook text is on |
 | `rank` | Dashboard order and the `#n` badge |
 | `scores`, `retention_analysis`, `psychological_trigger`, `safety_analysis`, the rest of `viral_packaging` | Clip card badges and the collapsible **AI analysis** panel |
@@ -152,7 +152,7 @@ set of fields; the dashboard and the worker read the same object:
 `hookText` / `ctaText` still obey the *Hook text* / *CTA text* switches (§2, §5) and still fall back
 to the dedicated `hook_generation` / `cta_generation` templates when the AI leaves them empty.
 Clips created before this schema have no `aiAnalysis`: they keep rendering, with no AI panel, no
-score or rank, a title taken from the hook text, and the hook intro taken from the first seconds.
+score or rank, a title taken from the hook text, and the hook intro taken from the first seconds (the 3s fallback).
 
 ### How the response is read (`lib/viral-response.ts`)
 
@@ -194,9 +194,9 @@ less than a second left inside the video is an error.
 | | Hook text **ON** (default) | Hook text **OFF** |
 | --- | --- | --- |
 | AI generation | `hookText` from the prompt (fallback: hook template) | skipped entirely |
-| Clip record | `hookDuration: 3`, hook text stored | `hookDuration: 0`, `hookText: ""` |
-| Render | 3s duplicated hook intro + on-screen hook overlay | no hook intro, no hook overlay |
-| Clip card | editable hook text field | "Hook overlay off — type text to enable it" (typing text re-enables a 3s hook on render) |
+| Clip record | `hookDuration: 3` enables the intro; hook text stored | `hookDuration: 0`, `hookText: ""` |
+| Render | Full `hook_timestamp.start`→`end` interval duplicated + on-screen hook overlay (3s fallback only when timestamps are missing/unreadable) | no hook intro, no hook overlay |
+| Clip card | editable hook text field | "Hook overlay off — type text to enable it" (typing text re-enables the detected hook interval on render) |
 | AI analysis | the model's `hook_text_on_video` stays in `aiAnalysis.viral_packaging` | kept as well (only the overlay is off) |
 
 ---

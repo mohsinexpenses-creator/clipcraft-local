@@ -267,7 +267,8 @@ export interface ClipRecord {
   videoTitle?: string;
   start: number; // start time in original video
   end: number;   // end time in original video
-  hookDuration: number; // duration of duplicated hook intro in seconds (e.g. 3)
+  /** 0 disables the hook intro; positive enables it. A valid AI hook timestamp supplies its exact duration. */
+  hookDuration: number;
   hookText: string; // short punchy text overlay during hook intro
   ctaText?: string; // short CTA text shown near the end of the clip
   ctaDuration?: number; // duration of CTA overlay in seconds
@@ -317,6 +318,7 @@ export interface JobData {
   videoId: string;
   start: number;
   end: number;
+  /** 0 disables the hook intro; positive enables it (AI timestamps determine the duration when valid). */
   hookDuration: number;
   hookText?: string;
   ctaText?: string;

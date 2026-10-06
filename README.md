@@ -2,8 +2,8 @@
 
 A **personal, local-first** AI clip generator: give it one long landscape video
 (podcast, interview, sermon, lecture) and it produces short, vertical **9:16 clips**
-optimized for social feeds — each with an active-speaker crop, a duplicated 3-second
-"suspense hook" intro, on-screen hook/CTA text, and word-synced animated captions.
+optimized for social feeds — each with an active-speaker crop, a duplicated intro covering
+the full detected hook timestamp range, on-screen hook/CTA text, and word-synced captions.
 
 Everything heavy runs **on your own machine** (Node.js only, no Python). Videos,
 transcripts, presets, and job state live in a local SQLite file (`./data/clipcraft.db`)
@@ -22,9 +22,9 @@ detection run locally with whisper.cpp and OpenCV YuNet.
 3. **Detect viral segments** — the Gemini LLM picks the most promising windows and
    writes `{start, end, hookText, ctaText, reason, score}`. If it returns fewer
    clips than requested, a **top-up pass** tops the list up to the exact count.
-4. **Find the hook** — the LLM picks the single most gripping moment inside each
-   clip; it is duplicated to the **start** (fixed 3 s) with a 0.5 s dip-to-black,
-   so the clip opens with the best beat and then builds back to it.
+4. **Replay the hook** — the complete `hook_timestamp.start`→`hook_timestamp.end`
+   interval returned during viral detection is duplicated at the **start** with a
+   0.5 s dip-to-black, so the clip opens with the detected hook and then builds back to it.
 5. **Frame the speaker** — active-speaker detection (YuNet faces + audio/motion
    fusion, `worker/asd/`) drives the 9:16 crop:
    - **Speaker focus** — one window that glides to follow whoever is talking.

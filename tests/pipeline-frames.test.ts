@@ -170,6 +170,31 @@ test('transparent overlays are composited into the base filter graph before the 
   ));
 });
 
+test('hook intervals outside the base segment fail instead of being clamped to a partial replay', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'clipcraft-hook-window-'));
+  try {
+    await assert.rejects(
+      processVideoSegment({
+        sourceVideoPath: path.join(dir, 'source-does-not-need-to-exist.mp4'),
+        outputPath: path.join(dir, 'out.mp4'),
+        start: 0,
+        end: 2,
+        hookDuration: 1.2,
+        hookStart: 1,
+        filterPresetId: 'none',
+        plan: singlePlan(),
+        sourceWidth: 1920,
+        sourceHeight: 1080,
+        targetFps: 25,
+        sourceHasAudio: false,
+      }),
+      /complete detected hook interval/
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Real-ffmpeg frame accuracy
 // ---------------------------------------------------------------------------
@@ -211,7 +236,7 @@ function meanLuma(bin: string, file: string, index: number): number {
   return px.length ? sum / px.length : 0;
 }
 
-async function renderClip(plan: LayoutPlan, hookDuration: number, tag: string) {
+async function renderClip(plan: LayoutPlan, hookDuration: number, tag: string, hookStart = 1) {
   const bin = FFMPEG!;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `clipcraft-frames-${tag}-`));
   const source = path.join(dir, 'source.mp4');
@@ -235,7 +260,7 @@ async function renderClip(plan: LayoutPlan, hookDuration: number, tag: string) {
       start: 0.405, // NOT a frame boundary: the first frame is 0.875 of a frame later (frames are every 0.04 s)
       end: 2.405,
       hookDuration,
-      hookStart: 1,
+      hookStart,
       filterPresetId: 'none',
       plan,
       sourceWidth: 1920,
@@ -285,6 +310,18 @@ for (const [name, plan] of [
       assert.ok(meanLuma(bin, out, 74) > 25, 'the clip ends on picture');
       // the dip to black at the join (hook fades out, clip fades in) really is dark
       assert.ok(meanLuma(bin, out, 25) < meanLuma(bin, out, 0) * 0.5, 'the join dips towards black');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test(`${name}: a timestamp-length hook (1.2s) is not shortened to the old 1s value`, { skip: SKIP }, async () => {
+    const { bin, out, dir } = await renderClip(plan, 1.2, name.replace(' ', '-') + '-timestamp-hook', 0.4);
+    try {
+      const hashes = frameHashes(bin, out);
+      assert.equal(hashes.length, 80, `1.2 s hook + 2 s clip at 25 fps is exactly 80 frames (got ${hashes.length})`);
+      assert.ok(meanLuma(bin, out, 0) > 25, 'the hook starts on picture');
+      assert.ok(meanLuma(bin, out, 79) > 25, 'the base clip ends on picture');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
