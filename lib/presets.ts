@@ -1,303 +1,538 @@
-import { FilterPreset, CaptionPreset, OverlayStylePreset, PromptTemplate, TextPreset } from './types';
+import {
+  FilterPreset,
+  CaptionPreset,
+  OverlayStylePreset,
+  PromptTemplate,
+} from "./types";
 
 export const DEFAULT_FILTER_PRESETS: FilterPreset[] = [
   {
-    id: 'none',
-    name: 'Original',
-    description: 'No color filtering applied',
-    ffmpegFilter: 'null',
+    id: "none",
+    name: "Original",
+    description: "No color filtering applied",
+    ffmpegFilter: "null",
   },
   {
-    id: 'vibrant',
-    name: 'Vibrant Boost',
-    description: 'Boosts saturation and contrast for pop',
-    ffmpegFilter: 'eq=saturation=1.35:contrast=1.08:brightness=0.02',
+    id: "vibrant",
+    name: "Vibrant Boost",
+    description: "Boosts saturation and contrast for pop",
+    ffmpegFilter: "eq=saturation=1.35:contrast=1.08:brightness=0.02",
   },
   {
-    id: 'warm',
-    name: 'Warm Sunset',
-    description: 'Warm golden tones with enhanced contrast',
-    ffmpegFilter: 'eq=saturation=1.2:contrast=1.05,colorbalance=rs=0.1:gs=0.05:bs=-0.1',
+    id: "warm",
+    name: "Warm Sunset",
+    description: "Warm golden tones with enhanced contrast",
+    ffmpegFilter:
+      "eq=saturation=1.2:contrast=1.05,colorbalance=rs=0.1:gs=0.05:bs=-0.1",
   },
   {
-    id: 'cinematic',
-    name: 'Cinematic Mood',
-    description: 'Rich contrast with slightly muted filmic saturation',
-    ffmpegFilter: 'eq=saturation=0.88:contrast=1.25,colorbalance=rs=-0.05:gs=0.02:bs=0.1',
+    id: "cinematic",
+    name: "Cinematic Mood",
+    description: "Rich contrast with slightly muted filmic saturation",
+    ffmpegFilter:
+      "eq=saturation=0.88:contrast=1.25,colorbalance=rs=-0.05:gs=0.02:bs=0.1",
   },
   {
-    id: 'cool',
-    name: 'Crisp Cool',
-    description: 'Clean cool tones with vibrant pop',
-    ffmpegFilter: 'eq=saturation=1.15:contrast=1.1,colorbalance=rs=-0.1:bs=0.15',
+    id: "cool",
+    name: "Crisp Cool",
+    description: "Clean cool tones with vibrant pop",
+    ffmpegFilter:
+      "eq=saturation=1.15:contrast=1.1,colorbalance=rs=-0.1:bs=0.15",
   },
   {
-    id: 'dramatic',
-    name: 'High Impact',
-    description: 'High contrast punch for maximum eye-catch',
-    ffmpegFilter: 'eq=contrast=1.35:saturation=1.1:brightness=-0.02',
+    id: "dramatic",
+    name: "High Impact",
+    description: "High contrast punch for maximum eye-catch",
+    ffmpegFilter: "eq=contrast=1.35:saturation=1.1:brightness=-0.02",
   },
 ];
 
+/**
+ * Modern caption styles: tighter strokes, cleaner type, and a single accent
+ * color per preset so highlighted words read instantly on mobile.
+ */
 export const DEFAULT_CAPTION_PRESETS: CaptionPreset[] = [
   {
-    _id: 'preset-bold-yellow',
-    name: 'Bold Yellow Karaoke',
-    fontFamily: 'Inter, system-ui, sans-serif',
-    fontSize: 50,
-    fontWeight: 'black',
-    textColor: '#FFFFFF',
-    highlightColor: '#FFE600',
-    strokeColor: '#000000',
-    strokeWidth: 4,
+    _id: "caption-creator-green",
+    name: "Creator Green",
+    fontFamily: "Montserrat, Inter, system-ui, sans-serif",
+    fontSize: 52,
+    fontWeight: "black",
+    textColor: "#FFFFFF",
+    highlightColor: "#22E55E",
+    strokeColor: "#000000",
+    strokeWidth: 5,
     positionY: 28,
-    animationStyle: 'karaoke',
+    animationStyle: "karaoke",
     uppercase: true,
     isDefault: true,
   },
   {
-    _id: 'preset-neon-cyan',
-    name: 'Neon Cyber Pop',
-    fontFamily: 'Inter, system-ui, sans-serif',
+    _id: "caption-electric-violet",
+    name: "Electric Violet",
+    fontFamily: "Inter, system-ui, sans-serif",
     fontSize: 48,
-    fontWeight: 'extra-bold',
-    textColor: '#FFFFFF',
-    highlightColor: '#00E5FF',
-    strokeColor: '#000000',
-    strokeWidth: 3,
-    positionY: 30,
-    animationStyle: 'word-pop',
-    uppercase: true,
-    isDefault: false,
-  },
-  {
-    _id: 'preset-fire-red',
-    name: 'Fire Hook Pop',
-    fontFamily: 'Impact, Arial Black, sans-serif',
-    fontSize: 54,
-    fontWeight: 'black',
-    textColor: '#FFFFFF',
-    highlightColor: '#FF3366',
-    strokeColor: '#000000',
+    fontWeight: "extra-bold",
+    textColor: "#FFFFFF",
+    highlightColor: "#A78BFA",
+    strokeColor: "#0B0B14",
     strokeWidth: 4,
-    positionY: 26,
-    animationStyle: 'word-pop',
+    positionY: 30,
+    animationStyle: "word-pop",
     uppercase: true,
     isDefault: false,
   },
   {
-    _id: 'preset-clean-fade',
-    name: 'Clean Minimal Fade',
-    fontFamily: 'Inter, system-ui, sans-serif',
+    _id: "caption-sunburst",
+    name: "Sunburst Pop",
+    fontFamily: "Montserrat, Inter, system-ui, sans-serif",
+    fontSize: 54,
+    fontWeight: "black",
+    textColor: "#FFFFFF",
+    highlightColor: "#FFB800",
+    strokeColor: "#000000",
+    strokeWidth: 5,
+    positionY: 26,
+    animationStyle: "word-pop",
+    uppercase: true,
+    isDefault: false,
+  },
+  {
+    _id: "caption-clean-studio",
+    name: "Clean Studio",
+    fontFamily: "Inter, system-ui, sans-serif",
     fontSize: 44,
-    fontWeight: 'bold',
-    textColor: '#F8FAFC',
-    highlightColor: '#38BDF8',
-    strokeColor: '#000000',
+    fontWeight: "bold",
+    textColor: "#FFFFFF",
+    highlightColor: "#60A5FA",
+    strokeColor: "#000000",
     strokeWidth: 2,
     positionY: 22,
-    animationStyle: 'fade-in',
+    animationStyle: "fade-in",
+    uppercase: false,
+    isDefault: false,
+  },
+  {
+    _id: "caption-coral-flow",
+    name: "Coral Flow",
+    fontFamily: "Inter, system-ui, sans-serif",
+    fontSize: 46,
+    fontWeight: "extra-bold",
+    textColor: "#FFF7F5",
+    highlightColor: "#FF6B6B",
+    strokeColor: "#1A0B0B",
+    strokeWidth: 3,
+    positionY: 24,
+    animationStyle: "karaoke",
     uppercase: false,
     isDefault: false,
   },
 ];
 
-const textPreset = (
-  _id: string,
-  kind: TextPreset['kind'],
-  text: string
-): TextPreset => ({
-  _id,
-  kind,
-  text,
-  createdAt: new Date(0).toISOString(),
-  updatedAt: new Date(0).toISOString(),
-});
-
 /**
- * Seed text presets for the intro hook and end CTA overlays (editable and
- * extensible in the app under "Text Presets"). Kept short on purpose - they
- * are burned onto video.
+ * Modern overlay styles for the intro hook and end CTA. Dark glass cards,
+ * solid accent blocks, and pills with restrained borders instead of heavy chrome.
  */
-export const DEFAULT_TEXT_PRESETS: TextPreset[] = [
-  textPreset('text-hook-wait', 'hook', 'WAIT FOR IT…'),
-  textPreset('text-hook-unbelievable', 'hook', "YOU WON'T BELIEVE THIS"),
-  textPreset('text-hook-saidwhat', 'hook', 'HE SAID WHAT?!'),
-  textPreset('text-hook-listen', 'hook', 'LISTEN TO THIS…'),
-  textPreset('text-hook-argument', 'hook', 'THIS ARGUMENT GOT HEATED'),
-  textPreset('text-cta-follow', 'cta', 'FOLLOW FOR PART 2'),
-  textPreset('text-cta-comment', 'cta', 'COMMENT YOUR TAKE'),
-  textPreset('text-cta-subscribe', 'cta', 'SUBSCRIBE FOR MORE'),
-  textPreset('text-cta-share', 'cta', 'SEND THIS TO A FRIEND'),
-];
-
 export const DEFAULT_OVERLAY_STYLE_PRESETS: OverlayStylePreset[] = [
+  // ── Hook styles ──────────────────────────────────────────────
   {
-    _id: 'hook-bold-yellow',
-    kind: 'hook',
-    name: 'Bold Yellow Punch',
-    description: 'Yellow impact text on a dark card with the red "Hook Intro" chip',
-    fontFamily: 'Inter, Impact, Arial Black, system-ui, sans-serif',
+    _id: "hook-midnight-glass",
+    kind: "hook",
+    name: "Midnight Glass",
+    description:
+      "White bold text on a dark translucent card with a subtle accent chip",
+    fontFamily: "Inter, system-ui, sans-serif",
     fontSize: 38,
-    fontWeight: 'black',
-    textColor: '#FFE600',
-    backgroundColor: 'rgba(15, 23, 42, 0.92)',
-    borderColor: 'rgba(255, 230, 0, 0.9)',
-    borderWidth: 2,
-    borderRadius: 16,
-    textTransform: 'uppercase',
+    fontWeight: "black",
+    textColor: "#FFFFFF",
+    backgroundColor: "rgba(10, 10, 15, 0.82)",
+    borderColor: "rgba(255, 255, 255, 0.14)",
+    borderWidth: 1,
+    borderRadius: 20,
+    textTransform: "uppercase",
     positionY: 12,
-    animationStyle: 'pop',
+    animationStyle: "pop",
     showBadge: true,
-    badgeText: 'Hook Intro',
+    badgeText: "Watch This",
     isDefault: true,
   },
   {
-    _id: 'hook-fire-red',
-    kind: 'hook',
-    name: 'Fire Red Alert',
-    description: 'White text on a red card that slides up in the opening seconds',
-    fontFamily: 'Impact, Arial Black, Inter, sans-serif',
-    fontSize: 42,
-    fontWeight: 'black',
-    textColor: '#FFFFFF',
-    backgroundColor: 'rgba(220, 38, 38, 0.94)',
-    borderColor: 'rgba(255, 255, 255, 0.35)',
-    borderWidth: 2,
-    borderRadius: 12,
-    textTransform: 'uppercase',
-    positionY: 14,
-    animationStyle: 'slide-up',
-    showBadge: true,
-    badgeText: 'Wait For It',
+    _id: "hook-volt-yellow",
+    kind: "hook",
+    name: "Volt Yellow",
+    description:
+      "Black text on a solid yellow block that slides up for instant contrast",
+    fontFamily: "Montserrat, Inter, system-ui, sans-serif",
+    fontSize: 40,
+    fontWeight: "black",
+    textColor: "#0A0A0F",
+    backgroundColor: "rgba(255, 224, 0, 0.98)",
+    borderColor: "rgba(0, 0, 0, 0)",
+    borderWidth: 0,
+    borderRadius: 14,
+    textTransform: "uppercase",
+    positionY: 13,
+    animationStyle: "slide-up",
+    showBadge: false,
     isDefault: false,
   },
   {
-    _id: 'cta-gradient-green',
-    kind: 'cta',
-    name: 'Green Gradient Card',
-    description: 'White uppercase CTA on the classic green-blue gradient card',
-    fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif',
+    _id: "hook-crimson-alert",
+    kind: "hook",
+    name: "Crimson Alert",
+    description:
+      "White text on a deep red card with a clean border for high-tension hooks",
+    fontFamily: "Montserrat, Inter, system-ui, sans-serif",
+    fontSize: 40,
+    fontWeight: "black",
+    textColor: "#FFFFFF",
+    backgroundColor: "rgba(225, 29, 72, 0.95)",
+    borderColor: "rgba(255, 255, 255, 0.22)",
+    borderWidth: 1,
+    borderRadius: 16,
+    textTransform: "uppercase",
+    positionY: 14,
+    animationStyle: "slide-up",
+    showBadge: true,
+    badgeText: "Wait For It",
+    isDefault: false,
+  },
+  {
+    _id: "hook-soft-light",
+    kind: "hook",
+    name: "Soft Light",
+    description: "Dark text on a frosted white card, calm and editorial",
+    fontFamily: "Inter, system-ui, sans-serif",
+    fontSize: 36,
+    fontWeight: "extra-bold",
+    textColor: "#0F172A",
+    backgroundColor: "rgba(255, 255, 255, 0.94)",
+    borderColor: "rgba(15, 23, 42, 0.08)",
+    borderWidth: 1,
+    borderRadius: 22,
+    textTransform: "none",
+    positionY: 12,
+    animationStyle: "pop",
+    showBadge: false,
+    isDefault: false,
+  },
+
+  // ── CTA styles ───────────────────────────────────────────────
+  {
+    _id: "cta-aurora-gradient",
+    kind: "cta",
+    name: "Aurora Gradient",
+    description: "White CTA on a violet-to-blue gradient card",
+    fontFamily: "Inter, system-ui, sans-serif",
     fontSize: 34,
-    fontWeight: 'black',
-    textColor: '#FFFFFF',
-    backgroundColor: 'linear-gradient(135deg, rgba(34,197,94,0.94), rgba(14,165,233,0.94))',
-    borderColor: 'rgba(255,255,255,0.2)',
-    borderWidth: 2,
+    fontWeight: "black",
+    textColor: "#FFFFFF",
+    backgroundColor:
+      "linear-gradient(135deg, rgba(124,58,237,0.96), rgba(37,99,235,0.96))",
+    borderColor: "rgba(255, 255, 255, 0.18)",
+    borderWidth: 1,
     borderRadius: 24,
-    textTransform: 'uppercase',
+    textTransform: "uppercase",
     positionY: 64,
-    animationStyle: 'pop',
+    animationStyle: "pop",
     isDefault: true,
   },
   {
-    _id: 'cta-white-pill',
-    kind: 'cta',
-    name: 'White Pill',
-    description: 'Dark text on a clean white pill with a soft fade',
-    fontFamily: 'Inter, system-ui, sans-serif',
+    _id: "cta-mono-pill",
+    kind: "cta",
+    name: "Mono Pill",
+    description: "Dark text on a clean white pill with a soft fade",
+    fontFamily: "Inter, system-ui, sans-serif",
     fontSize: 32,
-    fontWeight: 'extra-bold',
-    textColor: '#0F172A',
-    backgroundColor: 'rgba(255, 255, 255, 0.95)',
-    borderColor: 'rgba(15, 23, 42, 0.15)',
-    borderWidth: 2,
+    fontWeight: "extra-bold",
+    textColor: "#0A0A0F",
+    backgroundColor: "rgba(255, 255, 255, 0.96)",
+    borderColor: "rgba(10, 10, 15, 0.08)",
+    borderWidth: 1,
     borderRadius: 999,
-    textTransform: 'none',
+    textTransform: "none",
     positionY: 66,
-    animationStyle: 'fade',
+    animationStyle: "fade",
+    isDefault: false,
+  },
+  {
+    _id: "cta-night-outline",
+    kind: "cta",
+    name: "Night Outline",
+    description: "White text on a dark glass pill with a light outline",
+    fontFamily: "Inter, system-ui, sans-serif",
+    fontSize: 32,
+    fontWeight: "extra-bold",
+    textColor: "#FFFFFF",
+    backgroundColor: "rgba(10, 10, 15, 0.8)",
+    borderColor: "rgba(255, 255, 255, 0.25)",
+    borderWidth: 1,
+    borderRadius: 999,
+    textTransform: "uppercase",
+    positionY: 65,
+    animationStyle: "fade",
+    isDefault: false,
+  },
+  {
+    _id: "cta-mint-solid",
+    kind: "cta",
+    name: "Mint Solid",
+    description: "Dark text on a solid mint block that pops in",
+    fontFamily: "Montserrat, Inter, system-ui, sans-serif",
+    fontSize: 34,
+    fontWeight: "black",
+    textColor: "#04130B",
+    backgroundColor: "rgba(52, 245, 142, 0.98)",
+    borderColor: "rgba(0, 0, 0, 0)",
+    borderWidth: 0,
+    borderRadius: 18,
+    textTransform: "uppercase",
+    positionY: 64,
+    animationStyle: "pop",
     isDefault: false,
   },
 ];
 
 export const DEFAULT_PROMPT_TEMPLATES: PromptTemplate[] = [
   {
-    _id: 'prompt-viral-detection',
-    type: 'viral_detection',
-    name: 'Viral Short Segments Detection',
+    _id: "prompt-viral-detection",
+    type: "viral_detection",
+    name: "Viral Short Segments Detection",
     description:
-      'Expert social-strategy prompt: ranks transcript moments by viral potential and returns full clip packaging (hook, CTA, title, hashtags, safety, scores) as JSON',
+      "Expert social-strategy prompt: ranks transcript moments by viral potential and returns full clip packaging (hook, CTA, title, hashtags, safety, scores) as JSON",
     systemPrompt:
-      'You are an expert Social Media Strategist and professional Short-Form Content Clipper for platforms like TikTok, Instagram Reels, and YouTube Shorts. You deeply analyze entire video conversations and extract the TOP most viral moments that can be turned into short-form clips. You always follow every strict rule exactly, you never invent timestamps, and you always return strict, valid JSON.',
-    template: `Analyze the entire transcript below and extract the TOP {{clipCount}} most viral moments that can be turned into short-form clips.
+      "You are an expert Social Media Strategist and professional Short-Form Content Clipper for platforms like TikTok, Instagram Reels, and YouTube Shorts. You deeply analyze entire video conversations and extract the TOP most viral moments that can be turned into short-form clips. You always follow every strict rule exactly, you never invent timestamps, and you always return strict, valid JSON.",
+    template: `IMPORTANT STRICT RULES (MUST FOLLOW):
 
-STRICT RULES (MUST FOLLOW):
-- Every selected clip MUST be between {{minClipDuration}} and {{maxClipDuration}} seconds long. NEVER shorter than {{minClipDuration}} seconds. NEVER longer than {{maxClipDuration}} seconds.
-- Use ONLY timestamps directly supported by the transcript. Do not invent or estimate timestamps. "start" and "end" must fall inside the transcript's own timestamps.
+- Every selected clip MUST be between {{minClipDuration}}–{{maxClipDuration}} seconds long.
+- NEVER create clips shorter than {{minClipDuration}} seconds.
+- Follow all instructions exactly as written.
+- Use ONLY timestamps directly supported by the transcript. Do not invent or estimate timestamps.
+- Do not skip any required section.
+- Do not give generic answers.
+- Carefully verify timestamps before selecting clips.
 - Start clips as close as possible to the emotional trigger or curiosity point. Remove unnecessary setup unless it increases retention.
-- Prioritize clips that create immediate emotional tension within the first 1-3 seconds.
-- DO NOT order clips by the order they appear in the transcript. First analyze all possible viral moments, then rank them by highest viral potential. The array MUST be sorted with the MOST viral clip first.
-- Clips must NOT overlap. Every clip must have completely different timings.
+- Prioritize clips that create immediate emotional tension within the first 1–3 seconds.
+- Use relevant emojis throughout the response to improve readability, visual organization, and emotional understanding.
+- DO NOT number clips based on the order they appear in the transcript.
+- First analyze all possible viral moments, then rank them by highest viral potential.
+- Clip #1 MUST be the MOST viral clip.
+- Clip #2 MUST be the second most viral clip.
+- Continue numbering strictly based on viral ranking, not transcript order.
 
 When selecting clips, focus on:
+
 - High Emotion: anger, excitement, intense laughter, tension, or sadness.
 - Controversy / Hot Takes: strong opinions or statements that can trigger debate in the comments.
 - Storytelling: engaging stories with a strong setup and payoff.
 - High Value: powerful advice, insights, lessons, or mindset shifts.
 
-For every clip, perform this full analysis and fold it into the JSON fields:
-1. Hook Line Analysis - pick the single most psychologically gripping moment of the clip to use as the cold-open hook. It MUST be one of: a curiosity gap, a cliffhanger, a shocking statement, a reactive face/beat, a controversial claim, a teaser of a reveal, or an emotional pivot - NOT simply the first line of the clip. Prefer the moment that makes the viewer think "wait, what? I need to see the rest" over generic loud or excited lines. Set hookLine to that exact spoken line and hookLineStart/hookLineEnd to its exact transcript timestamps. CRITICAL: hookLineStart must sit exactly at the BEGINNING of that spoken phrase - never start the hook mid-sentence (the transcript is word-level timestamped, so align hookLineStart to a word boundary). The hook intro is ALWAYS cut to exactly 3 seconds starting at hookLineStart (this is a hard platform rule: hooks longer than ~3s give away the punchline, and hooks under 2.5s don't land), so the chosen moment must still work as a hook in exactly 3 seconds. Also write a punchy on-screen hook text (hookText, MAX 8 WORDS) that makes viewers stop scrolling.
-2. Retention Analysis - what creates curiosity in the first 3 seconds, where the payoff happens, and what open loop keeps viewers watching till the end. Summarize this into "reason" and rate retentionStrength (Weak / Medium / Strong / Extreme).
-3. Psychological Trigger Analysis - the dominant trigger for the clip: one of Curiosity, Anger, Inspiration, Shock, Validation, Fear, Controversy, Humor.
-4. TikTok / Shorts Safety & Eligibility Analysis - check the spoken words for policy-sensitive wording, monetization risk, reused-content risk, and algorithm suppression risk. Set safetyRisk (Low / Medium / High). In safetyNotes write the EXACT risky words or phrases clearly (never hidden references like "f-word" - write the actual word) followed by a safer replacement after "->". If the clip is clean, set safetyNotes to "No risky wording detected."
-5. Viral Packaging - provide: hookText (Hook Text On Video), title (a curiosity-driven, high-retention TikTok/Reels/Shorts title), ctaText (end-screen CTA that encourages comments or arguments - slightly controversial is preferred if it stays platform-safe, MAX 10 WORDS), and hashtags (3-5 highly relevant viral hashtags, each starting with #).
-6. Viral Scoring System - give "score" as the overall viral potential (out of 10) and fill "scores" with viral, retention, controversy, and shareability, each out of 10.
+For each clip, provide the information in the exact format below:
 
-Return ONLY a strict JSON array (no markdown fences, no commentary) with EXACTLY this schema per clip:
-[
-  {
-    "start": 120.5,
-    "end": 182.0,
-    "title": "curiosity-driven short-form title",
-    "score": 9.4,
-    "reason": "Why this will go viral: the psychology of why viewers will keep watching, comment, and share (2-3 sentences)",
-    "hookText": "ON-SCREEN HOOK TEXT (MAX 8 WORDS)",
-    "hookLine": "the exact spoken cold-open line",
-    "hookLineStart": 122.1,
-    "hookLineEnd": 125.8,
-    "ctaText": "END SCREEN CTA (MAX 10 WORDS)",
-    "hashtags": ["#tag1", "#tag2", "#tag3"],
-    "retentionStrength": "Strong",
-    "psychologicalTrigger": "Curiosity",
-    "safetyRisk": "Low",
-    "safetyNotes": "No risky wording detected.",
-    "scores": { "viral": 9, "retention": 9, "controversy": 6, "shareability": 8 }
-  }
-]
+Clip #[Number]
 
-Relevant emojis are welcome inside string fields (title, hookText, ctaText) where they improve stop-scroll power.
+Timestamp: [Exact Start Time – Exact End Time]
+Clip Duration: [Total duration in minutes and seconds]
 
-Transcript:
+Why This Will Go Viral:
+[Explain the psychology behind why viewers will keep watching, comment, and share it]
+
+Carefully analyze the transcript using verified timestamps and select only highly viral moments. (Lock)
+
+Do not create clips with overlapping timestamps. Every clip must have completely different timings. (Lock)
+
+Now, for each clip, perform these tasks separately:
+
+1. Hook Line Analysis
+
+Carefully read the clip and identify the single strongest line that can be used as a cold open hook at the start of the edited video.
+
+Also provide:
+
+- Exact hook timestamp (start and end)
+- Why this hook works psychologically
+- Whether the hook should be placed before the actual clip starts for retention
+
+(Lock)
+
+2. Retention Analysis
+
+For every clip, explain:
+
+- What creates curiosity in the first 3 seconds
+- Where the payoff happens
+- Whether the clip has an "open loop"
+- Whether the viewer is likely to watch till the end
+- Predicted retention strength: Weak / Medium / Strong / Extreme
+
+(Lock)
+
+3. Psychological Trigger Analysis
+
+Identify the dominant psychological trigger:
+
+- Curiosity
+- Anger
+- Inspiration
+- Shock
+- Validation
+- Fear
+- Controversy
+- Humor
+
+Explain why this trigger increases engagement.
+
+(Lock)
+
+4. TikTok / Shorts Safety & Eligibility Analysis
+
+Carefully analyze the clip, including:
+
+- Spoken words
+- Captions/subtitles shown on screen
+- Potential policy-sensitive wording
+
+Check whether:
+
+- The clip could become "Ineligible For You Feed"
+- Any words may reduce reach, monetization, or distribution
+- Any wording could trigger moderation or disqualification
+- Check for monetization risk, reused-content risk, and algorithm suppression risk
+
+Clearly mention:
+
+- Risk Level: Low / Medium / High
+- Exact risky words or phrases
+- Which words should be censored, replaced, muted, or removed from captions/voice
+- NEVER use hidden/censored references like "f-word", "s-word", "n-word", etc.
+- Always write the exact risky word or phrase clearly so there is no confusion.
+- If needed, also provide a safer replacement version beside it.
+
+Mention this separately for every clip. (Lock)
+
+5. Viral Packaging
+
+After analyzing the clip, provide:
+
+A. Hook Text On Video
+A highly engaging text line for the first seconds of the video that makes viewers stop scrolling.
+
+B. Video Title
+A curiosity-driven, high-retention title optimized for TikTok/Reels/Shorts.
+
+[Catchy and engaging title]
+
+C. CTA Text (End Screen)
+A short CTA text for the end of the clip that encourages comments, arguments, or engagement. Slightly controversial/questionable CTAs are preferred if they remain platform-safe.
+
+D. Hashtags:
+[3–5 highly relevant viral potential hashtags]
+
+Also mention separately:
+
+- Whether the wording is fully platform-safe
+- Whether any text could affect eligibility or reach
+- Any words that should be changed in captions or voiceover
+
+(Lock)
+
+6. Viral Scoring System
+
+For every clip, provide:
+
+- Viral Score: /10
+- Retention Score: /10
+- Controversy Score: /10
+- Shareability Score: /10
+
+(Lock)
+
+Rank all clips based on viral potential, with the highest viral probability first.
+
+For every clip, keep the same structure:
+
+- Clip Number
+- Timestamp
+- Title
+- Hook
+- Viral Analysis
+- Retention Analysis
+- Psychological Trigger Analysis
+- Safety Analysis
+- Viral Packaging
+- Viral Scores
+
+Make the final output clean, highly organized, professional, and strictly follow every instruction above.
+
+OUTPUT FORMAT (OVERRIDES ALL FORMATTING ABOVE):
+
+Return ONLY a single valid JSON object. No markdown, no code fences, no explanations, no text before or after the JSON.
+
+- All the sections, rules, and analysis above still apply in full. Only the output format changes: the "Clip #" text layout is replaced by the JSON schema below.
+- Emojis are allowed ONLY inside string values.
+- Use double quotes, escape internal quotes and newlines properly, and use no trailing commas.
+- The "clips" array MUST be sorted by viral ranking (rank 1 = most viral), not by transcript order.
+- Timestamps must be strings in the same format as the transcript. Durations must be calculated from them.
+- Never output null. Use "" or [] if something is not applicable.
+
+JSON SCHEMA:
+{
+  "clips": [
+    {
+      "rank": 1,
+      "timestamp": { "start": "", "end": "" },
+      "duration": { "minutes": 0, "seconds": 0, "total_seconds": 0 },
+      "why_this_will_go_viral": "",
+      "hook_line_analysis": {
+        "hook_line": "",
+        "hook_timestamp": { "start": "", "end": "" },
+        "why_it_works": "",
+        "place_before_clip": true
+      },
+      "retention_analysis": {
+        "curiosity_first_3_seconds": "",
+        "payoff_location": "",
+        "open_loop": true,
+        "likely_to_watch_till_end": true,
+        "predicted_retention": "Weak | Medium | Strong | Extreme"
+      },
+      "psychological_trigger": {
+        "dominant_trigger": "Curiosity | Anger | Inspiration | Shock | Validation | Fear | Controversy | Humor",
+        "explanation": ""
+      },
+      "safety_analysis": {
+        "risk_level": "Low | Medium | High",
+        "monetization_risk": "",
+        "reused_content_risk": "",
+        "algorithm_suppression_risk": "",
+        "ineligible_for_fyf_risk": "",
+        "risky_words": [
+          { "word_or_phrase": "", "action": "censor | replace | mute | remove", "safer_replacement": "" }
+        ]
+      },
+      "viral_packaging": {
+        "hook_text_on_video": "",
+        "video_title": "",
+        "cta_text": "",
+        "hashtags": ["", "", ""],
+        "platform_safe": true,
+        "eligibility_or_reach_concerns": "",
+        "words_to_change": []
+      },
+      "scores": {
+        "viral_score": 0,
+        "retention_score": 0,
+        "controversy_score": 0,
+        "shareability_score": 0
+      }
+    }
+  ]
+}
+
+The "clips" array must contain exactly {{clipCount}} items. Output the JSON object and nothing else.
+
+TRANSCRIPT:
 {{transcript}}`,
-    updatedAt: new Date().toISOString(),
-  },
-  {
-    _id: 'prompt-hook-generation',
-    type: 'hook_generation',
-    name: 'Punchy Hook Text Generator',
-    description: 'Generates a compelling on-screen text overlay for the intro hook portion of a clip',
-    systemPrompt: 'You are a master social media copywriter. You create viral, punchy, curiosity-inducing on-screen text overlays for short-form videos.',
-    template: `Generate a short, high-impact on-screen hook overlay (MAX 8 WORDS) for this video clip transcript segment.
-The hook must create a "wait, what? - I need to see the rest" feeling: a curiosity gap, a cliffhanger, a shocking claim, or a tease of what is about to happen - NOT a summary of the content and NOT generic excitement.
-Use ALL CAPS or strong action words. Return ONLY the hook text string without quotes.
-
-Clip Transcript:
-{{clipTranscript}}`,
-    updatedAt: new Date().toISOString(),
-  },
-  {
-    _id: 'prompt-cta-generation',
-    type: 'cta_generation',
-    name: 'End CTA Generator',
-    description: 'Generates a short end-of-clip call to action that feels native to short-form video',
-    systemPrompt: 'You are a short-form video strategist. You write concise end-of-video calls to action that feel natural, boost engagement, and fit as on-screen text overlays.',
-    template: `Generate one short end-of-video CTA overlay (MAX 10 WORDS) for this clip transcript.
-The CTA should encourage engagement such as follow, comment, save, share, or watch the next clip.
-It must feel punchy, platform-native, and safe to place in the final 2 to 3 seconds.
-Use ALL CAPS or strong action phrasing. Return ONLY the CTA text string without quotes.
-
-Clip Transcript:
-{{clipTranscript}}`,
     updatedAt: new Date().toISOString(),
   },
 ];
