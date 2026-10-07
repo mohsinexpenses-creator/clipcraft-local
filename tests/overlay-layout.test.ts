@@ -309,22 +309,22 @@ test('estimateLineCount: word wrap, monotonic in size, an over-long single word 
  * SMALLER (an under-estimate is what could put a card on a face) and must not be wildly bigger.
  */
 const MEASURED_HOOK_PX: Array<[string, string, number]> = [
-  ['hook-bold-yellow', 'WAIT FOR IT', 125],
-  ['hook-bold-yellow', 'WHY BROADWAY ROXY CASTING IS WILD', 171],
-  ['hook-bold-yellow', 'THE ONE THING NOBODY TELLS YOU ABOUT GETTING CAST IN A BROADWAY MUSICAL AFTER THIRTY', 217],
-  ['hook-bold-yellow', 'THIS CHANGED EVERYTHING I KNEW ABOUT CASTING DIRECTORS AND WHAT THEY REALLY LOOK FOR IN AN AUDITION ROOM', 262],
-  ['hook-fire-red', 'WAIT FOR IT', 128],
-  ['hook-fire-red', 'WHY BROADWAY ROXY CASTING IS WILD', 180],
-  ['hook-fire-red', 'THE ONE THING NOBODY TELLS YOU ABOUT GETTING CAST IN A BROADWAY MUSICAL AFTER THIRTY', 230],
-  ['hook-fire-red', 'THIS CHANGED EVERYTHING I KNEW ABOUT CASTING DIRECTORS AND WHAT THEY REALLY LOOK FOR IN AN AUDITION ROOM', 281],
+  ['hook-midnight-glass', 'WAIT FOR IT', 125],
+  ['hook-midnight-glass', 'WHY BROADWAY ROXY CASTING IS WILD', 171],
+  ['hook-midnight-glass', 'THE ONE THING NOBODY TELLS YOU ABOUT GETTING CAST IN A BROADWAY MUSICAL AFTER THIRTY', 217],
+  ['hook-midnight-glass', 'THIS CHANGED EVERYTHING I KNEW ABOUT CASTING DIRECTORS AND WHAT THEY REALLY LOOK FOR IN AN AUDITION ROOM', 262],
+  ['hook-crimson-alert', 'WAIT FOR IT', 128],
+  ['hook-crimson-alert', 'WHY BROADWAY ROXY CASTING IS WILD', 180],
+  ['hook-crimson-alert', 'THE ONE THING NOBODY TELLS YOU ABOUT GETTING CAST IN A BROADWAY MUSICAL AFTER THIRTY', 230],
+  ['hook-crimson-alert', 'THIS CHANGED EVERYTHING I KNEW ABOUT CASTING DIRECTORS AND WHAT THEY REALLY LOOK FOR IN AN AUDITION ROOM', 280],
 ];
 const MEASURED_CTA_PX: Array<[string, string, number]> = [
-  ['cta-gradient-green', 'FOLLOW', 81],
-  ['cta-gradient-green', 'FOLLOW FOR MORE CLIPS LIKE THIS', 81],
-  ['cta-gradient-green', 'FOLLOW FOR PART TWO OF THIS STORY AND MANY MORE CLIPS LIKE IT EVERY SINGLE WEEK', 162],
-  ['cta-white-pill', 'FOLLOW', 78],
-  ['cta-white-pill', 'FOLLOW FOR MORE CLIPS LIKE THIS', 78],
-  ['cta-white-pill', 'FOLLOW FOR PART TWO OF THIS STORY AND MANY MORE CLIPS LIKE IT EVERY SINGLE WEEK', 155],
+  ['cta-aurora-gradient', 'FOLLOW', 81],
+  ['cta-aurora-gradient', 'FOLLOW FOR MORE CLIPS LIKE THIS', 81],
+  ['cta-aurora-gradient', 'FOLLOW FOR PART TWO OF THIS STORY AND MANY MORE CLIPS LIKE IT EVERY SINGLE WEEK', 162],
+  ['cta-mono-pill', 'FOLLOW', 78],
+  ['cta-mono-pill', 'FOLLOW FOR MORE CLIPS LIKE THIS', 78],
+  ['cta-mono-pill', 'FOLLOW FOR PART TWO OF THIS STORY AND MANY MORE CLIPS LIKE IT EVERY SINGLE WEEK', 155],
 ];
 
 test('card-height estimates are never smaller than what Chrome really renders (and not wildly larger)', () => {

@@ -61,7 +61,7 @@ function renderPayload(record: ClipRecord): JobData {
     ctaText: record.ctaText,
     ctaDuration: record.ctaDuration,
     filterPreset: record.filterPreset,
-    captionPresetId: record.captionPresetId,
+    captionPresetId: record.captionPresetId ?? 'preset-bold-yellow',
     layout: record.layout,
     captionEngine: record.captionEngine,
     hookStylePresetId: record.hookStylePresetId,

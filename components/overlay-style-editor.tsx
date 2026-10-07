@@ -4,7 +4,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { OverlayStylePreset } from '@/lib/types';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
@@ -249,7 +249,9 @@ export const OverlayStyleEditor: React.FC<OverlayStyleEditorProps> = ({ kind, va
   const [activeId, setActiveId] = useState<string>(value._id);
   const [draft, setDraft] = useState<OverlayStylePreset>(value);
   const [isSaving, setIsSaving] = useState(false);
+  const [isSettingDefault, setIsSettingDefault] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [defaultSuccess, setDefaultSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const loadPresets = useCallback(async (): Promise<OverlayStylePreset[]> => {
@@ -266,7 +268,9 @@ export const OverlayStyleEditor: React.FC<OverlayStyleEditorProps> = ({ kind, va
         const list = await loadPresets();
         if (ignore) return;
         setPresets(list);
-        const initial = list.find((p) => p._id === activeId) ?? list[0];
+        const initial = list.find((preset) => preset.isDefault)
+          ?? list.find((preset) => preset._id === activeId)
+          ?? list[0];
         if (initial) {
           setActiveId(initial._id);
           setDraft(initial);
@@ -294,6 +298,7 @@ export const OverlayStyleEditor: React.FC<OverlayStyleEditorProps> = ({ kind, va
     setActiveId(id);
     setDraft(preset);
     setSaveSuccess(false);
+    setDefaultSuccess(false);
     onChange(preset);
   };
 
@@ -310,13 +315,49 @@ export const OverlayStyleEditor: React.FC<OverlayStyleEditorProps> = ({ kind, va
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || 'Failed to save overlay style preset.');
       }
-      setPresets(await loadPresets());
+      const list = await loadPresets();
+      setPresets(list);
+      const saved = list.find((preset) => preset._id === draft._id) ?? draft;
+      setDraft(saved);
+      onChange(saved);
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3000);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save overlay style preset.');
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handleSetDefault = async () => {
+    setIsSettingDefault(true);
+    setDefaultSuccess(false);
+    setError(null);
+    try {
+      const res = await fetch('/api/overlay-presets', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ _id: draft._id }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to set default overlay style preset.');
+      }
+      const data = await res.json();
+      const list = await loadPresets();
+      setPresets(list);
+      const selected = list.find((preset) => preset._id === data.preset?._id) ?? data.preset;
+      if (selected) {
+        setActiveId(selected._id);
+        setDraft(selected);
+        onChange(selected);
+      }
+      setDefaultSuccess(true);
+      setTimeout(() => setDefaultSuccess(false), 3000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to set default overlay style preset.');
+    } finally {
+      setIsSettingDefault(false);
     }
   };
 
@@ -351,7 +392,7 @@ export const OverlayStyleEditor: React.FC<OverlayStyleEditorProps> = ({ kind, va
 
   const handleDelete = async () => {
     if (draft.isDefault) {
-      setError('Default style presets cannot be deleted.');
+      setError('Set another style as the default for this category before deleting this one.');
       return;
     }
     if (!confirm(`Delete the style preset "${draft.name}"?`)) return;
@@ -367,7 +408,7 @@ export const OverlayStyleEditor: React.FC<OverlayStyleEditorProps> = ({ kind, va
       }
       const list = await loadPresets();
       setPresets(list);
-      const next = list[0];
+      const next = list.find((preset) => preset.isDefault) ?? list[0];
       if (next) {
         setActiveId(next._id);
         setDraft(next);
@@ -417,6 +458,22 @@ export const OverlayStyleEditor: React.FC<OverlayStyleEditorProps> = ({ kind, va
               ? 'How the hook intro overlay looks during the first seconds of the clip.'
               : 'How the end-of-clip call-to-action card looks.'}
           </CardDescription>
+          <CardAction className="flex items-center gap-2">
+            {draft.isDefault ? (
+              <Badge variant="secondary">Default</Badge>
+            ) : (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleSetDefault}
+                disabled={isSettingDefault || isSaving || !presets.some((preset) => preset._id === draft._id)}
+              >
+                {isSettingDefault ? <Loader2 className="animate-spin" /> : null}
+                Set default
+              </Button>
+            )}
+          </CardAction>
         </CardHeader>
 
         <CardContent>
@@ -610,25 +667,31 @@ export const OverlayStyleEditor: React.FC<OverlayStyleEditorProps> = ({ kind, va
         </CardContent>
 
         <CardFooter className="justify-between border-t pt-5">
-          {saveSuccess ? (
-            <span className="flex animate-fade-in items-center gap-1.5 text-xs font-medium text-primary">
-              <CheckCircle2 />
-              Style saved
-            </span>
-          ) : (
+          <div className="flex items-center gap-3">
+            {saveSuccess ? (
+              <span className="flex animate-fade-in items-center gap-1.5 text-xs font-medium text-primary">
+                <CheckCircle2 />
+                Style saved
+              </span>
+            ) : defaultSuccess ? (
+              <span className="flex animate-fade-in items-center gap-1.5 text-xs font-medium text-primary">
+                <CheckCircle2 />
+                Default updated
+              </span>
+            ) : null}
             <Button
               variant="ghost"
               size="icon"
               onClick={handleDelete}
-              title="Delete style preset"
+              title={draft.isDefault ? 'Choose another default before deleting' : 'Delete style preset'}
               className="hover:text-destructive"
-              disabled={isSaving || draft.isDefault}
+              disabled={isSaving || isSettingDefault || draft.isDefault}
             >
               <Trash2 />
             </Button>
-          )}
+          </div>
 
-          <Button onClick={handleSave} disabled={isSaving}>
+          <Button onClick={handleSave} disabled={isSaving || isSettingDefault}>
             {isSaving ? <Loader2 className="animate-spin" /> : <Save />}
             Save style
           </Button>

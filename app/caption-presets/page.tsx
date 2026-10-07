@@ -1,12 +1,13 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { CaptionPreset, OverlayStylePreset } from '@/lib/types';
+import { CaptionLineStyle, CaptionPreset, OverlayStylePreset } from '@/lib/types';
 import { CaptionPreview } from '@/components/caption-preview';
 import { OverlayStyleEditor } from '@/components/overlay-style-editor';
 import { DEFAULT_CAPTION_PRESETS, DEFAULT_OVERLAY_STYLE_PRESETS } from '@/lib/presets';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
   Card,
@@ -85,7 +86,9 @@ export default function CaptionPresetsPage() {
   const [sampleHookText, setSampleHookText] = useState('THE 1 SECRET YOU WERE NEVER TOLD');
   const [sampleCtaText, setSampleCtaText] = useState('FOLLOW FOR MORE BREAKDOWNS');
   const [isSaving, setIsSaving] = useState(false);
+  const [isSettingDefault, setIsSettingDefault] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [defaultSuccess, setDefaultSuccess] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [hookStyle, setHookStyle] = useState<OverlayStylePreset>(
     DEFAULT_OVERLAY_STYLE_PRESETS.find((p) => p.kind === 'hook')!
@@ -116,8 +119,9 @@ export default function CaptionPresetsPage() {
         setErrorMessage(null);
         if (!initializedRef.current && list.length > 0) {
           initializedRef.current = true;
-          setActivePresetId(list[0]._id);
-          setActivePreset(list[0]);
+          const initial = list.find((preset) => preset.isDefault) ?? list[0];
+          setActivePresetId(initial._id);
+          setActivePreset(initial);
         }
       } catch (err) {
         if (!ignore) {
@@ -143,6 +147,7 @@ export default function CaptionPresetsPage() {
     if (found) {
       setActivePreset({ ...found });
       setSaveSuccess(false);
+      setDefaultSuccess(false);
     }
   };
 
@@ -163,10 +168,10 @@ export default function CaptionPresetsPage() {
       isDefault: false,
     };
 
-    setPresets([newPreset, ...presets]);
     setActivePresetId(newPreset._id);
     setActivePreset(newPreset);
     setSaveSuccess(false);
+    setDefaultSuccess(false);
   };
 
   const handleSavePreset = async () => {
@@ -176,7 +181,7 @@ export default function CaptionPresetsPage() {
 
     try {
       const res = await fetch('/api/caption-presets', {
-        method: activePreset._id.startsWith('preset-') ? 'POST' : 'PUT',
+        method: presets.some((preset) => preset._id === activePreset._id) ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(activePreset),
       });
@@ -198,23 +203,120 @@ export default function CaptionPresetsPage() {
     }
   };
 
+  const handleSetDefault = async () => {
+    setIsSettingDefault(true);
+    setDefaultSuccess(false);
+    setErrorMessage(null);
+    try {
+      const res = await fetch('/api/caption-presets', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ _id: activePreset._id }),
+      });
+      if (!res.ok) {
+        throw new Error(await getErrorFromResponse(res, 'Failed to set the default caption preset.'));
+      }
+      const list = await refreshPresets();
+      const selected = list.find((preset) => preset._id === activePreset._id);
+      if (selected) setActivePreset(selected);
+      setDefaultSuccess(true);
+      setTimeout(() => setDefaultSuccess(false), 3000);
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : 'Failed to set the default caption preset.');
+    } finally {
+      setIsSettingDefault(false);
+    }
+  };
+
   const handleDeletePreset = async (id: string) => {
+    if (activePreset.isDefault) {
+      setErrorMessage('Set a different caption preset as the default before deleting this one.');
+      return;
+    }
     if (!confirm('Are you sure you want to delete this preset?')) return;
     setErrorMessage(null);
     try {
-      const res = await fetch(`/api/caption-presets?id=${id}`, { method: 'DELETE' });
+      const res = await fetch(`/api/caption-presets?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
       if (!res.ok) {
         throw new Error(await getErrorFromResponse(res, 'Failed to delete caption preset.'));
       }
       const list = await refreshPresets();
       if (list.length > 0) {
-        setActivePresetId(list[0]._id);
-        setActivePreset(list[0]);
+        const next = list.find((preset) => preset.isDefault) ?? list[0];
+        setActivePresetId(next._id);
+        setActivePreset(next);
       }
     } catch (err) {
       console.error('Error deleting preset:', err);
       setErrorMessage(err instanceof Error ? err.message : 'Failed to delete caption preset.');
     }
+  };
+
+  const toggleRichStyles = (enabled: boolean) => {
+    if (!enabled) {
+      setActivePreset({ ...activePreset, lineStyles: [], lineGap: undefined, lineAlignment: undefined });
+      return;
+    }
+    const makeLine = (index: number, maxWords: number): CaptionLineStyle => ({
+      maxWords,
+      fontFamily: activePreset.fontFamily,
+      fontSize: Math.max(12, activePreset.fontSize + (index === 0 ? 6 : -4)),
+      fontWeight: activePreset.fontWeight,
+      textColor: activePreset.textColor,
+      highlightColor: activePreset.highlightColor,
+      strokeColor: activePreset.strokeColor,
+      strokeWidth: activePreset.strokeWidth,
+      uppercase: activePreset.uppercase ?? true,
+      animationStyle: activePreset.animationStyle,
+      lineHeight: 1.12,
+    });
+    setActivePreset({
+      ...activePreset,
+      lineStyles: activePreset.lineStyles?.length ? activePreset.lineStyles : [makeLine(0, 2), makeLine(1, 3)],
+      lineGap: activePreset.lineGap ?? 5,
+      lineAlignment: activePreset.lineAlignment ?? 'center',
+    });
+  };
+
+  const patchLineStyle = (index: number, patch: Partial<CaptionLineStyle>) => {
+    const lineStyles = activePreset.lineStyles ?? [];
+    setActivePreset({
+      ...activePreset,
+      lineStyles: lineStyles.map((line, lineIndex) => lineIndex === index ? { ...line, ...patch } : line),
+    });
+  };
+
+  const addLineStyle = () => {
+    const lineStyles = activePreset.lineStyles ?? [];
+    if (lineStyles.length >= 6) return;
+    setActivePreset({
+      ...activePreset,
+      lineStyles: [
+        ...lineStyles,
+        {
+          maxWords: 2,
+          fontFamily: activePreset.fontFamily,
+          fontSize: activePreset.fontSize,
+          fontWeight: activePreset.fontWeight,
+          textColor: activePreset.textColor,
+          highlightColor: activePreset.highlightColor,
+          strokeColor: activePreset.strokeColor,
+          strokeWidth: activePreset.strokeWidth,
+          uppercase: activePreset.uppercase ?? true,
+          animationStyle: activePreset.animationStyle,
+          lineHeight: 1.12,
+        },
+      ],
+    });
+  };
+
+  const removeLineStyle = (index: number) => {
+    const lineStyles = activePreset.lineStyles ?? [];
+    if (lineStyles.length <= 1) return;
+    setActivePreset({
+      ...activePreset,
+      lineStyles: lineStyles.filter((_, lineIndex) => lineIndex !== index),
+    });
   };
 
   return (
@@ -268,6 +370,7 @@ export default function CaptionPresetsPage() {
                   )}
                 >
                   {p.name}
+                  {p.isDefault ? <Badge variant="secondary" className="ml-2 text-[10px]">Default</Badge> : null}
                 </button>
               );
             })}
@@ -279,19 +382,33 @@ export default function CaptionPresetsPage() {
               <CardDescription>
                 Changes apply to the live preview immediately
               </CardDescription>
-              {!activePreset.isDefault && (
-                <CardAction>
+              <CardAction className="flex items-center gap-2">
+                {activePreset.isDefault ? (
+                  <Badge variant="secondary">Default preset</Badge>
+                ) : (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleSetDefault}
+                    disabled={isSettingDefault || isSaving || !presets.some((preset) => preset._id === activePreset._id)}
+                  >
+                    {isSettingDefault ? <Loader2 className="animate-spin" /> : null}
+                    Set as default
+                  </Button>
+                )}
+                {!activePreset.isDefault && (
                   <Button
                     variant="ghost"
                     size="icon"
                     onClick={() => handleDeletePreset(activePreset._id)}
                     title="Delete preset"
                     className="hover:text-destructive"
+                    disabled={isSaving || isSettingDefault}
                   >
                     <Trash2 />
                   </Button>
-                </CardAction>
-              )}
+                )}
+              </CardAction>
             </CardHeader>
 
             <CardContent>
@@ -321,6 +438,226 @@ export default function CaptionPresetsPage() {
                     value={sampleCtaText}
                     onChange={(e) => setSampleCtaText(e.target.value)}
                   />
+                </div>
+
+                <div className="space-y-4 rounded-lg border p-4 sm:col-span-2">
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="space-y-0.5">
+                      <Label htmlFor="rich-line-toggle">Rich multi-line styling</Label>
+                      <p className="text-xs text-muted-foreground">
+                        Split each timed transcript chunk into styled visual lines. Off keeps the legacy renderer.
+                      </p>
+                    </div>
+                    <Switch
+                      id="rich-line-toggle"
+                      checked={Boolean(activePreset.lineStyles?.length)}
+                      onCheckedChange={toggleRichStyles}
+                    />
+                  </div>
+
+                  {activePreset.lineStyles?.length ? (
+                    <div className="space-y-4 border-t pt-4">
+                      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                        <div className="space-y-2">
+                          <Label id="line-alignment-label">Line alignment</Label>
+                          <Select
+                            value={activePreset.lineAlignment ?? 'center'}
+                            onValueChange={(value) => setActivePreset({
+                              ...activePreset,
+                              lineAlignment: value === 'left' || value === 'right' ? value : 'center',
+                            })}
+                          >
+                            <SelectTrigger aria-labelledby="line-alignment-label"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="left">Left</SelectItem>
+                              <SelectItem value="center">Center</SelectItem>
+                              <SelectItem value="right">Right</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="line-gap-input">Line gap (px)</Label>
+                          <Input
+                            id="line-gap-input"
+                            type="number"
+                            min={0}
+                            max={80}
+                            value={activePreset.lineGap ?? 5}
+                            onChange={(event) => setActivePreset({
+                              ...activePreset,
+                              lineGap: Math.max(0, Math.min(80, Number(event.target.value) || 0)),
+                            })}
+                          />
+                        </div>
+                      </div>
+
+                      {activePreset.lineStyles.map((line, index) => (
+                        <div key={`rich-line-${index}`} className="space-y-4 rounded-md bg-muted/40 p-4">
+                          <div className="flex items-center justify-between">
+                            <h3 className="text-sm font-semibold">Visual line {index + 1}</h3>
+                            {activePreset.lineStyles!.length > 1 && (
+                              <Button type="button" variant="ghost" size="sm" onClick={() => removeLineStyle(index)}>
+                                Remove line
+                              </Button>
+                            )}
+                          </div>
+                          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                            <div className="space-y-2">
+                              <Label htmlFor={`line-font-${index}`}>Font family</Label>
+                              <Input
+                                id={`line-font-${index}`}
+                                value={line.fontFamily ?? activePreset.fontFamily}
+                                onChange={(event) => patchLineStyle(index, { fontFamily: event.target.value })}
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label htmlFor={`line-max-words-${index}`}>Maximum words on this line</Label>
+                              <Input
+                                id={`line-max-words-${index}`}
+                                type="number"
+                                min={1}
+                                max={8}
+                                value={line.maxWords ?? 4}
+                                onChange={(event) => patchLineStyle(index, {
+                                  maxWords: Math.max(1, Math.min(8, Math.round(Number(event.target.value) || 1))),
+                                })}
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label id={`line-weight-label-${index}`}>Line font weight</Label>
+                              <Select
+                                value={line.fontWeight ?? activePreset.fontWeight}
+                                onValueChange={(value) => patchLineStyle(index, {
+                                  fontWeight: (value as CaptionPreset['fontWeight']) || activePreset.fontWeight,
+                                })}
+                              >
+                                <SelectTrigger aria-labelledby={`line-weight-label-${index}`}><SelectValue /></SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="normal">Normal</SelectItem>
+                                  <SelectItem value="bold">Bold</SelectItem>
+                                  <SelectItem value="extra-bold">Extra bold</SelectItem>
+                                  <SelectItem value="black">Black</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <div className="space-y-2">
+                              <Label id={`line-animation-label-${index}`}>Line animation</Label>
+                              <Select
+                                value={line.animationStyle ?? activePreset.animationStyle}
+                                onValueChange={(value) => patchLineStyle(index, {
+                                  animationStyle: (value as CaptionPreset['animationStyle']) || activePreset.animationStyle,
+                                })}
+                              >
+                                <SelectTrigger aria-labelledby={`line-animation-label-${index}`}><SelectValue /></SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="karaoke">Karaoke</SelectItem>
+                                  <SelectItem value="word-pop">Word pop</SelectItem>
+                                  <SelectItem value="fade-in">Fade in</SelectItem>
+                                  <SelectItem value="static">Static</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <div className="space-y-3 sm:col-span-2">
+                              <div className="flex items-center justify-between">
+                                <Label htmlFor={`line-font-size-${index}`}>Line font size</Label>
+                                <span className="text-xs text-muted-foreground">{line.fontSize ?? activePreset.fontSize}px</span>
+                              </div>
+                              <Slider
+                                id={`line-font-size-${index}`}
+                                min={12}
+                                max={120}
+                                value={line.fontSize ?? activePreset.fontSize}
+                                onValueChange={(fontSize) => patchLineStyle(index, { fontSize })}
+                                aria-label={`Line ${index + 1} font size`}
+                              />
+                            </div>
+                            <ColorField
+                              label="Line text color"
+                              value={line.textColor ?? activePreset.textColor}
+                              onChange={(textColor) => patchLineStyle(index, { textColor })}
+                            />
+                            <ColorField
+                              label="Line active-word highlight"
+                              value={line.highlightColor ?? activePreset.highlightColor}
+                              onChange={(highlightColor) => patchLineStyle(index, { highlightColor })}
+                            />
+                            <ColorField
+                              label="Line stroke color"
+                              value={line.strokeColor ?? activePreset.strokeColor}
+                              onChange={(strokeColor) => patchLineStyle(index, { strokeColor })}
+                            />
+                            <div className="space-y-3">
+                              <div className="flex items-center justify-between">
+                                <Label>Line stroke width</Label>
+                                <span className="text-xs text-muted-foreground">{line.strokeWidth ?? activePreset.strokeWidth}px</span>
+                              </div>
+                              <Slider
+                                min={0}
+                                max={20}
+                                value={line.strokeWidth ?? activePreset.strokeWidth}
+                                onValueChange={(strokeWidth) => patchLineStyle(index, { strokeWidth })}
+                                aria-label={`Line ${index + 1} stroke width`}
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label htmlFor={`line-spacing-${index}`}>Letter spacing (px)</Label>
+                              <Input
+                                id={`line-spacing-${index}`}
+                                type="number"
+                                min={-5}
+                                max={30}
+                                step={0.1}
+                                value={line.letterSpacing ?? 0}
+                                onChange={(event) => patchLineStyle(index, {
+                                  letterSpacing: Math.max(-5, Math.min(30, Number(event.target.value) || 0)),
+                                })}
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label htmlFor={`line-height-${index}`}>Line height multiplier</Label>
+                              <Input
+                                id={`line-height-${index}`}
+                                type="number"
+                                min={0.75}
+                                max={2.5}
+                                step={0.05}
+                                value={line.lineHeight ?? 1.12}
+                                onChange={(event) => patchLineStyle(index, {
+                                  lineHeight: Math.max(0.75, Math.min(2.5, Number(event.target.value) || 1.12)),
+                                })}
+                              />
+                            </div>
+                            <div className="flex items-center justify-between rounded-md border p-3">
+                              <Label htmlFor={`line-uppercase-${index}`}>Uppercase</Label>
+                              <Switch
+                                id={`line-uppercase-${index}`}
+                                checked={line.uppercase ?? activePreset.uppercase ?? true}
+                                onCheckedChange={(uppercase) => patchLineStyle(index, { uppercase })}
+                              />
+                            </div>
+                            <div className="flex items-center justify-between rounded-md border p-3">
+                              <Label htmlFor={`line-italic-${index}`}>Italic</Label>
+                              <Switch
+                                id={`line-italic-${index}`}
+                                checked={line.italic ?? false}
+                                onCheckedChange={(italic) => patchLineStyle(index, { italic })}
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={addLineStyle}
+                        disabled={activePreset.lineStyles.length >= 6}
+                      >
+                        <Plus />
+                        Add line style
+                      </Button>
+                    </div>
+                  ) : null}
                 </div>
 
                 <div className="space-y-2">
@@ -454,7 +791,12 @@ export default function CaptionPresetsPage() {
             </CardContent>
 
             <CardFooter className="justify-between border-t pt-5">
-              {saveSuccess ? (
+              {defaultSuccess ? (
+                <span className="flex animate-fade-in items-center gap-1.5 text-xs font-medium text-primary">
+                  <CheckCircle2 />
+                  Default updated
+                </span>
+              ) : saveSuccess ? (
                 <span className="flex animate-fade-in items-center gap-1.5 text-xs font-medium text-primary">
                   <CheckCircle2 />
                   Preset saved
@@ -464,7 +806,7 @@ export default function CaptionPresetsPage() {
                   Save to use this style on your clips
                 </span>
               )}
-              <Button onClick={handleSavePreset} disabled={isSaving}>
+              <Button onClick={handleSavePreset} disabled={isSaving || isSettingDefault}>
                 {isSaving ? <Loader2 className="animate-spin" /> : <Save />}
                 Save preset
               </Button>

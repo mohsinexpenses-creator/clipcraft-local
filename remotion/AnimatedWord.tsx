@@ -1,6 +1,7 @@
 import React from 'react';
 import { interpolate, spring } from 'remotion';
-import { CaptionPreset, WordTimestamp } from '../lib/types';
+import type { CaptionFontWeight, CaptionPreset, WordTimestamp } from '../lib/types';
+import { fitCaptionFontSize, splitCaptionWordsIntoLines } from '../lib/caption-layout';
 
 export interface CaptionChunk {
   id: string;
@@ -33,7 +34,7 @@ function buildOutline(color: string, width: number): string {
   return shadows.join(', ');
 }
 
-function fontWeightToCss(weight: CaptionPreset['fontWeight']): number {
+function fontWeightToCss(weight: CaptionFontWeight): number {
   switch (weight) {
     case 'black':
       return 900;
@@ -128,6 +129,151 @@ export const AnimatedWord: React.FC<AnimatedWordProps> = ({
 
   const liftPx = (bottomLiftPercent / 100) * 1920;
   const slidePx = interpolate(fadeIn, [0, 1], [14, 0]);
+
+  if (preset.lineStyles?.length) {
+    const lines = splitCaptionWordsIntoLines(active.words, preset);
+    const alignment = preset.lineAlignment ?? 'center';
+    const justifyContent = alignment === 'left'
+      ? 'flex-start'
+      : alignment === 'right'
+        ? 'flex-end'
+        : 'center';
+    const lineGap = Number.isFinite(preset.lineGap)
+      ? Math.max(0, Math.min(80, preset.lineGap ?? 0))
+      : 4;
+
+    return (
+      <div
+        data-caption-rich="true"
+        style={{
+          position: 'absolute',
+          bottom: `calc(${positionY}% + ${liftPx.toFixed(0)}px)`,
+          left: '5%',
+          right: '5%',
+          width: '90%',
+          maxWidth: '90%',
+          margin: '0 auto',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: lineGap,
+          zIndex: 20,
+          padding: '8px 8px',
+          opacity,
+          overflow: 'visible',
+          boxSizing: 'border-box',
+        }}
+      >
+        {lines.map((line, lineIndex) => {
+          const text = line.words
+            .map((word) => line.style.uppercase ? word.word.toUpperCase() : word.word)
+            .join(' ');
+          const fontSize = fitCaptionFontSize(
+            text,
+            line.style.fontSize,
+            1080 * 0.88,
+            line.style.letterSpacing,
+            line.style.uppercase
+          );
+          const animationStyle = line.style.animationStyle;
+          const lineEntrance = animationStyle === 'static'
+            ? 1
+            : spring({
+                frame: frame - Math.round(active.start * fps),
+                fps,
+                config: { damping: 14, stiffness: 180, mass: 0.6 },
+                durationInFrames: Math.max(6, Math.round(0.22 * fps)),
+              });
+          const lineTransform = animationStyle === 'static'
+            ? 'none'
+            : `translateY(${(slidePx + (1 - lineEntrance) * 8).toFixed(2)}px) scale(${(0.96 + lineEntrance * 0.04).toFixed(4)})`;
+          const lineStyle: React.CSSProperties = {
+            display: 'flex',
+            flexWrap: 'wrap',
+            justifyContent,
+            alignItems: 'center',
+            textAlign: alignment,
+            width: '100%',
+            maxWidth: '100%',
+            minWidth: 0,
+            overflowWrap: 'anywhere',
+            wordBreak: 'break-word',
+            fontFamily: line.style.fontFamily,
+            fontSize,
+            fontWeight: fontWeightToCss(line.style.fontWeight),
+            fontStyle: line.style.italic ? 'italic' : 'normal',
+            textTransform: line.style.uppercase ? 'uppercase' : 'none',
+            letterSpacing: `${line.style.letterSpacing}px`,
+            lineHeight: line.style.lineHeight,
+            columnGap: `${Math.max(2, fontSize * 0.08)}px`,
+            transform: lineTransform,
+            transformOrigin: 'center center',
+          };
+
+          return (
+            <div key={`${active.id}-rich-line-${lineIndex}`} data-caption-line={lineIndex} style={lineStyle}>
+              {line.words.map((word, wordIndex) => {
+                const isActive = currentTime >= word.start && currentTime <= word.end;
+                const isPast = currentTime > word.end;
+                let color = line.style.textColor;
+                let scale = 1;
+                let wordOpacity = 1;
+
+                if (animationStyle === 'karaoke') {
+                  color = isActive ? line.style.highlightColor : line.style.textColor;
+                  scale = isActive ? 1.12 : 1;
+                } else if (animationStyle === 'word-pop') {
+                  const pop = isActive
+                    ? spring({
+                        frame: frame - Math.round(word.start * fps),
+                        fps,
+                        config: { damping: 9, stiffness: 220, mass: 0.4 },
+                        durationInFrames: Math.max(4, Math.round(0.2 * fps)),
+                      })
+                    : 0;
+                  color = isActive ? line.style.highlightColor : line.style.textColor;
+                  scale = 1 + pop * 0.24;
+                  wordOpacity = isPast || isActive ? 1 : 0.62;
+                } else if (animationStyle === 'fade-in') {
+                  const reveal = interpolate(
+                    currentTime,
+                    [word.start - 0.12, word.start + 0.08],
+                    [0.25, 1],
+                    { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' }
+                  );
+                  color = isActive ? line.style.highlightColor : line.style.textColor;
+                  wordOpacity = reveal;
+                }
+
+                const displayWord = line.style.uppercase ? word.word.toUpperCase() : word.word;
+                return (
+                  <span
+                    key={`${active.id}-${lineIndex}-${wordIndex}-${word.word}`}
+                    data-word-index={wordIndex}
+                    style={{
+                      color,
+                      opacity: wordOpacity,
+                      display: 'inline-block',
+                      maxWidth: '100%',
+                      overflowWrap: 'anywhere',
+                      wordBreak: 'break-word',
+                      whiteSpace: 'pre-wrap',
+                      transform: `scale(${scale.toFixed(4)})`,
+                      textShadow: buildOutline(line.style.strokeColor, line.style.strokeWidth),
+                      padding: '0 0.025em',
+                    }}
+                  >
+                    {displayWord}
+                  </span>
+                );
+              })}
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
 
   const containerStyle: React.CSSProperties = {
     position: 'absolute',

@@ -99,7 +99,7 @@ const CLIP_COLUMNS = `
   id, video_id, start, end, output_path, status, progress, record_json, created_at, updated_at
 `;
 
-const CURRENT_SCHEMA_VERSION = 1;
+const CURRENT_SCHEMA_VERSION = 2;
 
 /** Absolute path used by the web process and the worker. */
 export function getDatabasePath(): string {
@@ -293,8 +293,70 @@ function migrateSchemaV1(db: SqliteDatabase): void {
   `);
 }
 
+function normalizePresetDefaultGroup(
+  db: SqliteDatabase,
+  kind?: OverlayStylePreset["kind"],
+): void {
+  const rows = kind
+    ? (db
+        .prepare(
+          "SELECT id, is_default, created_at, updated_at FROM overlay_style_presets WHERE kind = ? ORDER BY rowid",
+        )
+        .all(kind) as Array<{
+        id: string;
+        is_default: number | null;
+        created_at: string | null;
+        updated_at: string | null;
+      }>)
+    : (db
+        .prepare(
+          "SELECT id, is_default, created_at, updated_at FROM caption_presets ORDER BY rowid",
+        )
+        .all() as Array<{
+        id: string;
+        is_default: number | null;
+        created_at: string | null;
+        updated_at: string | null;
+      }>);
+  const flagged = rows.filter((row) => row.is_default === 1);
+  const winner =
+    flagged.sort((left, right) =>
+      (right.updated_at ?? right.created_at ?? "").localeCompare(
+        left.updated_at ?? left.created_at ?? "",
+      ),
+    )[0]?.id ?? rows[0]?.id;
+
+  if (kind) {
+    db.prepare("UPDATE overlay_style_presets SET is_default = 0 WHERE kind = ?").run(kind);
+    if (winner) {
+      db.prepare(
+        "UPDATE overlay_style_presets SET is_default = 1 WHERE id = ? AND kind = ?",
+      ).run(winner, kind);
+    }
+  } else {
+    db.prepare("UPDATE caption_presets SET is_default = 0").run();
+    if (winner) {
+      db.prepare("UPDATE caption_presets SET is_default = 1 WHERE id = ?").run(winner);
+    }
+  }
+}
+
+/** Normalize legacy default flags before adding per-category uniqueness constraints. */
+function migrateSchemaV2(db: SqliteDatabase): void {
+  normalizePresetDefaultGroup(db);
+  normalizePresetDefaultGroup(db, "hook");
+  normalizePresetDefaultGroup(db, "cta");
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS caption_presets_single_default_idx
+      ON caption_presets(is_default) WHERE is_default = 1;
+    CREATE UNIQUE INDEX IF NOT EXISTS overlay_style_presets_single_default_idx
+      ON overlay_style_presets(kind) WHERE is_default = 1;
+  `);
+}
+
 const SCHEMA_MIGRATIONS: Record<number, (db: SqliteDatabase) => void> = {
   1: migrateSchemaV1,
+  2: migrateSchemaV2,
 };
 
 export function initializeSchema(db: SqliteDatabase): void {
@@ -387,30 +449,71 @@ function seedDefaults(db: SqliteDatabase): void {
   const now = new Date().toISOString();
 
   db.transaction(() => {
+    let captionDefaultExists = Boolean(
+      db.prepare("SELECT 1 FROM caption_presets WHERE is_default = 1 LIMIT 1").get(),
+    );
+    const overlayDefaultKinds = new Set(
+      (
+        db
+          .prepare(
+            "SELECT DISTINCT kind FROM overlay_style_presets WHERE is_default = 1",
+          )
+          .all() as Array<{ kind: OverlayStylePreset["kind"] }>
+      ).map((row) => row.kind),
+    );
+
     for (const preset of DEFAULT_CAPTION_PRESETS) {
       const { _id, name, isDefault, createdAt, updatedAt, ...config } = preset;
-      insertCaption.run(
+      const makeDefault = isDefault === true && !captionDefaultExists;
+      const result = insertCaption.run(
         _id,
         name,
-        isDefault === undefined ? null : Number(isDefault),
+        Number(makeDefault),
         createdAt ?? now,
         updatedAt ?? now,
         serializeJson(config),
       );
+      if (makeDefault) {
+        const promoted =
+          result.changes > 0
+            ? result
+            : db
+                .prepare(`
+                  UPDATE caption_presets SET is_default = 1 WHERE id = ?
+                    AND NOT EXISTS (SELECT 1 FROM caption_presets WHERE is_default = 1)
+                `)
+                .run(_id);
+        if (promoted.changes > 0) captionDefaultExists = true;
+      }
     }
 
     for (const preset of DEFAULT_OVERLAY_STYLE_PRESETS) {
       const { _id, kind, name, isDefault, createdAt, updatedAt, ...config } =
         preset;
-      insertOverlay.run(
+      const makeDefault = isDefault === true && !overlayDefaultKinds.has(kind);
+      const result = insertOverlay.run(
         _id,
         kind,
         name,
-        isDefault === undefined ? null : Number(isDefault),
+        Number(makeDefault),
         createdAt ?? now,
         updatedAt ?? now,
         serializeJson(config),
       );
+      if (makeDefault) {
+        const promoted =
+          result.changes > 0
+            ? result
+            : db
+                .prepare(`
+                  UPDATE overlay_style_presets SET is_default = 1 WHERE id = ? AND kind = ?
+                    AND NOT EXISTS (
+                      SELECT 1 FROM overlay_style_presets WHERE kind = ? AND is_default = 1
+                    )
+                `)
+                .run(_id, kind, kind);
+        if (promoted.changes > 0) overlayDefaultKinds.add(kind);
+      }
     }
 
     for (const template of DEFAULT_PROMPT_TEMPLATES) {
@@ -574,6 +677,46 @@ export async function getOverlayStylePreset(
   return row ? mapOverlayStylePreset(row) : null;
 }
 
+export async function getDefaultOverlayStylePreset(
+  kind: OverlayStylePreset["kind"],
+  db: SqliteDatabase = getDatabase(),
+): Promise<OverlayStylePreset | null> {
+  const row = db
+    .prepare(
+      "SELECT * FROM overlay_style_presets WHERE kind = ? AND is_default = 1 LIMIT 1",
+    )
+    .get(kind) as OverlayStylePresetRow | undefined;
+  return row ? mapOverlayStylePreset(row) : null;
+}
+
+export async function setDefaultOverlayStylePreset(
+  id: string,
+  db: SqliteDatabase = getDatabase(),
+): Promise<OverlayStylePreset> {
+  return db
+    .transaction(() => {
+      const current = db
+        .prepare("SELECT kind FROM overlay_style_presets WHERE id = ?")
+        .get(id) as { kind: OverlayStylePreset["kind"] } | undefined;
+      if (!current) {
+        throw new AppError(`Overlay style preset ${id} was not found.`, {
+          status: 404,
+        });
+      }
+      db.prepare(
+        "UPDATE overlay_style_presets SET is_default = 0 WHERE kind = ? AND is_default = 1",
+      ).run(current.kind);
+      db.prepare(
+        "UPDATE overlay_style_presets SET is_default = 1 WHERE id = ? AND kind = ?",
+      ).run(id, current.kind);
+      const row = db
+        .prepare("SELECT * FROM overlay_style_presets WHERE id = ?")
+        .get(id) as OverlayStylePresetRow;
+      return mapOverlayStylePreset(row);
+    })
+    .immediate();
+}
+
 export async function saveOverlayStylePreset(
   preset: OverlayStylePreset,
 ): Promise<OverlayStylePreset> {
@@ -582,46 +725,47 @@ export async function saveOverlayStylePreset(
     preset._id = `overlay-${Date.now()}-${Math.random().toString(36).substring(7)}`;
   preset.updatedAt = new Date().toISOString();
   if (!preset.createdAt) preset.createdAt = preset.updatedAt;
-  const { _id, kind, name, isDefault, createdAt, updatedAt, ...config } =
-    preset;
+  const existing = db
+    .prepare("SELECT kind FROM overlay_style_presets WHERE id = ?")
+    .get(preset._id) as { kind: OverlayStylePreset["kind"] } | undefined;
+  if (existing) preset.kind = existing.kind;
+  const { _id, kind, name, createdAt, updatedAt, ...config } = preset;
+  delete config.isDefault;
 
   db.prepare(
     `
     INSERT INTO overlay_style_presets
       (id, kind, name, is_default, created_at, updated_at, config_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, 0, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
-      kind = excluded.kind, name = excluded.name, is_default = excluded.is_default,
+      name = excluded.name,
       created_at = COALESCE(overlay_style_presets.created_at, excluded.created_at),
       updated_at = excluded.updated_at, config_json = excluded.config_json
   `,
-  ).run(
-    _id,
-    kind,
-    name,
-    isDefault === undefined ? null : Number(isDefault),
-    createdAt,
-    updatedAt,
-    serializeJson(config),
-  );
+  ).run(_id, kind, name, createdAt, updatedAt, serializeJson(config));
 
-  return preset;
+  return (await getOverlayStylePreset(_id)) ?? preset;
 }
 
 export async function deleteOverlayStylePreset(id: string): Promise<boolean> {
-  const preset = await getOverlayStylePreset(id);
-  if (!preset) return false;
-  if (preset.isDefault) {
-    throw new AppError("Default overlay style presets cannot be deleted.", {
-      status: 400,
-      resolution:
-        "Create a custom style preset if you need a variation instead of deleting the built-in presets.",
-    });
-  }
-  getDatabase()
-    .prepare("DELETE FROM overlay_style_presets WHERE id = ?")
-    .run(id);
-  return true;
+  const db = getDatabase();
+  return db
+    .transaction(() => {
+      const existing = db
+        .prepare("SELECT is_default FROM overlay_style_presets WHERE id = ?")
+        .get(id) as { is_default: number | null } | undefined;
+      if (!existing) return false;
+      if (existing.is_default === 1) {
+        throw new AppError("Default overlay style presets cannot be deleted.", {
+          status: 400,
+          resolution:
+            "Set another preset as the default for this category before deleting this one.",
+        });
+      }
+      db.prepare("DELETE FROM overlay_style_presets WHERE id = ?").run(id);
+      return true;
+    })
+    .immediate();
 }
 
 /** Restore the shipped overlay style presets (hook + CTA). Custom presets are kept. */
@@ -635,29 +779,50 @@ export async function resetOverlayStylePresets(): Promise<
       (id, kind, name, is_default, created_at, updated_at, config_json)
     VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
-      kind = excluded.kind, name = excluded.name, is_default = excluded.is_default,
+      name = excluded.name,
       updated_at = excluded.updated_at, config_json = excluded.config_json
   `);
 
   db.transaction(() => {
+    const defaultKinds = new Set(
+      (
+        db
+          .prepare(
+            "SELECT DISTINCT kind FROM overlay_style_presets WHERE is_default = 1",
+          )
+          .all() as Array<{ kind: OverlayStylePreset["kind"] }>
+      ).map((row) => row.kind),
+    );
     for (const preset of DEFAULT_OVERLAY_STYLE_PRESETS) {
       const { _id, kind, name, isDefault, createdAt, ...config } = preset;
-      upsert.run(
+      const makeDefault = isDefault === true && !defaultKinds.has(kind);
+      const result = upsert.run(
         _id,
         kind,
         name,
-        isDefault === undefined ? null : Number(isDefault),
+        Number(makeDefault),
         createdAt ?? now,
         now,
         serializeJson(config),
       );
+      if (makeDefault) {
+        const promoted =
+          result.changes > 0
+            ? result
+            : db
+                .prepare(`
+                  UPDATE overlay_style_presets SET is_default = 1 WHERE id = ? AND kind = ?
+                    AND NOT EXISTS (
+                      SELECT 1 FROM overlay_style_presets WHERE kind = ? AND is_default = 1
+                    )
+                `)
+                .run(_id, kind, kind);
+        if (promoted.changes > 0) defaultKinds.add(kind);
+      }
     }
-  })();
+  }).immediate();
 
-  return DEFAULT_OVERLAY_STYLE_PRESETS.map((preset) => ({
-    ...preset,
-    updatedAt: now,
-  }));
+  return listOverlayStylePresets();
 }
 
 export async function saveVideo(video: VideoRecord): Promise<VideoRecord> {
@@ -787,33 +952,73 @@ export async function saveClip(clip: ClipRecord): Promise<ClipRecord> {
   clip.updatedAt = new Date().toISOString();
   if (!clip.createdAt) clip.createdAt = clip.updatedAt;
 
-  db.prepare(
-    `
-    INSERT INTO clips (${CLIP_COLUMNS})
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET
-      video_id = excluded.video_id,
-      start = excluded.start,
-      end = excluded.end,
-      output_path = excluded.output_path,
-      status = excluded.status,
-      progress = excluded.progress,
-      record_json = excluded.record_json,
-      created_at = clips.created_at,
-      updated_at = excluded.updated_at
-  `,
-  ).run(
-    clip._id,
-    clip.videoId,
-    clip.start,
-    clip.end,
-    clip.outputPath ?? null,
-    clip.status,
-    clip.progress ?? null,
-    serializeClipRecord(clip),
-    clip.createdAt,
-    clip.updatedAt,
-  );
+  db.transaction(() => {
+    if (!clip.captionPresetId?.trim()) {
+      const preset = db
+        .prepare("SELECT id FROM caption_presets WHERE is_default = 1 LIMIT 1")
+        .get() as { id: string } | undefined;
+      if (!preset) {
+        throw new AppError("No default caption preset is configured.", {
+          status: 500,
+        });
+      }
+      clip.captionPresetId = preset.id;
+    }
+    if (!clip.hookStylePresetId?.trim()) {
+      const preset = db
+        .prepare(
+          "SELECT id FROM overlay_style_presets WHERE kind = 'hook' AND is_default = 1 LIMIT 1",
+        )
+        .get() as { id: string } | undefined;
+      if (!preset) {
+        throw new AppError("No default Hook style preset is configured.", {
+          status: 500,
+        });
+      }
+      clip.hookStylePresetId = preset.id;
+    }
+    if (!clip.ctaStylePresetId?.trim()) {
+      const preset = db
+        .prepare(
+          "SELECT id FROM overlay_style_presets WHERE kind = 'cta' AND is_default = 1 LIMIT 1",
+        )
+        .get() as { id: string } | undefined;
+      if (!preset) {
+        throw new AppError("No default CTA style preset is configured.", {
+          status: 500,
+        });
+      }
+      clip.ctaStylePresetId = preset.id;
+    }
+
+    db.prepare(
+      `
+      INSERT INTO clips (${CLIP_COLUMNS})
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        video_id = excluded.video_id,
+        start = excluded.start,
+        end = excluded.end,
+        output_path = excluded.output_path,
+        status = excluded.status,
+        progress = excluded.progress,
+        record_json = excluded.record_json,
+        created_at = clips.created_at,
+        updated_at = excluded.updated_at
+    `,
+    ).run(
+      clip._id,
+      clip.videoId,
+      clip.start,
+      clip.end,
+      clip.outputPath ?? null,
+      clip.status,
+      clip.progress ?? null,
+      serializeClipRecord(clip),
+      clip.createdAt,
+      clip.updatedAt,
+    );
+  }).immediate();
 
   return clip;
 }
@@ -965,6 +1170,39 @@ export async function getCaptionPreset(
   return row ? mapCaptionPreset(row) : null;
 }
 
+export async function getDefaultCaptionPreset(
+  db: SqliteDatabase = getDatabase(),
+): Promise<CaptionPreset | null> {
+  const row = db
+    .prepare("SELECT * FROM caption_presets WHERE is_default = 1 LIMIT 1")
+    .get() as CaptionPresetRow | undefined;
+  return row ? mapCaptionPreset(row) : null;
+}
+
+export async function setDefaultCaptionPreset(
+  id: string,
+  db: SqliteDatabase = getDatabase(),
+): Promise<CaptionPreset> {
+  return db
+    .transaction(() => {
+      const exists = db
+        .prepare("SELECT 1 FROM caption_presets WHERE id = ?")
+        .get(id);
+      if (!exists) {
+        throw new AppError(`Caption preset ${id} was not found.`, { status: 404 });
+      }
+      db.prepare(
+        "UPDATE caption_presets SET is_default = 0 WHERE is_default = 1",
+      ).run();
+      db.prepare("UPDATE caption_presets SET is_default = 1 WHERE id = ?").run(id);
+      const row = db
+        .prepare("SELECT * FROM caption_presets WHERE id = ?")
+        .get(id) as CaptionPresetRow;
+      return mapCaptionPreset(row);
+    })
+    .immediate();
+}
+
 export async function saveCaptionPreset(
   preset: CaptionPreset,
 ): Promise<CaptionPreset> {
@@ -972,40 +1210,41 @@ export async function saveCaptionPreset(
   const now = new Date().toISOString();
   preset.updatedAt = now;
   if (!preset.createdAt) preset.createdAt = now;
-  const { _id, name, isDefault, createdAt, updatedAt, ...config } = preset;
+  const { _id, name, createdAt, updatedAt, ...config } = preset;
+  delete config.isDefault;
 
   db.prepare(
     `
     INSERT INTO caption_presets (id, name, is_default, created_at, updated_at, config_json)
-    VALUES (?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, 0, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
-      name = excluded.name, is_default = excluded.is_default,
+      name = excluded.name,
       created_at = COALESCE(caption_presets.created_at, excluded.created_at),
       updated_at = excluded.updated_at, config_json = excluded.config_json
   `,
-  ).run(
-    _id,
-    name,
-    isDefault === undefined ? null : Number(isDefault),
-    createdAt,
-    updatedAt,
-    serializeJson(config),
-  );
+  ).run(_id, name, createdAt, updatedAt, serializeJson(config));
 
-  return preset;
+  return (await getCaptionPreset(_id)) ?? preset;
 }
 
 export async function deleteCaptionPreset(id: string): Promise<boolean> {
-  const existing = await getCaptionPreset(id);
-  if (existing?.isDefault) {
-    throw new AppError("Default caption presets cannot be deleted.", {
-      status: 400,
-      resolution:
-        "Create a custom preset if you need a variation instead of deleting the built-in presets.",
-    });
-  }
-  getDatabase().prepare("DELETE FROM caption_presets WHERE id = ?").run(id);
-  return true;
+  const db = getDatabase();
+  return db
+    .transaction(() => {
+      const existing = db
+        .prepare("SELECT is_default FROM caption_presets WHERE id = ?")
+        .get(id) as { is_default: number | null } | undefined;
+      if (!existing) return false;
+      if (existing.is_default === 1) {
+        throw new AppError("Default caption presets cannot be deleted.", {
+          status: 400,
+          resolution: "Set another caption preset as the default before deleting this one.",
+        });
+      }
+      db.prepare("DELETE FROM caption_presets WHERE id = ?").run(id);
+      return true;
+    })
+    .immediate();
 }
 
 export async function listTextPresets(

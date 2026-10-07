@@ -5,6 +5,7 @@ import {
   listOverlayStylePresets,
   resetOverlayStylePresets,
   saveOverlayStylePreset,
+  setDefaultOverlayStylePreset,
 } from '@/lib/db';
 import { toErrorMessage, toErrorStatus } from '@/lib/errors';
 import { OverlayStylePreset } from '@/lib/types';
@@ -90,6 +91,22 @@ export async function PUT(request: Request) {
   } catch (error) {
     return NextResponse.json(
       { error: toErrorMessage(error, 'Failed to update overlay style preset.') },
+      { status: toErrorStatus(error, 500) }
+    );
+  }
+}
+
+export async function PATCH(request: Request) {
+  try {
+    const body = (await request.json()) as Record<string, unknown>;
+    const id = typeof body._id === 'string' ? body._id.trim() : '';
+    if (!id) return NextResponse.json({ error: 'Missing preset _id' }, { status: 400 });
+
+    const preset = await setDefaultOverlayStylePreset(id);
+    return NextResponse.json({ success: true, preset });
+  } catch (error) {
+    return NextResponse.json(
+      { error: toErrorMessage(error, 'Failed to set default overlay style preset.') },
       { status: toErrorStatus(error, 500) }
     );
   }

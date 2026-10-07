@@ -100,9 +100,7 @@ export const ClipCard: React.FC<ClipCardProps> = ({
   const [filterPreset, setFilterPreset] = useState(
     clip.filterPreset || "vibrant",
   );
-  const [captionPresetId, setCaptionPresetId] = useState(
-    clip.captionPresetId || "preset-bold-yellow",
-  );
+  const [captionPresetId, setCaptionPresetId] = useState(clip.captionPresetId ?? '');
   const [captionEngine, setCaptionEngine] = useState<"remotion" | "native">(
     clip.captionEngine === "native" ? "native" : "remotion",
   );
@@ -113,12 +111,8 @@ export const ClipCard: React.FC<ClipCardProps> = ({
   const [clipLayout, setClipLayout] = useState<
     "speaker-focus" | "split-screen"
   >(clip.layout === "split-screen" ? "split-screen" : "speaker-focus");
-  const [hookStylePresetId, setHookStylePresetId] = useState(
-    clip.hookStylePresetId || "hook-bold-yellow",
-  );
-  const [ctaStylePresetId, setCtaStylePresetId] = useState(
-    clip.ctaStylePresetId || "cta-gradient-green",
-  );
+  const [hookStylePresetId, setHookStylePresetId] = useState(clip.hookStylePresetId ?? '');
+  const [ctaStylePresetId, setCtaStylePresetId] = useState(clip.ctaStylePresetId ?? '');
   const [overlayPresets, setOverlayPresets] = useState<OverlayStylePreset[]>(
     [],
   );
@@ -133,8 +127,20 @@ export const ClipCard: React.FC<ClipCardProps> = ({
         const res = await fetch("/api/overlay-presets");
         if (!res.ok) return;
         const data = await res.json();
-        if (!ignore && Array.isArray(data.presets))
-          setOverlayPresets(data.presets);
+        if (!ignore && Array.isArray(data.presets)) {
+          const loadedPresets = data.presets as OverlayStylePreset[];
+          setOverlayPresets(loadedPresets);
+          if (!clip.hookStylePresetId) {
+            const defaultHook = loadedPresets.find((preset) => preset.kind === 'hook' && preset.isDefault)
+              ?? loadedPresets.find((preset) => preset.kind === 'hook');
+            if (defaultHook) setHookStylePresetId(defaultHook._id);
+          }
+          if (!clip.ctaStylePresetId) {
+            const defaultCta = loadedPresets.find((preset) => preset.kind === 'cta' && preset.isDefault)
+              ?? loadedPresets.find((preset) => preset.kind === 'cta');
+            if (defaultCta) setCtaStylePresetId(defaultCta._id);
+          }
+        }
       } catch {
         // Style pickers stay on their defaults when the API is unavailable.
       }
@@ -142,7 +148,10 @@ export const ClipCard: React.FC<ClipCardProps> = ({
     return () => {
       ignore = true;
     };
-  }, []);
+  }, [clip._id, clip.hookStylePresetId, clip.ctaStylePresetId]);
+
+  const effectiveCaptionPresetId =
+    captionPresetId || captionPresets.find((preset) => preset.isDefault)?._id || captionPresets[0]?._id || '';
 
   const handleRender = async () => {
     setIsTriggering(true);
@@ -165,7 +174,7 @@ export const ClipCard: React.FC<ClipCardProps> = ({
           ctaText,
           ctaDuration,
           filterPreset,
-          captionPresetId,
+          captionPresetId: effectiveCaptionPresetId,
           captionEngine,
           layout: clipLayout,
           hookStylePresetId,
@@ -473,10 +482,8 @@ export const ClipCard: React.FC<ClipCardProps> = ({
             <div className="space-y-2">
               <Label id={`caption-label-${clip._id}`}>Caption preset</Label>
               <Select
-                value={captionPresetId}
-                onValueChange={(v) =>
-                  setCaptionPresetId(String(v ?? "preset-bold-yellow"))
-                }
+                value={effectiveCaptionPresetId}
+                onValueChange={(v) => setCaptionPresetId(String(v ?? ''))}
                 disabled={isProcessing}
               >
                 <SelectTrigger aria-labelledby={`caption-label-${clip._id}`}>
@@ -485,7 +492,7 @@ export const ClipCard: React.FC<ClipCardProps> = ({
                 <SelectContent>
                   {captionPresets.map((cp) => (
                     <SelectItem key={cp._id} value={cp._id}>
-                      {cp.name} · {cp.animationStyle}
+                      {cp.name} · {cp.animationStyle}{cp.isDefault ? ' · Default' : ''}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -581,23 +588,16 @@ export const ClipCard: React.FC<ClipCardProps> = ({
               <Label id={`hook-style-label-${clip._id}`}>Hook style</Label>
               <Select
                 value={hookStylePresetId}
-                onValueChange={(v) =>
-                  setHookStylePresetId(String(v ?? "hook-bold-yellow"))
-                }
+                onValueChange={(v) => setHookStylePresetId(String(v ?? ''))}
                 disabled={isProcessing}
               >
                 <SelectTrigger aria-labelledby={`hook-style-label-${clip._id}`}>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {(overlayPresets.filter((p) => p.kind === "hook").length
-                    ? overlayPresets.filter((p) => p.kind === "hook")
-                    : ([
-                        { _id: "hook-bold-yellow", name: "Bold Yellow Punch" },
-                      ] as OverlayStylePreset[])
-                  ).map((p) => (
-                    <SelectItem key={p._id} value={p._id}>
-                      {p.name}
+                  {overlayPresets.filter((preset) => preset.kind === 'hook').map((preset) => (
+                    <SelectItem key={preset._id} value={preset._id}>
+                      {preset.name}{preset.isDefault ? ' · Default' : ''}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -608,26 +608,16 @@ export const ClipCard: React.FC<ClipCardProps> = ({
               <Label id={`cta-style-label-${clip._id}`}>CTA style</Label>
               <Select
                 value={ctaStylePresetId}
-                onValueChange={(v) =>
-                  setCtaStylePresetId(String(v ?? "cta-gradient-green"))
-                }
+                onValueChange={(v) => setCtaStylePresetId(String(v ?? ''))}
                 disabled={isProcessing}
               >
                 <SelectTrigger aria-labelledby={`cta-style-label-${clip._id}`}>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {(overlayPresets.filter((p) => p.kind === "cta").length
-                    ? overlayPresets.filter((p) => p.kind === "cta")
-                    : ([
-                        {
-                          _id: "cta-gradient-green",
-                          name: "Green Gradient Card",
-                        },
-                      ] as OverlayStylePreset[])
-                  ).map((p) => (
-                    <SelectItem key={p._id} value={p._id}>
-                      {p.name}
+                  {overlayPresets.filter((preset) => preset.kind === 'cta').map((preset) => (
+                    <SelectItem key={preset._id} value={preset._id}>
+                      {preset.name}{preset.isDefault ? ' · Default' : ''}
                     </SelectItem>
                   ))}
                 </SelectContent>

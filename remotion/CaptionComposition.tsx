@@ -2,6 +2,7 @@ import React from 'react';
 import { AbsoluteFill, OffthreadVideo, useCurrentFrame, useVideoConfig } from 'remotion';
 import { CaptionPreset, OverlayStylePreset, WordTimestamp } from '../lib/types';
 import { AnimatedWord, CaptionChunk } from './AnimatedWord';
+import { getCaptionChunkWordLimit } from '../lib/caption-layout';
 import { CTAOverlay, getCtaBottomLiftPercent } from './CTAOverlay';
 import { HookOverlay } from './HookOverlay';
 
@@ -190,7 +191,12 @@ export const CaptionComposition: React.FC<CaptionCompositionProps> = ({
   const hookWindowStart = hookDuration - transitionDur;
   const hookWindowEnd = hookDuration + transitionDur;
 
-  const chunks = buildFinalCaptionChunks(words, hookStart, hookDuration).filter(
+  const chunks = buildFinalCaptionChunks(
+    words,
+    hookStart,
+    hookDuration,
+    getCaptionChunkWordLimit(preset)
+  ).filter(
     (chunk) => {
       if (transitionDur <= 0) return true;
       return chunk.end <= hookWindowStart || chunk.start >= hookWindowEnd;

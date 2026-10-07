@@ -1,5 +1,11 @@
 import { NextResponse } from 'next/server';
-import { getClip, listClips, updateClip } from '@/lib/db';
+import {
+  getClip,
+  getDefaultCaptionPreset,
+  getDefaultOverlayStylePreset,
+  listClips,
+  updateClip,
+} from '@/lib/db';
 import { AppError, toErrorMessage, toErrorStatus } from '@/lib/errors';
 import { enqueueClipJob } from '@/lib/queue';
 import { CaptionEngine, ClipLayout, JobData } from '@/lib/types';
@@ -34,17 +40,19 @@ export async function POST(request: Request) {
     const hookText = typeof body.hookText === 'string' ? body.hookText : undefined;
     const ctaText = typeof body.ctaText === 'string' ? body.ctaText : undefined;
     const filterPreset = typeof body.filterPreset === 'string' ? body.filterPreset : 'vibrant';
-    const captionPresetId =
-      typeof body.captionPresetId === 'string' ? body.captionPresetId : 'preset-bold-yellow';
+    const captionPresetIdRaw =
+      typeof body.captionPresetId === 'string' && body.captionPresetId.trim()
+        ? body.captionPresetId.trim()
+        : undefined;
     const layout: ClipLayout = body.layout === 'split-screen' ? 'split-screen' : 'speaker-focus';
     const captionEngine: CaptionEngine = body.captionEngine === 'native' ? 'native' : 'remotion';
     const hookStylePresetIdRaw =
-      typeof body.hookStylePresetId === 'string' && body.hookStylePresetId
-        ? body.hookStylePresetId
+      typeof body.hookStylePresetId === 'string' && body.hookStylePresetId.trim()
+        ? body.hookStylePresetId.trim()
         : undefined;
     const ctaStylePresetIdRaw =
-      typeof body.ctaStylePresetId === 'string' && body.ctaStylePresetId
-        ? body.ctaStylePresetId
+      typeof body.ctaStylePresetId === 'string' && body.ctaStylePresetId.trim()
+        ? body.ctaStylePresetId.trim()
         : undefined;
 
     if (!clipId || !videoId) {
@@ -54,6 +62,26 @@ export async function POST(request: Request) {
     const existingClip = await getClip(clipId);
     if (!existingClip) {
       return NextResponse.json({ error: 'Clip record not found' }, { status: 404 });
+    }
+
+    const [defaultCaptionPreset, defaultHookStyle, defaultCtaStyle] = await Promise.all([
+      getDefaultCaptionPreset(),
+      getDefaultOverlayStylePreset('hook'),
+      getDefaultOverlayStylePreset('cta'),
+    ]);
+    const storedCaptionPresetId = existingClip.captionPresetId?.trim() || undefined;
+    const storedHookPresetId = existingClip.hookStylePresetId?.trim() || undefined;
+    const storedCtaPresetId = existingClip.ctaStylePresetId?.trim() || undefined;
+    const captionPresetId =
+      captionPresetIdRaw ?? storedCaptionPresetId ?? defaultCaptionPreset?._id;
+    const hookStylePresetId =
+      hookStylePresetIdRaw ?? storedHookPresetId ?? defaultHookStyle?._id;
+    const ctaStylePresetId = ctaStylePresetIdRaw ?? storedCtaPresetId ?? defaultCtaStyle?._id;
+    if (!captionPresetId || !hookStylePresetId || !ctaStylePresetId) {
+      throw new AppError('A database default preset is missing for this clip.', {
+        status: 500,
+        resolution: 'Open preset settings and choose a default for Caption, Hook, and CTA.',
+      });
     }
 
     const parsedStart = Number(start);
@@ -95,8 +123,8 @@ export async function POST(request: Request) {
     existingClip.captionPresetId = captionPresetId;
     existingClip.layout = layout;
     existingClip.captionEngine = captionEngine;
-    existingClip.hookStylePresetId = hookStylePresetIdRaw ?? existingClip.hookStylePresetId;
-    existingClip.ctaStylePresetId = ctaStylePresetIdRaw ?? existingClip.ctaStylePresetId;
+    existingClip.hookStylePresetId = hookStylePresetId;
+    existingClip.ctaStylePresetId = ctaStylePresetId;
 
     existingClip.status = 'pending';
     existingClip.progress = 0;

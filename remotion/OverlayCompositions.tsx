@@ -4,6 +4,7 @@ import { CaptionPreset, OverlayStylePreset, WordTimestamp } from '../lib/types';
 import { getCtaBottomLiftPercent } from './CTAOverlay';
 import { AnimatedWord } from './AnimatedWord';
 import { buildFinalCaptionChunks } from './CaptionComposition';
+import { getCaptionChunkWordLimit } from '../lib/caption-layout';
 import { CTAOverlay } from './CTAOverlay';
 import { HookOverlay } from './HookOverlay';
 
@@ -50,7 +51,12 @@ export const CaptionOverlayComposition: React.FC<CaptionOverlayCompositionProps>
   const hookVisibleDuration = Math.max(0, hookDuration - transition);
   const transitionStart = hookDuration - transition;
   const transitionEnd = hookDuration + transition;
-  const chunks = buildFinalCaptionChunks(words, hookStart, hookDuration).filter((chunk) =>
+  const chunks = buildFinalCaptionChunks(
+    words,
+    hookStart,
+    hookDuration,
+    getCaptionChunkWordLimit(preset)
+  ).filter((chunk) =>
     transition <= 0 || chunk.end <= transitionStart || chunk.start >= transitionEnd
   );
   const captionLift =

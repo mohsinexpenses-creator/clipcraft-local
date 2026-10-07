@@ -220,19 +220,47 @@ export interface FilterPreset {
   ffmpegFilter: string; // e.g. "eq=saturation=1.3:contrast=1.1"
 }
 
+export type CaptionFontWeight = 'normal' | 'bold' | 'extra-bold' | 'black';
+export type CaptionAnimationStyle = 'karaoke' | 'word-pop' | 'fade-in' | 'static';
+
+/** Optional per-visual-line overrides; missing fields inherit from CaptionPreset. */
+export interface CaptionLineStyle {
+  fontFamily?: string;
+  fontSize?: number;
+  fontWeight?: CaptionFontWeight;
+  textColor?: string;
+  highlightColor?: string;
+  strokeColor?: string;
+  strokeWidth?: number;
+  italic?: boolean;
+  uppercase?: boolean;
+  letterSpacing?: number;
+  /** Maximum transcript words assigned to this visual line (clamped to 1..8). */
+  maxWords?: number;
+  animationStyle?: CaptionAnimationStyle;
+  /** CSS/ASS line-height multiplier. */
+  lineHeight?: number;
+}
+
 export interface CaptionPreset {
   _id: string;
   name: string;
   fontFamily: string;
   fontSize: number; // e.g. 48
-  fontWeight: 'normal' | 'bold' | 'extra-bold' | 'black';
+  fontWeight: CaptionFontWeight;
   textColor: string; // hex or rgb
   highlightColor: string; // active word highlight hex or rgb
   strokeColor: string; // text outline stroke
   strokeWidth: number; // e.g. 2
   positionY: number; // percentage from bottom, e.g. 25
-  animationStyle: 'karaoke' | 'word-pop' | 'fade-in' | 'static';
+  animationStyle: CaptionAnimationStyle;
   uppercase?: boolean;
+  /** Optional rich multi-line styling. Omitted presets keep legacy one-line rendering. */
+  lineStyles?: CaptionLineStyle[];
+  /** Gap between rich visual lines in composition pixels. */
+  lineGap?: number;
+  /** Horizontal alignment for rich line blocks. */
+  lineAlignment?: 'left' | 'center' | 'right';
   isDefault?: boolean;
   createdAt?: string;
   updatedAt?: string;
@@ -273,7 +301,7 @@ export interface ClipRecord {
   ctaText?: string; // short CTA text shown near the end of the clip
   ctaDuration?: number; // duration of CTA overlay in seconds
   filterPreset: string; // filter preset id
-  captionPresetId: string;
+  captionPresetId?: string;
   captionPreset?: CaptionPreset;
   /**
    * Output framing mode:

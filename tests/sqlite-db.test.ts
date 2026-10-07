@@ -74,7 +74,7 @@ test('SQLite schema is versioned, indexed, WAL-enabled, and has a five-second bu
   const version = db.prepare('SELECT version FROM schema_version WHERE id = 1').get() as
     | { version: number }
     | undefined;
-  assert.deepEqual(version, { version: 1 });
+  assert.deepEqual(version, { version: 2 });
 
   const tables = new Set(
     (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map(
@@ -98,7 +98,13 @@ test('SQLite schema is versioned, indexed, WAL-enabled, and has a five-second bu
       (row) => row.name
     )
   );
-  for (const index of ['videos_created_at_idx', 'clips_video_created_at_idx', 'jobs_claim_idx']) {
+  for (const index of [
+    'videos_created_at_idx',
+    'clips_video_created_at_idx',
+    'jobs_claim_idx',
+    'caption_presets_single_default_idx',
+    'overlay_style_presets_single_default_idx',
+  ]) {
     assert.ok(indexes.has(index), `missing index ${index}`);
   }
 });
@@ -155,7 +161,7 @@ test('large transcript and clip JSON values round-trip without truncation', asyn
 
 });
 
-test('seeded presets and prompt templates stay editable through typed CRUD helpers', async (t) => {
+test('seeded caption/overlay presets and prompt templates plus text CRUD stay editable', async (t) => {
   createTemporaryDatabase(t);
   const captions = await listCaptionPresets();
   const overlays = await listOverlayStylePresets();
@@ -163,7 +169,7 @@ test('seeded presets and prompt templates stay editable through typed CRUD helpe
   const prompts = await listPromptTemplates();
   assert.ok(captions.length > 0);
   assert.ok(overlays.length > 0);
-  assert.ok(texts.length > 0);
+  assert.deepEqual(texts, []);
   assert.ok(prompts.length > 0);
   assert.equal((await getPromptTemplate('viral_detection'))?._id, 'prompt-viral-detection');
 

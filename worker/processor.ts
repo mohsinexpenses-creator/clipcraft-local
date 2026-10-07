@@ -1,12 +1,19 @@
 import fs from 'fs';
 import path from 'path';
-import { getCaptionPreset, getClip, getOverlayStylePreset, getVideo, updateClip } from '../lib/db';
+import {
+  getCaptionPreset,
+  getClip,
+  getDefaultCaptionPreset,
+  getDefaultOverlayStylePreset,
+  getOverlayStylePreset,
+  getVideo,
+  updateClip,
+} from '../lib/db';
 import { AppError, RenderCancelledError, toErrorMessage } from '../lib/errors';
 
 import { getVideoMetadata } from '../lib/ffmpeg';
 import { getCaptionOffsetMs, shiftCaptionWords } from './caption-timing';
 import { CaptionEngine, ClipLayout, ClipRecord, JobData, OverlayStylePreset } from '../lib/types';
-import { DEFAULT_OVERLAY_STYLE_PRESETS } from '../lib/presets';
 import { detectSpeakerTimeline } from './asd';
 import { buildLayoutPlan, getSplitFramingSettings } from './layout';
 import { adaptOverlaysToLayout, describePlacements } from './overlay-layout';
@@ -38,27 +45,30 @@ function deriveOverlayText(words: Array<{ word: string }>, maxWords: number, fal
   return text || fallback;
 }
 
-/**
- * Resolve an overlay STYLE preset id to a full preset. Missing/unknown ids fall
- * back to the seeded default for that overlay kind - a render never fails just
- * because a style was deleted.
- */
+/** Resolve an explicit overlay id, or use the current database default only when absent. */
 async function resolveOverlayStyle(
   id: string | undefined,
   kind: 'hook' | 'cta'
 ): Promise<OverlayStylePreset> {
-  const fallback =
-    DEFAULT_OVERLAY_STYLE_PRESETS.find((p) => p.kind === kind && p.isDefault) ??
-    DEFAULT_OVERLAY_STYLE_PRESETS.find((p) => p.kind === kind)!;
-  if (id) {
-    try {
-      const preset = await getOverlayStylePreset(id);
-      if (preset && preset.kind === kind) return preset;
-    } catch {
-      // fall through to the default below
+  if (id?.trim()) {
+    const preset = await getOverlayStylePreset(id.trim());
+    if (!preset || preset.kind !== kind) {
+      throw new AppError(`Overlay style preset ${id} was not found for ${kind}.`, {
+        status: 404,
+        resolution: 'Select an existing overlay style preset from the dashboard and retry rendering.',
+      });
     }
+    return preset;
   }
-  return fallback;
+
+  const preset = await getDefaultOverlayStylePreset(kind);
+  if (!preset) {
+    throw new AppError(`No default ${kind.toUpperCase()} style preset is configured.`, {
+      status: 500,
+      resolution: 'Choose a database default for Hook and CTA in preset settings.',
+    });
+  }
+  return preset;
 }
 
 export async function processClipJob(
@@ -311,9 +321,23 @@ export async function processClipJob(
     }
     await reportProgress(20);
 
-    const preset = await getCaptionPreset(captionPresetId);
+    const requestedCaptionPresetId =
+      typeof captionPresetId === 'string' && captionPresetId.trim()
+        ? captionPresetId.trim()
+        : clip.captionPresetId?.trim() || undefined;
+    const defaultCaptionPreset = requestedCaptionPresetId
+      ? null
+      : await getDefaultCaptionPreset();
+    const resolvedCaptionPresetId = requestedCaptionPresetId ?? defaultCaptionPreset?._id;
+    if (!resolvedCaptionPresetId) {
+      throw new AppError('No caption preset is selected and no database default is configured.', {
+        status: 500,
+        resolution: 'Choose a default caption preset in preset settings before rendering.',
+      });
+    }
+    const preset = await getCaptionPreset(resolvedCaptionPresetId);
     if (!preset) {
-      throw new AppError(`Caption preset ${captionPresetId} was not found.`, {
+      throw new AppError(`Caption preset ${resolvedCaptionPresetId} was not found.`, {
         status: 404,
         resolution: 'Select an existing caption preset from the dashboard and retry rendering.',
       });
@@ -361,14 +385,25 @@ export async function processClipJob(
 
     // Overlay STYLE presets (font/colors/card/animation) - per clip, falling
     // back to the seeded defaults. The TEXT above stays prompt-generated.
-    const hookStyle = await resolveOverlayStyle(
-      jobData.hookStylePresetId ?? clip.hookStylePresetId,
-      'hook'
-    );
-    const ctaStyle = await resolveOverlayStyle(
-      jobData.ctaStylePresetId ?? clip.ctaStylePresetId,
-      'cta'
-    );
+    const requestedHookStylePresetId = [
+      jobData.hookStylePresetId,
+      clip.hookStylePresetId,
+    ].find((id) => typeof id === 'string' && id.trim())?.trim();
+    const requestedCtaStylePresetId = [
+      jobData.ctaStylePresetId,
+      clip.ctaStylePresetId,
+    ].find((id) => typeof id === 'string' && id.trim())?.trim();
+    const hookStyle = await resolveOverlayStyle(requestedHookStylePresetId, 'hook');
+    const ctaStyle = await resolveOverlayStyle(requestedCtaStylePresetId, 'cta');
+
+    // Persist the resolved ids so legacy clips keep the exact presets used by
+    // this render even if the database defaults change before a later rerender.
+    clip.captionPresetId = resolvedCaptionPresetId;
+    clip.hookStylePresetId = hookStyle._id;
+    clip.ctaStylePresetId = ctaStyle._id;
+    if (!(await updateClip(clip))) {
+      throw new RenderCancelledError('Clip was deleted while presets were being resolved.');
+    }
 
     // Where the captions / hook / CTA go depends on the layout. In a split screen
     // the preset positions would land on the two faces, so they are re-placed from
@@ -509,6 +544,7 @@ export async function processClipJob(
     clip.hookText = resolvedHookText;
     clip.ctaText = resolvedCtaText;
     clip.ctaDuration = resolvedCtaDuration;
+    clip.captionPresetId = resolvedCaptionPresetId;
     clip.captionPreset = preset;
     clip.captionEngine = engine;
     clip.hookStylePresetId = hookStyle._id;

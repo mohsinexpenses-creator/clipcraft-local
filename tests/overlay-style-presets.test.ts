@@ -25,15 +25,15 @@ test('style presets keep hook/CTA text generation intact (styling only)', () => 
   }
 });
 
-test('the faithful-default styles reproduce the previous hardcoded looks', () => {
-  const hook = DEFAULT_OVERLAY_STYLE_PRESETS.find((p) => p._id === 'hook-bold-yellow')!;
-  assert.ok(hook, 'hook-bold-yellow present');
+test('the shipped default styles retain their hook and CTA presentation', () => {
+  const hook = DEFAULT_OVERLAY_STYLE_PRESETS.find((p) => p._id === 'hook-midnight-glass')!;
+  assert.ok(hook, 'hook-midnight-glass present');
   assert.equal(hook.animationStyle, 'pop');
-  assert.equal(hook.badgeText, 'Hook Intro');
+  assert.equal(hook.badgeText, 'Watch This');
   assert.equal(hook.positionY, 12);
 
-  const cta = DEFAULT_OVERLAY_STYLE_PRESETS.find((p) => p._id === 'cta-gradient-green')!;
-  assert.ok(cta, 'cta-gradient-green present');
+  const cta = DEFAULT_OVERLAY_STYLE_PRESETS.find((p) => p._id === 'cta-aurora-gradient')!;
+  assert.ok(cta, 'cta-aurora-gradient present');
   assert.equal(cta.animationStyle, 'pop');
   assert.equal(cta.positionY, 64);
   assert.ok(cta.backgroundColor.includes('linear-gradient'), cta.backgroundColor);

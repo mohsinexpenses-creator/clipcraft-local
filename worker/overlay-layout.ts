@@ -29,6 +29,7 @@
  * everything from `positionY` - pick it up without any special casing.
  */
 import type { CaptionEngine, CaptionPreset, OverlayStylePreset } from '../lib/types';
+import { resolveCaptionLineStyle } from '../lib/caption-layout';
 import { zonesBetween, type CanvasZone, type LayoutPlan } from './layout';
 
 export const CANVAS_WIDTH = 1080;
@@ -196,6 +197,21 @@ interface CaptionGeometry {
  */
 function captionGeometry(engine: CaptionEngine, preset: CaptionPreset): CaptionGeometry {
   const fontSize = Number.isFinite(preset.fontSize) && preset.fontSize > 0 ? preset.fontSize : 48;
+  if (preset.lineStyles?.length) {
+    const lineStyles = preset.lineStyles.map((_, index) => resolveCaptionLineStyle(preset, index));
+    const lineGap = Number.isFinite(preset.lineGap) ? Math.max(0, Math.min(80, preset.lineGap ?? 0)) : 4;
+    const height = lineStyles.reduce((sum, line) => {
+      const engineScale = engine === 'native' ? ASS_FONT_SCALE : 1.12;
+      const stroke = engine === 'native' ? line.strokeWidth * 2 : line.strokeWidth * 2;
+      return sum + line.fontSize * engineScale * line.lineHeight + stroke;
+    }, 0) + Math.max(0, lineStyles.length - 1) * lineGap + 16;
+    return {
+      height,
+      centreOffset: height / 2,
+      positionYFor: (top) => 100 * (1 - (top + height) / CANVAS_HEIGHT),
+      topFor: (positionY) => CANVAS_HEIGHT * (1 - positionY / 100) - height,
+    };
+  }
   if (engine === 'native') {
     const size = Math.round(fontSize * ASS_FONT_SCALE);
     const stroke = preset.strokeWidth ?? 3;

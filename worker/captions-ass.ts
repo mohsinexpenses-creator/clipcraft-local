@@ -18,6 +18,13 @@
  */
 import { buildFinalCaptionChunks } from '../remotion/CaptionComposition';
 import { getCtaBottomLiftPercent } from '../remotion/CTAOverlay';
+import {
+  fitCaptionFontSize,
+  getCaptionChunkWordLimit,
+  splitCaptionWordsIntoLines,
+  type CaptionVisualLine,
+  type ResolvedCaptionLineStyle,
+} from '../lib/caption-layout';
 import { maskProfanity } from '../lib/profanity';
 import type { CaptionPreset, WordTimestamp } from '../lib/types';
 
@@ -90,6 +97,11 @@ function assFontName(fontFamily?: string): string {
   const f = (fontFamily ?? '').toLowerCase();
   if (f.includes('impact')) return 'Impact';
   if (f.includes('arial black')) return 'Arial Black';
+  if (f.includes('liberation sans')) return 'Liberation Sans';
+  if (f.includes('dejavu sans')) return 'DejaVu Sans';
+  if (f.includes('arial')) return 'Arial';
+  // Only return known common families; arbitrary CSS/web-font names are not
+  // available to libass and can otherwise resolve unpredictably on Windows.
   return 'Segoe UI';
 }
 
@@ -156,6 +168,150 @@ function fontSizeForLine(chunk: { words: WordTimestamp[] }, fontSize: number): n
   const scaled = fontSize * ASS_FONT_SCALE;
   const maxForWidth = (PLAY_RES_X * 0.94) / Math.max(1, text.length) / EST_CHAR_WIDTH_FRACTION;
   return Math.max(20, Math.floor(Math.min(scaled, maxForWidth)));
+}
+
+function richFontSize(line: CaptionVisualLine): number {
+  const text = line.words
+    .map((word) => line.style.uppercase ? word.word.toUpperCase() : word.word)
+    .join(' ');
+  return fitCaptionFontSize(
+    text,
+    line.style.fontSize,
+    PLAY_RES_X * 0.88,
+    line.style.letterSpacing,
+    line.style.uppercase
+  );
+}
+
+function assWeight(weight: ResolvedCaptionLineStyle['fontWeight']): string {
+  return weight === 'normal' ? '0' : '1';
+}
+
+function splitOverlongAssWord(word: string, assFontSize: number, letterSpacing: number): string[] {
+  const maxWidth = PLAY_RES_X * 0.88;
+  const maxChars = Math.max(
+    12,
+    Math.floor(maxWidth / Math.max(1, assFontSize * EST_CHAR_WIDTH_FRACTION + letterSpacing))
+  );
+  const chars = Array.from(word);
+  if (chars.length <= maxChars) return [word];
+  const pieces: string[] = [];
+  for (let i = 0; i < chars.length; i += maxChars) {
+    pieces.push(chars.slice(i, i + maxChars).join(''));
+  }
+  return pieces;
+}
+
+function richWordText(word: string, line: CaptionVisualLine, assFontSize: number): string {
+  const shown = line.style.uppercase ? word.toUpperCase() : word;
+  return splitOverlongAssWord(shown, assFontSize, line.style.letterSpacing)
+    .map(assEscape)
+    .join('\\N');
+}
+
+function buildRichDialogues(
+  chunk: { words: WordTimestamp[]; start: number; end: number },
+  nextStart: number | undefined,
+  input: AssGenerationInput
+): string[] {
+  const { preset, totalDurationSeconds, ctaDuration } = input;
+  const { positionY = 25 } = preset;
+  const lines = splitCaptionWordsIntoLines(chunk.words, preset);
+  if (lines.length === 0) return [];
+
+  const start = Math.max(0, chunk.start);
+  const holdEnd = chunk.end + HOLD_AFTER_SECONDS;
+  let end = nextStart !== undefined ? Math.min(holdEnd, nextStart - 0.02) : holdEnd;
+  const transitionDur = input.hookDuration > 0
+    ? Math.max(0, Math.min(input.hookTransitionDuration ?? 0, input.hookDuration / 2))
+    : 0;
+  if (transitionDur > 0 && start < input.hookDuration - transitionDur) {
+    end = Math.min(end, input.hookDuration - transitionDur);
+  }
+  if (end - start < 0.12) return [];
+  const exitCs = Math.max(0, Math.min(EXIT_FADE_CS, Math.round((end - chunk.end) * 100)));
+
+  const chunkCenter = (start + chunk.end) / 2;
+  const liftPercent = getCtaBottomLiftPercent(ctaDuration, totalDurationSeconds, chunkCenter)
+    * Math.max(0, input.captionLiftScale ?? 1);
+  const liftPx = (liftPercent / 100) * PLAY_RES_Y;
+  const lineGap = Number.isFinite(preset.lineGap)
+    ? Math.max(0, Math.min(80, preset.lineGap ?? 0))
+    : 4;
+  const sizes = lines.map((line) => Math.round(richFontSize(line) * ASS_FONT_SCALE));
+  const wrapCounts = lines.map((line, index) => {
+    const maxChars = Math.max(
+      12,
+      Math.floor((PLAY_RES_X * 0.88) / Math.max(1, sizes[index] * EST_CHAR_WIDTH_FRACTION + line.style.letterSpacing))
+    );
+    return line.words.reduce((sum, word) => {
+      const shown = line.style.uppercase ? word.word.toUpperCase() : word.word;
+      return sum + Math.max(1, Math.ceil(Array.from(shown).length / maxChars));
+    }, 0);
+  });
+  const rowHeights = lines.map((line, index) => sizes[index] * line.style.lineHeight * wrapCounts[index]);
+  const blockHeight = rowHeights.reduce((sum, height) => sum + height, 0) + Math.max(0, lines.length - 1) * lineGap;
+  const bottomEdge = PLAY_RES_Y * (1 - positionY / 100) - liftPx;
+  let lineTop = bottomEdge - blockHeight;
+
+  return lines.map((line, lineIndex) => {
+    const style = line.style;
+    const fontSize = sizes[lineIndex];
+    const thisTop = Math.round(lineTop);
+    lineTop += rowHeights[lineIndex] + lineGap;
+    const wordsShown = line.words.map((word) => style.uppercase ? word.word.toUpperCase() : word.word);
+    const usesKaraoke = style.animationStyle === 'karaoke';
+    let body = wordsShown.map((word) => richWordText(word, line, fontSize)).join(' ');
+    if (style.animationStyle === 'word-pop') {
+      body = line.words.map((word, wordIndex) => {
+        const wordStartMs = Math.max(0, Math.round((word.start - chunk.start) * 1000));
+        const wordEndMs = Math.max(wordStartMs + 30, Math.round((word.end - chunk.start) * 1000));
+        const popEndMs = wordStartMs + 90;
+        const settleEndMs = popEndMs + 90;
+        const colorInEndMs = wordStartMs + 30;
+        const colorOutStartMs = Math.max(wordStartMs + 1, wordEndMs - 30);
+        const wordTags =
+          `\\1c${assColor(style.textColor)}\\fscx100\\fscy100` +
+          `\\t(${wordStartMs},${colorInEndMs},\\1c${assColor(style.highlightColor)})` +
+          `\\t(${wordStartMs},${popEndMs},\\fscx124\\fscy124)` +
+          `\\t(${popEndMs},${settleEndMs},\\fscx100\\fscy100)` +
+          `\\t(${colorOutStartMs},${wordEndMs},\\1c${assColor(style.textColor)})`;
+        return `{${wordTags}}${richWordText(wordsShown[wordIndex], line, fontSize)}`;
+      }).join(' ');
+    } else if (usesKaraoke) {
+      const preRollCs = Math.max(0, Math.round((line.words[0].start - chunk.start) * 100));
+      const tagged = line.words.map((word, wordIndex) => {
+        const duration = Math.max(1, Math.round((word.end - word.start) * 100));
+        return `{\\k${duration}}${richWordText(wordsShown[wordIndex], line, fontSize)}`;
+      }).join(' ');
+      body = (preRollCs > 0 ? `{\\k${preRollCs}}` : '') + tagged;
+    }
+
+    const entrance = entranceFor(style.animationStyle);
+    const entranceScale = String(entrance.scale);
+    const anim = style.animationStyle === 'static'
+      ? ''
+      : `\\fscx${entranceScale}\\fscy${entranceScale}\\t(0,${entrance.cs},\\fscx100\\fscy100)\\fad(${entrance.cs},${exitCs})`;
+    const italic = style.italic ? '1' : '0';
+    const spacing = style.letterSpacing.toFixed(2);
+    const alignment = preset.lineAlignment ?? 'center';
+    const anchor = alignment === 'left' ? 7 : alignment === 'right' ? 9 : 8;
+    const x = alignment === 'left' ? 60 : alignment === 'right' ? PLAY_RES_X - 60 : PLAY_RES_X / 2;
+    const position = `\\an${anchor}\\pos(${x},${thisTop})`;
+    const primaryColor = usesKaraoke ? style.highlightColor : style.textColor;
+    const overrides =
+      `\\fn${assFontName(style.fontFamily)}` +
+      `\\fs${fontSize}` +
+      `\\b${assWeight(style.fontWeight)}` +
+      `\\i${italic}` +
+      `\\1c${assColor(primaryColor)}` +
+      `\\2c${assColor(style.textColor)}` +
+      `\\3c${assColor(style.strokeColor)}` +
+      `\\bord${style.strokeWidth}` +
+      `\\fsp${spacing}` +
+      `\\q0` + position + anim;
+    return `Dialogue: 0,${assTime(start)},${assTime(end)},Cap,,0,0,0,,{${overrides}}${body}`;
+  });
 }
 
 function buildDialogue(
@@ -255,9 +411,12 @@ export function generateAssFile(input: AssGenerationInput): string {
   // Same timeline remapping as the Remotion composition: the processed clip is
   // [hook intro][full segment]. Intro (hook moment) chunks and shifted chunks
   // are built separately so a line never mixes words from two moments.
-  const allChunks = buildFinalCaptionChunks(maskedWords, hookStart, hookDuration).filter(
-    (c) => c.end > 0
-  );
+  const allChunks = buildFinalCaptionChunks(
+    maskedWords,
+    hookStart,
+    hookDuration,
+    getCaptionChunkWordLimit(preset)
+  ).filter((c) => c.end > 0);
   const chunks =
     transitionDur > 0
       ? allChunks.filter((c) => c.end <= windowStart || c.start >= windowEnd)
@@ -280,6 +439,10 @@ export function generateAssFile(input: AssGenerationInput): string {
   ];
 
   for (let i = 0; i < chunks.length; i += 1) {
+    if (preset.lineStyles?.length) {
+      lines.push(...buildRichDialogues(chunks[i], chunks[i + 1]?.start, input));
+      continue;
+    }
     const line = buildDialogue(chunks[i], chunks[i + 1]?.start, input);
     if (line) lines.push(line);
   }
