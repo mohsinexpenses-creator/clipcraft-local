@@ -3,6 +3,8 @@ import fs from "fs";
 import path from "path";
 import Database from "better-sqlite3";
 import {
+  APP_SETTINGS_SECTIONS,
+  AppSettingsSection,
   CaptionPreset,
   ClipRecord,
   OverlayStylePreset,
@@ -151,7 +153,7 @@ const VIDEO_SUMMARY_SELECT = `
      FROM clips c WHERE c.video_id = v.id) AS clip_progress
 `;
 
-const CURRENT_SCHEMA_VERSION = 3;
+const CURRENT_SCHEMA_VERSION = 4;
 
 /** Absolute path used by the web process and the worker. */
 export function getDatabasePath(): string {
@@ -427,10 +429,31 @@ function migrateSchemaV3(db: SqliteDatabase): void {
   }
 }
 
+/**
+ * Schema v4: `app_settings`, one JSON document per Settings-page section.
+ *
+ * Only *overrides* live here. Anything the user never touched on the Settings page
+ * has no row, so the env file (`.env.local`) and the built-in defaults stay in
+ * charge - which is what keeps the worker, `npm run` scripts and a fresh clone
+ * working exactly as before. Secrets are stored in this file for the same reason
+ * they are stored in `.env.local`: the machine is the trust boundary. They are
+ * never read back out in full by an API response (see `lib/app-settings.ts`).
+ */
+function migrateSchemaV4(db: SqliteDatabase): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY CHECK (key IN ('pipeline', 'render', 'ai', 'worker', 'profanity')),
+      value_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
+}
+
 const SCHEMA_MIGRATIONS: Record<number, (db: SqliteDatabase) => void> = {
   1: migrateSchemaV1,
   2: migrateSchemaV2,
   3: migrateSchemaV3,
+  4: migrateSchemaV4,
 };
 
 export function initializeSchema(db: SqliteDatabase): void {
@@ -503,6 +526,67 @@ function parseJson<T>(value: string, label: string): T {
       `SQLite ${label} contains invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
+}
+
+/**
+ * Stored settings overrides, keyed by Settings-page section. Rows are written only
+ * when the user saves something, and a section can be cleared again (`resetAppSettings`)
+ * to fall back to `.env.local` / built-in defaults.
+ *
+ * A corrupt or unknown row must never take the app down, so reading is deliberately
+ * forgiving: bad JSON or an unexpected shape is reported and skipped.
+ */
+export interface AppSettingsRow {
+  key: AppSettingsSection;
+  value: unknown;
+  updatedAt: string;
+}
+
+export function readAppSettingsSections(): AppSettingsRow[] {
+  const rows = getDatabase()
+    .prepare(`SELECT key, value_json, updated_at FROM app_settings`)
+    .all() as Array<{ key: string; value_json: string; updated_at: string }>;
+
+  const sections: AppSettingsRow[] = [];
+  for (const row of rows) {
+    if (!APP_SETTINGS_SECTIONS.includes(row.key as AppSettingsSection)) continue;
+    try {
+      sections.push({
+        key: row.key as AppSettingsSection,
+        value: parseJson<unknown>(row.value_json, `app_settings.${row.key}`),
+        updatedAt: row.updated_at,
+      });
+    } catch {
+      // Ignore a single broken row - the section just falls back to env/defaults.
+    }
+  }
+  return sections;
+}
+
+/** One statement per call; `undefined` values are dropped, so rows never store noise. */
+export function saveAppSettingsSection(
+  key: AppSettingsSection,
+  value: Record<string, unknown> | null
+): string {
+  const updatedAt = new Date().toISOString();
+  const db = getDatabase();
+
+  if (!value) {
+    db.prepare(`DELETE FROM app_settings WHERE key = ?`).run(key);
+    return updatedAt;
+  }
+
+  const compact = Object.fromEntries(
+    Object.entries(value).filter(([, entry]) => entry !== undefined)
+  );
+
+  db.prepare(
+    `INSERT INTO app_settings (key, value_json, updated_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`
+  ).run(key, serializeJson(compact), updatedAt);
+
+  return updatedAt;
 }
 
 function seedDefaults(db: SqliteDatabase): void {

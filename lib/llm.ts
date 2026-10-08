@@ -33,6 +33,7 @@
  */
 
 import { AppError, toErrorMessage } from "./errors";
+import { loadEffectiveSettings } from "./app-settings";
 
 export type LlmProviderKind = "openai-compatible" | "gemini-native";
 
@@ -168,12 +169,29 @@ function sleep(ms: number): Promise<void> {
 
 /**
  * True when the entry's env var holds a real key. Empty values and the
- * `.env.example` placeholder style (`your_api_key`) count as "not set", so
- * a freshly copied .env.local skips every entry cleanly instead of failing.
+ * `.env.example` placeholder style (`your_api_key`) count as "not set", so a
+ * freshly copied .env.local skips every entry cleanly instead of failing. This is
+ * the env-only view; `llmKeysFor` below is the one that also knows about a
+ * Settings -> AI providers key pool, and callers that must answer "can we run at
+ * all?" use that.
  */
 export function isLlmKeyConfigured(entry: LlmProviderEntry): boolean {
   const value = process.env[entry.apiKeyEnv]?.trim();
   return Boolean(value && !value.toLowerCase().includes("your_api_key"));
+}
+
+/**
+ * Keys this entry can try, in order: the stored pool first, then the env var. Every
+ * chain slot reads the same variable name, so a pool of three keys means three
+ * attempts before the next model is tried.
+ */
+export async function llmKeysFor(entry: LlmProviderEntry): Promise<string[]> {
+  const settings = await loadEffectiveSettings();
+  if (entry.apiKeyEnv.toUpperCase() === "GEMINI_API_KEY" && settings.ai.geminiApiKeys.length) {
+    return settings.ai.geminiApiKeys;
+  }
+  const value = process.env[entry.apiKeyEnv]?.trim() ?? "";
+  return value && !value.toLowerCase().includes("your_api_key") ? [value] : [];
 }
 
 /** Pull a human-readable message out of a provider error body, when possible. */
@@ -379,11 +397,12 @@ function effectiveMaxTokens(
   );
 }
 
-async function callEntry(
+/** One attempt with one key. Kept separate from the retry loops so callers stay readable. */
+async function callEntryWithKey(
   entry: LlmProviderEntry,
+  apiKey: string,
   request: LlmCompletionRequest,
 ): Promise<string> {
-  const apiKey = process.env[entry.apiKeyEnv]?.trim() ?? "";
   const maxTokens = effectiveMaxTokens(entry, request);
   return entry.kind === "gemini-native"
     ? callGeminiNative(entry, apiKey, request, maxTokens)
@@ -409,10 +428,19 @@ export async function completeWithFallback(
 ): Promise<LlmCompletionResult> {
   const attempts: string[] = [];
 
+  // The Gemini key pool is resolved once per completion, not per entry: all five
+  // chain slots share one env var, so re-reading it five times would be five queries
+  // for the same answer.
+  const keyPool = new Map<string, string[]>();
+  for (const entry of chain) {
+    if (!keyPool.has(entry.apiKeyEnv)) keyPool.set(entry.apiKeyEnv, await llmKeysFor(entry));
+  }
+
   for (const entry of chain) {
     const label = `${entry.provider} (${entry.model})`;
+    const keys = keyPool.get(entry.apiKeyEnv) ?? [];
 
-    if (!isLlmKeyConfigured(entry)) {
+    if (keys.length === 0) {
       const why = `${entry.apiKeyEnv} is not set`;
       console.log(`[LLM] Skipping ${label} — ${why}`);
       attempts.push(`${label}: ${why}`);
@@ -421,43 +449,65 @@ export async function completeWithFallback(
 
     const startedAt = Date.now();
     const maxAttempts = (entry.retries ?? 0) + 1;
-    console.log(`[LLM] Trying ${label} for "${request.task}" ...`);
+    // A free-tier key can be out of daily quota while the next key on the SAME model
+    // still works, so a transient failure rotates keys before giving up on the model.
+    // The retry delay is only paid for same-key retries, never for a key switch.
+    console.log(
+      `[LLM] Trying ${label} for "${request.task}" ...` +
+        (keys.length > 1 ? ` (${keys.length} keys)` : "")
+    );
 
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      try {
-        const text = await callEntry(entry, request);
-        const tookMs = Date.now() - startedAt;
-        console.log(`[LLM] ${label} handled "${request.task}" in ${tookMs}ms`);
-        return { text, entry, tookMs };
-      } catch (error) {
-        const failure =
-          error instanceof LlmCallFailure
-            ? error
-            : new LlmCallFailure(entry, toErrorMessage(error));
-        const transient =
-          failure.statusCode === 429 || failure.statusCode === 503;
+    for (let keyIndex = 0; keyIndex < keys.length; keyIndex++) {
+      let stopEntry = false;
 
-        if (transient && attempt < maxAttempts) {
-          console.warn(
-            `[LLM] ${label} got HTTP ${failure.statusCode} - transient, retrying in ${LLM_RETRY_DELAY_MS}ms ` +
-              `(attempt ${attempt + 1}/${maxAttempts})`,
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          const text = await callEntryWithKey(entry, keys[keyIndex], request);
+          const tookMs = Date.now() - startedAt;
+          console.log(
+            `[LLM] ${label} handled "${request.task}" in ${tookMs}ms` +
+              (keys.length > 1 ? ` (key #${keyIndex + 1})` : "")
           );
-          await sleep(LLM_RETRY_DELAY_MS);
-          continue;
-        }
+          return { text, entry, tookMs };
+        } catch (error) {
+          const failure =
+            error instanceof LlmCallFailure
+              ? error
+              : new LlmCallFailure(entry, toErrorMessage(error));
+          const transient = failure.statusCode === 429 || failure.statusCode === 503;
 
-        console.warn(
-          `[LLM] ${label} ${
-            transient
-              ? `was rate limited / unavailable (HTTP ${failure.statusCode}) - moving to the next provider`
-              : `failed (${failure.message}) - moving to the next provider`
-          }`,
-        );
-        attempts.push(
-          `${label}: ${failure.message}${transient ? ` (after ${attempt} attempt${attempt > 1 ? "s" : ""})` : ""}`,
-        );
-        break;
+          if (transient && attempt < maxAttempts) {
+            console.warn(
+              `[LLM] ${label} got HTTP ${failure.statusCode} - transient, retrying in ${LLM_RETRY_DELAY_MS}ms ` +
+                `(attempt ${attempt + 1}/${maxAttempts}, key #${keyIndex + 1})`
+            );
+            await sleep(LLM_RETRY_DELAY_MS);
+            continue;
+          }
+
+          if (transient && keyIndex + 1 < keys.length) {
+            console.warn(
+              `[LLM] ${label} was rate limited with key #${keyIndex + 1} - switching to key #${keyIndex + 2}`
+            );
+            break; // Next key, same model.
+          }
+
+          console.warn(
+            `[LLM] ${label} ${
+              transient
+                ? `was rate limited / unavailable (HTTP ${failure.statusCode}) - moving to the next provider`
+                : `failed (${failure.message}) - moving to the next provider`
+            }`
+          );
+          attempts.push(
+            `${label}: ${failure.message}${transient ? ` (after ${attempt} attempt${attempt > 1 ? "s" : ""})` : ""}`
+          );
+          stopEntry = true;
+          break;
+        }
       }
+
+      if (stopEntry) break;
     }
   }
 

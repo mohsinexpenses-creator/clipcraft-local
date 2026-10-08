@@ -8,6 +8,8 @@ import {
   updateVideo,
 } from '../lib/db';
 import { toErrorMessage } from '../lib/errors';
+import { loadEffectiveSettings } from '../lib/app-settings';
+import { applyStoredRuntimeSettings } from './runtime-settings';
 import {
   CLIP_QUEUE_NAME,
   QUEUE_POLL_INTERVAL_MS,
@@ -29,12 +31,11 @@ import { color, log } from '../lib/logger';
 // NOTE: .env.local is loaded by lib/errors.ts (loadEnvConfig), which this file imports
 // transitively - that only works when the worker is started from the repository root.
 
-function readConcurrency(envName: string, fallback: number): number {
-  const raw = Number(process.env[envName]?.trim());
-  if (Number.isFinite(raw) && raw > 0) return Math.max(1, Math.floor(raw));
-  return fallback;
-}
-
+/**
+ * Concurrency comes from `lib/app-settings.ts`, which already folds in the
+ * `.env.local` values (`WORKER_CONCURRENCY`, `VIRAL_CONCURRENCY`) and the built-in
+ * default of 1, so there is deliberately no second env reader here.
+ */
 async function transcribeVideoJob(
   data: TranscriptionJobData
 ): Promise<{ status: string; videoId: string; autoDetectQueued?: boolean }> {
@@ -162,6 +163,7 @@ async function markRecordRetrying(job: QueueJob): Promise<void> {
 
 async function executeJob(job: QueueJob, label: string, handler: JobHandler): Promise<void> {
   log.detail(`Received ${label} job ${job.id} (attempt ${job.attempts}/${job.maxAttempts}).`);
+  await applyStoredRuntimeSettings();
   try {
     const result = await handler(job, (progress) => {
       updateJobProgress(job.id, progress);
@@ -218,13 +220,18 @@ async function startWorker(): Promise<void> {
   // Opening the database applies the schema and enables WAL + the five-second busy wait.
   getDatabase();
   const recovered = recoverRunningJobs();
-  const clipConcurrency = readConcurrency('WORKER_CONCURRENCY', 1);
+  await applyStoredRuntimeSettings();
+  // Settings win, `.env.local` is the fallback, and both are folded together there.
+  // Loop counts cannot change while the loops are running, so this is the one value
+  // that needs a restart - the Settings page says so on the field.
+  const workerSettings = (await loadEffectiveSettings()).worker;
+  const clipConcurrency = workerSettings.clipConcurrency;
   const transcriptionConcurrency = 1;
-  const detectionConcurrency = readConcurrency('VIRAL_CONCURRENCY', 1);
+  const detectionConcurrency = workerSettings.viralConcurrency;
 
   log.section('ClipCraft worker starting');
   log.detail(`SQLite: ${getDatabasePath()} (WAL, busy_timeout=5000ms)`);
-  log.detail(`Clip concurrency: ${clipConcurrency}`);
+  log.detail(`Clip concurrency: ${clipConcurrency} (Settings -> Worker & limits; restart the worker to change it)`);
   log.detail(`Transcription concurrency: ${transcriptionConcurrency}`);
   log.detail(`Viral detection concurrency: ${detectionConcurrency}`);
   if (recovered > 0) log.warn(`Recovered ${recovered} job(s) left running by a previous worker process.`);

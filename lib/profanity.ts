@@ -90,7 +90,20 @@ export function containsProfanity(text: string): boolean {
  */
 export type ProfanityAudioMode = 'mute' | 'beep' | 'off';
 
+/**
+ * The worker sets this from the resolved settings before every job (see
+ * `worker/runtime-settings.ts`), so changing the mode on the Settings page applies to
+ * the next clip rather than the next process start. Left null - a fresh clone, or a
+ * process that never went through the worker - `PROFANITY_AUDIO_MODE` decides.
+ */
+let storedModeOverride: ProfanityAudioMode | null = null;
+
+export function setProfanityAudioModeOverride(mode: ProfanityAudioMode | null): void {
+  storedModeOverride = mode;
+}
+
 export function getProfanityAudioMode(): ProfanityAudioMode {
+  if (storedModeOverride) return storedModeOverride;
   const raw = (process.env.PROFANITY_AUDIO_MODE || 'mute').trim().toLowerCase();
   if (raw === 'beep' || raw === 'off') return raw;
   return 'mute';

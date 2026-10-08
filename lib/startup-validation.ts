@@ -5,7 +5,8 @@ import path from 'path';
 import { getDatabase, getDatabasePath, listPromptTemplates } from './db';
 import { toErrorMessage } from './errors';
 import { getFfmpegPath } from './ffmpeg';
-import { LLM_PROVIDER_CHAIN, isLlmKeyConfigured } from './llm';
+import { LLM_PROVIDER_CHAIN, llmKeysFor } from './llm';
+import { loadEffectiveSettings } from './app-settings';
 import {
   getPlannedTranscriptionEngine,
   getWhisperCliPath,
@@ -161,7 +162,7 @@ async function validateTranscription(): Promise<StartupCheck> {
   const modelPath = getWhisperModelPath();
 
   try {
-    const engine = getPlannedTranscriptionEngine();
+    const engine = await getPlannedTranscriptionEngine();
 
     if (engine.provider === 'deepgram') {
       return createCheck({
@@ -214,7 +215,22 @@ async function validateTranscription(): Promise<StartupCheck> {
 }
 
 async function validateAiProvider(): Promise<StartupCheck> {
-  const withKeys = LLM_PROVIDER_CHAIN.filter(isLlmKeyConfigured);
+  // Keys may live in the app settings instead of the env file, so the chain is asked
+  // the same question the LLM layer asks at call time.
+  const pool = (await loadEffectiveSettings()).ai.geminiApiKeys;
+  const entries = await Promise.all(LLM_PROVIDER_CHAIN.map(async (entry) => ({ entry, keys: await llmKeysFor(entry) })));
+  const withKeys = entries.filter(({ keys }) => keys.length > 0).map(({ entry }) => entry);
+
+  if (pool.length > 1 && withKeys.length) {
+    return createCheck({
+      id: 'ai-provider',
+      label: 'AI provider',
+      status: 'ok',
+      summary:
+        `LLM fallback chain ready with a ${pool.length}-key pool - first active: ${withKeys[0].provider} (${withKeys[0].model}).`,
+      details: `Keys are managed in Settings -> AI providers; a rate-limited key rotates to the next one before the next model is tried.`,
+    });
+  }
 
   if (withKeys.length === 0) {
     return createCheck({
@@ -226,15 +242,17 @@ async function validateAiProvider(): Promise<StartupCheck> {
         (entry, index) => `${index + 1}. ${entry.provider} ${entry.model} (needs ${entry.apiKeyEnv})`
       ).join(' • '),
       resolution:
-        'Set GEMINI_API_KEY in .env.local (see .env.example) - the chain runs on ' +
-        'Google AI Studio slots only.',
+        'Add a key under Settings -> AI providers, or set GEMINI_API_KEY in .env.local ' +
+        '(see .env.example) - the chain runs on Google AI Studio slots only.',
     });
   }
 
-  const details = LLM_PROVIDER_CHAIN.map(
-    (entry, index) =>
+  const details = entries.map(
+    ({ entry, keys }, index) =>
       `${index + 1}. ${entry.provider} (${entry.model}) - ${
-        isLlmKeyConfigured(entry) ? 'key set' : `skipped, ${entry.apiKeyEnv} not set`
+        keys.length > 0
+          ? `${keys.length} key${keys.length > 1 ? 's' : ''} available`
+          : `skipped, no key for ${entry.apiKeyEnv}`
       }`
   );
 

@@ -76,7 +76,7 @@ test('SQLite schema is versioned, indexed, WAL-enabled, and has a five-second bu
   const version = db.prepare('SELECT version FROM schema_version WHERE id = 1').get() as
     | { version: number }
     | undefined;
-  assert.deepEqual(version, { version: 3 });
+  assert.deepEqual(version, { version: 4 });
 
   // v3 is the additive pipeline column: the per-video automation settings
   // (auto-detect / auto-render + AI clip options) captured at upload time.
@@ -86,6 +86,19 @@ test('SQLite schema is versioned, indexed, WAL-enabled, and has a five-second bu
     )
   );
   assert.ok(videoColumns.has('pipeline_json'), 'videos.pipeline_json is missing');
+
+  // v4 is the Settings-page table: one JSON document per section, and only for
+  // sections the user actually saved - so an empty table means "env + defaults".
+  const settingsColumns = new Set(
+    (db.prepare('PRAGMA table_info(app_settings)').all() as Array<{ name: string }>).map((row) => row.name)
+  );
+  assert.deepEqual([...settingsColumns].sort(), ['key', 'updated_at', 'value_json']);
+  assert.deepEqual(db.prepare('SELECT COUNT(*) AS count FROM app_settings').get(), { count: 0 });
+  assert.throws(
+    () => db.prepare(`INSERT INTO app_settings (key, value_json, updated_at) VALUES ('bogus', '{}', 'now')`).run(),
+    /CHECK constraint failed/,
+    'an unknown settings section must not be storable'
+  );
 
   // A legacy database (v1/v2 without the column) migrates without touching rows.
   const legacy = new Database(':memory:');
@@ -105,7 +118,11 @@ test('SQLite schema is versioned, indexed, WAL-enabled, and has a five-second bu
     initializeSchema(legacy);
     assert.deepEqual(
       legacy.prepare('SELECT version FROM schema_version WHERE id = 1').get(),
-      { version: 3 }
+      { version: 4 }
+    );
+    assert.ok(
+      legacy.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'app_settings'").get(),
+      'the v4 migration must create app_settings on an existing database'
     );
     assert.deepEqual(
       legacy.prepare('SELECT id, original_name, pipeline_json FROM videos').get(),

@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import Link from 'next/link';
 import { VideoUploader } from '@/components/video-uploader';
 import { AutomationPanel } from '@/components/pipeline-settings';
 import { usePipelineDefaults } from '@/components/use-pipeline-defaults';
@@ -36,8 +37,12 @@ export function UploadWorkspace() {
         </div>
         <AutomationPanel value={defaults} onChange={setDefaults} />
         <p className="mt-3 text-[11px] leading-snug text-muted-foreground">
-          These settings are stored on the video when it finishes uploading, so you can change them later
-          per video from the dashboard.
+          Sent with the upload and stored on that video, so the chain keeps these settings after a reload -
+          and you can change them later per video from the dashboard.{" "}
+          <Link href="/settings" className="font-medium text-foreground underline-offset-2 hover:underline">
+            Manage defaults in Settings
+          </Link>
+          .
         </p>
       </section>
     </div>

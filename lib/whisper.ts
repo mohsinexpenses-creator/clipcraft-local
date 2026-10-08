@@ -5,6 +5,7 @@ import path from 'path';
 import { extractAudio16kMono } from './ffmpeg';
 import { AppError, toErrorMessage } from './errors';
 import { transcribeWithDeepgram } from './deepgram';
+import { loadEffectiveSettings } from './app-settings';
 import { TranscriptData, TranscriptSegment, WordTimestamp } from './types';
 
 export interface TranscriptionEngineInfo {
@@ -140,12 +141,29 @@ function getWhisperTimeoutMs(audioSeconds: number): number {
   return estimated;
 }
 
-export function getPlannedTranscriptionEngine(): TranscriptionEngineInfo {
-  if (process.env.DEEPGRAM_API_KEY?.trim() && !looksLikePlaceholder(process.env.DEEPGRAM_API_KEY ?? '')) {
+/**
+ * Which engine a transcription would use, decided the same way the run itself decides:
+ * Settings -> AI providers first, `.env.local` second. `transcriptionProvider` lets the
+ * user force one engine - forced means a missing setup surfaces as an error instead of
+ * quietly falling back.
+ */
+export async function getPlannedTranscriptionEngine(): Promise<TranscriptionEngineInfo> {
+  const settings = await loadEffectiveSettings();
+  const choice = settings.ai.transcriptionProvider;
+  const deepgramKey = settings.ai.deepgramApiKey;
+
+  if (choice === 'deepgram' || (choice === 'auto' && deepgramKey)) {
+    if (!deepgramKey) {
+      throw new AppError('Transcription is forced to Deepgram, but no Deepgram API key is configured.', {
+        status: 500,
+        resolution:
+          'Add a key under Settings -> AI providers (or DEEPGRAM_API_KEY in .env.local), or set the provider back to "auto".',
+      });
+    }
     return {
       provider: 'deepgram',
       label: 'Deepgram',
-      model: process.env.DEEPGRAM_MODEL?.trim() || 'nova-2',
+      model: settings.ai.deepgramModel || 'nova-2',
     };
   }
 
@@ -186,7 +204,7 @@ export async function transcribeVideo(videoPath: string): Promise<TranscriptData
   const videoDir = path.dirname(videoPath);
   const audioWavPath = path.join(videoDir, 'audio_16k.wav');
   const jsonOutBase = path.join(videoDir, 'transcript_out');
-  const engine = getPlannedTranscriptionEngine();
+  const engine = await getPlannedTranscriptionEngine();
 
   console.log(`[Transcription] Extracting 16kHz mono audio from ${videoPath}...`);
   await extractAudio16kMono(videoPath, audioWavPath);

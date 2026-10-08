@@ -222,7 +222,7 @@ export async function buildVideoRecord(
   let transcriptionProvider: VideoRecord['transcriptionProvider'];
   let transcriptionModel: string | undefined;
   try {
-    const engine = getPlannedTranscriptionEngine();
+    const engine = await getPlannedTranscriptionEngine();
     transcriptionProvider = engine.provider;
     transcriptionModel = engine.model;
   } catch (error) {

@@ -21,7 +21,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
  * Same panel, same clamping, no duplicated form.
  */
 
-interface NumberFieldProps {
+export interface NumberFieldProps {
   id: string;
   value: number;
   onCommit: (next: number) => void;
@@ -36,7 +36,7 @@ interface NumberFieldProps {
  * string, so clearing the field or typing an intermediate value never fights the
  * min/max clamp. The value is committed - and only then clamped - on blur/Enter.
  */
-function NumberField({ id, value, onCommit, min, max, step = 1, disabled }: NumberFieldProps) {
+export function NumberField({ id, value, onCommit, min, max, step = 1, disabled }: NumberFieldProps) {
   const [editing, setEditing] = React.useState(false);
   // Re-mounting with a fresh draft when the outside value changes is what lets the
   // field hold "12" or "" mid-edit without the clamp fighting every keystroke.

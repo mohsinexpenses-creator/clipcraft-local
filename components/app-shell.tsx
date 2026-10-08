@@ -8,6 +8,7 @@ import {
   LayoutDashboard,
   Menu,
   MessageSquareText,
+  Settings2,
   ShieldCheck,
   SlidersHorizontal,
   Upload,
@@ -34,6 +35,7 @@ const NAV_ITEMS = [
     hint: "Caption, hook and CTA styles",
   },
   { label: "Prompts", href: "/prompt-templates", icon: MessageSquareText, hint: "AI prompt templates" },
+  { label: "Settings", href: "/settings", icon: Settings2, hint: "Pipeline + render defaults, keys, worker" },
   { label: "Startup check", href: "/startup-validation", icon: ShieldCheck, hint: "Verify binaries and keys" },
 ] as const
 

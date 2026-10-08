@@ -57,7 +57,7 @@ export async function POST(
 
     // Fail fast, in the request, if no engine could ever run - better than queueing a
     // job that immediately errors in the worker.
-    const engine = getPlannedTranscriptionEngine();
+    const engine = await getPlannedTranscriptionEngine();
 
     video.status = 'transcribing';
     video.transcriptionProvider = engine.provider;

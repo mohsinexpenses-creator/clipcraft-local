@@ -65,6 +65,34 @@ pauses the chain: it recovers at the step where it stopped.
    with a SQLite record (status, score, layout, engines, presets). The dashboard
    streams it back over a Range-enabled HTTP endpoint for preview/download.
 
+## Settings (`/settings`)
+
+Every default the studio asks you for lives in one sidebar page, in five sections:
+
+| Section | What it holds |
+|---|---|
+| Pipeline defaults | auto-detect / auto-render and the viral-detection request (clip count, duration window, hook/CTA text) |
+| Render clip defaults | caption engine, layout, filter preset, caption + hook/CTA style presets, hook/CTA durations |
+| AI providers | Gemini key pool, Deepgram key + model, and which transcription engine to use |
+| Worker | clip / viral-detection / Remotion concurrency |
+| Profanity | what happens to the *audio* of a flagged word (mute / beep / leave it) |
+
+How the values combine — the same rule everywhere, in both processes:
+
+**a value saved on this page → `.env.local` → the built-in default.**
+Each row shows where its value is coming from, "Reset to env" removes a section's
+override, and a fresh clone still works from `.env.local` alone. Pipeline and render
+defaults are **snapshotted onto the video at upload**, so a clip already being rendered
+is never changed from under the worker; editing a clip in the studio always wins over the
+default. Keys are stored in the local SQLite file (same trust boundary as `.env.local`)
+and the API only ever returns them masked — pasting a masked value back means "keep it".
+
+The Verify column calls the real upstream APIs with `fetch` and labels each key by its
+mask, so a rotated key is obvious. Unsaved keys can be tested first (paste → test →
+save). Everything applies to the next job except the two loop sizes: **clip and detection
+concurrency need `npm run worker` restarted**, because those are read when its polling
+loops start (the page says so while such an override is saved).
+
 ## Tech stack
 
 | Layer | Choice |
@@ -112,8 +140,10 @@ app/                    Next.js pages + API routes
   caption-presets/      caption style preset manager (live preview)
   prompt-templates/     edit the LLM prompt templates
   startup-validation/   pre-flight checks UI
+  settings/             defaults for pipeline + render, AI keys, worker, profanity
   api/                  videos, clips, transcript, detect-viral, upload(+session),
-                        media (Range file server), presets, templates
+                        media (Range file server), presets, templates, settings (+
+                        settings/verify, which probes Google and Deepgram)
 lib/                    shared server logic
   llm.ts                Gemini fallback chain (config array, plain fetch)
   ai.ts                 prompt templates, JSON parsing, exact-count top-up
@@ -123,6 +153,9 @@ lib/                    shared server logic
   pipeline.ts           the automatic chain: transcript -> detection -> render
   pipeline-status.ts    derives the live stage/progress from queue + clip rows
   pipeline-defaults.ts  clip options + their limits, shared by client and server
+  app-settings.ts       the one resolver for stored settings: precedence, clamping,
+                        key masking, verification payloads (no raw secrets out)
+  settings-verify.ts    live HEAD/GET probes against Gemini + Deepgram
   clip-edits.ts         validates a single-clip edit before it is saved/rendered
   profanity.ts          word masking + render-time mute/beep windows
   overlay-bg.ts         solid/gradient card-background picker helpers

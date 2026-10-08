@@ -140,6 +140,152 @@ export const DEFAULT_RENDER_OPTIONS = {
   captionEngine: 'remotion',
 } as const;
 
+/* ==========================================================================
+ * App settings (Settings page -> `app_settings` table)
+ *
+ * Everything here follows one rule: a stored value wins, otherwise the value
+ * from `.env.local` is used, otherwise the built-in default. Secrets are only
+ * ever stored in the local SQLite file - the same place `.env.local` keeps them
+ * - and are never returned by an API response in full (see `maskSecret`).
+ * ========================================================================== */
+
+/** One row of `app_settings`; the key is the section name. */
+export const APP_SETTINGS_SECTIONS = ['pipeline', 'render', 'ai', 'worker', 'profanity'] as const;
+export type AppSettingsSection = (typeof APP_SETTINGS_SECTIONS)[number];
+
+/** Where an effective value came from - shown in the UI so env and app never look magical. */
+export type SettingsSource = 'app' | 'env' | 'default';
+
+export interface RenderDefaults {
+  /** `remotion` (premium animated overlays) or `native` (FFmpeg ASS captions). */
+  captionEngine: CaptionEngine;
+  layout: ClipLayout;
+  /** Id from `DEFAULT_FILTER_PRESETS`. */
+  filterPreset: string;
+  /** null = whatever the caption-preset table marks as its default. */
+  captionPresetId: string | null;
+  /** null = the default overlay style preset of that kind. */
+  hookStylePresetId: string | null;
+  ctaStylePresetId: string | null;
+  /**
+   * Hook intro / CTA card length in seconds for clips nobody edited. 0 on the
+   * hook means "no hook replay", which is also what a clip with no hook text gets.
+   */
+  hookDuration: number;
+  ctaDuration: number;
+}
+
+export const DEFAULT_RENDER_SETTINGS: RenderDefaults = {
+  captionEngine: DEFAULT_RENDER_OPTIONS.captionEngine,
+  layout: DEFAULT_RENDER_OPTIONS.layout,
+  filterPreset: DEFAULT_RENDER_OPTIONS.filterPreset,
+  captionPresetId: null,
+  hookStylePresetId: null,
+  ctaStylePresetId: null,
+  hookDuration: 3,
+  ctaDuration: 2.5,
+};
+
+export type TranscriptionProviderChoice = 'auto' | 'deepgram' | 'whisper';
+
+export interface AiProviderSettings {
+  /**
+   * Google AI Studio keys, tried in order. Rotation is per model: a key that is
+   * rate limited moves on to the next key before the next model is tried.
+   * Empty means "use GEMINI_API_KEY from .env.local".
+   */
+  geminiApiKeys: string[];
+  /** Empty means "use DEEPGRAM_API_KEY from .env.local" (and no cloud transcription). */
+  deepgramApiKey: string;
+  /** Empty means DEEPGRAM_MODEL from .env.local, else `nova-2`. */
+  deepgramModel: string;
+  /**
+   * `auto` prefers Deepgram when a key is configured and falls back to local
+   * whisper.cpp. The other two force one engine (and a missing setup then
+   * surfaces as a real error, which is what "forced" should mean).
+   */
+  transcriptionProvider: TranscriptionProviderChoice;
+}
+
+export const DEFAULT_AI_SETTINGS: AiProviderSettings = {
+  geminiApiKeys: [],
+  deepgramApiKey: '',
+  deepgramModel: '',
+  transcriptionProvider: 'auto',
+};
+
+export const CONCURRENCY_LIMITS = { clip: { min: 1, max: 8 }, viral: { min: 1, max: 8 }, remotion: { min: 1, max: 32 } } as const;
+
+export interface WorkerSettings {
+  /** Simultaneous clip renders. Each one runs FFmpeg + headless Chrome. */
+  clipConcurrency: number;
+  /** Simultaneous viral-detection runs (LLM-bound, cheap). */
+  viralConcurrency: number;
+  /** Chrome tabs per render; null = half the CPU cores. */
+  remotionConcurrency: number | null;
+}
+
+export interface ProfanitySettings {
+  /** What happens to the AUDIO of a profane word; on-screen text is always masked. */
+  audioMode: 'mute' | 'beep' | 'off';
+}
+
+export const DEFAULT_PROFANITY_SETTINGS: ProfanitySettings = { audioMode: 'mute' };
+
+export interface AppSettings {
+  pipeline: PipelineOptions;
+  render: RenderDefaults;
+  ai: AiProviderSettings;
+  worker: WorkerSettings;
+  profanity: ProfanitySettings;
+}
+
+/** Per-key origin of every effective value, for the UI's `from .env` / `from app` chips. */
+export type SettingsSources = {
+  [K in AppSettingsSection]?: Partial<Record<string, SettingsSource>>;
+};
+
+/** What `.env.local` contributes for one variable, without leaking its value. */
+export interface EnvHint {
+  name: string;
+  /** True when this process can see the variable. */
+  present: boolean;
+  /** The value from the env file, masked - empty when it is not a usable secret. */
+  masked: string;
+  /** The name appears in `.env.local` even when this process has not loaded it. */
+  inEnvFile: boolean;
+}
+
+export interface SettingsLimits {
+  clipCount: { min: number; max: number };
+  minClipDuration: { min: number; max: number };
+  concurrency: typeof CONCURRENCY_LIMITS;
+  overlayDuration: { min: number; max: number };
+  maxKeyPool: number;
+  filterPresets: Array<{ id: string; name: string; description: string }>;
+  engines: readonly string[];
+  layouts: readonly string[];
+  audioModes: readonly string[];
+  transcriptionProviders: readonly string[];
+}
+
+/**
+ * What `GET /api/settings` returns. Secrets are masked everywhere in here; `env` and
+ * `limits` let the page explain where a value came from and what it may be set to.
+ */
+export interface AppSettingsSnapshot {
+  /** Stored (raw) values per section - secrets are masked, never sent in full. */
+  stored: Partial<Record<AppSettingsSection, unknown>>;
+  effective: AppSettings;
+  sources: SettingsSources;
+  /** Sections the user has actually saved something for. */
+  configured: AppSettingsSection[];
+  /** Stored values a running worker only picks up again after it is restarted. */
+  restartRequired: string[];
+  env: Record<string, EnvHint>;
+  limits: SettingsLimits;
+}
+
 /**
  * Allowed values of the AI's enum fields, exactly as the viral_detection prompt
  * schema lists them. lib/viral-response.ts rejects any other value.

@@ -1,15 +1,24 @@
 import fs from 'fs';
 import { TranscriptData, TranscriptSegment, WordTimestamp } from './types';
-import { AppError, ensureEnvVar, toErrorMessage } from './errors';
+import { AppError, toErrorMessage } from './errors';
+import { resolveDeepgram } from './app-settings';
 
 export async function transcribeWithDeepgram(audioWavPath: string): Promise<TranscriptData> {
-  const apiKey = ensureEnvVar('DEEPGRAM_API_KEY', 'transcribe audio with Deepgram');
+  // Key and model come from Settings -> AI providers, with `.env.local` underneath.
+  const { apiKey, model } = await resolveDeepgram();
+  if (!apiKey) {
+    throw new AppError('DEEPGRAM_API_KEY is not configured.', {
+      status: 500,
+      resolution:
+        'Add a key under Settings -> AI providers, or set DEEPGRAM_API_KEY in .env.local, so ClipCraft can transcribe audio with Deepgram.',
+    });
+  }
 
   try {
-    console.log('[Deepgram] Sending audio to Deepgram REST API (Nova-2 model)...');
+    console.log(`[Deepgram] Sending audio to Deepgram REST API (${model} model)...`);
     const audioBuffer = fs.readFileSync(audioWavPath);
 
-    const url = 'https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true&punctuate=true&paragraphs=true';
+    const url = `https://api.deepgram.com/v1/listen?model=${encodeURIComponent(model)}&smart_format=true&punctuate=true&paragraphs=true`;
     const response = await fetch(url, {
       method: 'POST',
       headers: {

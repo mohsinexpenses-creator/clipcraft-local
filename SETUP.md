@@ -104,6 +104,31 @@ Both `npm run dev` and `npm run worker` load `.env.local` (via `@next/env`'s
 
 ---
 
+### Defaults live in two places
+
+`.env.local` is the **fallback**, and the app has a **Settings** page (`/settings`, in the
+sidebar) that saves overrides for the same values into `app_settings` rows in the SQLite
+file: pipeline defaults, render clip defaults, the Gemini key pool, Deepgram key + model
++ engine choice, worker concurrency, and the profanity audio mode. Precedence is always
+*stored value → `.env.local` → built-in default*, and every row on that page tells you
+which of the three won.
+
+That split is deliberate:
+
+- a fresh clone (or a script like `npm run verify:clip`) keeps working from `.env.local`
+  alone, with nothing to click first;
+- the pool in `GEMINI_API_KEY` may hold several keys separated by commas, semicolons, or
+  newlines — `lib/llm.ts` tries each one before moving to the next model;
+- keys saved in the app are returned **masked** (`AIza…9f3`). Pasting a masked entry back
+  and saving keeps the stored key, so you can reorder the pool without retyping it.
+  Secrets live in the same git-ignored SQLite file as `.env.local`, so the trust boundary
+  does not change;
+- **clip and detection concurrency need `npm run worker` restarted** — the polling loops
+  are sized when the process starts, and the page says so while an override is saved.
+  Everything else, including Chrome tabs per render, transcription, render defaults and
+  the profanity mode, applies to the next job. Use **Test** on the AI card to check a key
+  against Google or Deepgram before saving — unsaved keys are testable too.
+
 ## 4. SQLite database and job queue
 
 No separate database or queue process is required. The web server and worker open the

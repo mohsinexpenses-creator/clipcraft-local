@@ -94,7 +94,7 @@ export async function POST(request: Request) {
     // enqueueClipJob() writes the edits and the job in one transaction, so an
     // active-job conflict can never leave the row looking "pending" while no
     // render was actually queued.
-    await enqueueClipJob(jobDataFromClip(existingClip));
+    await enqueueClipJob(await jobDataFromClip(existingClip));
     const queuedClip = await getClip(existingClip._id);
 
     return NextResponse.json({

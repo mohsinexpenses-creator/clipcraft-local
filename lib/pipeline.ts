@@ -24,12 +24,12 @@ import {
   findActiveJob,
 } from './queue';
 import { sanitizePipelineOptions } from './pipeline-defaults';
+import { loadEffectiveSettings } from './app-settings';
 import {
-  CaptionEngine,
   ClipLayout,
   ClipRecord,
-  DEFAULT_RENDER_OPTIONS,
   JobData,
+  RenderDefaults,
   PipelineOptions,
   VideoRecord,
   ViralDetectionOptions,
@@ -52,17 +52,26 @@ import {
  * FFmpeg pipeline are unchanged and stay the single implementation of a render.
  */
 
-/** Clip render configuration used when nobody has opened the editor yet. */
-export function defaultCaptionEngine(): CaptionEngine {
-  const configured = process.env.AUTO_RENDER_CAPTION_ENGINE?.trim().toLowerCase();
-  return configured === 'native' ? 'native' : DEFAULT_RENDER_OPTIONS.captionEngine;
+/**
+ * Render configuration a clip gets when nobody has opened the editor yet:
+ * Settings page when something is stored there, `AUTO_RENDER_CAPTION_ENGINE` for
+ * the engine, and the built-in defaults otherwise.
+ */
+export async function resolveRenderDefaults(): Promise<RenderDefaults> {
+  const settings = await loadEffectiveSettings();
+  return settings.render;
 }
 
-/** The render payload for one clip: stored values first, explicit edits on top. */
-export function jobDataFromClip(
+/**
+ * The render payload for one clip: stored values first, explicit edits on top,
+ * app render defaults underneath. Stored values always win - a clip the user
+ * edited must re-render exactly as it did before.
+ */
+export async function jobDataFromClip(
   clip: ClipRecord,
   overrides: Partial<JobData> = {}
-): JobData {
+): Promise<JobData> {
+  const render = await resolveRenderDefaults();
   return {
     clipId: clip._id,
     videoId: clip.videoId,
@@ -72,10 +81,10 @@ export function jobDataFromClip(
     hookText: clip.hookText ?? '',
     ctaText: clip.ctaText ?? '',
     ctaDuration: clip.ctaDuration ?? 0,
-    filterPreset: clip.filterPreset || DEFAULT_RENDER_OPTIONS.filterPreset,
+    filterPreset: clip.filterPreset || render.filterPreset,
     captionPresetId: clip.captionPresetId ?? '',
-    layout: (clip.layout ?? DEFAULT_RENDER_OPTIONS.layout) as ClipLayout,
-    captionEngine: clip.captionEngine ?? defaultCaptionEngine(),
+    layout: (clip.layout ?? render.layout) as ClipLayout,
+    captionEngine: clip.captionEngine ?? render.captionEngine,
     hookStylePresetId: clip.hookStylePresetId,
     ctaStylePresetId: clip.ctaStylePresetId,
     ...overrides,
@@ -247,6 +256,9 @@ export async function runViralDetection(
   }
 
   const defaultCaptionPreset = await getDefaultCaptionPreset();
+  // Settings -> "Render clip defaults". Everything below is what a clip looks like
+  // before anyone opens the editor, so an unattended run uses exactly these values.
+  const render = await resolveRenderDefaults();
   const createdClips: ClipRecord[] = [];
 
   // One timestamp for the whole run: the clips of a detection run tie on
@@ -286,17 +298,20 @@ export async function runViralDetection(
       start: segment.start,
       end: segment.end,
       // hookDuration 0 means "no hook intro / no hook overlay" downstream.
-      hookDuration: options.includeHookText && hookText ? 3 : 0,
+      hookDuration: options.includeHookText && hookText ? render.hookDuration : 0,
       hookText,
       ctaText,
       // 0 = no CTA overlay (CTA switch was off for this run).
-      ctaDuration: options.includeCta ? 2.5 : 0,
-      // Default render configuration: the database defaults for the presets, so
-      // an automatic render uses exactly what the user configured in settings.
-      filterPreset: DEFAULT_RENDER_OPTIONS.filterPreset,
-      captionPresetId: defaultCaptionPreset?._id ?? 'preset-bold-yellow',
-      layout: DEFAULT_RENDER_OPTIONS.layout,
-      captionEngine: defaultCaptionEngine(),
+      ctaDuration: options.includeCta ? render.ctaDuration : 0,
+      // Default render configuration: the app settings for the knobs, the database
+      // defaults for the presets, so an automatic render uses exactly what the user
+      // configured in Settings -> Render clip defaults.
+      filterPreset: render.filterPreset,
+      captionPresetId: render.captionPresetId ?? defaultCaptionPreset?._id ?? 'preset-bold-yellow',
+      layout: render.layout,
+      captionEngine: render.captionEngine,
+      ...(render.hookStylePresetId ? { hookStylePresetId: render.hookStylePresetId } : {}),
+      ...(render.ctaStylePresetId ? { ctaStylePresetId: render.ctaStylePresetId } : {}),
       // Everything the AI said about the clip, stored as returned; the card,
       // the analysis panel and the worker read it from here.
       aiAnalysis: segment.clip,
@@ -345,7 +360,7 @@ export async function queueRenders(
 
   for (const clip of clips) {
     try {
-      await enqueueClipJob(jobDataFromClip(clip));
+      await enqueueClipJob(await jobDataFromClip(clip));
       const withJob = await getClip(clip._id);
       queued.push(withJob ?? clip);
     } catch (error) {
