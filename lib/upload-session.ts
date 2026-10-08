@@ -12,7 +12,7 @@ import {
   resolveUploadDir,
   validateUploadFileName,
 } from './upload';
-import { VideoRecord } from './types';
+import { PipelineOptions, VideoRecord } from './types';
 
 /**
  * Resumable, chunked upload sessions for long recordings.
@@ -368,7 +368,15 @@ async function* webStreamToAsyncIterable(
  * If the record cannot be saved (SQLite unavailable, ...) the file is moved back into the
  * session so the user can retry the finish step without re-uploading gigabytes.
  */
-export async function finalizeUploadSession(id: string): Promise<{
+/**
+ * `pipeline` is the automation the upload asked for (auto-detect / auto-render +
+ * the AI clip options). It is stored on the video record, so every later step -
+ * and every retry - uses the same configuration the user picked while uploading.
+ */
+export async function finalizeUploadSession(
+  id: string,
+  pipeline?: PipelineOptions
+): Promise<{
   video: VideoRecord;
   transcriptionQueued: boolean;
   receivedBytes: number;
@@ -403,7 +411,7 @@ export async function finalizeUploadSession(id: string): Promise<{
   await moveFile(dataPath, finalPath);
 
   try {
-    const { video, queued } = await registerUploadedVideo(originalName, storedName, finalPath);
+    const { video, queued } = await registerUploadedVideo(originalName, storedName, finalPath, pipeline);
     await removeSessionDir(id);
     console.log(
       `[Upload] Session ${id} finalized: ${formatBytes(session.receivedBytes)} -> ${finalPath}`

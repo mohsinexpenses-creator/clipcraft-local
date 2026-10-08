@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import Database from 'better-sqlite3';
 import {
   deleteCaptionPreset,
   deleteClip,
@@ -12,6 +13,7 @@ import {
   getPromptTemplate,
   getTextPreset,
   getVideo,
+  initializeSchema,
   listCaptionPresets,
   listClips,
   listOverlayStylePresets,
@@ -74,7 +76,45 @@ test('SQLite schema is versioned, indexed, WAL-enabled, and has a five-second bu
   const version = db.prepare('SELECT version FROM schema_version WHERE id = 1').get() as
     | { version: number }
     | undefined;
-  assert.deepEqual(version, { version: 2 });
+  assert.deepEqual(version, { version: 3 });
+
+  // v3 is the additive pipeline column: the per-video automation settings
+  // (auto-detect / auto-render + AI clip options) captured at upload time.
+  const videoColumns = new Set(
+    (db.prepare('PRAGMA table_info(videos)').all() as Array<{ name: string }>).map(
+      (row) => row.name
+    )
+  );
+  assert.ok(videoColumns.has('pipeline_json'), 'videos.pipeline_json is missing');
+
+  // A legacy database (v1/v2 without the column) migrates without touching rows.
+  const legacy = new Database(':memory:');
+  try {
+    legacy.exec(`
+      CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL, applied_at TEXT NOT NULL);
+      INSERT INTO schema_version (id, version, applied_at) VALUES (1, 2, '2025-01-01T00:00:00.000Z');
+      CREATE TABLE videos (
+        id TEXT PRIMARY KEY, original_name TEXT NOT NULL, file_name TEXT NOT NULL, file_base TEXT,
+        file_path TEXT NOT NULL, duration REAL NOT NULL, width INTEGER NOT NULL, height INTEGER NOT NULL,
+        file_size INTEGER NOT NULL, status TEXT NOT NULL, transcript_json TEXT, transcription_provider TEXT,
+        transcription_model TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      INSERT INTO videos (id, original_name, file_name, file_path, duration, width, height, file_size, status, created_at, updated_at)
+        VALUES ('v1', 'old.mp4', '001_old.mp4', '/tmp/001_old.mp4', 10, 1920, 1080, 1, 'transcribed', '2025-01-01', '2025-01-01');
+    `);
+    initializeSchema(legacy);
+    assert.deepEqual(
+      legacy.prepare('SELECT version FROM schema_version WHERE id = 1').get(),
+      { version: 3 }
+    );
+    assert.deepEqual(
+      legacy.prepare('SELECT id, original_name, pipeline_json FROM videos').get(),
+      { id: 'v1', original_name: 'old.mp4', pipeline_json: null },
+      'the v3 migration must not rewrite existing video rows'
+    );
+  } finally {
+    legacy.close();
+  }
 
   const tables = new Set(
     (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map(

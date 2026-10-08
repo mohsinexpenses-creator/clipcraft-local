@@ -24,12 +24,12 @@ import { AppError, toErrorMessage } from './errors';
 import { log } from './logger';
 import { completeWithFallback } from './llm';
 import {
-  DEFAULT_VIRAL_OPTIONS,
   PromptTemplate,
   TranscriptData,
   ViralDetectionOptions,
   ViralSegment,
 } from './types';
+import { resolveViralOptions } from './pipeline-defaults';
 import { parseViralResponse } from './viral-response';
 
 /**
@@ -88,38 +88,10 @@ async function requireTemplate(type: string): Promise<PromptTemplate> {
   return templateDoc;
 }
 
-/**
- * Effective options for one detection run: user values with fallbacks.
- * `maxClipDuration` is always >= `minClipDuration`.
- */
-export function resolveViralOptions(
-  partial?: Partial<ViralDetectionOptions> | null
-): Required<ViralDetectionOptions> {
-  const clipCount = Math.round(
-    Number.isFinite(Number(partial?.clipCount)) && Number(partial?.clipCount) > 0
-      ? Number(partial?.clipCount)
-      : DEFAULT_VIRAL_OPTIONS.clipCount
-  );
-  const minClipDuration = Math.max(
-    1,
-    Number.isFinite(Number(partial?.minClipDuration)) && Number(partial?.minClipDuration) > 0
-      ? Number(partial?.minClipDuration)
-      : DEFAULT_VIRAL_OPTIONS.minClipDuration
-  );
-  const maxClipDuration = Math.max(
-    minClipDuration,
-    Number.isFinite(Number(partial?.maxClipDuration)) && Number(partial?.maxClipDuration) > 0
-      ? Number(partial?.maxClipDuration)
-      : DEFAULT_VIRAL_OPTIONS.maxClipDuration
-  );
-  return {
-    clipCount,
-    minClipDuration,
-    maxClipDuration,
-    includeHookText: partial?.includeHookText ?? DEFAULT_VIRAL_OPTIONS.includeHookText,
-    includeCta: partial?.includeCta ?? DEFAULT_VIRAL_OPTIONS.includeCta,
-  };
-}
+// `resolveViralOptions` lives in lib/pipeline-defaults.ts - a dependency-free
+// module the browser can import too, so the settings panel clamps values exactly
+// the way the server does. Re-exported here for the existing callers.
+export { resolveViralOptions };
 
 /** Fill every supported {{placeholder}} (all occurrences) in a template. */
 function fillTemplate(template: string, values: Record<string, string | number>): string {

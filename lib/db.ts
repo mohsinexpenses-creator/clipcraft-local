@@ -6,9 +6,11 @@ import {
   CaptionPreset,
   ClipRecord,
   OverlayStylePreset,
+  PipelineOptions,
   PromptTemplate,
   TextPreset,
   TranscriptData,
+  VideoListEntry,
   VideoRecord,
 } from "./types";
 import {
@@ -42,9 +44,38 @@ interface VideoRow {
   transcript_json: string | null;
   transcription_provider: VideoRecord["transcriptionProvider"] | null;
   transcription_model: string | null;
+  pipeline_json: string | null;
   error: string | null;
   created_at: string;
   updated_at: string;
+}
+
+/** A `videos` row without the transcript blob, plus per-video clip aggregates. */
+interface VideoSummaryRow {
+  id: string;
+  original_name: string;
+  file_name: string;
+  file_base: string | null;
+  file_path: string;
+  duration: number;
+  width: number;
+  height: number;
+  file_size: number;
+  status: VideoRecord["status"];
+  transcription_provider: VideoRecord["transcriptionProvider"] | null;
+  transcription_model: string | null;
+  pipeline_json: string | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+  transcript_ready: number;
+  transcript_segments: number;
+  clip_count: number;
+  clip_done: number;
+  clip_active: number;
+  clip_queued: number;
+  clip_failed: number;
+  clip_progress: number;
 }
 
 interface ClipRow {
@@ -92,14 +123,35 @@ interface PromptTemplateRow {
 const VIDEO_COLUMNS = `
   id, original_name, file_name, file_base, file_path, duration, width, height,
   file_size, status, transcript_json, transcription_provider, transcription_model,
-  error, created_at, updated_at
+  pipeline_json, error, created_at, updated_at
 `;
 
 const CLIP_COLUMNS = `
   id, video_id, start, end, output_path, status, progress, record_json, created_at, updated_at
 `;
 
-const CURRENT_SCHEMA_VERSION = 2;
+/** Everything the dashboard list needs, minus the transcript blob (it can be MBs). */
+const VIDEO_SUMMARY_SELECT = `
+  v.id, v.original_name, v.file_name, v.file_base, v.file_path, v.duration, v.width,
+  v.height, v.file_size, v.status, v.transcription_provider, v.transcription_model,
+  v.pipeline_json, v.error, v.created_at, v.updated_at,
+  (v.transcript_json IS NOT NULL) AS transcript_ready,
+  CASE
+    WHEN v.transcript_json IS NOT NULL AND json_valid(v.transcript_json)
+      THEN COALESCE(json_array_length(json_extract(v.transcript_json, '$.segments')), 0)
+    ELSE 0
+  END AS transcript_segments,
+  (SELECT COUNT(*) FROM clips c WHERE c.video_id = v.id) AS clip_count,
+  (SELECT COUNT(*) FROM clips c WHERE c.video_id = v.id AND c.status = 'done') AS clip_done,
+  (SELECT COUNT(*) FROM clips c WHERE c.video_id = v.id AND c.status = 'processing') AS clip_active,
+  (SELECT COUNT(*) FROM clips c WHERE c.video_id = v.id AND c.status = 'pending') AS clip_queued,
+  (SELECT COUNT(*) FROM clips c WHERE c.video_id = v.id AND c.status = 'failed') AS clip_failed,
+  (SELECT COALESCE(ROUND(AVG(CASE c.status
+      WHEN 'done' THEN 100 WHEN 'failed' THEN 0 ELSE COALESCE(c.progress, 0) END)), 0)
+     FROM clips c WHERE c.video_id = v.id) AS clip_progress
+`;
+
+const CURRENT_SCHEMA_VERSION = 3;
 
 /** Absolute path used by the web process and the worker. */
 export function getDatabasePath(): string {
@@ -354,9 +406,31 @@ function migrateSchemaV2(db: SqliteDatabase): void {
   `);
 }
 
+/**
+ * v3 - the automatic pipeline.
+ *
+ * Purely additive: one JSON column holding the per-video automation settings
+ * captured at upload (auto-detect / auto-render + the AI clip options). The
+ * pipeline stage itself is never stored; it is derived from the jobs and clip
+ * rows that already exist (see lib/pipeline-status.ts), so an interrupted run
+ * can never leave a half-written status behind.
+ */
+function migrateSchemaV3(db: SqliteDatabase): void {
+  const hasVideos = db
+    .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'videos'`)
+    .get();
+  if (!hasVideos) return;
+
+  const columns = db.prepare(`PRAGMA table_info(videos)`).all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === "pipeline_json")) {
+    db.exec(`ALTER TABLE videos ADD COLUMN pipeline_json TEXT`);
+  }
+}
+
 const SCHEMA_MIGRATIONS: Record<number, (db: SqliteDatabase) => void> = {
   1: migrateSchemaV1,
   2: migrateSchemaV2,
+  3: migrateSchemaV3,
 };
 
 export function initializeSchema(db: SqliteDatabase): void {
@@ -535,7 +609,7 @@ function mapVideo(row: VideoRow): VideoRecord {
     height: row.height,
     fileSize: row.file_size,
     status: row.status,
-    ...(row.transcript_json !== null
+    ...(typeof row.transcript_json === "string"
       ? {
           transcript: parseJson<TranscriptData>(
             row.transcript_json,
@@ -549,9 +623,52 @@ function mapVideo(row: VideoRow): VideoRecord {
     ...(row.transcription_model !== null
       ? { transcriptionModel: row.transcription_model }
       : {}),
+    ...(row.pipeline_json
+      ? { pipeline: parseJson<PipelineOptions>(row.pipeline_json, "video pipeline") }
+      : {}),
     ...(row.error !== null ? { error: row.error } : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+/** One library row: the video record (no transcript) plus its SQL clip tally. */
+function mapVideoSummary(row: VideoSummaryRow): VideoListEntry {
+  return {
+    video: {
+      _id: row.id,
+      originalName: row.original_name,
+      fileName: row.file_name,
+      ...(row.file_base !== null ? { fileBase: row.file_base } : {}),
+      filePath: row.file_path,
+      duration: row.duration,
+      width: row.width,
+      height: row.height,
+      fileSize: row.file_size,
+      status: row.status,
+      ...(row.transcription_provider !== null
+        ? { transcriptionProvider: row.transcription_provider }
+        : {}),
+      ...(row.transcription_model !== null
+        ? { transcriptionModel: row.transcription_model }
+        : {}),
+      ...(row.pipeline_json
+        ? { pipeline: parseJson<PipelineOptions>(row.pipeline_json, "video pipeline") }
+        : {}),
+      ...(row.error !== null ? { error: row.error } : {}),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      transcriptReady: row.transcript_ready === 1,
+      transcriptSegmentCount: row.transcript_segments,
+    },
+    counts: {
+      clips: row.clip_count,
+      done: row.clip_done,
+      active: row.clip_active,
+      queued: row.clip_queued,
+      failed: row.clip_failed,
+      progress: row.clip_progress,
+    },
   };
 }
 
@@ -836,8 +953,8 @@ export async function saveVideo(video: VideoRecord): Promise<VideoRecord> {
     INSERT INTO videos (
       id, original_name, file_name, file_base, file_path, duration, width, height,
       file_size, status, transcript_json, transcription_provider, transcription_model,
-      error, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      pipeline_json, error, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       original_name = excluded.original_name,
       file_name = excluded.file_name,
@@ -851,6 +968,7 @@ export async function saveVideo(video: VideoRecord): Promise<VideoRecord> {
       transcript_json = COALESCE(excluded.transcript_json, videos.transcript_json),
       transcription_provider = excluded.transcription_provider,
       transcription_model = excluded.transcription_model,
+      pipeline_json = COALESCE(excluded.pipeline_json, videos.pipeline_json),
       error = excluded.error,
       created_at = videos.created_at,
       updated_at = excluded.updated_at
@@ -869,6 +987,7 @@ export async function saveVideo(video: VideoRecord): Promise<VideoRecord> {
     video.transcript ? serializeJson(video.transcript) : null,
     video.transcriptionProvider ?? null,
     video.transcriptionModel ?? null,
+    video.pipeline ? serializeJson(video.pipeline) : null,
     video.error ?? null,
     video.createdAt,
     video.updatedAt,
@@ -890,7 +1009,9 @@ export function updateVideoRecordSync(
       original_name = ?, file_name = ?, file_base = ?, file_path = ?, duration = ?,
       width = ?, height = ?, file_size = ?, status = ?,
       transcript_json = COALESCE(?, transcript_json),
-      transcription_provider = ?, transcription_model = ?, error = ?, updated_at = ?
+      transcription_provider = ?, transcription_model = ?,
+      pipeline_json = COALESCE(?, pipeline_json),
+      error = ?, updated_at = ?
     WHERE id = ?
   `,
     )
@@ -907,6 +1028,7 @@ export function updateVideoRecordSync(
       video.transcript ? serializeJson(video.transcript) : null,
       video.transcriptionProvider ?? null,
       video.transcriptionModel ?? null,
+      video.pipeline ? serializeJson(video.pipeline) : null,
       video.error ?? null,
       video.updatedAt,
       video._id,
@@ -935,6 +1057,27 @@ export async function listVideos(): Promise<VideoRecord[]> {
     )
     .all() as VideoRow[];
   return rows.map(mapVideo);
+}
+
+/**
+ * Every video with its clip tally, without loading a single transcript. The
+ * dashboard polls this, so keeping the transcript blob out of the query is what
+ * makes a 2-second poll cheap on a three-hour podcast (tens of thousands of
+ * words per video).
+ */
+export async function listVideoSummaries(): Promise<VideoListEntry[]> {
+  const rows = getDatabase()
+    .prepare(`SELECT ${VIDEO_SUMMARY_SELECT} FROM videos v ORDER BY v.created_at DESC`)
+    .all() as VideoSummaryRow[];
+  return rows.map(mapVideoSummary);
+}
+
+/** One video + its clip tally (same cheap projection as `listVideoSummaries`). */
+export async function getVideoSummary(id: string): Promise<VideoListEntry | null> {
+  const row = getDatabase()
+    .prepare(`SELECT ${VIDEO_SUMMARY_SELECT} FROM videos v WHERE v.id = ?`)
+    .get(id) as VideoSummaryRow | undefined;
+  return row ? mapVideoSummary(row) : null;
 }
 
 export async function deleteVideo(id: string): Promise<boolean> {

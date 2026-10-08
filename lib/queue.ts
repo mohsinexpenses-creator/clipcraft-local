@@ -6,11 +6,23 @@ import {
   updateClipRecordSync,
   updateVideoRecordSync,
 } from './db';
-import { JobData, TranscriptionJobData, VideoRecord } from './types';
+import {
+  JobData,
+  TranscriptionJobData,
+  VideoRecord,
+  ViralDetectionJobData,
+} from './types';
 import type { SqliteDatabase } from './db';
 
 export const CLIP_QUEUE_NAME = 'clip-processing';
 export const TRANSCRIPTION_QUEUE_NAME = 'transcription';
+/**
+ * Viral-segment detection is a queue job rather than a request the browser has
+ * to keep open: an LLM pass over a three-hour transcript outlives proxies and
+ * page refreshes, and queueing it gives the same retry + restart-recovery
+ * behaviour transcription and rendering already have.
+ */
+export const VIRAL_DETECTION_QUEUE_NAME = 'viral-detection';
 export const DEFAULT_MAX_ATTEMPTS = 2;
 export const DEFAULT_RETRY_DELAY_MS = 2000;
 export const QUEUE_POLL_INTERVAL_MS = 1000;
@@ -370,4 +382,100 @@ export async function enqueueTranscriptionJob(
     }
     enqueue(TRANSCRIPTION_QUEUE_NAME, jobData, enqueueOptions, db);
   }).immediate();
+}
+
+/**
+ * Queue the viral-detection step for one video. Stable job id, so a retry or a
+ * second "detect again" press replaces the queued run instead of stacking
+ * duplicates; an already-running pass is refused with 409 (the caller decides
+ * whether that is "already in progress" or an error).
+ */
+export async function enqueueViralDetectionJob(videoId: string): Promise<string> {
+  return enqueue(
+    VIRAL_DETECTION_QUEUE_NAME,
+    { videoId } satisfies ViralDetectionJobData,
+    {
+      id: `viral-detection:${videoId}`,
+      maxAttempts: DEFAULT_MAX_ATTEMPTS,
+      retryDelayMs: DEFAULT_RETRY_DELAY_MS,
+      videoId,
+    }
+  );
+}
+
+/**
+ * All jobs of the given types, oldest first. The video list uses this to attach
+ * the latest transcription/detection job to every row in one query instead of
+ * one query per video.
+ */
+export function listJobsByTypes(
+  types: string[],
+  db: SqliteDatabase = getDatabase()
+): QueueJob[] {
+  if (!types.length) return [];
+  const placeholders = types.map(() => '?').join(', ');
+  const rows = db
+    .prepare(`SELECT * FROM jobs WHERE type IN (${placeholders}) ORDER BY created_at ASC, id ASC`)
+    .all(...types) as JobRow[];
+  return rows.map(mapJob);
+}
+
+/** One queued/running job for this record and type, if any. */
+export function findActiveJob(
+  type: string,
+  selector: { videoId?: string; clipId?: string },
+  db: SqliteDatabase = getDatabase()
+): QueueJob | null {
+  const { videoId, clipId } = selector;
+  const row = (
+    clipId
+      ? db
+          .prepare(`SELECT * FROM jobs WHERE type = ? AND status IN ('queued','running') AND clip_id = ? ORDER BY created_at DESC LIMIT 1`)
+          .get(type, clipId)
+      : db
+          .prepare(`SELECT * FROM jobs WHERE type = ? AND status IN ('queued','running') AND video_id = ? ORDER BY created_at DESC LIMIT 1`)
+          .get(type, videoId ?? '')
+  ) as JobRow | undefined;
+  return row ? mapJob(row) : null;
+}
+
+/**
+ * The jobs that describe one video's pipeline: its transcription, its detection
+ * run and every render of its clips, oldest first. The dashboard polls this to
+ * show live progress without touching clip records.
+ */
+export function listVideoPipelineJobs(
+  videoId: string,
+  db: SqliteDatabase = getDatabase()
+): QueueJob[] {
+  const rows = db
+    .prepare(
+      `
+      SELECT * FROM jobs
+      WHERE video_id = ?
+         OR clip_id IN (SELECT id FROM clips WHERE video_id = ?)
+      ORDER BY created_at ASC, id ASC
+    `
+    )
+    .all(videoId, videoId) as JobRow[];
+  return rows.map(mapJob);
+}
+
+/** Terminal job state for a record (used to report why a step failed). */
+export function findLatestJob(
+  type: string,
+  selector: { videoId?: string; clipId?: string },
+  db: SqliteDatabase = getDatabase()
+): QueueJob | null {
+  const { videoId, clipId } = selector;
+  const row = (
+    clipId
+      ? db
+          .prepare(`SELECT * FROM jobs WHERE type = ? AND clip_id = ? ORDER BY created_at DESC LIMIT 1`)
+          .get(type, clipId)
+      : db
+          .prepare(`SELECT * FROM jobs WHERE type = ? AND video_id = ? ORDER BY created_at DESC LIMIT 1`)
+          .get(type, videoId ?? '')
+  ) as JobRow | undefined;
+  return row ? mapJob(row) : null;
 }

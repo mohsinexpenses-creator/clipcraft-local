@@ -4,8 +4,9 @@ import { NextResponse } from 'next/server';
 import { saveVideo, updateVideo } from './db';
 import { AppError, getErrorResponse, toErrorMessage } from './errors';
 import { getVideoMetadata } from './ffmpeg';
-import { enqueueTranscriptionJob } from './queue';
-import { VideoRecord } from './types';
+import { enqueueTranscriptionJob, findActiveJob, TRANSCRIPTION_QUEUE_NAME } from './queue';
+import { sanitizePipelineOptions } from './pipeline-defaults';
+import { PipelineOptions, VideoRecord } from './types';
 import { getPlannedTranscriptionEngine } from './whisper';
 
 /**
@@ -189,7 +190,8 @@ export function buildStoredFileName(originalName: string): string {
 export async function buildVideoRecord(
   originalName: string,
   fileName: string,
-  filePath: string
+  filePath: string,
+  pipeline?: PipelineOptions
 ): Promise<VideoRecord> {
   const now = new Date().toISOString();
   let width = 0;
@@ -241,14 +243,25 @@ export async function buildVideoRecord(
     status: 'uploaded',
     ...(transcriptionProvider ? { transcriptionProvider } : {}),
     ...(transcriptionModel ? { transcriptionModel } : {}),
+    /**
+     * What the automatic chain should do after the bytes are on disk. Stored on the
+     * record (not just used once) so a worker restart, a retry or "run it again"
+     * reuse exactly the settings the upload was started with.
+     */
+    pipeline: pipeline ?? sanitizePipelineOptions({}),
     createdAt: now,
     updatedAt: now,
   };
 }
 
-/** Queue the transcription and persist the outcome; never throws. */
+/**
+ * Queue the transcription (step 1 of the automatic chain) and persist the
+ * outcome; never throws. An already queued/running pass is left alone, so a
+ * retried finalize cannot stack two whisper runs for the same video.
+ */
 export async function queueTranscription(video: VideoRecord): Promise<boolean> {
   try {
+    if (findActiveJob(TRANSCRIPTION_QUEUE_NAME, { videoId: video._id })) return true;
     await enqueueTranscriptionJob({ videoId: video._id, filePath: video.filePath });
     return true;
   } catch (error) {
@@ -270,9 +283,10 @@ export async function queueTranscription(video: VideoRecord): Promise<boolean> {
 export async function registerUploadedVideo(
   originalName: string,
   fileName: string,
-  filePath: string
+  filePath: string,
+  pipeline?: PipelineOptions
 ): Promise<{ video: VideoRecord; queued: boolean }> {
-  const video = await buildVideoRecord(originalName, fileName, filePath);
+  const video = await buildVideoRecord(originalName, fileName, filePath, pipeline);
   await saveVideo(video);
   const queued = await queueTranscription(video);
   return { video, queued };
@@ -280,7 +294,7 @@ export async function registerUploadedVideo(
 
 export const QUEUE_MESSAGES = {
   queued:
-    'Upload complete. Transcription is queued - refresh the dashboard to follow its progress.',
+    'Upload complete. The pipeline is running: transcript -> viral detection -> render.',
   notQueued:
     'Upload complete, but the transcription job could not be queued. Is the worker database path writable?',
 } as const;

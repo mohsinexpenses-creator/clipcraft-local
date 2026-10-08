@@ -19,6 +19,21 @@ export interface TranscriptData {
   words: WordTimestamp[];
 }
 
+/**
+ * What happens automatically once a video is on disk. Captured at upload time
+ * (stored in `videos.pipeline_json`) so the whole chain - transcript -> viral
+ * detection -> render - runs unattended with the settings the user picked, and a
+ * later re-run reuses exactly the same configuration.
+ */
+export interface PipelineOptions {
+  /** Start viral detection as soon as the transcript is ready. */
+  autoDetect: boolean;
+  /** Render every detected clip with the default render configuration. */
+  autoRender: boolean;
+  /** Options for the detection run (clip count, clip length, hook/CTA text). */
+  viral: Required<ViralDetectionOptions>;
+}
+
 export interface VideoRecord {
   _id: string;
   originalName: string;
@@ -40,9 +55,39 @@ export interface VideoRecord {
   transcript?: TranscriptData;
   transcriptionProvider?: 'deepgram' | 'whisper.cpp';
   transcriptionModel?: string;
+  /** Automatic chain configured for this video (see `PipelineOptions`). */
+  pipeline?: PipelineOptions;
   error?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * A video as the dashboard list needs it: everything except the (potentially
+ * megabyte-sized) transcript JSON, plus the derived facts the library rows show.
+ */
+export interface VideoSummary extends Omit<VideoRecord, 'transcript'> {
+  transcriptReady: boolean;
+  transcriptSegmentCount: number;
+}
+
+/** Per-status tally of one video's clips; `progress` averages all clip renders. */
+export interface ClipCounts {
+  clips: number;
+  done: number;
+  /** Clips the worker is rendering right now. */
+  active: number;
+  /** Clips waiting for a render job. */
+  queued: number;
+  failed: number;
+  /** Mean render progress over all clips (done = 100, failed = 0). */
+  progress: number;
+}
+
+/** One row of the dashboard library: the video, its clip tally and its stage. */
+export interface VideoListEntry {
+  video: VideoSummary;
+  counts: ClipCounts;
 }
 
 /**
@@ -73,6 +118,27 @@ export const DEFAULT_VIRAL_OPTIONS: ViralDetectionOptions = {
   includeHookText: true,
   includeCta: true,
 };
+
+/**
+ * Defaults for the automatic upload pipeline: transcribe -> detect -> render.
+ * `lib/viral-options.ts` clamps whatever the client sends into this shape.
+ */
+export const DEFAULT_PIPELINE_OPTIONS: PipelineOptions = {
+  autoDetect: true,
+  autoRender: true,
+  viral: { ...DEFAULT_VIRAL_OPTIONS },
+};
+
+/**
+ * Render configuration a clip gets when the pipeline renders it automatically,
+ * i.e. before the user ever opens the editor. Presets are resolved from the
+ * database (their configured defaults) - these are the non-preset knobs.
+ */
+export const DEFAULT_RENDER_OPTIONS = {
+  filterPreset: 'vibrant',
+  layout: 'speaker-focus',
+  captionEngine: 'remotion',
+} as const;
 
 /**
  * Allowed values of the AI's enum fields, exactly as the viral_detection prompt
@@ -370,5 +436,18 @@ export interface TranscriptionJobData {
   videoId: string;
   filePath: string;
   /** Set when the user pressed "Transcribe again" on the dashboard. */
+  retry?: boolean;
+}
+
+/**
+ * Queued viral-segment detection. The detection options are read from the video
+ * record rather than the payload, so a retry after an app reload still uses the
+ * settings the upload was started with.
+ */
+export interface ViralDetectionJobData {
+  videoId: string;
+  /** Render every clip the run creates with the default configuration. */
+  autoRender?: boolean;
+  /** Set when the user re-ran detection by hand. */
   retry?: boolean;
 }

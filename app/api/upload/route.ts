@@ -3,6 +3,7 @@ import path from 'path';
 import { NextRequest, NextResponse } from 'next/server';
 import { listVideos } from '../../../lib/db';
 import { AppError, toErrorMessage } from '../../../lib/errors';
+import { sanitizePipelineOptions } from '../../../lib/pipeline-defaults';
 import {
   buildStoredFileName,
   formatBytes,
@@ -76,7 +77,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
       await writeFileToDisk(file, filePath);
 
-      const { video, queued } = await registerUploadedVideo(originalName, fileName, filePath);
+      const pipeline = sanitizePipelineOptions(
+        parseMaybeJson(formData.get('pipeline')) ?? parseMaybeJson(formData.get('options'))
+      );
+
+      const { video, queued } = await registerUploadedVideo(originalName, fileName, filePath, pipeline);
 
       // Shape matters: components/video-uploader.tsx reads `data.video._id`.
       return NextResponse.json({
@@ -96,6 +101,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       const body = (await request.json().catch(() => ({}))) as {
         youtubeUrl?: unknown;
         url?: unknown;
+        pipeline?: unknown;
       };
       // components/video-uploader.tsx posts { youtubeUrl }; accept `url` as well.
       const url =
@@ -124,7 +130,12 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
         const info = await downloadYoutubeVideo(url, filePath);
 
-        const { video, queued } = await registerUploadedVideo(`${info.title}.mp4`, fileName, filePath);
+        const { video, queued } = await registerUploadedVideo(
+          `${info.title}.mp4`,
+          fileName,
+          filePath,
+          sanitizePipelineOptions(body.pipeline ?? body)
+        );
 
         return NextResponse.json({
           success: true,
@@ -166,6 +177,16 @@ export async function GET(): Promise<NextResponse> {
     return NextResponse.json({ success: true, data: videos });
   } catch (error) {
     return jsonError(error);
+  }
+}
+
+/** A multipart text field is a string; a JSON body is already an object. */
+function parseMaybeJson(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return undefined;
   }
 }
 

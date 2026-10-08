@@ -210,14 +210,23 @@ provider chain, and the Remotion renderer, and tells you exactly what to fix.
 2. Finishing the upload moves the file into `uploads/` (named
    `001_my_recording.mp4` — 3-digit sequence + original name), probes it with
    FFmpeg and enqueues a **transcription job** — the request returns immediately.
+   The automation you ticked on the upload form (`autoDetect`, `autoRender`, plus
+   the AI clip options) is stored with the video record in `videos.pipeline_json`,
+   so the rest of the chain keeps running with those settings after a reload, a
+   retry, or a worker restart. It is editable per video from the dashboard's
+   **Pipeline** panel.
 3. The worker transcribes with whisper.cpp (or Deepgram, if you opted in) and
    stores word-level timestamps in SQLite.
 4. **Detect viral segments** asks the Gemini chain (5-slot fallback) for
    `{start, end, hookText, ctaText, reason, score}` — with an automatic **top-up
-   pass** if it returns fewer than the requested count. Clip count, minimum clip
-   length (max is fixed internally at 90 s), and the hook/CTA switches are
-   per-video options persisted in your browser.
-5. **Render** (per clip): the complete hook interval returned by viral detection
+   pass** if it returns fewer than the requested count. It is queued by the worker as
+   soon as step 3 finishes, so you never have to press it (unless you switched
+   *auto-detect* off). Clip count, minimum clip length (max is fixed internally at
+   90 s), and the hook/CTA switches come from the video's stored settings; the form
+   remembers your last choice in `localStorage` as the default for the next upload.
+5. **Render** (per clip, queued for every detected clip when *auto-render* is on —
+   the default, using the stock configuration; turn it off to review the scores in the
+   grid first): the complete hook interval returned by viral detection
    (`hook_timestamp.start`→`hook_timestamp.end`) is duplicated to the **start**, with
    a 0.5 s dip-to-black → active-speaker layout planning (`worker/asd/` +
    `worker/layout.ts`) → transparent caption / hook / CTA frames are prepared by
@@ -226,7 +235,8 @@ provider chain, and the Remotion renderer, and tells you exactly what to fix.
    compositing, audio handling and the single final H.264 encode (1080×1920).
 6. Output: `generated-clips/001_my_recording/<clip title>.mp4`, tracked in
    SQLite. The dashboard plays it through `/api/media/...` (Range-enabled, so
-   seeking works).
+   seeking works). Each clip in the grid shows its viral score and the AI analysis;
+   **Edit** on a clip saves new settings and re-renders that one clip only.
 
 ---
 

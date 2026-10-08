@@ -15,13 +15,26 @@ detection run locally with whisper.cpp and OpenCV YuNet.
 
 ## What it does, end to end
 
+**Upload is the only step you press.** The moment a file lands, the app queues the
+transcript, then viral detection, then a render of every clip with the default
+configuration (steps 2, 3 and 6 below). Closing the page or restarting the worker only
+pauses the chain: it recovers at the step where it stopped.
+
 1. **Upload** — resumable, chunked, **no size limit** (a 3-hour podcast is a normal
-   input). Files are stored as `uploads/001_my_recording.mp4`.
+   input). Files are stored as `uploads/001_my_recording.mp4`. The upload form also
+   captures the automation you want (`autoDetect` / `autoRender` + AI clip options);
+   it is saved on the video record (`videos.pipeline_json`) so later retries and
+   re-runs use exactly the same settings.
 2. **Transcribe** — whisper.cpp (local) produces a transcript with **word-level
    timestamps**, stored in SQLite. (Optional Deepgram override if you set a key.)
 3. **Detect viral segments** — the Gemini LLM picks the most promising windows and
    writes `{start, end, hookText, ctaText, reason, score}`. If it returns fewer
    clips than requested, a **top-up pass** tops the list up to the exact count.
+   Clips appear in the dashboard grid as soon as they exist, each showing its **score**,
+   and the full AI analysis behind it (drop-down on the tile).
+   - **Edit and re-render one clip** — *Edit* on any tile changes the window, hook/CTA
+     text, caption and layout for that clip alone and re-renders only it. The rest of the
+     grid is untouched (`POST /api/clips` = save + render in one call).
 4. **Replay the hook** — the complete `hook_timestamp.start`→`hook_timestamp.end`
    interval returned during viral detection is duplicated at the **start** with a
    0.5 s dip-to-black, so the clip opens with the detected hook and then builds back to it.
@@ -94,6 +107,7 @@ LLM chain, and the Remotion renderer, and tells you exactly what to fix.
 
 ```
 app/                    Next.js pages + API routes
+  page.tsx              the studio: library sidebar, live pipeline, clip grid
   upload/               upload page (resumable chunks, optional YouTube import)
   caption-presets/      caption style preset manager (live preview)
   prompt-templates/     edit the LLM prompt templates
@@ -106,6 +120,10 @@ lib/                    shared server logic
   whisper.ts            whisper.cpp discovery + transcription
   ffmpeg.ts             FFmpeg/ffprobe resolution, stream probing + spawn wrapper
   queue.ts              SQLite job queue (transcription + clip render)
+  pipeline.ts           the automatic chain: transcript -> detection -> render
+  pipeline-status.ts    derives the live stage/progress from queue + clip rows
+  pipeline-defaults.ts  clip options + their limits, shared by client and server
+  clip-edits.ts         validates a single-clip edit before it is saved/rendered
   profanity.ts          word masking + render-time mute/beep windows
   overlay-bg.ts         solid/gradient card-background picker helpers
   presets.ts            default caption/overlay/text presets

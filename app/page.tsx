@@ -1,68 +1,62 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, Suspense } from "react";
+import React, { Suspense, useMemo, useState } from "react";
 import Link from "next/link";
-import { useSearchParams, useRouter } from "next/navigation";
-import { VideoRecord, ClipRecord, CaptionPreset } from "@/lib/types";
-import { ClipCard } from "@/components/clip-card";
-import { sortClipsForDisplay } from "@/lib/clip-order";
-import { ViralDetectOptions } from "@/components/viral-detect-options";
-import { useViralOptions } from "@/components/use-viral-options";
-import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardAction,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Separator } from "@/components/ui/separator";
+import { useSearchParams } from "next/navigation";
 import {
   AlertCircle,
+  ArrowUpDown,
+  Captions,
   CheckCircle2,
   Clock,
   Clapperboard,
+  FileText,
   Film,
+  Gauge,
   Loader2,
   RefreshCw,
-  Scissors,
+  Search,
+  Settings2,
   Sparkles,
   Trash2,
   Upload,
 } from "lucide-react";
 import { cn } from "cn";
+import type { ClipRecord, PipelineOptions } from "@/lib/types";
+import { isPipelineOptionsEqual } from "@/lib/pipeline-defaults";
+import { clipScore, formatClock, stageMeta } from "@/lib/pipeline-ui";
+import type { VideoListItem } from "@/lib/pipeline-ui";
+import { usePipeline } from "@/hooks/use-pipeline";
+import { sortClipsForGrid } from "@/lib/pipeline-ui";
+import { ClipTile } from "@/components/clip-tile";
+import { ClipEditDialog } from "@/components/clip-edit-dialog";
+import { PipelineStepper } from "@/components/pipeline-stepper";
+import { AutomationPanel } from "@/components/pipeline-settings";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
-function VideoStatusBadge({ status }: { status: VideoRecord["status"] }) {
-  switch (status) {
-    case "transcribed":
-      return (
-        <Badge variant="success">
-          <CheckCircle2 />
-          Transcribed
-        </Badge>
-      );
-    case "transcribing":
-      return (
-        <Badge variant="secondary">
-          <Loader2 className="animate-spin" />
-          Transcribing
-        </Badge>
-      );
-    case "failed":
-      return (
-        <Badge variant="destructive">
-          <AlertCircle />
-          Failed
-        </Badge>
-      );
-    default:
-      return <Badge variant="outline">Uploaded</Badge>;
-  }
-}
+/**
+ * The studio: one list of videos, one pipeline strip per video and the clip grid
+ * that the automatic chain fills in. There is deliberately nothing to "start":
+ * uploading a video queues transcription, which queues detection, which queues
+ * the renders - this page only watches, explains and lets you fix one clip.
+ */
+
+type ClipFilter = "all" | "live" | "ready" | "failed";
+type ClipSort = "run" | "score" | "status";
 
 function formatTime(seconds: number) {
   const m = Math.floor(seconds / 60);
@@ -70,656 +64,750 @@ function formatTime(seconds: number) {
   return `${m}:${s < 10 ? "0" : ""}${s}`;
 }
 
-function formatTranscriptionEngine(video: VideoRecord) {
-  if (!video.transcriptionProvider)
-    return "Transcription engine not selected yet";
-
+function formatTranscriptionEngine(video: { transcriptionProvider?: string; transcriptionModel?: string }) {
+  if (!video.transcriptionProvider) return "engine pending";
   if (video.transcriptionProvider === "deepgram") {
     return `Deepgram · ${video.transcriptionModel || "nova-2"}`;
   }
-
   return `whisper.cpp · ${video.transcriptionModel || "local model"}`;
 }
 
-async function getErrorFromResponse(response: Response, fallback: string) {
-  try {
-    const data = await response.json();
-    return data.error || fallback;
-  } catch {
-    return fallback;
-  }
+/** Sidebar row: name, one status line, and a hairline progress bar when active. */
+function VideoRow({
+  video,
+  selected,
+  onSelect,
+  onDelete,
+}: {
+  video: VideoListItem;
+  selected: boolean;
+  onSelect: () => void;
+  onDelete: () => void;
+}) {
+  const meta = stageMeta(video.pipelineStatus.stage);
+  const active = meta.pulse;
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onSelect}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelect();
+        }
+      }}
+      className={cn(
+        "group relative cursor-pointer rounded-xl border p-2.5 text-left outline-none transition-[background-color,border-color,box-shadow]",
+        "focus-visible:ring-2 focus-visible:ring-ring/40",
+        selected
+          ? "border-primary/35 bg-accent/70 shadow-[var(--shadow-card)]"
+          : "border-transparent hover:border-border hover:bg-muted/70"
+      )}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <p className="line-clamp-2 min-w-0 flex-1 text-[12.5px] leading-snug font-medium">
+          {video.originalName}
+        </p>
+        <button
+          type="button"
+          aria-label="Delete video"
+          onClick={(event) => {
+            event.stopPropagation();
+            onDelete();
+          }}
+          className="shrink-0 rounded-md p-1 text-muted-foreground opacity-0 transition-[opacity,color] group-hover:opacity-100 hover:text-destructive focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
+        >
+          <Trash2 className="size-3.5" />
+        </button>
+      </div>
+
+      <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+        <Clock className="size-3" />
+        <span className="tabular">{formatTime(video.duration || 0)}</span>
+        <span className="text-muted-foreground/50">·</span>
+        <span className="tabular">{video.counts.clips} clips</span>
+        {video.counts.done > 0 && (
+          <>
+            <span className="text-muted-foreground/50">·</span>
+            <span className="tabular text-emerald-600 dark:text-emerald-400">{video.counts.done} ready</span>
+          </>
+        )}
+      </div>
+
+      <div className="mt-2 flex items-center gap-2">
+        <span
+          className={cn(
+            "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium ring-1 ring-inset",
+            meta.chip
+          )}
+        >
+          <span className={cn("size-1 rounded-full", meta.bar, active && "animate-pulse")} />
+          {meta.label}
+        </span>
+        <span className="h-1 flex-1 overflow-hidden rounded-full bg-muted">
+          <span
+            className={cn("block h-full rounded-full transition-[width] duration-700", meta.bar, active && "progress-live")}
+            style={{ width: `${Math.max(3, video.pipelineStatus.progress)}%` }}
+          />
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function StatChip({
+  icon,
+  label,
+  value,
+  tone,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  tone?: "muted" | "success" | "warn";
+}) {
+  return (
+    <div className="flex items-center gap-2 rounded-lg border bg-card/60 px-2.5 py-1.5">
+      <span className="flex size-6 items-center justify-center rounded-md bg-muted text-muted-foreground [&>svg]:size-3.5">
+        {icon}
+      </span>
+      <div className="min-w-0">
+        <p className="text-[10px] leading-none tracking-wide text-muted-foreground uppercase">{label}</p>
+        <p
+          className={cn(
+            "mt-0.5 text-[13px] leading-none font-semibold tabular",
+            tone === "success" && "text-emerald-600 dark:text-emerald-400",
+            tone === "warn" && "text-amber-600 dark:text-amber-400"
+          )}
+        >
+          {value}
+        </p>
+      </div>
+    </div>
+  );
 }
 
 function DashboardContent() {
   const searchParams = useSearchParams();
-  const router = useRouter();
-  const initialVideoId = searchParams.get("videoId");
+  const videoId = searchParams.get("videoId");
 
-  const [videos, setVideos] = useState<VideoRecord[]>([]);
-  const [selectedVideoId, setSelectedVideoId] = useState<string | null>(
-    initialVideoId,
-  );
-  const [clips, setClips] = useState<ClipRecord[]>([]);
-  const [captionPresets, setCaptionPresets] = useState<CaptionPreset[]>([]);
-  const [isLoadingVideos, setIsLoadingVideos] = useState(true);
-  const [isDetectingViral, setIsDetectingViral] = useState(false);
-  const [isTranscribing, setIsTranscribing] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [copiedTranscript, setCopiedTranscript] = useState(false);
-  const [viralOptions, setViralOptions] = useViralOptions();
+  const pipeline = usePipeline(videoId);
+  const {
+    videos,
+    detail,
+    clips,
+    status,
+    captionPresets,
+    overlayPresets,
+    isLoading,
+    isRefreshing,
+    busy,
+    listError,
+  } = pipeline;
 
-  const loadVideos = useCallback(async (): Promise<VideoRecord[]> => {
-    const res = await fetch("/api/videos");
-    if (!res.ok) {
-      throw new Error(
-        await getErrorFromResponse(res, "Failed to load videos."),
-      );
-    }
+  const [filter, setFilter] = useState<ClipFilter>("all");
+  const [sort, setSort] = useState<ClipSort>("run");
+  const [query, setQuery] = useState("");
+  const [editingClip, setEditingClip] = useState<ClipRecord | null>(null);
+  const [transcriptOpen, setTranscriptOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [automationDraft, setAutomationDraft] = useState<PipelineOptions | null>(null);
 
-    const data = await res.json();
-    return data.videos || [];
-  }, []);
+  const selectedVideo = videoId ? videos.find((video) => video._id === videoId) ?? null : null;
+  const video = detail?.video;
 
-  const loadClipsAndPresets = useCallback(async (): Promise<{
-    clips: ClipRecord[];
-    presets: CaptionPreset[];
-  }> => {
-    const [clipsRes, presetsRes] = await Promise.all([
-      fetch(
-        selectedVideoId
-          ? `/api/clips?videoId=${selectedVideoId}`
-          : "/api/clips",
-      ),
-      fetch("/api/caption-presets"),
-    ]);
+  // Defaults for the settings dialog come from the video, then from the
+  // browser's "next upload" defaults.
+  const effectivePipeline = automationDraft ?? detail?.status.pipeline ?? video?.pipeline ?? null;
+  const settingsDirty =
+    automationDraft !== null && !isPipelineOptionsEqual(automationDraft, detail?.status.pipeline ?? video?.pipeline);
 
-    if (!clipsRes.ok) {
-      throw new Error(
-        await getErrorFromResponse(clipsRes, "Failed to load clips."),
-      );
-    }
+  const stage = status?.stage ?? selectedVideo?.pipelineStatus.stage;
+  const stageMeta = stage ? stageMetaOf(stage) : null;
 
-    if (!presetsRes.ok) {
-      throw new Error(
-        await getErrorFromResponse(
-          presetsRes,
-          "Failed to load caption presets.",
-        ),
-      );
-    }
-
-    const [clipsData, presetsData] = await Promise.all([
-      clipsRes.json(),
-      presetsRes.json(),
-    ]);
-
-    return {
-      clips: clipsData.clips || [],
-      presets: presetsData.presets || [],
-    };
-  }, [selectedVideoId]);
-
-  const refreshClipsAndPresets = useCallback(async () => {
-    const data = await loadClipsAndPresets();
-    setClips(data.clips);
-    setCaptionPresets(data.presets);
-    setErrorMessage(null);
-  }, [loadClipsAndPresets]);
-
-  // Initial video load
-  useEffect(() => {
-    let ignore = false;
-    (async () => {
-      try {
-        const list = await loadVideos();
-        if (ignore) return;
-        setVideos(list);
-        if (!selectedVideoId && list.length > 0) {
-          setSelectedVideoId(list[0]._id);
-        }
-      } catch (err) {
-        if (!ignore) {
-          setErrorMessage(
-            err instanceof Error ? err.message : "Failed to load videos.",
-          );
-        }
-      } finally {
-        if (!ignore) {
-          setIsLoadingVideos(false);
-        }
-      }
-    })();
-    return () => {
-      ignore = true;
-    };
-  }, [loadVideos, selectedVideoId]);
-
-  // Load clips + presets whenever the selected video changes
-  useEffect(() => {
-    let ignore = false;
-    (async () => {
-      try {
-        const data = await loadClipsAndPresets();
-        if (ignore) return;
-        setClips(data.clips);
-        setCaptionPresets(data.presets);
-      } catch (err) {
-        if (!ignore) {
-          setErrorMessage(
-            err instanceof Error
-              ? err.message
-              : "Failed to load clips or presets.",
-          );
-        }
-      }
-    })();
-    return () => {
-      ignore = true;
-    };
-  }, [loadClipsAndPresets]);
-
-  // Poll while render jobs are active
-  useEffect(() => {
-    const hasActiveJobs = clips.some(
-      (c) => c.status === "pending" || c.status === "processing",
+  const filteredClips = useMemo(() => {
+    const sorted = sortClipsForGrid(clips, sort);
+    const byFilter = sorted.filter((clip) => {
+      if (filter === "live") return clip.status === "processing" || clip.status === "pending";
+      if (filter === "ready") return clip.status === "done";
+      if (filter === "failed") return clip.status === "failed";
+      return true;
+    });
+    const needle = query.trim().toLowerCase();
+    if (!needle) return byFilter;
+    return byFilter.filter((clip) =>
+      [clip.aiAnalysis?.viral_packaging.video_title, clip.hookText, clip.ctaText, clip.aiAnalysis?.why_this_will_go_viral]
+        .filter(Boolean)
+        .some((field) => String(field).toLowerCase().includes(needle))
     );
-    if (!hasActiveJobs) return;
+  }, [clips, filter, query, sort]);
 
-    const interval = setInterval(async () => {
-      try {
-        const data = await loadClipsAndPresets();
-        setClips(data.clips);
-        setCaptionPresets(data.presets);
-      } catch (err) {
-        setErrorMessage(
-          err instanceof Error ? err.message : "Failed to refresh clip status.",
-        );
-      }
-    }, 3000);
+  const counts = status?.counts ?? { clips: 0, done: 0, active: 0, queued: 0, failed: 0, progress: 0 };
+  const bestScore = useMemo(() => {
+    const scores = clips.map((clip) => clipScore(clip)).filter((score): score is number => score !== null);
+    return scores.length ? Math.max(...scores) : null;
+  }, [clips]);
 
-    return () => clearInterval(interval);
-  }, [clips, loadClipsAndPresets]);
+  const filteredVideos = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    // The search box filters the library only while no clip search is active.
+    if (!needle) return videos;
+    return videos.filter((entry) => entry.originalName.toLowerCase().includes(needle));
+  }, [query, videos]);
 
-  useEffect(() => {
-    const hasTranscribingVideo = videos.some(
-      (video) => video.status === "transcribing",
-    );
-    if (!hasTranscribingVideo) return;
-
-    const interval = setInterval(async () => {
-      try {
-        const latestVideos = await loadVideos();
-        setVideos(latestVideos);
-      } catch (err) {
-        setErrorMessage(
-          err instanceof Error
-            ? err.message
-            : "Failed to refresh video status.",
-        );
-      }
-    }, 3000);
-
-    return () => clearInterval(interval);
-  }, [loadVideos, videos]);
-
-  const selectedVideo = videos.find((v) => v._id === selectedVideoId);
-
-  const handleDetectViralClips = async () => {
-    if (!selectedVideoId) return;
-    setIsDetectingViral(true);
-    setErrorMessage(null);
-
-    try {
-      const res = await fetch(`/api/videos/${selectedVideoId}/detect-viral`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ options: viralOptions }),
-      });
-
-      if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.error || "Failed to detect viral segments");
-      }
-
-      await refreshClipsAndPresets();
-    } catch (err) {
-      console.error("Detect viral error:", err);
-      setErrorMessage(
-        err instanceof Error
-          ? err.message
-          : "Failed to analyze viral segments with the configured AI provider.",
-      );
-    } finally {
-      setIsDetectingViral(false);
-    }
+  const openSettings = () => {
+    setAutomationDraft(detail?.status.pipeline ?? video?.pipeline ?? null);
+    setSettingsOpen(true);
   };
 
-  const handleReTranscribe = async () => {
-    if (!selectedVideoId) return;
-    setIsTranscribing(true);
-    setErrorMessage(null);
-    try {
-      const res = await fetch(`/api/videos/${selectedVideoId}/transcript`, {
-        method: "POST",
-      });
-      if (!res.ok) {
-        throw new Error(
-          await getErrorFromResponse(res, "Failed to transcribe video."),
-        );
-      }
-      setVideos(await loadVideos());
-    } catch (err) {
-      console.error("Re-transcribe error:", err);
-      setErrorMessage(
-        err instanceof Error ? err.message : "Failed to transcribe video.",
-      );
-    } finally {
-      setIsTranscribing(false);
-    }
-  };
-
-  const handleDeleteVideo = async (videoId: string) => {
-    if (
-      !confirm("Are you sure you want to delete this video and all its clips?")
-    )
-      return;
-    setErrorMessage(null);
-    try {
-      const res = await fetch(`/api/videos/${videoId}`, { method: "DELETE" });
-      if (!res.ok) {
-        throw new Error(
-          await getErrorFromResponse(res, "Failed to delete video."),
-        );
-      }
-      if (selectedVideoId === videoId) setSelectedVideoId(null);
-      setVideos(await loadVideos());
-      await refreshClipsAndPresets();
-    } catch (err) {
-      console.error("Delete video error:", err);
-      setErrorMessage(
-        err instanceof Error ? err.message : "Failed to delete video.",
-      );
-    }
-  };
-
-  const handleRefreshVideos = async () => {
-    setErrorMessage(null);
-    try {
-      setVideos(await loadVideos());
-    } catch (err) {
-      setErrorMessage(
-        err instanceof Error ? err.message : "Failed to refresh videos.",
-      );
+  const confirmDeleteVideo = () => {
+    if (!videoId) return;
+    if (window.confirm("Delete this video, its transcript and every clip? Rendered files are removed too.")) {
+      void pipeline.deleteVideo(videoId);
     }
   };
 
   return (
-    <div className="space-y-8">
-      {/* Page header */}
-      <div className="flex animate-fade-up flex-col justify-between gap-4 sm:flex-row sm:items-center">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
-          <p className="text-sm text-muted-foreground">
-            Manage source videos, detect viral moments with AI, and render 9:16
-            portrait clips.
+    <div className="space-y-5">
+      {/* ---------- page header ---------- */}
+      <div className="flex animate-fade-up flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <h1 className="text-[22px] leading-tight font-semibold tracking-tight">Studio</h1>
+          <p className="mt-1 text-[13px] text-muted-foreground">
+            Upload a landscape video and the pipeline transcribes it, finds the viral moments and renders
+            9:16 clips - no buttons in between.
           </p>
         </div>
-        <Button size="lg" nativeButton={false} render={<Link href="/upload" />}>
-          <Upload />
-          Upload video
-        </Button>
+        <div className="flex shrink-0 items-center gap-2">
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  variant="outline"
+                  size="icon-lg"
+                  aria-label="Refresh"
+                  onClick={() => void pipeline.refresh()}
+                />
+              }
+            >
+              <RefreshCw className={cn(isRefreshing && "animate-spin")} />
+            </TooltipTrigger>
+            <TooltipContent>Refresh</TooltipContent>
+          </Tooltip>
+          <Button size="lg" nativeButton={false} render={<Link href="/upload" />}>
+            <Upload />
+            Upload video
+          </Button>
+        </div>
       </div>
 
-      {errorMessage && !selectedVideo && (
+      {listError && !videoId && (
         <Alert variant="destructive">
           <AlertCircle className="mt-0.5" />
-          <AlertDescription>{errorMessage}</AlertDescription>
+          <AlertDescription>{listError}</AlertDescription>
         </Alert>
       )}
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-        {/* Source videos */}
-        <div
-          className="animate-fade-up lg:col-span-4"
-          style={{ animationDelay: "60ms" }}
+      <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,260px)_minmax(0,1fr)] xl:grid-cols-[minmax(0,300px)_minmax(0,1fr)]">
+        {/* ---------- library ---------- */}
+        <aside
+          className="animate-fade-up space-y-3 lg:sticky lg:top-6"
+          style={{ animationDelay: "40ms" }}
         >
-          <Card className="gap-4">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-base">
-                Source videos
-                <Badge variant="secondary">{videos.length}</Badge>
-              </CardTitle>
-              <CardDescription>Videos uploaded for clipping</CardDescription>
-              <CardAction>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={handleRefreshVideos}
-                  title="Refresh videos"
-                >
-                  <RefreshCw />
-                </Button>
-              </CardAction>
-            </CardHeader>
+          <div className="rounded-2xl border bg-card/70 p-3 shadow-[var(--shadow-card)]">
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="flex items-center gap-1.5 text-[13px] font-semibold tracking-tight">
+                <Film className="size-3.5 text-muted-foreground" />
+                Library
+              </h2>
+              <Badge variant="secondary" className="tabular">
+                {videos.length}
+              </Badge>
+            </div>
 
-            <CardContent>
-              {isLoadingVideos ? (
-                <div className="space-y-2">
-                  {[0, 1, 2].map((i) => (
-                    <Skeleton key={i} className="h-[74px] w-full rounded-lg" />
-                  ))}
-                </div>
-              ) : videos.length === 0 ? (
-                <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed px-6 py-10 text-center">
-                  <div className="flex size-10 items-center justify-center rounded-full bg-muted">
-                    <Film className="size-5 text-muted-foreground" />
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium">No videos yet</p>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Upload a long-form landscape video to get started.
-                    </p>
-                  </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    nativeButton={false}
-                    render={<Link href="/upload" />}
-                  >
-                    <Upload />
-                    Upload video
-                  </Button>
+            <div className="relative mt-2.5">
+              <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder={videoId ? "Search clips…" : "Search videos…"}
+                className="h-8 pl-7.5 text-xs"
+                aria-label="Search"
+              />
+            </div>
+
+            <div className="subtle-scroll mt-2.5 max-h-[min(58vh,560px)] space-y-1 overflow-y-auto pr-0.5">
+              {isLoading ? (
+                [0, 1, 2].map((index) => <Skeleton key={index} className="skeleton-sheen h-[86px] rounded-xl" />)
+              ) : filteredVideos.length === 0 ? (
+                <div className="rounded-xl border border-dashed px-4 py-8 text-center">
+                  <p className="text-[12.5px] font-medium">
+                    {videos.length ? "No match" : "No videos yet"}
+                  </p>
+                  <p className="mx-auto mt-1 max-w-[220px] text-[11px] text-muted-foreground">
+                    {videos.length
+                      ? "Try a different search."
+                      : "Upload a long-form landscape video to start the pipeline."}
+                  </p>
+                  {!videos.length && (
+                    <Button size="sm" variant="outline" className="mt-3" nativeButton={false} render={<Link href="/upload" />}>
+                      <Upload />
+                      Upload video
+                    </Button>
+                  )}
                 </div>
               ) : (
-                <div className="max-h-[560px] space-y-2 overflow-y-auto pr-1">
-                  {videos.map((vid) => {
-                    const isSelected = vid._id === selectedVideoId;
-                    return (
-                      <div
-                        key={vid._id}
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => {
-                          setSelectedVideoId(vid._id);
-                          router.push(`/?videoId=${vid._id}`);
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") {
-                            e.preventDefault();
-                            setSelectedVideoId(vid._id);
-                            router.push(`/?videoId=${vid._id}`);
-                          }
-                        }}
-                        className={cn(
-                          "group cursor-pointer rounded-lg border p-3 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
-                          isSelected
-                            ? "border-primary/40 bg-accent"
-                            : "border-border hover:bg-muted",
-                        )}
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <p className="truncate text-sm font-medium">
-                            {vid.originalName}
-                          </p>
-                          <Button
-                            variant="ghost"
-                            size="icon-xs"
-                            className="opacity-0 transition-opacity group-hover:opacity-100 hover:text-destructive focus-visible:opacity-100"
-                            title="Delete video"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDeleteVideo(vid._id);
-                            }}
-                          >
-                            <Trash2 />
-                          </Button>
-                        </div>
-                        <div className="mt-2 flex items-center justify-between gap-2">
-                          <div className="min-w-0">
-                            <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                              <Clock className="size-3" />
-                              {formatTime(vid.duration || 0)}
-                            </span>
-                            {(vid.status === "transcribing" ||
-                              vid.status === "transcribed") && (
-                              <p className="mt-1 truncate text-[11px] text-muted-foreground">
-                                {formatTranscriptionEngine(vid)}
-                              </p>
-                            )}
-                          </div>
-                          <VideoStatusBadge status={vid.status} />
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                filteredVideos.map((entry) => (
+                  <VideoRow
+                    key={entry._id}
+                    video={entry}
+                    selected={entry._id === videoId}
+                    onSelect={() => pipeline.selectVideo(entry._id)}
+                    onDelete={() => {
+                      if (window.confirm(`Delete "${entry.originalName}" and its clips?`)) {
+                        void pipeline.deleteVideo(entry._id);
+                      }
+                    }}
+                  />
+                ))
               )}
-            </CardContent>
-          </Card>
-        </div>
+            </div>
+          </div>
+        </aside>
 
-        {/* Selected video + clips */}
-        <div
-          className="animate-fade-up space-y-6 lg:col-span-8"
-          style={{ animationDelay: "120ms" }}
-        >
-          {selectedVideo ? (
+        {/* ---------- main column ---------- */}
+        <div className="animate-fade-up min-w-0 space-y-4" style={{ animationDelay: "80ms" }}>
+          {!videoId ? (
+            <div className="flex flex-col items-center gap-4 rounded-2xl border border-dashed bg-card/50 px-6 py-16 text-center">
+              <span className="flex size-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+                <Clapperboard className="size-7" />
+              </span>
+              <div className="max-w-md space-y-1.5">
+                <h2 className="text-lg font-semibold tracking-tight">Pick a video, or start a new one</h2>
+                <p className="text-[13px] text-muted-foreground">
+                  Every video shows its live pipeline state here: transcript, viral detection, then the clip
+                  grid with scores and AI analytics.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button size="lg" nativeButton={false} render={<Link href="/upload" />}>
+                  <Upload />
+                  Upload video
+                </Button>
+                {videos.length > 0 && (
+                  <Button size="lg" variant="outline" onClick={() => pipeline.selectVideo(videos[0]._id)}>
+                    Open latest
+                  </Button>
+                )}
+              </div>
+            </div>
+          ) : !detail || !video ? (
+            <div className="space-y-4">
+              <Skeleton className="skeleton-sheen h-28 rounded-2xl" />
+              <Skeleton className="skeleton-sheen h-64 rounded-2xl" />
+            </div>
+          ) : (
             <>
-              <Card className="gap-4">
-                <CardHeader>
-                  <CardTitle className="text-lg">
-                    {selectedVideo.originalName}
-                  </CardTitle>
-                  <CardDescription>
-                    {formatTime(selectedVideo.duration || 0)} •{" "}
-                    {selectedVideo.width}×{selectedVideo.height} • Uploaded{" "}
-                    {new Date(selectedVideo.createdAt).toLocaleDateString()}
-                  </CardDescription>
-                  <CardAction>
-                    <div className="flex items-center gap-2">
-                      {selectedVideo.status !== "transcribed" && (
-                        <Button
-                          variant="outline"
-                          onClick={handleReTranscribe}
-                          disabled={isTranscribing}
-                        >
-                          {isTranscribing ? (
-                            <Loader2 className="animate-spin" />
-                          ) : (
-                            <RefreshCw />
-                          )}
-                          Transcribe
-                        </Button>
+              {/* video header */}
+              <section className="rounded-2xl border bg-card p-4 shadow-[var(--shadow-card)]">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <h2 className="truncate text-[15px] font-semibold tracking-tight" title={video.originalName}>
+                      {video.originalName}
+                    </h2>
+                    <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11.5px] text-muted-foreground">
+                      <span className="tabular">{formatClock(video.duration || 0)}</span>
+                      <span className="text-muted-foreground/40">·</span>
+                      <span className="tabular">
+                        {video.width}×{video.height}
+                      </span>
+                      <span className="text-muted-foreground/40">·</span>
+                      <span>{formatTranscriptionEngine(video)}</span>
+                      <span className="text-muted-foreground/40">·</span>
+                      <span>uploaded {new Date(video.createdAt).toLocaleDateString()}</span>
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <Button
+                      size="sm"
+                      variant="soft"
+                      onClick={() =>
+                        effectivePipeline && void pipeline.detect(video._id, effectivePipeline.viral, false)
+                      }
+                      disabled={busy === "detect" || !detail.transcriptReady}
+                    >
+                      {busy === "detect" ? <Loader2 className="animate-spin" /> : <Sparkles />}
+                      Detect again
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void pipeline.renderAll(video._id, {})}
+                      disabled={!counts.clips || busy === "renderAll"}
+                      title={
+                        counts.clips
+                          ? "Queue every clip that is not rendered yet"
+                          : "Run viral detection first"
+                      }
+                    >
+                      {busy === "renderAll" ? <Loader2 className="animate-spin" /> : <Clapperboard />}
+                      Render pending
+                      {counts.queued + counts.active > 0 && (
+                        <span className="ml-1 tabular opacity-70">{counts.queued + counts.active}</span>
                       )}
-                      <Button
-                        onClick={handleDetectViralClips}
-                        disabled={
-                          isDetectingViral ||
-                          selectedVideo.status !== "transcribed"
+                    </Button>
+                    <Tooltip>
+                      <TooltipTrigger render={<Button size="icon-sm" variant="ghost" aria-label="Pipeline settings" onClick={openSettings} />}>
+                        <Settings2 />
+                      </TooltipTrigger>
+                      <TooltipContent>Pipeline settings</TooltipContent>
+                    </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <Button
+                            size="icon-sm"
+                            variant="ghost"
+                            aria-label="Transcribe again"
+                            onClick={() => void pipeline.transcribe(video._id)}
+                            disabled={busy === "transcribe"}
+                          />
                         }
                       >
-                        {isDetectingViral ? (
-                          <Loader2 className="animate-spin" />
-                        ) : (
-                          <Sparkles />
-                        )}
-                        {isDetectingViral ? "Analyzing…" : "Detect viral clips"}
-                      </Button>
-                    </div>
-                  </CardAction>
-                </CardHeader>
-
-                {selectedVideo.status === "transcribing" && (
-                  <CardContent className="pt-0">
-                    <Alert>
-                      <Loader2 className="mt-0.5 animate-spin text-primary" />
-                      <AlertDescription>
-                        Transcript is being generated with{" "}
-                        {formatTranscriptionEngine(selectedVideo)}.
-                      </AlertDescription>
-                    </Alert>
-                  </CardContent>
-                )}
-
-                {(errorMessage ||
-                  (selectedVideo.status === "failed" &&
-                    selectedVideo.error)) && (
-                  <CardContent className="pt-0">
-                    <Alert variant="destructive">
-                      <AlertCircle className="mt-0.5" />
-                      <AlertDescription>
-                        {errorMessage || selectedVideo.error}
-                      </AlertDescription>
-                    </Alert>
-                  </CardContent>
-                )}
-
-                {selectedVideo.transcript && (
-                  <CardContent className="pt-0">
-                    <div className="rounded-lg bg-muted/60 p-4">
-                      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                        <p className="text-xs font-medium text-muted-foreground">
-                          Transcript ·{" "}
-                          {selectedVideo.transcript.segments?.length || 0}{" "}
-                          segments · {formatTranscriptionEngine(selectedVideo)}
-                        </p>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="h-7 text-xs"
-                          onClick={async () => {
-                            const full = selectedVideo
-                              .transcript!.segments.map(
-                                (seg) =>
-                                  `[${formatTime(seg.start)} – ${formatTime(seg.end)}] ${seg.text}`,
-                              )
-                              .join("\n");
-                            try {
-                              await navigator.clipboard.writeText(full);
-                              setCopiedTranscript(true);
-                              setTimeout(
-                                () => setCopiedTranscript(false),
-                                1500,
-                              );
-                            } catch {
-                              // Clipboard blocked (permissions/HTTP) - ignore, the
-                              // textarea itself is selectable.
-                            }
-                          }}
-                        >
-                          {copiedTranscript
-                            ? "Copied!"
-                            : "Copy with timestamps"}
-                        </Button>
-                      </div>
-                      <textarea
-                        readOnly
-                        rows={5}
-                        aria-label="Full transcript with timestamps"
-                        className="h-72 w-full resize-y rounded-md border border-border bg-background p-3 font-mono text-xs leading-relaxed text-foreground shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
-                        value={(selectedVideo.transcript.segments || [])
-                          .map(
-                            (seg) =>
-                              `[${formatTime(seg.start)} – ${formatTime(seg.end)}] ${seg.text}`,
-                          )
-                          .join("\n")}
-                      />
-                    </div>
-                  </CardContent>
-                )}
-              </Card>
-
-              <div
-                className="animate-fade-up"
-                style={{ animationDelay: "90ms" }}
-              >
-                <ViralDetectOptions
-                  value={viralOptions}
-                  onChange={setViralOptions}
-                />
-              </div>
-
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <h2 className="flex items-center gap-2 text-base font-semibold">
-                    <Clapperboard className="size-4 text-muted-foreground" />
-                    Generated clips
-                    <Badge variant="secondary">{clips.length}</Badge>
-                  </h2>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={refreshClipsAndPresets}
-                  >
-                    <RefreshCw />
-                    Refresh
-                  </Button>
+                        <Captions />
+                      </TooltipTrigger>
+                      <TooltipContent>Re-transcribe (re-detects and re-renders)</TooltipContent>
+                    </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <Button
+                            size="icon-sm"
+                            variant="ghost"
+                            aria-label="Delete video"
+                            className="hover:text-destructive"
+                            onClick={confirmDeleteVideo}
+                          />
+                        }
+                      >
+                        <Trash2 />
+                      </TooltipTrigger>
+                      <TooltipContent>Delete video and clips</TooltipContent>
+                    </Tooltip>
+                  </div>
                 </div>
 
-                <Separator />
+                {stageMeta && (
+                  <div className="mt-3">
+                    <PipelineStepper
+                      status={status!}
+                      busy={Boolean(busy)}
+                      onResume={() => void pipeline.resume(video._id)}
+                      onRetryStep={(step) => {
+                        if (step.key === "transcript") void pipeline.transcribe(video._id);
+                        else if (step.key === "analyze")
+                          void pipeline.detect(video._id, effectivePipeline?.viral ?? { clipCount: 10, minClipDuration: 60, maxClipDuration: 90, includeHookText: true, includeCta: true }, true);
+                        else void pipeline.renderAll(video._id, { clipIds: clips.filter((clip) => clip.status === "failed").map((clip) => clip._id) });
+                      }}
+                    />
+                  </div>
+                )}
 
-                {clips.length === 0 ? (
-                  <Card className="border-dashed">
-                    <CardContent className="flex flex-col items-center gap-3 py-10 text-center">
-                      <div className="flex size-10 items-center justify-center rounded-full bg-muted">
-                        <Scissors className="size-5 text-muted-foreground" />
-                      </div>
-                      <div>
-                        <p className="text-sm font-medium">
-                          No clips created yet
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <StatChip icon={<Clapperboard />} label="Clips" value={String(counts.clips)} />
+                  <StatChip
+                    icon={<CheckCircle2 />}
+                    label="Ready"
+                    value={`${counts.done}/${counts.clips || 0}`}
+                    tone={counts.done && counts.done === counts.clips ? "success" : undefined}
+                  />
+                  <StatChip
+                    icon={<Loader2 className={counts.active ? "animate-spin" : undefined} />}
+                    label="Rendering"
+                    value={String(counts.active + counts.queued)}
+                    tone={counts.active ? "warn" : undefined}
+                  />
+                  <StatChip
+                    icon={<Gauge />}
+                    label="Top score"
+                    value={bestScore === null ? "—" : bestScore.toFixed(1)}
+                  />
+                </div>
+
+                {detail.video.error && (
+                  <Alert variant="destructive" className="mt-3">
+                    <AlertCircle className="mt-0.5" />
+                    <AlertDescription className="text-[12px]">{detail.video.error}</AlertDescription>
+                  </Alert>
+                )}
+              </section>
+
+              {/* clips */}
+              <section className="space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <h3 className="flex items-center gap-1.5 text-[13px] font-semibold tracking-tight">
+                      Clips
+                      <span className="rounded-md bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground tabular">
+                        {filteredClips.length}
+                        {filteredClips.length !== counts.clips ? ` / ${counts.clips}` : ""}
+                      </span>
+                    </h3>
+                    <div className="flex items-center gap-0.5 rounded-lg border bg-card p-0.5">
+                      {(
+                        [
+                          ["all", "All"],
+                          ["live", "In progress"],
+                          ["ready", "Ready"],
+                          ["failed", "Failed"],
+                        ] as const
+                      ).map(([key, label]) => (
+                        <button
+                          key={key}
+                          type="button"
+                          onClick={() => setFilter(key)}
+                          className={cn(
+                            "rounded-md px-2 py-1 text-[11px] font-medium transition-colors",
+                            filter === key ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-muted"
+                          )}
+                        >
+                          {label}
+                          {key !== "all" && (
+                            <span className="ml-1 tabular opacity-60">
+                              {key === "live"
+                                ? counts.active + counts.queued
+                                : key === "ready"
+                                  ? counts.done
+                                  : counts.failed}
+                            </span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setSort(sort === "run" ? "score" : sort === "score" ? "status" : "run")}
+                      title="Change clip order"
+                    >
+                      <ArrowUpDown />
+                      {sort === "run" ? "Latest run" : sort === "score" ? "Top score" : "Status"}
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setTranscriptOpen((open) => !open)}>
+                      <FileText />
+                      Transcript
+                    </Button>
+                  </div>
+                </div>
+
+                {transcriptOpen && (
+                  <TranscriptPanel
+                    videoId={video._id}
+                    onLoad={pipeline.loadTranscript}
+                    isLoading={pipeline.isTranscriptLoading}
+                    transcript={pipeline.transcript}
+                  />
+                )}
+
+                {counts.clips === 0 ? (
+                  <div className="rounded-2xl border border-dashed bg-card/50 px-6 py-12 text-center">
+                    {stageMeta && (stageMeta.pulse || stage === "queued") ? (
+                      <>
+                        <span className="mx-auto flex size-11 items-center justify-center rounded-full bg-primary/10 text-primary">
+                          <Loader2 className="size-5 animate-spin" />
+                        </span>
+                        <p className="mt-3 text-[13px] font-medium">{stageMeta.hint}</p>
+                        <p className="mx-auto mt-1 max-w-sm text-[11.5px] text-muted-foreground">
+                          Clips appear in this grid as soon as the AI finishes scoring the transcript - the
+                          renders queue themselves right after.
                         </p>
-                        <p className="mx-auto mt-1 max-w-md text-xs text-muted-foreground">
-                          Run “Detect viral clips” above to automatically
-                          identify high-engagement segments from the transcript.
+                        <div className="mx-auto mt-5 grid max-w-2xl grid-cols-1 gap-3 sm:grid-cols-3">
+                          {[0, 1, 2].map((index) => (
+                            <Skeleton key={index} className="skeleton-sheen aspect-9/16 rounded-2xl" />
+                          ))}
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <span className="mx-auto flex size-11 items-center justify-center rounded-full bg-muted text-muted-foreground">
+                          <Sparkles className="size-5" />
+                        </span>
+                        <p className="mt-3 text-[13px] font-medium">No clips yet</p>
+                        <p className="mx-auto mt-1 max-w-sm text-[11.5px] text-muted-foreground">
+                          {detail.transcriptReady
+                            ? "The transcript is ready - detection was skipped or paused. Start it, or turn the automation back on in Pipeline settings."
+                            : "Waiting for the transcript. Keep this page open - or come back later, the worker keeps going either way."}
                         </p>
-                      </div>
-                    </CardContent>
-                  </Card>
+                        {detail.transcriptReady && (
+                          <Button
+                            size="sm"
+                            className="mt-4"
+                            onClick={() =>
+                              effectivePipeline && void pipeline.detect(video._id, effectivePipeline.viral, true)
+                            }
+                          >
+                            <Sparkles />
+                            Detect and render now
+                          </Button>
+                        )}
+                      </>
+                    )}
+                  </div>
+                ) : filteredClips.length === 0 ? (
+                  <div className="rounded-2xl border border-dashed bg-card/50 px-6 py-10 text-center text-[12.5px] text-muted-foreground">
+                    No clip matches this filter.
+                  </div>
                 ) : (
-                  <div className="space-y-4">
-                    {sortClipsForDisplay(clips).map((clip) => (
-                      <ClipCard
+                  <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 xl:grid-cols-3">
+                    {filteredClips.map((clip, index) => (
+                      <div
                         key={clip._id}
-                        clip={clip}
-                        captionPresets={captionPresets}
-                        onRefresh={refreshClipsAndPresets}
-                      />
+                        className="animate-fade-up"
+                        style={{ animationDelay: `${Math.min(index, 8) * 35}ms` }}
+                      >
+                        <ClipTile
+                          clip={clip}
+                          captionPresets={captionPresets}
+                          busy={busy === `render:${clip._id}` || busy === `save:${clip._id}`}
+                          onEdit={setEditingClip}
+                          onRender={(target) => void pipeline.renderClip(target)}
+                          onCancel={(target) => void pipeline.cancelClip(target)}
+                          onDelete={(target) => void pipeline.deleteClip(target)}
+                        />
+                      </div>
                     ))}
                   </div>
                 )}
-              </div>
+              </section>
             </>
-          ) : (
-            <Card className="border-dashed">
-              <CardContent className="flex flex-col items-center gap-3 py-16 text-center">
-                <div className="flex size-12 items-center justify-center rounded-full bg-muted">
-                  <Film className="size-6 text-muted-foreground" />
-                </div>
-                <div>
-                  <p className="text-sm font-medium">
-                    Select a video to view clips
-                  </p>
-                  <p className="mx-auto mt-1 max-w-sm text-xs text-muted-foreground">
-                    Choose an uploaded video from the list, or upload a new
-                    landscape video to get started.
-                  </p>
-                </div>
-              </CardContent>
-            </Card>
           )}
         </div>
       </div>
+
+      {/* ---------- clip editor ---------- */}
+      <ClipEditDialog
+        clip={editingClip}
+        open={Boolean(editingClip)}
+        onOpenChange={(open) => !open && setEditingClip(null)}
+        captionPresets={captionPresets}
+        overlayPresets={overlayPresets}
+        sourceUrl={video?.fileName ? `/api/media/uploads/${encodeURIComponent(video.fileName)}` : null}
+        videoDuration={video?.duration}
+        busy={editingClip ? busy === `save:${editingClip._id}` : false}
+        onSave={pipeline.saveClip}
+      />
+
+      {/* ---------- pipeline settings ---------- */}
+      <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
+        <DialogContent size="lg">
+          <DialogHeader>
+            <DialogTitle>Pipeline settings</DialogTitle>
+            <DialogDescription className="text-[12px]">
+              Applies to this video from now on - including the next automatic step.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogBody>
+            {effectivePipeline ? (
+              <AutomationPanel
+                value={effectivePipeline}
+                onChange={setAutomationDraft}
+                onSave={() => {
+                  if (!videoId || !automationDraft) return;
+                  void pipeline.saveAutomation(videoId, automationDraft).then(() => {
+                    setSettingsOpen(false);
+                    setAutomationDraft(null);
+                  });
+                }}
+                dirty={settingsDirty}
+                busy={busy === `automation:${videoId}`}
+              />
+            ) : (
+              <p className="text-[12.5px] text-muted-foreground">Loading…</p>
+            )}
+          </DialogBody>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSettingsOpen(false)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
+}
+
+/** Transcript is loaded on demand: it is the biggest thing this page could fetch. */
+function TranscriptPanel({
+  videoId,
+  onLoad,
+  isLoading,
+  transcript,
+}: {
+  videoId: string;
+  onLoad: (id: string) => Promise<void>;
+  isLoading: boolean;
+  transcript: { segments: { start: number; end: number; text: string }[] } | null;
+}) {
+  // Fetching is delegated to the hook, which caches per video, so opening this
+  // panel again - or switching back to a video - costs nothing.
+  React.useEffect(() => {
+    void onLoad(videoId);
+  }, [videoId, onLoad, transcript]);
+
+  return (
+    <div className="animate-fade-in space-y-2 rounded-2xl border bg-card/60 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
+          {transcript ? `${transcript.segments.length} segments` : "Loading transcript…"}
+        </p>
+        {transcript && (
+          <Button
+            size="xs"
+            variant="outline"
+            onClick={() => {
+              const full = transcript.segments
+                .map((segment) => `[${formatTime(segment.start)} – ${formatTime(segment.end)}] ${segment.text}`)
+                .join("\n");
+              void navigator.clipboard?.writeText(full).catch(() => undefined);
+            }}
+          >
+            Copy with timestamps
+          </Button>
+        )}
+      </div>
+      {isLoading && !transcript ? (
+        <Skeleton className="skeleton-sheen h-40 rounded-lg" />
+      ) : (
+        <textarea
+          readOnly
+          aria-label="Full transcript with timestamps"
+          className="subtle-scroll h-40 w-full resize-y rounded-lg border border-border bg-background p-2.5 font-mono text-[11px] leading-relaxed shadow-inner focus:ring-1 focus:ring-ring focus:outline-none"
+          value={(transcript?.segments ?? [])
+            .map((segment) => `[${formatTime(segment.start)} – ${formatTime(segment.end)}] ${segment.text}`)
+            .join("\n")}
+        />
+      )}
+    </div>
+  );
+}
+
+function stageMetaOf(stage: NonNullable<VideoListItem["pipelineStatus"]["stage"]>) {
+  return stageMeta(stage);
 }
 
 export default function DashboardPage() {
   return (
     <Suspense
       fallback={
-        <div className="flex items-center justify-center gap-2 p-12 text-muted-foreground">
-          <Loader2 className="size-5 animate-spin" />
-          Loading dashboard…
+        <div className="flex items-center justify-center gap-2 py-16 text-muted-foreground">
+          <Loader2 className="size-4 animate-spin" />
+          <span className="text-[13px]">Loading studio…</span>
         </div>
       }
     >

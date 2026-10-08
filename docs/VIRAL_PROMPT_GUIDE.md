@@ -40,11 +40,15 @@ On the dashboard, **AI clip options** (shown for the selected video, above *Gene
 | --- | --- | --- |
 | **Number of clips** | `10` | How many top viral moments to generate (1–25). Injected as `{{clipCount}}` and enforced after parsing. |
 | **Min clip length** | `60s` | Clips shorter than this are **never** created (prompt rule + code enforcement). This is the **only** length knob — the max is fixed internally. |
-| **Max clip length** | `600s` (fixed) | Not exposed in the UI anymore. Clips longer than 600s are trimmed to 600s. Still injected as `{{maxClipDuration}}`. |
+| **Max clip duration** | fixed | Not user-configurable: whatever a client sends is replaced with the built-in maximum, so a bad value can never produce a 20-minute "clip". Still injected as `{{maxClipDuration}}`. |
 | **Hook text** (switch) | **On** | When **off**, no hook text is generated, the clip gets `hookDuration: 0`, and renders with **no hook intro/overlay**. |
 | **CTA text** (switch) | **On** | When **off**, no CTA is generated, the clip gets `ctaDuration: 0`, and renders with **no CTA card**. |
 
-Choices persist in `localStorage` (`clipcraft.viral-options`) and are sent with the request:
+Choices are edited in the **Pipeline** panel (upload form and dashboard). They persist in
+`localStorage` as `clipcraft.pipeline-defaults` — `clipcraft.viral-options` is still mirrored
+for older bookmarks — and a chosen set is stored on each video at upload time
+(`videos.pipeline_json`), so the automatic run uses it. A manual detection sends them
+with the request:
 
 ```http
 POST /api/videos/{videoId}/detect-viral

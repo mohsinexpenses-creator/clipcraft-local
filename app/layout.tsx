@@ -1,14 +1,24 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
-import Link from "next/link";
-import { Navbar } from "@/components/navbar";
+import { AppShell } from "@/components/app-shell";
 import { ThemeProvider } from "@/components/theme-provider";
+import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 export const metadata: Metadata = {
-  title: "ClipCraft Local - Personal AI Clip Generator",
+  title: {
+    default: "ClipCraft Local — Personal AI Clip Generator",
+    template: "%s · ClipCraft",
+  },
   description:
-    "Convert landscape long-form videos into viral 9:16 portrait short clips with smart crop, color filters, intro hook, and animated captions.",
+    "Convert landscape long-form videos into viral 9:16 portrait short clips: upload once and the app transcribes, finds the viral moments and renders them automatically.",
+};
+
+export const viewport: Viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#ffffff" },
+    { media: "(prefers-color-scheme: dark)", color: "#141420" },
+  ],
 };
 
 export default function RootLayout({
@@ -26,22 +36,9 @@ export default function RootLayout({
           disableTransitionOnChange
         >
           <TooltipProvider>
-            <Navbar />
-            <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-8 sm:px-6 lg:px-8">
-              {children}
-            </main>
-            <footer className="border-t py-6 text-center text-xs text-muted-foreground">
-              ClipCraft Local — Personal AI Short-Form Video Generator | Made
-              with ❤ by{" "}
-              <Link
-                href="https://nawab-tech.vercel.app/about"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-primary hover:underline underline-offset-4"
-              >
-                Nawab Tech
-              </Link>
-            </footer>
+            <Toaster>
+              <AppShell>{children}</AppShell>
+            </Toaster>
           </TooltipProvider>
         </ThemeProvider>
       </body>

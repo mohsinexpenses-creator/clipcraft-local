@@ -74,7 +74,9 @@ test('schema v2 keeps user presets and migrates duplicate legacy defaults to one
 
     migrated = openDatabase(filePath);
     const version = migrated.prepare('SELECT version FROM schema_version WHERE id = 1').get() as { version: number };
-    assert.equal(version.version, 2);
+    // Every pending migration runs on open, including the additive v3 pipeline
+    // column - which must tolerate this fixture having no `videos` table at all.
+    assert.equal(version.version, 3);
     assert.equal((await getDefaultCaptionPreset(migrated))?._id, 'user-caption');
     assert.equal((await getDefaultOverlayStylePreset('hook', migrated))?._id, 'user-hook');
     assert.equal((await getDefaultOverlayStylePreset('cta', migrated))?._id, 'user-cta');

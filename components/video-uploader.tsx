@@ -2,13 +2,26 @@
 
 import React, { useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { Upload, Tv, Loader2, CheckCircle2, AlertCircle, FileVideo, X } from 'lucide-react';
+import {
+  Upload,
+  Tv,
+  Loader2,
+  CheckCircle2,
+  AlertCircle,
+  FileVideo,
+  X,
+  Sparkles,
+  Captions,
+  Clapperboard,
+} from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Progress } from '@/components/ui/progress';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { cn } from 'cn';
+import type { PipelineOptions } from '@/lib/types';
 import {
   deleteUploadSession,
   formatDuration,
@@ -19,9 +32,42 @@ import {
   UploadPhase,
   uploadVideoFile,
 } from '@/lib/upload-client';
-import { cn } from 'cn';
 
-export const VideoUploader = () => {
+/**
+ * The upload step of the pipeline - and the only interaction a new video needs.
+ *
+ * Once the last byte lands, the server queues transcription, transcription
+ * queues viral detection, and detection queues the renders (see
+ * lib/pipeline.ts). The uploader's job is therefore to stream the file
+ * resumably, remember the automation the user chose, and get out of the way by
+ * navigating straight to the dashboard that watches it happen.
+ */
+
+/** The three steps the video walks through on its own after this page. */
+const PIPELINE_STEPS = [
+  {
+    icon: Captions,
+    title: 'Transcribe',
+    text: 'Local whisper.cpp or Deepgram, with word-level timestamps.',
+  },
+  {
+    icon: Sparkles,
+    title: 'Detect clips',
+    text: 'AI ranks the best moments, writes the hook and the CTA.',
+  },
+  {
+    icon: Clapperboard,
+    title: 'Render 9:16',
+    text: 'Speaker crop, hook replay, animated captions - default styles.',
+  },
+] as const;
+
+export interface VideoUploaderProps {
+  /** Automation to store on this video; defaults to the saved upload defaults. */
+  pipeline: PipelineOptions;
+}
+
+export const VideoUploader: React.FC<VideoUploaderProps> = ({ pipeline }) => {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -62,8 +108,8 @@ export const VideoUploader = () => {
 
   /**
    * Uploads through the resumable chunked endpoint, so a multi-hour recording is never
-   * buffered in memory, never hits the old 512 MB check, and can be resumed if the
-   * connection drops.
+   * buffered in memory and can be resumed if the connection drops. The chosen
+   * automation travels with the finalize request and is stored on the video record.
    */
   const handleUploadFile = async (resumeSessionId?: string | null) => {
     if (!selectedFile) return;
@@ -86,21 +132,15 @@ export const VideoUploader = () => {
         onSessionCreated: setSessionId,
         onProgress: setProgress,
         onPhase: setPhase,
+        pipeline,
       });
 
       setSessionId(null);
       setPhase('idle');
-      const transcriptionLabel =
-        data.video?.transcriptionProvider === 'deepgram'
-          ? `Deepgram (${data.video?.transcriptionModel || 'nova-2'})`
-          : `whisper.cpp (${data.video?.transcriptionModel || 'local model'})`;
-      setStatusMessage(
-        `Upload complete (${formatFileSize(selectedFile.size)}). Transcription is starting with ${transcriptionLabel}. Redirecting to dashboard…`
-      );
-
-      setTimeout(() => {
-        router.push(`/?videoId=${data.video._id}`);
-      }, 800);
+      setIsProcessing(false);
+      // Go straight to the dashboard: it polls the pipeline, so the user lands on
+      // a live progress bar instead of a "thank you" screen.
+      router.push(`/?videoId=${data.video._id}`);
     } catch (err) {
       if (err instanceof UploadAbortedError) {
         setStatusMessage('Upload cancelled.');
@@ -140,7 +180,7 @@ export const VideoUploader = () => {
       const res = await fetch('/api/upload', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ youtubeUrl: youtubeUrl.trim() }),
+        body: JSON.stringify({ youtubeUrl: youtubeUrl.trim(), pipeline }),
       });
 
       if (!res.ok) {
@@ -149,14 +189,8 @@ export const VideoUploader = () => {
       }
 
       const data = await res.json();
-      const transcriptionLabel = data.video?.transcriptionProvider === 'deepgram'
-        ? `Deepgram (${data.video?.transcriptionModel || 'nova-2'})`
-        : `whisper.cpp (${data.video?.transcriptionModel || 'local model'})`;
-      setStatusMessage(`YouTube video fetched. Transcription is starting with ${transcriptionLabel}. Redirecting to dashboard…`);
-
-      setTimeout(() => {
-        router.push(`/?videoId=${data.video._id}`);
-      }, 800);
+      setIsProcessing(false);
+      router.push(`/?videoId=${data.video._id}`);
     } catch (err) {
       console.error('YouTube error:', err);
       setErrorMessage(err instanceof Error ? err.message : 'Failed to fetch YouTube video');
@@ -169,9 +203,15 @@ export const VideoUploader = () => {
   const percent = totalBytes > 0 ? Math.min(100, Math.round((uploadedBytes / totalBytes) * 100)) : 0;
   const canResume =
     !isProcessing && Boolean(sessionId) && uploadedBytes > 0 && Boolean(errorMessage);
+  const nextStep =
+    pipeline.autoDetect && pipeline.autoRender
+      ? 'transcript → viral detection → render'
+      : pipeline.autoDetect
+        ? 'transcript → viral detection'
+        : 'transcript only';
 
   return (
-    <div className="mx-auto w-full max-w-xl">
+    <div className="mx-auto w-full">
       <Tabs defaultValue="file" onValueChange={() => setErrorMessage(null)}>
         <TabsList className="w-full">
           <TabsTrigger value="file" className="flex-1">
@@ -205,13 +245,14 @@ export const VideoUploader = () => {
             onDragLeave={() => setIsDragActive(false)}
             onDrop={handleDrop}
             className={cn(
-              'flex cursor-pointer flex-col items-center justify-center gap-3 rounded-lg border border-dashed px-6 py-10 text-center transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/40',
-              isProcessing && 'cursor-default opacity-80',
+              'flex cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border border-dashed px-6 py-12 text-center outline-none transition-[border-color,background-color,box-shadow] duration-200',
+              'focus-visible:ring-2 focus-visible:ring-ring/40',
+              isProcessing && 'cursor-default opacity-90',
               isDragActive
-                ? 'border-primary bg-accent'
+                ? 'border-primary bg-accent shadow-[var(--shadow-lift)]'
                 : selectedFile
-                  ? 'border-primary/50 bg-accent/50'
-                  : 'border-input bg-muted/30 hover:border-ring hover:bg-muted/50'
+                  ? 'border-primary/50 bg-accent/40'
+                  : 'border-input bg-muted/25 hover:border-ring hover:bg-muted/45'
             )}
           >
             <input
@@ -222,30 +263,42 @@ export const VideoUploader = () => {
               className="hidden"
             />
 
-            <div className="flex size-11 items-center justify-center rounded-full bg-muted">
-              <Upload className="size-5 text-muted-foreground" />
-            </div>
+            <span
+              className={cn(
+                'flex size-12 items-center justify-center rounded-2xl transition-colors',
+                selectedFile ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'
+              )}
+            >
+              {isProcessing ? <Loader2 className="size-5 animate-spin" /> : <Upload className="size-5" />}
+            </span>
 
             {selectedFile ? (
               <div>
-                <p className="text-sm font-medium">{selectedFile.name}</p>
+                <p className="max-w-[46ch] truncate text-sm font-medium">{selectedFile.name}</p>
                 <p className="mt-1 text-xs text-muted-foreground">
                   {formatFileSize(selectedFile.size)} · Click to change
                 </p>
               </div>
             ) : (
               <div>
-                <p className="text-sm font-medium">Click or drag a video file here</p>
-                <p className="mt-1 text-xs text-muted-foreground">MP4, MOV, MKV · no size limit</p>
+                <p className="text-sm font-medium">Drop a video here, or click to choose one</p>
+                <p className="mt-1 text-xs text-muted-foreground">MP4, MOV, MKV, WEBM · no size limit</p>
               </div>
+            )}
+
+            {!isProcessing && (
+              <p className="text-[11px] text-muted-foreground">
+                After the upload this video runs <span className="font-medium text-foreground/70">{nextStep}</span> on
+                its own.
+              </p>
             )}
           </div>
 
           {isProcessing && (
             <div className="space-y-2">
               <Progress value={percent} />
-              <div className="flex items-center justify-between text-xs text-muted-foreground">
-                <span>
+              <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                <span className="tabular">
                   {formatFileSize(uploadedBytes)} / {formatFileSize(totalBytes)} · {percent}%
                 </span>
                 <span>
@@ -271,7 +324,7 @@ export const VideoUploader = () => {
           {selectedFile && !isProcessing && !canResume && (
             <Button size="lg" className="w-full" onClick={() => handleUploadFile()}>
               <Upload />
-              Upload &amp; process video
+              Upload &amp; start the pipeline
             </Button>
           )}
 
@@ -298,9 +351,9 @@ export const VideoUploader = () => {
           )}
 
           {selectedFile && !isProcessing && (
-            <p className="text-xs text-muted-foreground">
-              Long recordings upload in chunks ({formatFileSize(selectedFile.size)} won&apos;t be
-              buffered in memory) and resume automatically if the connection drops.
+            <p className="text-[11px] text-muted-foreground">
+              Long recordings upload in chunks ({formatFileSize(selectedFile.size)} won&apos;t be buffered in
+              memory) and resume automatically if the connection drops.
             </p>
           )}
         </TabsContent>
@@ -320,6 +373,10 @@ export const VideoUploader = () => {
               }}
               disabled={isProcessing}
             />
+            <p className="text-[11px] text-muted-foreground">
+              Disabled by default: set <code className="rounded bg-muted px-1">ENABLE_YT_IMPORT=1</code> in
+              .env.local. Direct uploads are faster and never break with YouTube.
+            </p>
           </div>
 
           {youtubeUrl.trim() && !isProcessing && (
@@ -349,6 +406,38 @@ export const VideoUploader = () => {
           <AlertDescription>{statusMessage}</AlertDescription>
         </Alert>
       )}
+
+      {/* What happens next */}
+      <ol className="mt-5 grid gap-2 sm:grid-cols-3">
+        {PIPELINE_STEPS.map((step, index) => {
+          const Icon = step.icon;
+          const skipped =
+            (step.title === 'Detect clips' && !pipeline.autoDetect) ||
+            (step.title === 'Render 9:16' && !pipeline.autoRender);
+          return (
+            <li
+              key={step.title}
+              className={cn(
+                'relative flex items-start gap-2.5 rounded-xl border px-3 py-2.5 transition-colors',
+                skipped ? 'bg-muted/25 text-muted-foreground' : 'bg-card'
+              )}
+            >
+              <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md bg-primary/10 text-[11px] font-bold text-primary tabular">
+                {index + 1}
+              </span>
+              <div className="min-w-0">
+                <p className="flex items-center gap-1.5 text-[12.5px] leading-tight font-medium">
+                  <Icon className="size-3.5" />
+                  {step.title}
+                </p>
+                <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
+                  {skipped ? 'Manual — you start it from the dashboard.' : step.text}
+                </p>
+              </div>
+            </li>
+          );
+        })}
+      </ol>
     </div>
   );
 };

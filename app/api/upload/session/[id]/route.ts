@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { AppError } from '../../../../../lib/errors';
 import { jsonError, QUEUE_MESSAGES } from '../../../../../lib/upload';
+import { sanitizePipelineOptions } from '../../../../../lib/pipeline-defaults';
 import {
   abortUploadSession,
   appendUploadChunk,
@@ -12,6 +13,10 @@ import {
 export const runtime = 'nodejs';
 
 type RouteContext = { params: Promise<{ id: string }> };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 /**
  * GET /api/upload/session/[id]
@@ -76,12 +81,19 @@ export async function PUT(request: NextRequest, { params }: RouteContext): Promi
  * POST /api/upload/session/[id]
  *
  * Finishes the upload: moves the assembled file into UPLOAD_DIR, probes it with FFmpeg,
- * stores the video record and queues transcription.
+ * stores the video record and queues transcription - step 1 of the automatic chain.
+ *
+ * The request may carry the automation the uploader chose
+ * (`{ pipeline: { autoDetect, autoRender, viral } }`). It is stored on the video
+ * record, so the transcript -> detection -> render chain that the worker runs
+ * afterwards uses exactly these settings - including after a reload or restart.
  */
-export async function POST(_request: NextRequest, { params }: RouteContext): Promise<NextResponse> {
+export async function POST(request: NextRequest, { params }: RouteContext): Promise<NextResponse> {
   try {
     const { id } = await params;
-    const { video, transcriptionQueued } = await finalizeUploadSession(id);
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    const pipeline = isRecord(body) ? sanitizePipelineOptions(body) : undefined;
+    const { video, transcriptionQueued } = await finalizeUploadSession(id, pipeline);
 
     // Shape matters: components/video-uploader.tsx reads `data.video._id`.
     return NextResponse.json({

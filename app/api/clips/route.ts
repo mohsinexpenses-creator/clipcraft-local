@@ -3,12 +3,16 @@ import {
   getClip,
   getDefaultCaptionPreset,
   getDefaultOverlayStylePreset,
+  getVideo,
   listClips,
   updateClip,
 } from '@/lib/db';
 import { AppError, toErrorMessage, toErrorStatus } from '@/lib/errors';
 import { enqueueClipJob } from '@/lib/queue';
-import { CaptionEngine, ClipLayout, JobData } from '@/lib/types';
+import { jobDataFromClip } from '@/lib/pipeline';
+import { sanitizeClipEdits } from '@/lib/clip-edits';
+
+export const runtime = 'nodejs';
 
 export async function GET(request: Request) {
   try {
@@ -25,128 +29,72 @@ export async function GET(request: Request) {
   }
 }
 
+/**
+ * POST /api/clips - queue one clip for rendering.
+ *
+ * The body may carry the edits made in the clip editor; whatever it carries is
+ * applied to the stored clip record and then rendered, so "Save & re-render" is
+ * one request and one atomic step. Fields left out keep their stored value,
+ * which is also what makes a plain `{ clipId }` body a "re-render as is".
+ */
 export async function POST(request: Request) {
   let body: Record<string, unknown> | null = null;
+  let clipId = '';
 
   try {
     body = (await request.json()) as Record<string, unknown>;
 
-    const clipId = typeof body.clipId === 'string' ? body.clipId : '';
+    clipId = typeof body.clipId === 'string' ? body.clipId : '';
     const videoId = typeof body.videoId === 'string' ? body.videoId : '';
-    const start = body.start;
-    const end = body.end;
-    const hookDurationValue = body.hookDuration ?? 3;
-    const ctaDurationValue = body.ctaDuration ?? 2.5;
-    const hookText = typeof body.hookText === 'string' ? body.hookText : undefined;
-    const ctaText = typeof body.ctaText === 'string' ? body.ctaText : undefined;
-    const filterPreset = typeof body.filterPreset === 'string' ? body.filterPreset : 'vibrant';
-    const captionPresetIdRaw =
-      typeof body.captionPresetId === 'string' && body.captionPresetId.trim()
-        ? body.captionPresetId.trim()
-        : undefined;
-    const layout: ClipLayout = body.layout === 'split-screen' ? 'split-screen' : 'speaker-focus';
-    const captionEngine: CaptionEngine = body.captionEngine === 'native' ? 'native' : 'remotion';
-    const hookStylePresetIdRaw =
-      typeof body.hookStylePresetId === 'string' && body.hookStylePresetId.trim()
-        ? body.hookStylePresetId.trim()
-        : undefined;
-    const ctaStylePresetIdRaw =
-      typeof body.ctaStylePresetId === 'string' && body.ctaStylePresetId.trim()
-        ? body.ctaStylePresetId.trim()
-        : undefined;
 
-    if (!clipId || !videoId) {
-      return NextResponse.json({ error: 'Missing clipId or videoId' }, { status: 400 });
+    if (!clipId) {
+      return NextResponse.json({ error: 'Missing clipId' }, { status: 400 });
     }
 
     const existingClip = await getClip(clipId);
     if (!existingClip) {
       return NextResponse.json({ error: 'Clip record not found' }, { status: 404 });
     }
+    if (videoId && existingClip.videoId !== videoId) {
+      throw new AppError(`Clip ${clipId} does not belong to video ${videoId}.`, { status: 400 });
+    }
 
+    const video = await getVideo(existingClip.videoId);
+    const edits = sanitizeClipEdits(body, { duration: video?.duration });
+    Object.assign(existingClip, edits);
+
+    // Preset ids fall back to the configured database defaults, so a re-render
+    // of an old clip (created before presets existed) still finds a style. The
+    // worker resolves the same defaults again; doing it here too means the clip
+    // record and the queue job agree on exactly what is being rendered.
     const [defaultCaptionPreset, defaultHookStyle, defaultCtaStyle] = await Promise.all([
       getDefaultCaptionPreset(),
       getDefaultOverlayStylePreset('hook'),
       getDefaultOverlayStylePreset('cta'),
     ]);
-    const storedCaptionPresetId = existingClip.captionPresetId?.trim() || undefined;
-    const storedHookPresetId = existingClip.hookStylePresetId?.trim() || undefined;
-    const storedCtaPresetId = existingClip.ctaStylePresetId?.trim() || undefined;
-    const captionPresetId =
-      captionPresetIdRaw ?? storedCaptionPresetId ?? defaultCaptionPreset?._id;
-    const hookStylePresetId =
-      hookStylePresetIdRaw ?? storedHookPresetId ?? defaultHookStyle?._id;
-    const ctaStylePresetId = ctaStylePresetIdRaw ?? storedCtaPresetId ?? defaultCtaStyle?._id;
-    if (!captionPresetId || !hookStylePresetId || !ctaStylePresetId) {
-      throw new AppError('A database default preset is missing for this clip.', {
+    existingClip.captionPresetId =
+      existingClip.captionPresetId?.trim() || defaultCaptionPreset?._id || '';
+    existingClip.hookStylePresetId =
+      existingClip.hookStylePresetId?.trim() || defaultHookStyle?._id;
+    existingClip.ctaStylePresetId = existingClip.ctaStylePresetId?.trim() || defaultCtaStyle?._id;
+
+    if (!existingClip.captionPresetId) {
+      throw new AppError('No caption preset is selected for this clip.', {
         status: 500,
-        resolution: 'Open preset settings and choose a default for Caption, Hook, and CTA.',
+        resolution: 'Pick a caption preset in the clip editor, or set a default in preset settings.',
       });
     }
 
-    const parsedStart = Number(start);
-    const parsedEnd = Number(end);
-    const parsedHookDuration = Number(hookDurationValue);
-    const parsedCtaDuration = Number(ctaDurationValue);
-
-    if (!Number.isFinite(parsedStart) || !Number.isFinite(parsedEnd) || parsedEnd <= parsedStart) {
-      throw new AppError('Clip render request has invalid start/end timestamps.', {
-        status: 400,
-        details: `start=${String(start)}, end=${String(end)}`,
-        resolution: 'Choose a valid clip window before rendering.',
-      });
-    }
-
-    if (!Number.isFinite(parsedHookDuration) || parsedHookDuration < 0) {
-      throw new AppError('Clip render request has an invalid hook duration.', {
-        status: 400,
-        details: `hookDuration=${String(hookDurationValue)}`,
-        resolution: 'Use a non-negative hook duration before rendering.',
-      });
-    }
-
-    if (!Number.isFinite(parsedCtaDuration) || parsedCtaDuration < 0) {
-      throw new AppError('Clip render request has an invalid CTA duration.', {
-        status: 400,
-        details: `ctaDuration=${String(ctaDurationValue)}`,
-        resolution: 'Use a non-negative CTA duration before rendering.',
-      });
-    }
-
-    existingClip.start = parsedStart;
-    existingClip.end = parsedEnd;
-    existingClip.hookDuration = parsedHookDuration;
-    existingClip.ctaDuration = parsedCtaDuration;
-    if (hookText !== undefined) existingClip.hookText = hookText;
-    if (ctaText !== undefined) existingClip.ctaText = ctaText;
-    existingClip.filterPreset = filterPreset;
-    existingClip.captionPresetId = captionPresetId;
-    existingClip.layout = layout;
-    existingClip.captionEngine = captionEngine;
-    existingClip.hookStylePresetId = hookStylePresetId;
-    existingClip.ctaStylePresetId = ctaStylePresetId;
-
+    // A re-render always starts from scratch: clear the previous failure and
+    // progress so the grid shows a clean 0% instead of an old error.
     existingClip.status = 'pending';
     existingClip.progress = 0;
     existingClip.error = undefined;
-    const jobData: JobData = {
-      clipId: existingClip._id,
-      videoId: existingClip.videoId,
-      start: existingClip.start,
-      end: existingClip.end,
-      hookDuration: existingClip.hookDuration,
-      hookText: existingClip.hookText,
-      ctaText: existingClip.ctaText,
-      ctaDuration: existingClip.ctaDuration,
-      filterPreset: existingClip.filterPreset,
-      captionPresetId: existingClip.captionPresetId,
-      layout: existingClip.layout,
-      captionEngine: existingClip.captionEngine,
-      hookStylePresetId: existingClip.hookStylePresetId,
-      ctaStylePresetId: existingClip.ctaStylePresetId,
-    };
 
-    await enqueueClipJob(jobData);
+    // enqueueClipJob() writes the edits and the job in one transaction, so an
+    // active-job conflict can never leave the row looking "pending" while no
+    // render was actually queued.
+    await enqueueClipJob(jobDataFromClip(existingClip));
     const queuedClip = await getClip(existingClip._id);
 
     return NextResponse.json({
@@ -154,8 +102,6 @@ export async function POST(request: Request) {
       clip: queuedClip ?? existingClip,
     });
   } catch (error) {
-    const clipId = typeof body?.clipId === 'string' ? body.clipId : undefined;
-
     if (clipId && toErrorStatus(error, 500) !== 409) {
       try {
         const clip = await getClip(clipId);

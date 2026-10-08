@@ -1,4 +1,4 @@
-import { VideoRecord } from './types';
+import { PipelineOptions, VideoRecord } from './types';
 
 /**
  * Browser half of the resumable upload protocol (app/api/upload/session/*).
@@ -39,6 +39,13 @@ export interface UploadVideoFileOptions {
   onProgress?: (progress: UploadFileProgress) => void;
   onPhase?: (phase: UploadPhase) => void;
   signal?: AbortSignal;
+  /**
+   * Automation for this video (auto-detect / auto-render + AI clip options).
+   * It is sent with the finalize request and stored on the video record, so the
+   * steps that run minutes later - after a reload or a worker restart - still use
+   * what was chosen here.
+   */
+  pipeline?: PipelineOptions;
 }
 
 export interface UploadVideoFileResult {
@@ -370,7 +377,13 @@ export async function uploadVideoFile(
 
   const { ok, status, data } = await requestJson(
     `/api/upload/session/${session.id}`,
-    { method: 'POST' },
+    options.pipeline
+      ? {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pipeline: options.pipeline }),
+        }
+      : { method: 'POST' },
     signal
   );
 

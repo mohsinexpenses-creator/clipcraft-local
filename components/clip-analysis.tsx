@@ -1,309 +1,251 @@
-"use client";
+"use client"
 
-import React, { useId, useState } from "react";
+import * as React from "react"
 import {
   BrainCircuit,
+  Check,
   ChevronDown,
+  Copy,
   Gauge,
   Megaphone,
   Quote,
   ShieldAlert,
   ShieldCheck,
   Target,
-} from "lucide-react";
-import { Badge } from "@/components/ui/badge";
-import { cn } from "@/lib/utils";
-import type { SafetyRisk, ViralClip } from "@/lib/types";
-
-function Section({
-  title,
-  icon,
-  className,
-  children,
-}: {
-  title: string;
-  icon: React.ReactNode;
-  className?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <section
-      className={cn("mb-4 min-w-0 space-y-2 break-inside-avoid", className)}
-    >
-      <h4 className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground [&>svg]:size-3.5">
-        {icon}
-        {title}
-      </h4>
-      {children}
-    </section>
-  );
-}
-
-function Field({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <p className="leading-relaxed break-words">
-      <span className="font-medium text-foreground/80">{label}: </span>
-      <span className="text-muted-foreground">{children}</span>
-    </p>
-  );
-}
-
-function YesNo({ label, value }: { label: string; value: boolean }) {
-  return (
-    <Badge variant={value ? "success" : "outline"}>
-      {label}: {value ? "Yes" : "No"}
-    </Badge>
-  );
-}
-
-function RiskBadge({ risk }: { risk: SafetyRisk }) {
-  return (
-    <Badge
-      variant={
-        risk === "High" ? "destructive" : risk === "Low" ? "success" : "outline"
-      }
-      className={
-        risk === "Medium"
-          ? "border-amber-500/50 text-amber-600 dark:text-amber-400"
-          : undefined
-      }
-    >
-      {risk === "Low" ? <ShieldCheck /> : <ShieldAlert />}
-      {risk} risk
-    </Badge>
-  );
-}
-
-const SCORE_LABELS: Array<[keyof ViralClip["scores"], string]> = [
-  ["viral_score", "Viral"],
-  ["retention_score", "Retention"],
-  ["controversy_score", "Controversy"],
-  ["shareability_score", "Shareability"],
-];
-
-function ScoreBar({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="space-y-1">
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="text-muted-foreground">{label}</span>
-        <span className="font-medium tabular-nums text-foreground/80">
-          {Number.isInteger(value) ? value : value.toFixed(1)}/10
-        </span>
-      </div>
-      <div
-        className="h-1.5 overflow-hidden rounded-full bg-muted"
-        role="meter"
-        aria-label={`${label} score`}
-        aria-valuemin={0}
-        aria-valuemax={10}
-        aria-valuenow={value}
-      >
-        <div
-          className="h-full rounded-full bg-primary"
-          style={{ width: `${value * 10}%` }}
-        />
-      </div>
-    </div>
-  );
-}
+} from "lucide-react"
+import { cn } from "cn"
+import type { SafetyRisk, ViralClip } from "@/lib/types"
+import { scoreTone } from "@/lib/pipeline-ui"
 
 /**
- * Collapsible view of everything the AI said about a clip (the stored
- * `ViralClip`). Closed by default so the card stays compact; renders nothing
- * for clips created before the new AI schema.
+ * The "AI analytics" dropdown on a clip tile.
+ *
+ * Everything the detection model said about the clip, kept in one expandable
+ * strip so the grid stays scannable: the score is always visible on the
+ * thumbnail and this is the detail behind it. It is deliberately self-contained -
+ * no portal, no popover - so it never overlaps a neighbouring tile.
  */
-export function ClipAnalysisPanel({ analysis }: { analysis?: ViralClip }) {
-  const [open, setOpen] = useState(false);
-  const baseId = useId();
-  const toggleId = `${baseId}-toggle`;
-  const panelId = `${baseId}-panel`;
 
-  if (!analysis) return null;
+const SCORE_ROWS: Array<{ key: keyof ViralClip["scores"]; label: string }> = [
+  { key: "viral_score", label: "Viral" },
+  { key: "retention_score", label: "Retention" },
+  { key: "controversy_score", label: "Controversy" },
+  { key: "shareability_score", label: "Shareability" },
+]
 
-  const {
-    hook_line_analysis: hook,
-    retention_analysis: retention,
-    psychological_trigger: trigger,
-    safety_analysis: safety,
-    viral_packaging: packaging,
-    scores,
-  } = analysis;
+function ScoreRow({ label, value }: { label: string; value: number }) {
+  const tone = scoreTone(value)
+  return (
+    <div className="flex items-center gap-2">
+      <span className="w-20 shrink-0 text-[11px] text-muted-foreground">{label}</span>
+      <span className="h-1 flex-1 overflow-hidden rounded-full bg-muted">
+        <span
+          className={cn("block h-full rounded-full transition-[width] duration-500", tone.fill)}
+          style={{ width: `${Math.min(100, Math.max(2, value * 10))}%` }}
+        />
+      </span>
+      <span className="w-8 shrink-0 text-right text-[11px] font-medium tabular">{value.toFixed(1)}</span>
+    </div>
+  )
+}
 
-  const riskLines: Array<[string, string]> = [
-    ["Monetization", safety.monetization_risk],
-    ["Reused content", safety.reused_content_risk],
-    ["Algorithm suppression", safety.algorithm_suppression_risk],
-    ["For You feed eligibility", safety.ineligible_for_fyf_risk],
-  ];
+function Pill({
+  tone = "neutral",
+  children,
+  title,
+}: {
+  tone?: "neutral" | "good" | "warn" | "bad"
+  children: React.ReactNode
+  title?: string
+}) {
+  return (
+    <span
+      title={title}
+      className={cn(
+        "inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10.5px] font-medium ring-1 ring-inset",
+        tone === "neutral" && "bg-muted text-muted-foreground ring-border",
+        tone === "good" && "bg-emerald-500/10 text-emerald-700 ring-emerald-500/20 dark:text-emerald-300",
+        tone === "warn" && "bg-amber-500/10 text-amber-700 ring-amber-500/25 dark:text-amber-300",
+        tone === "bad" && "bg-destructive/10 text-destructive ring-destructive/25"
+      )}
+    >
+      {children}
+    </span>
+  )
+}
+
+function riskTone(risk: SafetyRisk): "good" | "warn" | "bad" {
+  return risk === "Low" ? "good" : risk === "Medium" ? "warn" : "bad";
+}
+
+function Group({ title, icon, children }: { title: string; icon: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <section className="space-y-1.5">
+      <h5 className="flex items-center gap-1.5 text-[10px] font-semibold tracking-[0.08em] text-muted-foreground/80 uppercase">
+        <span className="[&>svg]:size-3">{icon}</span>
+        {title}
+      </h5>
+      {children}
+    </section>
+  )
+}
+
+export interface ClipAnalysisPanelProps {
+  analysis?: ViralClip
+  open: boolean
+  onOpenChange: (open: boolean) => void
+}
+
+export function ClipAnalysisPanel({ analysis, open, onOpenChange }: ClipAnalysisPanelProps) {
+  const [copied, setCopied] = React.useState(false);
+
+  const toggle = () => onOpenChange(!open);
+
+  const copyCaption = async () => {
+    if (!analysis) return;
+    const text = [
+      analysis.viral_packaging.video_title,
+      "",
+      analysis.viral_packaging.hashtags.join(" "),
+    ].join("\n").trim();
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard blocked (permissions / non-secure origin) - nothing else to do.
+    }
+  };
+
+  const headline = analysis
+    ? `${analysis.scores.viral_score.toFixed(1)} viral score`
+    : "no AI analysis stored";
 
   return (
-    <div className="mt-3 overflow-hidden rounded-lg border bg-muted/30">
+    <div className="border-t bg-muted/25">
       <button
-        id={toggleId}
         type="button"
-        onClick={() => setOpen((value) => !value)}
+        onClick={toggle}
         aria-expanded={open}
-        aria-controls={panelId}
-        className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-xs font-medium transition-colors hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none"
+        disabled={!analysis}
+        className={cn(
+          "flex w-full items-center gap-2 px-3 py-2 text-left text-[11px] font-medium transition-colors",
+          "focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none",
+          analysis ? "hover:bg-muted/60" : "cursor-not-allowed opacity-60",
+          open && "bg-muted/40"
+        )}
       >
-        <span className="flex items-center gap-1.5">
-          <BrainCircuit className="size-3.5 text-primary" />
-          AI analysis
-        </span>
-        <span className="flex items-center gap-2 font-normal text-muted-foreground">
-          <span className="hidden sm:inline">
-            Hook · Retention · Trigger · Safety · Packaging · Scores
-          </span>
-          <ChevronDown
-            className={cn("size-4 transition-transform", open && "rotate-180")}
-          />
-        </span>
+        <BrainCircuit className="size-3.5 shrink-0 text-primary" />
+        <span className="shrink-0">AI analytics</span>
+        {!open && <span className="min-w-0 flex-1 truncate text-muted-foreground">{headline}</span>}
+        {open && <span className="flex-1" />}
+        <ChevronDown className={cn("size-3.5 shrink-0 text-muted-foreground transition-transform duration-200", open && "rotate-180")} />
       </button>
 
-      {open && (
-        <div
-          id={panelId}
-          role="region"
-          aria-labelledby={toggleId}
-          className="border-t px-3 py-3 text-xs sm:columns-2 sm:gap-x-6"
-        >
-          <Section
-            title="Scores"
-            icon={<Gauge />}
-            className="sm:[column-span:all]"
-          >
-            <div className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4">
-              {SCORE_LABELS.map(([key, label]) => (
-                <ScoreBar key={key} label={label} value={scores[key]} />
+      {open && analysis && (
+        <div className="animate-fade-in space-y-3 px-3 pt-1 pb-3 text-xs">
+          <Group title="Scores" icon={<Gauge />}>
+            <div className="space-y-1 rounded-lg bg-card/60 p-2 ring-1 ring-border/60">
+              {SCORE_ROWS.map((row) => (
+                <ScoreRow key={row.key} label={row.label} value={analysis.scores[row.key]} />
               ))}
             </div>
-          </Section>
+          </Group>
 
-          <Section title="Hook line" icon={<Quote />}>
-            {hook.hook_line && (
-              <p className="rounded-md border-l-2 border-primary/60 bg-background/60 px-2.5 py-1.5 leading-relaxed break-words italic">
-                “{hook.hook_line}”
-                <span className="ml-2 text-muted-foreground not-italic">
-                  {hook.hook_timestamp.start} – {hook.hook_timestamp.end}
-                </span>
+          {analysis.why_this_will_go_viral && (
+            <p className="leading-relaxed text-muted-foreground">{analysis.why_this_will_go_viral}</p>
+          )}
+
+          <Group title="Hook line" icon={<Quote />}>
+            {analysis.hook_line_analysis.hook_line && (
+              <p className="rounded-md border-l-2 border-primary/60 bg-card/60 px-2 py-1.5 leading-relaxed text-foreground/90 italic">
+                “{analysis.hook_line_analysis.hook_line}”
               </p>
             )}
-            {hook.why_it_works && (
-              <Field label="Why it works">{hook.why_it_works}</Field>
+            {analysis.hook_line_analysis.why_it_works && (
+              <p className="leading-relaxed text-muted-foreground">{analysis.hook_line_analysis.why_it_works}</p>
             )}
-            <div className="flex flex-wrap gap-1.5">
-              <YesNo label="Hook before clip" value={hook.place_before_clip} />
-            </div>
-          </Section>
+          </Group>
 
-          <Section title="Retention" icon={<Target />}>
-            <Badge variant="secondary">
-              🎯 Predicted: {retention.predicted_retention}
-            </Badge>
-            {retention.curiosity_first_3_seconds && (
-              <Field label="First 3 seconds">
-                {retention.curiosity_first_3_seconds}
-              </Field>
-            )}
-            {retention.payoff_location && (
-              <Field label="Payoff">{retention.payoff_location}</Field>
-            )}
-            <div className="flex flex-wrap gap-1.5">
-              <YesNo label="Open loop" value={retention.open_loop} />
-              <YesNo
-                label="Watches to the end"
-                value={retention.likely_to_watch_till_end}
-              />
+          <Group title="Retention & trigger" icon={<Target />}>
+            <div className="flex flex-wrap gap-1">
+              <Pill>Retention · {analysis.retention_analysis.predicted_retention}</Pill>
+              <Pill>Trigger · {analysis.psychological_trigger.dominant_trigger}</Pill>
+              <Pill tone={analysis.retention_analysis.open_loop ? "good" : "neutral"}>Open loop</Pill>
+              <Pill tone={analysis.retention_analysis.likely_to_watch_till_end ? "good" : "warn"}>
+                Watches to end
+              </Pill>
             </div>
-          </Section>
-
-          <Section title="Psychological trigger" icon={<BrainCircuit />}>
-            <Badge variant="secondary">🧠 {trigger.dominant_trigger}</Badge>
-            {trigger.explanation && (
-              <p className="leading-relaxed text-muted-foreground break-words">
-                {trigger.explanation}
+            {analysis.psychological_trigger.explanation && (
+              <p className="leading-relaxed text-muted-foreground">
+                {analysis.psychological_trigger.explanation}
               </p>
             )}
-          </Section>
+          </Group>
 
-          <Section title="Safety & eligibility" icon={<ShieldCheck />}>
-            <div className="flex flex-wrap gap-1.5">
-              <RiskBadge risk={safety.risk_level} />
-              <YesNo label="Platform safe" value={packaging.platform_safe} />
+          <Group title="Safety" icon={<ShieldCheck />}>
+            <div className="flex flex-wrap gap-1">
+              <Pill tone={riskTone(analysis.safety_analysis.risk_level)} title={analysis.safety_analysis.monetization_risk}>
+                {analysis.safety_analysis.risk_level === "Low" ? (
+                  <ShieldCheck className="size-3" />
+                ) : (
+                  <ShieldAlert className="size-3" />
+                )}
+                {analysis.safety_analysis.risk_level} risk
+              </Pill>
+              <Pill tone={analysis.viral_packaging.platform_safe ? "good" : "bad"}>
+                Platform safe
+              </Pill>
             </div>
-            {riskLines.map(
-              ([label, value]) =>
-                value && (
-                  <Field key={label} label={label}>
-                    {value}
-                  </Field>
-                ),
-            )}
-            {safety.risky_words.length > 0 && (
-              <div className="space-y-1">
-                <p className="font-medium text-foreground/80">Risky words</p>
-                <ul className="space-y-1">
-                  {safety.risky_words.map((word, index) => (
-                    <li
-                      key={`${word.word_or_phrase}-${index}`}
-                      className="flex flex-wrap items-center gap-1.5"
-                    >
-                      <code className="rounded bg-amber-500/10 px-1.5 py-0.5 font-medium text-amber-700 dark:text-amber-400">
-                        {word.word_or_phrase}
-                      </code>
-                      <Badge variant="outline">{word.action}</Badge>
-                      {word.safer_replacement && (
-                        <span className="text-muted-foreground">
-                          → {word.safer_replacement}
-                        </span>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </Section>
-
-          <Section title="Viral packaging" icon={<Megaphone />}>
-            {packaging.video_title && (
-              <Field label="Title">{packaging.video_title}</Field>
-            )}
-            {packaging.hook_text_on_video && (
-              <Field label="Hook text on video">
-                {packaging.hook_text_on_video}
-              </Field>
-            )}
-            {packaging.cta_text && (
-              <Field label="CTA">{packaging.cta_text}</Field>
-            )}
-            {packaging.hashtags.length > 0 && (
-              <Field label="Hashtags">{packaging.hashtags.join(" ")}</Field>
-            )}
-            {packaging.eligibility_or_reach_concerns && (
-              <Field label="Reach concerns">
-                {packaging.eligibility_or_reach_concerns}
-              </Field>
-            )}
-            {packaging.words_to_change.length > 0 && (
-              <div className="flex flex-wrap items-center gap-1.5">
-                <span className="font-medium text-foreground/80">
-                  Words to change:
-                </span>
-                {packaging.words_to_change.map((word, index) => (
-                  <Badge key={`${word}-${index}`} variant="outline">
-                    {word}
-                  </Badge>
+            {analysis.safety_analysis.risky_words.length > 0 && (
+              <ul className="space-y-1">
+                {analysis.safety_analysis.risky_words.map((word, index) => (
+                  <li key={`${word.word_or_phrase}-${index}`} className="flex flex-wrap items-center gap-1 text-[11px]">
+                    <code className="rounded bg-amber-500/10 px-1 py-0.5 font-medium text-amber-700 dark:text-amber-300">
+                      {word.word_or_phrase}
+                    </code>
+                    <span className="text-muted-foreground">
+                      {word.action}
+                      {word.safer_replacement ? ` → ${word.safer_replacement}` : ""}
+                    </span>
+                  </li>
                 ))}
-              </div>
+              </ul>
             )}
-          </Section>
+          </Group>
+
+          <Group title="Packaging" icon={<Megaphone />}>
+            <div className="flex items-start justify-between gap-2">
+              <p className="min-w-0 flex-1 leading-relaxed font-medium">
+                {analysis.viral_packaging.video_title || "—"}
+              </p>
+              <button
+                type="button"
+                onClick={copyCaption}
+                className="shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
+                title="Copy title + hashtags"
+              >
+                {copied ? <Check className="size-3 text-primary" /> : <Copy className="size-3" />}
+              </button>
+            </div>
+            {analysis.viral_packaging.hashtags.length > 0 && (
+              <p className="text-[11px] leading-relaxed text-primary/80">
+                {analysis.viral_packaging.hashtags.join(" ")}
+              </p>
+            )}
+            {analysis.viral_packaging.eligibility_or_reach_concerns && (
+              <p className="text-[11px] leading-relaxed text-muted-foreground">
+                {analysis.viral_packaging.eligibility_or_reach_concerns}
+              </p>
+            )}
+          </Group>
         </div>
+      )}
+
+      {open && !analysis && (
+        <p className="px-3 pb-3 text-[11px] text-muted-foreground">
+          This clip predates the current analysis format - re-run viral detection to score it.
+        </p>
       )}
     </div>
   );
