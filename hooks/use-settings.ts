@@ -42,12 +42,30 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
     headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
   });
   const text = await response.text();
-  const data = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+  // A dev server that restarted mid-edit answers a /api path with an HTML 404, and
+  // "Unexpected token '<'" is what that looks like in a toast. Say what happened instead:
+  // the page is fine, the request never reached a handler.
+  const parsed = text.trimStart().startsWith("{") || text.trimStart().startsWith("[") ? safeParse(text) : null;
   if (!response.ok) {
-    throw new Error(String(data.error ?? data.message ?? `Request to ${url} failed.`));
+    const detail = parsed ? String(parsed.error ?? parsed.message ?? "") : "";
+    throw new Error(
+      detail ||
+      (parsed
+        ? `${url} failed (HTTP ${response.status}).`
+        : `The app server answered ${url} with HTTP ${response.status} and no JSON. A dev server that was just restarted does this - reload the page.`)
+    );
   }
-  return data as T;
+  return (parsed ?? {}) as T;
 }
+
+function safeParse(text: string): Record<string, unknown> | null {
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
 
 /**
  * The Settings page's only data source.

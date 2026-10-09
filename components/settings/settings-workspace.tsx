@@ -737,10 +737,10 @@ function ProvidersCard({
     !settings.stored.ai &&
     Boolean(geminiFromEnv?.present || deepgramFromEnv?.present);
 
-  const dirty =
-    staged !== null ||
-    candidate.trim().length > 0 ||
-    deepgramKey.trim().length > 0;
+  // The Gemini pool's staged view. The Deepgram key has its own save below - the two
+  // fields live in one section but are edited independently, so `dirty` deliberately
+  // tracks only the pool and its banner never claims to save a pasted Deepgram key.
+  const dirty = staged !== null || candidate.trim().length > 0;
 
   const addCandidate = () => {
     const key = candidate.trim();
@@ -748,6 +748,16 @@ function ProvidersCard({
     setStaged([...pool, key]);
     setCandidate("");
   };
+
+  const saveDeepgramKey = async () => {
+    const key = deepgramKey.trim();
+    if (!key) return;
+    // Clearing the local field is what keeps the mask in the placeholder the only
+    // representation of the key that survives a save.
+    if (await settings.save("ai", { deepgramApiKey: key })) setDeepgramKey("");
+  };
+
+  const removeDeepgramKey = () => settings.save("ai", { deepgramApiKey: "" });
 
   const savePool = async () => {
     // Masked entries mean "keep that stored key" (the server resolves them); the new
@@ -1013,6 +1023,12 @@ function ProvidersCard({
                 id="deepgram-key"
                 value={deepgramKey}
                 onChange={(event) => setDeepgramKey(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void saveDeepgramKey();
+                  }
+                }}
                 placeholder={
                   storedDeepgramMasked
                     ? storedDeepgramMasked
@@ -1044,7 +1060,56 @@ function ProvidersCard({
                 )}
                 Test
               </Button>
+              <Button
+                size="sm"
+                variant="soft"
+                onClick={() => void saveDeepgramKey()}
+                disabled={!deepgramKey.trim() || settings.busy !== null}
+              >
+                {settings.busy === "save:ai" ? (
+                  <Loader2 className="animate-spin" />
+                ) : (
+                  <Save />
+                )}
+                Save
+              </Button>
             </div>
+
+            {effective.ai.deepgramApiKey ? (
+              <div className="flex flex-wrap items-center gap-1.5 text-[11px] leading-snug text-muted-foreground">
+                <span className="min-w-0 flex-1">
+                  Saved as{" "}
+                  <code className="font-mono text-foreground">
+                    {effective.ai.deepgramApiKey}
+                  </code>
+                  <span className="ml-1.5 inline-flex align-middle">
+                    <SourceChip source={settings.sources.ai?.deepgramApiKey} />
+                  </span>
+                </span>
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  disabled={settings.busy !== null}
+                  onClick={() => void settings.verify({ target: "deepgram" })}
+                >
+                  Test the saved key
+                </Button>
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  disabled={settings.busy === "save:ai"}
+                  onClick={() => void removeDeepgramKey()}
+                >
+                  Remove
+                </Button>
+              </div>
+            ) : (
+              <p className="text-[11px] leading-snug text-muted-foreground">
+                Nothing saved yet, so transcription runs on local whisper.cpp - a key
+                is only needed for cloud transcription. Test asks Deepgram without
+                storing anything; Save stores it for the next upload.
+              </p>
+            )}
           </div>
 
           <Row

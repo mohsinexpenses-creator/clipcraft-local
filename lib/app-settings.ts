@@ -113,6 +113,23 @@ function isMaskedPlaceholder(value: unknown): value is string {
 }
 
 /**
+ * An `ai` section as it may leave the server: the keys replaced by their mask.
+ *
+ * `saveSettingsSection` hands back the merged section it just wrote, and for `ai` that
+ * object contains the real keys, so every route that echoes it has to pass it through
+ * here. Masking is a function rather than a per-route habit because a route that forgets
+ * one field is a secret in a JSON response, not a bug anyone notices.
+ */
+export function maskAiSecrets(values: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...values };
+  if (Array.isArray(out.geminiApiKeys)) {
+    out.geminiApiKeys = (out.geminiApiKeys as unknown[]).map((key) => maskSecret(String(key)));
+  }
+  if (typeof out.deepgramApiKey === 'string') out.deepgramApiKey = maskSecret(out.deepgramApiKey);
+  return out;
+}
+
+/**
  * Which `.env.local` names still hold a value that Settings now owns. This is a
  * migration courtesy and nothing else: the values are shown masked so the user can
  * recognise which key is sitting unused, and the page tells them it is NOT read.
@@ -319,7 +336,7 @@ export function sanitizeSettingsSection(
         const carried = context.storedAi?.deepgramApiKey ?? '';
         const raw = isMaskedPlaceholder(input.deepgramApiKey) ? carried : textOf(input.deepgramApiKey, 300, 'Deepgram API key');
         if (raw && !isUsableSecret(raw)) {
-          throw badRequest('That does not look like a Deepgram API key.', `Keys are at least ${MIN_SECRET_LENGTH} characters with no spaces. Leave it empty to use the env file.`);
+          throw badRequest('That does not look like a Deepgram API key.', `Keys are at least ${MIN_SECRET_LENGTH} characters with no spaces. Submit an empty value to remove the stored key.`);
         }
         out.deepgramApiKey = raw;
       }
@@ -622,11 +639,22 @@ export async function buildAppSettingsSnapshot(): Promise<AppSettingsSnapshot> {
 
   return {
     stored: storedOut,
-    effective,
+    // Masked, like `stored`. `resolveSettings` keeps the raw keys because the worker and
+    // the provider calls read that object; this one goes to a browser, where a key is
+    // only ever needed as "present" plus a tail to recognise (and to send back as the
+    // keep-this-one placeholder).
+    effective: {
+      ...effective,
+      ai: {
+        ...effective.ai,
+        geminiApiKeys: effective.ai.geminiApiKeys.map(maskSecret),
+        deepgramApiKey: maskSecret(effective.ai.deepgramApiKey),
+      },
+    },
     sources,
     configured: APP_SETTINGS_SECTIONS.filter((section) => Object.prototype.hasOwnProperty.call(stored, section)),
-    // Only a *stored* override can be pending; a value that still comes from env was
-    // already read at worker start, so saying "restart" there would be noise.
+    // Only a *stored* override can be pending; a field that still holds its built-in
+    // default was already read at worker start, so saying "restart" there would be noise.
     restartRequired: RESTART_REQUIRED_PATHS.filter((path) => {
       const [section, key] = path.split('.') as [AppSettingsSection, string];
       return sources[section]?.[key] === 'app';
@@ -702,7 +730,9 @@ export async function saveSettingsSection(
   await options.validate?.(merged);
 
   const updatedAt = store.write(section, merged);
-  return { updatedAt, saved: merged };
+  // The row keeps the real keys; what is handed back is what a route puts in a response
+  // body, and both callers today echo it straight to the browser.
+  return { updatedAt, saved: section === 'ai' ? maskAiSecrets(merged) : merged };
 }
 
 export async function clearSettingsSection(section: AppSettingsSection): Promise<string> {

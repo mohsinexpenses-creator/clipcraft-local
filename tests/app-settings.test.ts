@@ -308,3 +308,61 @@ test('the snapshot reports a restart only for a loop size the app actually store
     }
   }
 });
+/**
+ * The Settings payload is the one place a stored secret can leave the process, and the PUT
+ * response echoes back the section it just wrote. Both have to carry masks: the UI needs a
+ * tail to recognise a key by, and that same tail is what it resubmits to mean "keep this
+ * one" - so a raw key here would be both a leak and a save path that cannot round-trip.
+ */
+test('the ai section round-trips its keys without ever returning one in full', async () => {
+  const rows = new Map<AppSettingsSection, Record<string, unknown>>();
+  setSettingsStoreForTests({
+    read: () => [...rows].map(([key, value]) => ({ key, value })),
+    write: (section, value) => {
+      if (value === null) rows.delete(section);
+      else rows.set(section, value);
+      return new Date().toISOString();
+    },
+  });
+
+  const gemini = 'AIzaSyD-a-stored-key-0000000001';
+  const deepgram = 'deepgram-stored-key-00000002';
+  try {
+    const saved = await saveSettingsSection('ai', {
+      geminiApiKeys: [gemini],
+      deepgramApiKey: deepgram,
+      deepgramModel: 'nova-3',
+    });
+    assert.equal(JSON.stringify(saved.saved).includes(gemini), false, 'the PUT response must not carry a raw key');
+    assert.equal(JSON.stringify(saved.saved).includes(deepgram), false);
+
+    // The row keeps the real values, or no provider call could ever be made.
+    assert.deepEqual(rows.get('ai')?.geminiApiKeys, [gemini]);
+    assert.equal(rows.get('ai')?.deepgramApiKey, deepgram);
+
+    const snapshot = await buildAppSettingsSnapshot();
+    const payload = JSON.stringify(snapshot);
+    assert.equal(payload.includes(gemini), false, 'GET /api/settings is read by the browser, so it carries masks');
+    assert.equal(payload.includes(deepgram), false);
+    assert.deepEqual(snapshot.effective.ai.geminiApiKeys, [maskSecret(gemini)]);
+    assert.equal(snapshot.effective.ai.deepgramApiKey, maskSecret(deepgram), 'the list rows match the verify labels, which is how a per-key result dot finds its row');
+    assert.equal(snapshot.sources.ai?.deepgramApiKey, 'app');
+
+    // The Deepgram Save button resubmits what is on screen when only the model changed.
+    await saveSettingsSection('ai', { deepgramApiKey: snapshot.effective.ai.deepgramApiKey, deepgramModel: 'nova-2' });
+    assert.equal(rows.get('ai')?.deepgramApiKey, deepgram, 'a mask means keep the stored key');
+
+    // Remove in the UI is the same save with an empty value.
+    await saveSettingsSection('ai', { deepgramApiKey: '' });
+    assert.equal(rows.get('ai')?.deepgramApiKey, '', 'an empty value removes the key');
+    assert.equal((await buildAppSettingsSnapshot()).sources.ai?.deepgramApiKey, 'default');
+
+    await assert.rejects(
+      () => saveSettingsSection('ai', { deepgramApiKey: 'too-short' }),
+      /does not look like a Deepgram API key/,
+      'and a paste that got truncated is refused rather than stored'
+    );
+  } finally {
+    setSettingsStoreForTests(null);
+  }
+});

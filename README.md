@@ -73,7 +73,7 @@ Every default the studio asks you for lives in one sidebar page, in five section
 |---|---|
 | Pipeline defaults | auto-detect / auto-render and the viral-detection request (clip count, duration window, hook/CTA text) |
 | Render clip defaults | caption engine, layout, filter preset, caption + hook/CTA style presets, hook/CTA durations |
-| AI providers | Gemini key pool, Deepgram key + model, and which transcription engine to use |
+| AI providers | Gemini key pool, Deepgram key + model, and which transcription engine to use. Every key field is Test + Save on its own - Test asks the provider, Save stores it (keys are only ever shown back masked) |
 | Worker | clip / viral-detection / Remotion concurrency |
 | Profanity | what happens to the *audio* of a flagged word (mute / beep / leave it) |
 
@@ -177,7 +177,7 @@ lib/                    shared server logic
   pipeline-defaults.ts  clip options + their limits, shared by client and server
   app-settings.ts       the one resolver for stored settings: precedence, clamping,
                         key masking, verification payloads (no raw secrets out)
-  settings-verify.ts    live HEAD/GET probes against Gemini + Deepgram
+  settings-verify.ts    live probes: Google model list/test + Deepgram /v1/auth/token
   clip-edits.ts         validates a single-clip edit before it is saved/rendered
   profanity.ts          word masking + render-time mute/beep windows
   overlay-bg.ts         solid/gradient card-background picker helpers

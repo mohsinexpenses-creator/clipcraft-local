@@ -125,6 +125,11 @@ Practical consequences worth knowing:
   a **Copy into Settings** button once, so an existing setup is a click rather than a
   retyping session. Nothing reads the env file at the moment a value is used; that button
   writes into the table.
+- **Deepgram has its own Test + Save** in that card, because it is optional and easy to
+  leave half-configured. Test calls `GET /v1/auth/token`, the key check Deepgram documents -
+  it answers for any key, so a rejection there is about the key and nothing else. Removing the
+  key (Save with the field empty, or the **Remove** link) falls transcription back to
+  whisper.cpp by itself.
 - keys are returned **masked** (`AIza…9f3`) and never in full. Pasting a masked entry back
   and saving means "keep that stored key", so you can reorder or trim the pool without
   retyping. Secrets sit in the git-ignored SQLite file — the same trust boundary as

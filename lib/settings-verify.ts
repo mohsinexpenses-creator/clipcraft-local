@@ -175,10 +175,9 @@ async function pingGeminiGeneration(apiKey: string, model: string): Promise<Veri
 }
 
 /**
- * Deepgram: `GET /v1/manage/projects` is the cheapest call that authenticates the key.
- * The model id itself is not verified against an API (Deepgram has no stable
- * public model-list endpoint), so `knownModel` only flags ids that are almost
- * certainly typos - an unusual id is still allowed, it just gets a note.
+ * The model id is not verified against an API (Deepgram has no stable public
+ * model-list endpoint), so the probe only flags ids that are almost certainly typos -
+ * an unusual id is still allowed, it just gets a note.
  */
 const KNOWN_DEEPGRAM_MODELS = new Set([
   'nova-3',
@@ -196,53 +195,118 @@ export function isKnownDeepgramModel(model: string): boolean {
   return base.startsWith('nova') || base.startsWith('whisper') || KNOWN_DEEPGRAM_MODELS.has(base);
 }
 
+/**
+ * Deepgram: `GET /v1/auth/token` is the check Deepgram's own docs recommend for "does
+ * this key work" - it answers for any key, at no cost, and needs no project scope.
+ *
+ * A management call (`/v1/manage/projects`) is kept as a fallback and only for the
+ * project count, because that endpoint is where a key without admin scope gets a 401 or
+ * a 404 that has nothing to do with the credential being valid.
+ */
 export async function verifyDeepgramKey(
   apiKey: string,
   model: string
 ): Promise<VerifyProbeResult> {
   const startedAt = Date.now();
-  const modelNote = isKnownDeepgramModel(model) ? undefined : `Unknown model "${model}" - Deepgram will reject it at transcription time if the id is wrong.`;
+  const label = `Deepgram · ${model}`;
+  const notes = isKnownDeepgramModel(model) ? [] : [`Unknown model "${model}" - Deepgram will reject it at transcription time if the id is wrong.`];
+  const headers = { Authorization: `Token ${apiKey}`, accept: 'application/json' };
 
+  let response: Response;
+  try {
+    response = await fetchWithTimeout('https://api.deepgram.com/v1/auth/token', { method: 'GET', headers });
+  } catch (error) {
+    return unreachable('deepgram', label, error, 'https://api.deepgram.com');
+  }
+  const latencyMs = Date.now() - startedAt;
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    if (classifyStatus(response.status) === 'rejected') {
+      return {
+        target: 'deepgram',
+        status: 'rejected',
+        label,
+        latencyMs,
+        httpStatus: response.status,
+        message: 'Deepgram rejected this key (401/403). Keys live in the Deepgram console under API keys.',
+        ...(detail ? { notes: [...notes, detail] } : notes.length ? { notes } : {}),
+      };
+    }
+
+    // 404/5xx from the key check is an endpoint problem, so ask the account-level call
+    // before saying anything about the key. If that one authenticates, the key is fine.
+    const fallback = await probeProjects(apiKey);
+    if (fallback?.ok) {
+      return {
+        target: 'deepgram',
+        status: 'ok',
+        label,
+        latencyMs: Date.now() - startedAt,
+        httpStatus: 200,
+        message: fallback.projects === null
+          ? 'Key accepted by api.deepgram.com.'
+          : `Key accepted (${fallback.projects} project${fallback.projects === 1 ? '' : 's'} on this account).`,
+        notes: [
+          ...notes,
+          `Skipped /v1/auth/token, which replied HTTP ${response.status}${detail ? ` (${detail})` : ''}.`,
+        ],
+      };
+    }
+
+    return {
+      target: 'deepgram',
+      status: 'error',
+      label,
+      latencyMs,
+      httpStatus: response.status,
+      message:
+        `Deepgram's key check did not answer (HTTP ${response.status}${detail ? `: ${detail}` : ''}). ` +
+        'This is not a verdict on your key - transcription may still work.',
+      notes: [...notes, 'If a clip will not transcribe, the model id and the key scopes are the two things to check.'],
+    };
+  }
+
+  const payload = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+  const scopes = Array.isArray(payload?.scopes) ? payload.scopes.filter((scope): scope is string => typeof scope === 'string') : [];
+  const canTranscribe = scopes.length === 0 || scopes.some((scope) => TRANSCRIPTION_SCOPES.has(scope));
+
+  return {
+    target: 'deepgram',
+    // An authenticating key with no usable scope is a real problem to surface here,
+    // because the failure would otherwise show up later as a silent fallback to whisper.
+    status: canTranscribe ? 'ok' : 'limited',
+    label,
+    latencyMs,
+    httpStatus: response.status,
+    message: canTranscribe
+      ? scopes.length
+        ? `Key accepted (scopes: ${scopes.join(', ')}).`
+        : 'Key accepted by api.deepgram.com.'
+      : 'The key authenticates, but none of its scopes covers transcription.',
+    ...(canTranscribe
+      ? { notes: notes.length ? notes : undefined }
+      : { notes: [...notes, `Scopes reported: ${scopes.join(', ') || 'none'}. A key needs ${[...TRANSCRIPTION_SCOPES].join(', ')} (or admin) to run /v1/listen.`] }),
+  };
+}
+
+/** Returns null unless the projects call answered at all; used only as the second opinion. */
+async function probeProjects(apiKey: string): Promise<{ ok: boolean; projects: number | null } | null> {
   try {
     const response = await fetchWithTimeout('https://api.deepgram.com/v1/manage/projects', {
       method: 'GET',
       headers: { Authorization: `Token ${apiKey}`, accept: 'application/json' },
     });
-    const latencyMs = Date.now() - startedAt;
-
-    if (!response.ok) {
-      const detail = await readErrorDetail(response);
-      const status = classifyStatus(response.status);
-      return {
-        target: 'deepgram',
-        status,
-        label: `Deepgram · ${model}`,
-        latencyMs,
-        httpStatus: response.status,
-        message:
-          status === 'rejected'
-            ? 'Deepgram rejected this key (401/403). Keys live in the Deepgram console under API keys.'
-            : detail || `Deepgram replied with HTTP ${response.status}.`,
-        ...(modelNote ? { notes: [modelNote] } : {}),
-      };
-    }
-
+    if (!response.ok) return { ok: false, projects: null };
     const payload = (await response.json().catch(() => null)) as { results?: unknown[] } | null;
-    const projects = Array.isArray(payload?.results) ? payload.results.length : null;
-
-    return {
-      target: 'deepgram',
-      status: 'ok',
-      label: `Deepgram · ${model}`,
-      latencyMs,
-      httpStatus: response.status,
-      message: projects === null ? 'Key accepted by api.deepgram.com.' : `Key accepted (${projects} project${projects === 1 ? '' : 's'} on this account).`,
-      ...(modelNote ? { notes: [modelNote] } : {}),
-    };
-  } catch (error) {
-    return unreachable('deepgram', `Deepgram · ${model}`, error, 'https://api.deepgram.com');
+    return { ok: true, projects: Array.isArray(payload?.results) ? payload.results.length : null };
+  } catch {
+    return null;
   }
 }
+
+/** Scopes Deepgram accepts on /v1/listen; `admin:all` covers everything. */
+const TRANSCRIPTION_SCOPES = new Set(['admin:all', 'usage:write', 'scopes:member']);
 
 function unreachable(
   target: 'gemini' | 'deepgram',
