@@ -171,7 +171,7 @@ async function validateTranscription(): Promise<StartupCheck> {
         status: 'ok',
         summary: `Transcription will use ${engine.label} (${engine.model}).`,
         details:
-          'DEEPGRAM_API_KEY is set, so cloud transcription wins over local whisper.cpp. ' +
+          'A Deepgram key is configured in Settings, so cloud transcription wins over local whisper.cpp. ' +
           `Local whisper.cpp would use: ${binaryPath || 'not found'} • ${modelPath || 'no model'}`,
       });
     }
@@ -209,7 +209,7 @@ async function validateTranscription(): Promise<StartupCheck> {
       ].join(' • '),
       resolution:
         'Run `npm run setup:whisper` (or `npm run setup:whisper:ps` on Windows) to download a whisper.cpp build and a ggml model, ' +
-        'or set DEEPGRAM_API_KEY to transcribe in the cloud instead.',
+        'or add a Deepgram key under Settings -> AI providers to transcribe in the cloud instead.',
     });
   }
 }
@@ -242,8 +242,9 @@ async function validateAiProvider(): Promise<StartupCheck> {
         (entry, index) => `${index + 1}. ${entry.provider} ${entry.model} (needs ${entry.apiKeyEnv})`
       ).join(' • '),
       resolution:
-        'Add a key under Settings -> AI providers, or set GEMINI_API_KEY in .env.local ' +
-        '(see .env.example) - the chain runs on Google AI Studio slots only.',
+        'Open Settings -> AI providers and add a Google AI Studio key - the chain runs on ' +
+        'Gemini slots only. Keys are read from the app settings, not from .env.local, ' +
+        'so the env file alone no longer configures anything.',
     });
   }
 
@@ -408,7 +409,9 @@ async function validateRemotion(): Promise<StartupCheck> {
     details: [
       `Entry: ${path.relative(process.cwd(), entryPoint)}`,
       `Output: ${path.relative(process.cwd(), outputDir)}`,
-      `Concurrency: ${process.env.REMOTION_CONCURRENCY?.trim() || 'auto (half the CPU threads)'}`,
+      `Concurrency: ${
+        (await loadEffectiveSettings()).worker.remotionConcurrency ?? 'auto (half the CPU threads)'
+      } (Settings -> Worker & limits)`,
     ].join(' • '),
   });
 }

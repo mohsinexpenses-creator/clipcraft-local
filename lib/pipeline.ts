@@ -54,8 +54,9 @@ import {
 
 /**
  * Render configuration a clip gets when nobody has opened the editor yet:
- * Settings page when something is stored there, `AUTO_RENDER_CAPTION_ENGINE` for
- * the engine, and the built-in defaults otherwise.
+ * the Settings page owns all of it: preset ids, engine, layout, durations. The values
+ * are read once per step from `lib/app-settings.ts`, which returns what was saved there
+ * or the built-in default - never a surprise from `.env.local`.
  */
 export async function resolveRenderDefaults(): Promise<RenderDefaults> {
   const settings = await loadEffectiveSettings();

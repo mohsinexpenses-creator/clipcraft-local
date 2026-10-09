@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { APP_SETTINGS_SECTIONS, AppSettingsSection } from '@/lib/types';
-import { buildAppSettingsSnapshot, clearSettingsSection, saveSettingsSection } from '@/lib/app-settings';
+import { buildAppSettingsSnapshot, clearSettingsSection, envAiSectionForImport, saveSettingsSection } from '@/lib/app-settings';
 import { getCaptionPreset, getOverlayStylePreset, listCaptionPresets, listOverlayStylePresets } from '@/lib/db';
 import { AppError, toErrorMessage, toErrorStatus } from '@/lib/errors';
 
@@ -10,9 +10,10 @@ export const runtime = 'nodejs';
  * GET /api/settings
  *
  * Everything the Settings page shows in one round trip: what is stored, what is
- * actually in effect (stored -> `.env.local` -> built-in default), where each value
- * came from, and the option lists its selects need. Secrets are masked - the response
- * never contains a key it did not already have.
+ * actually in effect (a saved value, otherwise the built-in default), and the option
+ * lists its selects need. `.env.local` is not a tier in that chain, so the page cannot
+ * disagree with the app. Secrets are masked - the response never contains a key it did
+ * not already have.
  */
 export async function GET() {
   try {
@@ -114,10 +115,49 @@ export async function PUT(request: Request) {
 }
 
 /**
+ * POST /api/settings   { action: 'import-env' }
+ *
+ * The one place `.env.local` is read on purpose: copying the keys that file already
+ * holds into Settings, so an existing setup is not stranded the moment env stopped being
+ * a fallback. It is an explicit click, it writes (it does not shadow), and it can only
+ * move secrets - there is no read of them in the response.
+ */
+export async function POST(request: Request) {
+  try {
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    if (body.action !== 'import-env') {
+      throw new AppError('Unsupported action.', { status: 400, resolution: "Send { action: 'import-env' }." });
+    }
+
+    const value = await envAiSectionForImport();
+    if (!value) {
+      throw new AppError('There is nothing to copy - .env.local has no usable GEMINI_API_KEY or DEEPGRAM_API_KEY.', {
+        status: 400,
+        resolution: 'Add the key under Settings -> AI providers instead.',
+      });
+    }
+
+    const { saved } = await saveSettingsSection('ai', value);
+    return NextResponse.json({
+      success: true,
+      // Only the shape is reported back; the values are secrets.
+      copied: { geminiKeys: ((saved.geminiApiKeys as string[] | undefined) ?? []).length, deepgram: Boolean(saved.deepgramApiKey) },
+      snapshot: await buildAppSettingsSnapshot(),
+    });
+  } catch (error) {
+    return NextResponse.json(
+      { error: toErrorMessage(error, 'Those keys could not be copied.') },
+      { status: toErrorStatus(error, 400) }
+    );
+  }
+}
+
+/**
  * DELETE /api/settings?section=render
  *
- * Clears a whole section, which is how a value goes back to "whatever .env.local
- * says". Nothing destructive: uploads, clips and presets are untouched.
+ * Deletes a whole section's row, which leaves the built-in defaults for it - not
+ * `.env.local`, which these keys no longer come from. Nothing destructive: uploads,
+ * clips and presets are untouched.
  */
 export async function DELETE(request: Request) {
   try {

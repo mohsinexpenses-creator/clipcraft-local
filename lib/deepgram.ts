@@ -10,7 +10,7 @@ export async function transcribeWithDeepgram(audioWavPath: string): Promise<Tran
     throw new AppError('DEEPGRAM_API_KEY is not configured.', {
       status: 500,
       resolution:
-        'Add a key under Settings -> AI providers, or set DEEPGRAM_API_KEY in .env.local, so ClipCraft can transcribe audio with Deepgram.',
+        'Add a key under Settings -> AI providers to transcribe with Deepgram, or switch the provider back to "auto" to use local whisper.cpp.',
     });
   }
 

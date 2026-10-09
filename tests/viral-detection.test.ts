@@ -16,10 +16,14 @@ import { AppError } from '../lib/errors';
 import { claimNextJob, CLIP_QUEUE_NAME } from '../lib/queue';
 import type { ClipRecord, JobData } from '../lib/types';
 import { parseTimestamp } from '../lib/viral-response';
+import { setSettingsStoreForTests } from '../lib/app-settings';
 import { createTemporaryDatabase } from './sqlite-test-helpers';
 import { aiClip, aiResponse, makeVideo, type RawClip } from './viral-fixtures';
 
 const VIDEO_SECONDS = 600;
+
+/** Long enough to pass the "looks like a real key" check in `lib/app-settings.ts`. */
+const TEST_GEMINI_KEY = 'test-gemini-key-for-fake-calls';
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -39,12 +43,14 @@ interface LlmCall {
  * collecting its warnings so tests can assert on them.
  */
 function fakeLlm(t: TestContext, reply: (call: LlmCall, index: number) => string) {
-  const previousKey = process.env.GEMINI_API_KEY;
-  process.env.GEMINI_API_KEY = 'test-key';
-  t.after(() => {
-    if (previousKey === undefined) delete process.env.GEMINI_API_KEY;
-    else process.env.GEMINI_API_KEY = previousKey;
+  // Keys are configured on /settings, not in the environment, so a test key is injected
+  // as the stored pool. Setting `process.env.GEMINI_API_KEY` here would now prove nothing
+  // except that it is ignored - which `tests/app-settings.test.ts` asserts on purpose.
+  setSettingsStoreForTests({
+    read: () => [{ key: 'ai', value: { geminiApiKeys: [TEST_GEMINI_KEY] } }],
+    write: () => new Date().toISOString(),
   });
+  t.after(() => setSettingsStoreForTests(null));
 
   t.mock.method(console, 'log', () => {});
   const warnings: string[] = [];

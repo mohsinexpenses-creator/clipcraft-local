@@ -33,8 +33,8 @@ import { color, log } from '../lib/logger';
 
 /**
  * Concurrency comes from `lib/app-settings.ts`, which already folds in the
- * `.env.local` values (`WORKER_CONCURRENCY`, `VIRAL_CONCURRENCY`) and the built-in
- * default of 1, so there is deliberately no second env reader here.
+ * the values saved on /settings, whose built-in default is 1. `.env.local` is not a
+ * fallback for these two, so there is deliberately no second reader here.
  */
 async function transcribeVideoJob(
   data: TranscriptionJobData

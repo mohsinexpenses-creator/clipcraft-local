@@ -65,42 +65,62 @@ test('with nothing stored, the built-in defaults win and nothing is marked as ap
   });
 });
 
-test('.env.local is the fallback layer and is labelled as env, not as app settings', () => {
+test('a value that only exists in .env.local is NOT a setting - the page is the whole truth', () => {
   withEnv(
-    { WORKER_CONCURRENCY: '3', VIRAL_CONCURRENCY: '2', REMOTION_CONCURRENCY: '6', PROFANITY_AUDIO_MODE: 'beep', AUTO_RENDER_CAPTION_ENGINE: 'native', GEMINI_API_KEY: 'gemini-key-with-plenty-of-characters', DEEPGRAM_API_KEY: 'deepgram-key-with-plenty-of-chars', DEEPGRAM_MODEL: 'nova-3' },
+    {
+      WORKER_CONCURRENCY: '3',
+      VIRAL_CONCURRENCY: '2',
+      REMOTION_CONCURRENCY: '6',
+      PROFANITY_AUDIO_MODE: 'beep',
+      AUTO_RENDER_CAPTION_ENGINE: 'native',
+      GEMINI_API_KEY: 'gemini-key-with-plenty-of-characters',
+      DEEPGRAM_API_KEY: 'deepgram-key-with-plenty-of-chars',
+      DEEPGRAM_MODEL: 'nova-3',
+    },
     () => {
       const { effective, sources } = resolveSettings({});
-      assert.equal(effective.worker.clipConcurrency, 3);
-      assert.equal(effective.worker.viralConcurrency, 2);
-      assert.equal(effective.worker.remotionConcurrency, 6);
-      assert.equal(effective.profanity.audioMode, 'beep');
-      assert.equal(effective.render.captionEngine, 'native');
-      assert.equal(effective.ai.deepgramModel, 'nova-3');
-      assert.deepEqual(effective.ai.geminiApiKeys, ['gemini-key-with-plenty-of-characters']);
-      assert.equal(sources.worker?.clipConcurrency, 'env');
-      assert.equal(sources.render?.captionEngine, 'env');
-      assert.equal(sources.ai?.deepgramApiKey, 'env');
-      assert.equal(sources.ai?.geminiApiKeys, 'env');
+
+      // Every one of those env variables is set, and every one of them is ignored: with
+      // no stored row the answer is the built-in default, which is what the Settings page
+      // shows. A half-configured env file can no longer mean a value the user never saw.
+      assert.equal(effective.worker.clipConcurrency, 1);
+      assert.equal(effective.worker.viralConcurrency, 1);
+      assert.equal(effective.worker.remotionConcurrency, null);
+      assert.equal(effective.profanity.audioMode, 'mute');
+      assert.equal(effective.render.captionEngine, 'remotion');
+      assert.equal(effective.ai.deepgramModel, 'nova-2');
+      assert.equal(effective.ai.deepgramApiKey, '');
+      assert.deepEqual(effective.ai.geminiApiKeys, []);
+      assert.deepEqual(Object.values(sources.worker ?? {}), ['default', 'default', 'default']);
+      assert.deepEqual(Object.values(sources.ai ?? {}), ['default', 'default', 'default', 'default']);
+
+      // The empty pool has to be reported as unconfigured rather than as a secret that
+      // exists but cannot be shown, or the startup check would be lying about readiness.
+      assert.equal(sources.ai?.geminiApiKeys, 'default');
     }
   );
 });
 
-test('a stored section overrides both env and defaults, and only for the fields it contains', () => {
-  withEnv({ WORKER_CONCURRENCY: '9', VIRAL_CONCURRENCY: '9', PROFANITY_AUDIO_MODE: 'off', DEEPGRAM_MODEL: 'nova-2' }, () => {
+test('a stored section overrides the defaults, and only for the fields it contains', () => {
+  withEnv({ WORKER_CONCURRENCY: '9', VIRAL_CONCURRENCY: '9', PROFANITY_AUDIO_MODE: 'off', DEEPGRAM_MODEL: 'whisper' }, () => {
     const { effective, sources } = resolveSettings({
       worker: { clipConcurrency: 2 },
       render: { layout: 'split-screen' },
       ai: { deepgramModel: '' },
     });
 
-    assert.equal(effective.worker.clipConcurrency, 2, 'stored value beats the env file');
-    assert.equal(effective.worker.viralConcurrency, 8, 'an env value is clamped to the same limits the UI offers');
+    assert.equal(effective.worker.clipConcurrency, 2, 'what was saved is what runs');
+    assert.equal(
+      effective.worker.viralConcurrency,
+      1,
+      'the field nobody saved takes the built-in default, not the env value'
+    );
 
     assert.equal(sources.worker?.clipConcurrency, 'app');
-    assert.equal(sources.worker?.viralConcurrency, 'env');
+    assert.equal(sources.worker?.viralConcurrency, 'default');
     assert.equal(effective.render.layout, 'split-screen');
     assert.equal(effective.render.filterPreset, 'vibrant', 'untouched fields keep their default');
-    assert.equal(effective.ai.deepgramModel, 'nova-2', 'an empty stored model defers to env');
+    assert.equal(effective.ai.deepgramModel, 'nova-2', 'an empty stored model means the shipped model');
   });
 });
 
@@ -114,15 +134,19 @@ test('an empty field never becomes zero, but an explicit zero is respected', () 
   assert.equal(zero.effective.render.ctaDuration, 0);
 });
 
-test('a stored null means "decide for me", while a missing row means "whatever env says"', () => {
+test('a stored null means "decide for me", and a missing row means the same default', () => {
   withEnv({ REMOTION_CONCURRENCY: '5' }, () => {
     const auto = resolveSettings({ worker: { remotionConcurrency: null } });
     assert.equal(auto.effective.worker.remotionConcurrency, null);
     assert.equal(auto.sources.worker?.remotionConcurrency, 'app', 'null is an explicit choice, so it is not "unset"');
 
-    const fromEnv = resolveSettings({ worker: {} });
-    assert.equal(fromEnv.effective.worker.remotionConcurrency, 5);
-    assert.equal(fromEnv.sources.worker?.remotionConcurrency, 'env');
+    // Nothing stored: still auto, because REMOTION_CONCURRENCY is not consulted.
+    const nothing = resolveSettings({ worker: {} });
+    assert.equal(nothing.effective.worker.remotionConcurrency, null);
+    assert.equal(nothing.sources.worker?.remotionConcurrency, 'default');
+
+    const stored = resolveSettings({ worker: { remotionConcurrency: 400 } });
+    assert.equal(stored.effective.worker.remotionConcurrency, 32, 'a hand-written row is clamped');
   });
 
   // A `null` caption preset id means "use the preset the preset table marks default".
@@ -218,10 +242,23 @@ test('a Deepgram model id is judged leniently: a near-certain typo is flagged, a
   assert.equal(isKnownDeepgramModel('   '), false);
 });
 
-test('env lookups are not mutated by the resolution layer', () => {
+test('resolving settings never rewrites process.env (env is only ever displayed)', () => {
   withEnv({ PROFANITY_AUDIO_MODE: 'BEEP  ' }, () => {
     assert.equal(readEnv('PROFANITY_AUDIO_MODE'), 'BEEP');
-    assert.equal(resolveSettings({}).effective.profanity.audioMode, 'beep', 'case and spacing are tolerated');
+    assert.equal(resolveSettings({}).effective.profanity.audioMode, 'mute', 'the env value is not a setting');
+    assert.equal(readEnv('PROFANITY_AUDIO_MODE'), 'BEEP', 'reading settings must leave the env file\'s values alone');
+
+    // Case and spacing are still tolerated - in what the user actually saved.
+    assert.equal(
+      resolveSettings({ profanity: { audioMode: '  BeeP ' } }).effective.profanity.audioMode,
+      'beep',
+      'a stored value is normalised, not rejected'
+    );
+    assert.equal(
+      resolveSettings({ profanity: { audioMode: 'shuffle' } }).effective.profanity.audioMode,
+      'mute',
+      'and an unknown stored value degrades to the default instead of crashing a render'
+    );
   });
 });
 
@@ -246,14 +283,14 @@ test('the snapshot reports a restart only for a loop size the app actually store
   process.env.VIRAL_CONCURRENCY = '2';
   try {
     const fromEnv = await buildAppSettingsSnapshot();
-    assert.equal(fromEnv.effective.worker.clipConcurrency, 3);
-    assert.equal(fromEnv.sources.worker?.clipConcurrency, 'env');
-    assert.deepEqual(fromEnv.restartRequired, [], 'env values cannot be "pending"');
+    assert.equal(fromEnv.effective.worker.clipConcurrency, 1, 'the env file is not a source any more');
+    assert.equal(fromEnv.sources.worker?.clipConcurrency, 'default');
+    assert.deepEqual(fromEnv.restartRequired, [], 'nothing was saved, so nothing is pending');
 
     await saveSettingsSection('worker', { clipConcurrency: 4 });
     const stored = await buildAppSettingsSnapshot();
     assert.equal(stored.effective.worker.clipConcurrency, 4);
-    assert.equal(stored.effective.worker.viralConcurrency, 2, 'the field nobody touched keeps its env value');
+    assert.equal(stored.effective.worker.viralConcurrency, 1, 'the field nobody touched keeps its default');
     assert.deepEqual(stored.restartRequired, ['worker.clipConcurrency']);
     assert.deepEqual(stored.configured, ['worker']);
 

@@ -157,7 +157,7 @@ export async function getPlannedTranscriptionEngine(): Promise<TranscriptionEngi
       throw new AppError('Transcription is forced to Deepgram, but no Deepgram API key is configured.', {
         status: 500,
         resolution:
-          'Add a key under Settings -> AI providers (or DEEPGRAM_API_KEY in .env.local), or set the provider back to "auto".',
+          'Add a key under Settings -> AI providers, or set the provider back to "auto" to use whichever engine is available.',
       });
     }
     return {
@@ -176,7 +176,7 @@ export async function getPlannedTranscriptionEngine(): Promise<TranscriptionEngi
       details: `platform=${process.platform} arch=${process.arch} cwd=${process.cwd()}`,
       resolution:
         'Run `npm run setup:whisper` to download a build for your OS, or set WHISPER_CLI_PATH in .env.local, ' +
-        'or set DEEPGRAM_API_KEY to transcribe in the cloud instead.',
+        'or add a Deepgram key under Settings -> AI providers to transcribe in the cloud instead.',
     });
   }
 
@@ -186,7 +186,7 @@ export async function getPlannedTranscriptionEngine(): Promise<TranscriptionEngi
       details: `looked in ${path.join(process.cwd(), 'models')}`,
       resolution:
         'Run `npm run setup:whisper` (downloads a ggml model into ./models), or set WHISPER_MODEL_PATH ' +
-        'in .env.local, or set DEEPGRAM_API_KEY instead.',
+        'in .env.local, or add a Deepgram key under Settings -> AI providers instead.',
     });
   }
 
@@ -221,7 +221,7 @@ export async function transcribeVideo(videoPath: string): Promise<TranscriptData
     throw new AppError('whisper.cpp was selected but the local binary or model path is unavailable.', {
       status: 500,
       resolution:
-        'Run `npm run setup:whisper`, or provide WHISPER_CLI_PATH + WHISPER_MODEL_PATH, or set DEEPGRAM_API_KEY.',
+        'Run `npm run setup:whisper`, or provide WHISPER_CLI_PATH + WHISPER_MODEL_PATH in .env.local, or add a Deepgram key under Settings -> AI providers.',
     });
   }
 

@@ -193,7 +193,10 @@ test('only positionY changes - fonts, colours and animation of every preset are 
   assert.deepEqual({ ...result.hookStyle!, positionY: 0 }, { ...hookStyle, positionY: 0 });
   assert.deepEqual({ ...result.ctaStyle!, positionY: 0 }, { ...ctaStyle, positionY: 0 });
   assert.equal(DEFAULT_CAPTION_PRESETS[0].positionY, 28, 'the shared default preset object is not mutated');
-  assert.equal(hookStyle.positionY, 12);
+  // The shipped default hook card sits at 55 (`hook-aurora-gradient`, the preset
+  // `DEFAULT_OVERLAY_STYLE_PRESETS` marks default). Asserting the value rather than a
+  // hardcoded 12 means this stays a "nothing was mutated" check when the catalogue moves.
+  assert.equal(hookStyle.positionY, DEFAULT_OVERLAY_STYLE_PRESETS.find((preset) => preset.isDefault)!.positionY);
 });
 
 test('positionY maths: hook / CTA are % from the TOP, captions follow each engine\'s own anchor', () => {

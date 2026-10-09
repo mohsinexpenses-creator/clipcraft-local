@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 import {
   AlertTriangle,
   ArrowDown,
@@ -24,7 +25,7 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "cn";
-import type { AppSettingsSection, PipelineOptions, RenderDefaults } from "@/lib/types";
+import type { AppSettingsSection, EnvHint, PipelineOptions, RenderDefaults } from "@/lib/types";
 import { useSettings, type VerifyResult } from "@/hooks/use-settings";
 import { AutomationPanel, NumberField } from "@/components/pipeline-settings";
 import { Button } from "@/components/ui/button";
@@ -44,10 +45,11 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
  *
  * 1. Each card owns one settings section and saves only that section, so a half-edited
  *    card can never overwrite another one.
- * 2. Every field says where its value comes from - Settings, `.env.local`, or the
- *    built-in default - and "Clear section" puts it back to that chain. Nothing here
- *    edits the env file, so a hand-written `.env.local` stays authoritative until an
- *    override is actually saved.
+ * 2. What you see is what runs. A field is either a value you saved here or the built-in
+ *    default, and "Reset to defaults" goes back to the default - `.env.local` is not a
+ *    fallback for any of these, so no value can come from a file you are not looking at.
+ *    (Everything the page does *not* own - binary paths, models, CRF, upload limits,
+ *    timeouts - still lives in `.env.local` exactly as before.)
  */
 
 const SECTIONS = [
@@ -72,9 +74,9 @@ export function SettingsWorkspace() {
           </h1>
           <p className="max-w-2xl text-[13px] text-muted-foreground">
             Defaults for the automatic pipeline, how clips are rendered, provider keys and worker
-            limits. Stored in the same SQLite file as everything else - and{" "}
-            <code className="rounded bg-muted px-1 py-0.5 text-[12px]">.env.local</code> still wins
-            for anything you never save here.
+            limits. Saved in the same SQLite file as everything else, and these values come
+            from this page alone - nothing here falls back to
+            <code className="rounded bg-muted px-1 py-0.5 text-[12px]">.env.local</code>.
           </p>
         </div>
         <Button variant="outline" size="sm" onClick={() => void reload()} disabled={busy === "load"}>
@@ -188,7 +190,7 @@ function SettingsCard({
           onClick={() => void settings.reset(section)}
           disabled={busy || !configured}
         >
-          Clear section
+          Reset to defaults
         </Button>
         <p className="ml-auto min-w-0 text-[11px] leading-snug text-muted-foreground">{footnote}</p>
       </div>
@@ -196,24 +198,22 @@ function SettingsCard({
   );
 }
 
+/**
+ * One chip, because there is one interesting state: a value this page saved. Anything
+ * else is the built-in default, which needs no label - `.env.local` is not consulted
+ * for any of these settings, so there is nothing to disambiguate.
+ */
 function SourceChip({ source, className }: { source?: string; className?: string }) {
-  if (!source || source === "default") return null;
+  if (source !== "app") return null;
   return (
     <span
       className={cn(
-        "rounded-md px-1.5 py-0.5 text-[10px] font-medium tracking-wide whitespace-nowrap uppercase",
-        source === "app"
-          ? "bg-primary/10 text-primary"
-          : "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+        "rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium tracking-wide whitespace-nowrap uppercase text-primary",
         className
       )}
-      title={
-        source === "app"
-          ? "Saved on this page"
-          : "Coming from .env.local - saving here overrides it"
-      }
+      title="Saved on this page"
     >
-      {source === "app" ? "settings" : ".env"}
+      settings
     </span>
   );
 }
@@ -226,7 +226,8 @@ function Row({
   className,
 }: {
   label: string;
-  hint?: string;
+  /** Usually a sentence; a link is allowed because a few rows point at the page that owns the list. */
+  hint?: React.ReactNode;
   source?: string;
   children: React.ReactNode;
   className?: string;
@@ -285,22 +286,59 @@ function Segmented<T extends string>({
   );
 }
 
-function EnvBadge({ hint }: { hint?: { present: boolean; masked: string; inEnvFile: boolean } }) {
+/**
+ * A `.env.local` name that still holds a value this page now owns. Shown so a key that
+ * stopped working is explained rather than mysterious - and so it is obvious which line
+ * of the env file can be deleted. It is NOT a fallback: nothing here reads that value.
+ */
+function LeftoverEnvBadge({ hint }: { hint?: EnvHint }) {
   if (!hint) return null;
   if (!hint.present && !hint.inEnvFile) return null;
   return (
     <Tooltip>
       <TooltipTrigger
-        render={<span className="inline-flex cursor-help items-center gap-1 text-[10.5px] text-muted-foreground" />}
+        render={<span className="inline-flex cursor-help items-center gap-1 text-[10.5px] text-amber-600 dark:text-amber-400" />}
       >
-        <Cloud className="size-3" />
-        {hint.present ? "in env" : "in .env.local"}
+        <AlertTriangle className="size-3" />
+        left in .env.local
       </TooltipTrigger>
       <TooltipContent className="dark">
-        {hint.present
-          ? `This process can read it${hint.masked ? ` (${hint.masked})` : ""}.` : "Set in .env.local but not loaded by this process."}
+        {`This page is the source of truth now, so ${hint.name ?? "that variable"} is ignored`}
+        {hint.masked ? ` (it holds ${hint.masked})` : ""}. Set the value here, then remove the
+        line from .env.local.
       </TooltipContent>
     </Tooltip>
+  );
+}
+
+/**
+ * The compact version of the same message for a whole card: lists only the env names
+ * that actually still hold a value, and disappears when the file is cleaned up.
+ */
+function LeftoverEnvList({
+  env,
+  names,
+}: {
+  env: Record<string, EnvHint | undefined>;
+  names: string[];
+}) {
+  const leftovers = names.filter((name) => env[name]?.present || env[name]?.inEnvFile);
+  if (leftovers.length === 0) return null;
+  return (
+    <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-2.5 py-2">
+      <p className="flex items-center gap-1.5 text-[11px] font-medium text-amber-700 dark:text-amber-400">
+        <AlertTriangle className="size-3.5 shrink-0" />
+        Ignored now that Settings owns these values
+      </p>
+      <ul className="mt-1.5 space-y-1 text-[11px] text-muted-foreground">
+        {leftovers.map((name) => (
+          <li key={name} className="flex items-center justify-between gap-2">
+            <code className="font-mono">{name}</code>
+            <span>{env[name]?.masked || "set in .env.local"}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -432,7 +470,17 @@ function RenderCard({
 
       <Row
         label="Caption preset"
-        hint={value.captionPresetId ? undefined : "Uses the preset marked default in the caption preset table."}
+        hint={
+          value.captionPresetId ? undefined : (
+            <>
+              Uses the preset marked default on{" "}
+              <Link href="/caption-presets" className="underline underline-offset-2 hover:text-foreground">
+                Style presets
+              </Link>
+              , where the built-ins can also be re-synced.
+            </>
+          )
+        }
         source={sources.captionPresetId}
       >
         <Select
@@ -498,7 +546,12 @@ function RenderCard({
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2">
-        <Row label="Hook intro (s)" hint="0 removes the replayed hook entirely." source={sources.hookDuration} className="sm:block">
+        <Row
+          label="Hook intro fallback (s)"
+          hint="Only used when a clip has no usable hook interval from the prompt - that interval normally decides the length. 0 turns the intro and hook text off."
+          source={sources.hookDuration}
+          className="sm:block"
+        >
           <div className="mt-2">
             <NumberField
               id="default-hook-duration"
@@ -553,6 +606,12 @@ function ProvidersCard({
   const storedDeepgramMasked = String(
     (settings.stored.ai as { deepgramApiKey?: string } | undefined)?.deepgramApiKey ?? ""
   );
+
+  const geminiFromEnv: EnvHint | undefined = settings.env.GEMINI_API_KEY;
+  const deepgramFromEnv: EnvHint | undefined = settings.env.DEEPGRAM_API_KEY;
+  // Only offered while nothing is stored: after one copy, this page owns the keys and
+  // the env file is never consulted again.
+  const canCopyKeysFromEnv = !settings.stored.ai && Boolean(geminiFromEnv?.present || deepgramFromEnv?.present);
 
   const dirty = staged !== null || candidate.trim().length > 0 || deepgramKey.trim().length > 0;
 
@@ -616,7 +675,7 @@ function ProvidersCard({
           <div className="flex items-center justify-between gap-2">
             <h3 className="flex items-center gap-1.5 text-[12.5px] font-semibold">
               Gemini keys
-              <EnvBadge hint={settings.env.GEMINI_API_KEY} />
+              <LeftoverEnvBadge hint={settings.env.GEMINI_API_KEY} />
             </h3>
             <span className="text-[11px] text-muted-foreground">
               {effective.ai.geminiApiKeys.length
@@ -626,10 +685,31 @@ function ProvidersCard({
           </div>
 
           {effective.ai.geminiApiKeys.length === 0 ? (
-            <p className="rounded-lg border border-dashed bg-muted/30 px-3 py-2.5 text-[11.5px] leading-snug text-muted-foreground">
-              No key yet. Paste one below, <span className="text-foreground">Test</span> it, then save.
-              Create keys free at aistudio.google.com/apikey.
-            </p>
+            <div className="rounded-lg border border-dashed bg-muted/30 px-3 py-2.5 text-[11.5px] leading-snug text-muted-foreground">
+              <p>
+                No key yet. Paste one below, <span className="text-foreground">Test</span> it, then save.
+                Create keys free at aistudio.google.com/apikey.
+              </p>
+              {canCopyKeysFromEnv ? (
+                <div className="mt-2 flex flex-wrap items-center justify-between gap-2 border-t pt-2">
+                  <p className="min-w-0 flex-1">
+                    <code className="font-mono">.env.local</code> already holds
+                    {geminiFromEnv.masked ? ` <span className="font-mono text-foreground">{geminiFromEnv.masked}</span>` : " a key"}
+                    {deepgramFromEnv.present ? " and a Deepgram key" : ""}. This page does not read that file, so
+                    nothing works until the key is stored here.
+                  </p>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    disabled={settings.busy === "import-env"}
+                    onClick={() => void settings.importEnv()}
+                  >
+                    {settings.busy === "import-env" ? <Loader2 className="animate-spin" /> : <ArrowDown />}
+                    Copy into Settings
+                  </Button>
+                </div>
+              ) : null}
+            </div>
           ) : (
             <ul className="space-y-1.5">
               {effective.ai.geminiApiKeys.map((masked, index) => {
@@ -715,11 +795,13 @@ function ProvidersCard({
                 <SourceChip source={settings.sources.ai?.geminiApiKeys} />
                 {settings.sources.ai?.geminiApiKeys === "app"
                   ? "the pool saved on this page"
-                  : settings.sources.ai?.geminiApiKeys === "env"
-                    ? "GEMINI_API_KEY in .env.local"
-                    : "nothing yet - viral detection cannot run until you add a key"}
+                  : "nothing yet - viral detection cannot run until you add a key here"}
               </p>
-              <p>Saved keys live in the SQLite file next to your videos; they never leave this machine except to the provider.</p>
+              <p>
+                Keys live in the SQLite file next to your videos and never leave this machine except to the
+                provider. <code className="font-mono">GEMINI_API_KEY</code> in .env.local is not read: this
+                page is the only place keys are configured.
+              </p>
             </div>
           </details>
         </div>
@@ -728,7 +810,7 @@ function ProvidersCard({
         <div className="space-y-2.5">
           <h3 className="flex items-center gap-1.5 text-[12.5px] font-semibold">
             Deepgram (optional)
-            <EnvBadge hint={settings.env.DEEPGRAM_API_KEY} />
+            <LeftoverEnvBadge hint={settings.env.DEEPGRAM_API_KEY} />
           </h3>
 
           <div className="space-y-1.5">
@@ -957,11 +1039,7 @@ function WorkerCard({
     >
       <Row
         label="Clip renders at once"
-        hint={
-          settings.sources.worker?.clipConcurrency === "env"
-            ? "Currently from WORKER_CONCURRENCY in .env.local."
-            : "1 is the right value on a normal PC."
-        }
+        hint="1 is the right value on a normal PC - each render runs FFmpeg plus a headless Chrome."
         source={settings.sources.worker?.clipConcurrency}
       >
         <NumberField
@@ -991,7 +1069,7 @@ function WorkerCard({
 
       <Row
         label="Chrome tabs per render"
-        hint={autoRemotion ? "Unset: the renderer picks half your CPU cores." : "Overridden from Settings; applies on the next render."}
+        hint={autoRemotion ? "Unset: the renderer picks half your CPU cores." : "Saved here and applied on the next render - no restart needed."}
         source={settings.sources.worker?.remotionConcurrency}
       >
         <div className="flex items-center gap-2">
@@ -1011,7 +1089,7 @@ function WorkerCard({
               id="remotion-concurrency"
               value={effective.worker.remotionConcurrency ?? 0}
               min={limits?.remotion.min ?? 1}
-              max={limits?.remotion.max ?? 8}
+              max={limits?.remotion.max ?? 32}
               disabled={autoRemotion || settings.busy === "save:worker"}
               onCommit={(remotionConcurrency) => setDraft((current) => ({ ...current, remotionConcurrency }))}
             />
@@ -1019,20 +1097,7 @@ function WorkerCard({
         </div>
       </Row>
 
-      <div className="rounded-lg border bg-muted/20 px-2.5 py-2">
-        <p className="text-[10.5px] font-medium tracking-wide text-muted-foreground uppercase">Env fallbacks</p>
-        <ul className="mt-1.5 space-y-1 text-[11px] text-muted-foreground">
-          {["WORKER_CONCURRENCY", "VIRAL_CONCURRENCY", "REMOTION_CONCURRENCY"].map((name) => (
-            <li key={name} className="flex items-center justify-between gap-2">
-              <code className="font-mono">{name}</code>
-              <span className="flex items-center gap-1.5">
-                {settings.env[name]?.present ? settings.env[name]?.masked || "set" : "not set"}
-                <EnvBadge hint={settings.env[name]} />
-              </span>
-            </li>
-          ))}
-        </ul>
-      </div>
+      <LeftoverEnvList env={settings.env} names={["WORKER_CONCURRENCY", "VIRAL_CONCURRENCY", "REMOTION_CONCURRENCY"]} />
     </SettingsCard>
   );
 }
@@ -1093,8 +1158,8 @@ function SafetyCard({
               <span className="min-w-0">
                 <span className="flex items-center gap-1.5 text-[12.5px] font-medium">
                   {mode.label}
-                  {settings.sources.profanity?.audioMode === "env" && mode.value === effective.profanity.audioMode && !draft ? (
-                    <SourceChip source="env" />
+                  {settings.sources.profanity?.audioMode === "app" && mode.value === effective.profanity.audioMode && !draft ? (
+                    <SourceChip source="app" />
                   ) : null}
                 </span>
                 <span className="mt-0.5 block text-[11px] leading-snug text-muted-foreground">{mode.description}</span>

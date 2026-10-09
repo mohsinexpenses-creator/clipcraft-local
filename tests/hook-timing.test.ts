@@ -35,7 +35,7 @@ test('resolveHookTiming keeps the hook disabled even when AI timestamps are pres
   );
 });
 
-test('resolveHookTiming preserves a bounded legacy fallback for clips without valid timestamps', () => {
+test('resolveHookTiming falls back to the configured length when the analysis has no usable interval', () => {
   const timing = resolveHookTiming({
     enabled: true,
     clipStart: 65,
@@ -45,7 +45,26 @@ test('resolveHookTiming preserves a bounded legacy fallback for clips without va
     fallbackDuration: 5,
   });
 
-  assert.deepEqual(timing, { start: 15, duration: 3, source: 'fallback' });
+  // 5s, not 3s: the Settings page owns this number and allows up to 30, so rewriting it
+  // here would make the field a lie. A start with no end is "no usable interval".
+  assert.deepEqual(timing, { start: 15, duration: 5, source: 'fallback' });
+});
+
+test('a fallback intro can never be longer than the clip it replays', () => {
+  const short = resolveHookTiming({
+    enabled: true,
+    clipStart: 10,
+    clipEnd: 16, // a 6s clip
+    fallbackDuration: 20,
+  });
+  assert.equal(short.duration, 3, 'bounded by half the segment');
+  assert.equal(short.start, 0);
+
+  // Nothing configured at all -> the shipped 3s, when it fits.
+  assert.equal(
+    resolveHookTiming({ enabled: true, clipStart: 0, clipEnd: 120 }).duration,
+    3
+  );
 });
 
 test('resolveHookTiming rejects a valid timestamp interval that cannot fit inside the selected clip', () => {

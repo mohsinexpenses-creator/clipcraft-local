@@ -30,6 +30,7 @@ export type SettingsBusy =
   | "load"
   | `save:${AppSettingsSection}`
   | `reset:${AppSettingsSection}`
+  | "import-env"
   | "verify:gemini"
   | "verify:deepgram"
   | "verify:all"
@@ -53,9 +54,9 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
  *
  * One snapshot for the whole page: every card edits a local draft of its own section
  * and PUTs that section, and the server's answer (the recomputed snapshot, with the
- * `app` / `env` / `default` provenance per field) replaces the page state. That is why
- * saving a section you did not touch is impossible, and why the page can honestly show
- * "from .env.local" next to a value it never stored.
+ * `app` / `default` provenance per field) replaces the page state. That is why saving a
+ * section you did not touch is impossible - and why what is on screen is exactly what
+ * the app will do, with no hidden env tier to disagree with it.
  */
 export function useSettings() {
   const { toast } = useToast();
@@ -125,8 +126,8 @@ export function useSettings() {
         setRevision((current) => current + 1);
         setResults((current) => current.filter((result) => section !== "ai" || result.target !== "gemini"));
         toast({
-          title: "Section cleared",
-          description: "Values fall back to .env.local and the built-in defaults.",
+          title: "Reset to defaults",
+          description: settingsResetNote(section),
           tone: "success",
         });
         return true;
@@ -143,6 +144,41 @@ export function useSettings() {
     },
     [toast]
   );
+
+  /**
+   * The one env-file action on the page, and it is a write: it copies the keys
+   * `.env.local` holds into Settings so an existing setup keeps working now that env is
+   * not a fallback. Nothing reads env at the moment a value is used.
+   */
+  const importEnv = React.useCallback(async () => {
+    setBusy("import-env");
+    try {
+      const data = await requestJson<{ snapshot: SettingsPayload; copied: { geminiKeys: number; deepgram: boolean } }>(
+        "/api/settings",
+        { method: "POST", body: JSON.stringify({ action: "import-env" }) }
+      );
+      setPayload(data.snapshot);
+      setRevision((current) => current + 1);
+      toast({
+        title: "Keys copied into Settings",
+        description:
+          `${data.copied.geminiKeys} Gemini key${data.copied.geminiKeys === 1 ? "" : "s"}` +
+          `${data.copied.deepgram ? " and a Deepgram key" : ""} are stored here now. ` +
+          "You can delete them from .env.local.",
+        tone: "success",
+      });
+      return true;
+    } catch (caught) {
+      toast({
+        title: "Nothing was copied",
+        description: caught instanceof Error ? caught.message : "The server refused the import.",
+        tone: "error",
+      });
+      return false;
+    } finally {
+      setBusy(null);
+    }
+  }, [toast]);
 
   const verify = React.useCallback(
     async (input: {
@@ -199,11 +235,33 @@ export function useSettings() {
     reload: load,
     save,
     reset,
+    importEnv,
     verify,
   };
 }
 
-/** A saved section is only useful if the user knows what it changes - and when it needs a restart. */
+/**
+ * Resetting deletes the row, and a deleted row means the built-in default - NOT whatever
+ * `.env.local` happens to hold. Saying "cleared" without that would send someone to edit
+ * a file that the app stopped reading for these keys.
+ */
+function settingsResetNote(section: AppSettingsSection): string {
+  switch (section) {
+    case "pipeline":
+      return "The next upload starts from the shipped defaults: auto-detect and auto-render on, 10 clips from 60s up.";
+    case "render":
+      return "Clips nobody has edited go back to the shipped render defaults.";
+    case "ai":
+      return "No provider keys are configured now - add them here; .env.local is not read for keys.";
+    case "worker":
+      return "Back to one clip and one detection at a time, applied when the worker restarts.";
+    case "profanity":
+      return "The spoken word is muted again from the next render; text stays masked either way.";
+    default:
+      return "";
+  }
+}
+
 function settingsToastNote(section: AppSettingsSection): string {
   switch (section) {
     case "pipeline":

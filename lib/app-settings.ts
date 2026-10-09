@@ -11,6 +11,7 @@ import {
   DEFAULT_PIPELINE_OPTIONS,
   DEFAULT_PROFANITY_SETTINGS,
   DEFAULT_RENDER_SETTINGS,
+  DEFAULT_WORKER_SETTINGS,
   PipelineOptions,
   EnvHint,
   ProfanitySettings,
@@ -24,19 +25,25 @@ import { DEFAULT_FILTER_PRESETS } from './presets';
 import { AppError } from './errors';
 
 /**
- * The Settings page's backing store: read the stored overrides from SQLite, fall
- * back to `.env.local`, then to the built-in defaults. Nothing else in the app
- * reads `process.env` for a value that has a settings row - and nothing here
- * rewrites `.env.local`, so a hand-edited env file stays authoritative until an
- * override is saved.
+ * The Settings page's backing store, and the only place these five sections are read.
  *
- * Secrets (Gemini / Deepgram keys) are stored here for the same reason they live in
- * `.env.local`: this is a single-user machine. The API never returns one in full -
- * `maskSecret` is the only view of it - which is why saving a section that contains
- * a masked placeholder means "keep the key that is already stored".
+ * Precedence is deliberately short: **a value saved on /settings, otherwise the
+ * built-in default**. `.env.local` is NOT a fallback for a settings value - a key or a
+ * knob that only exists in the env file is simply not configured as far as the app is
+ * concerned, so what the page shows is exactly what the app does. Everything else in
+ * `.env.local` (paths, model files, CRF, upload limits, timeouts) is untouched and
+ * still read where it always was.
  *
- * `.env.local` is parsed for one display purpose: to tell the user "DEEPGRAM_API_KEY
- * is already set in your env file" without exposing its value (see `envHints`).
+ * `.env.local` is still *parsed*, for two narrow purposes: the page lists what the env
+ * file holds so nothing looks lost (`envHints`), and `envAiKeysForImport` lets the user
+ * copy an already-working key setup into Settings once, with their consent. Neither
+ * reads env at the moment a value is used.
+ *
+ * Secrets (Gemini / Deepgram keys) live here for the same reason they lived in
+ * `.env.local`: this is a single-user machine, and the SQLite file is git-ignored like
+ * the env file is. The API never returns one in full - `maskSecret` is the only view of
+ * it - which is why saving a section that contains a masked placeholder means "keep the
+ * key that is already stored".
  */
 
 /**
@@ -65,13 +72,6 @@ export type SecretKind = 'gemini' | 'deepgram';
 
 function envText(name: string): string {
   return process.env[name]?.trim() ?? '';
-}
-
-function envNumber(name: string): number | null {
-  const raw = envText(name);
-  if (!raw) return null;
-  const value = Number(raw);
-  return Number.isFinite(value) && value > 0 ? Math.floor(value) : null;
 }
 
 /**
@@ -113,9 +113,11 @@ function isMaskedPlaceholder(value: unknown): value is string {
 }
 
 /**
- * Which `.env.local` keys are in play, without sending their values to the browser.
- * `file` says the name appears in the env file even when this process has not loaded it
- * (the worker loads it itself, and `next dev` only loads it for its own process).
+ * Which `.env.local` names still hold a value that Settings now owns. This is a
+ * migration courtesy and nothing else: the values are shown masked so the user can
+ * recognise which key is sitting unused, and the page tells them it is NOT read.
+ * `inEnvFile` is true when the name appears in the file even if this process has not
+ * loaded it (the worker loads it itself, `next dev` only loads it for its own process).
  */
 export function envHints(): Record<string, EnvHint> {
   const names = [
@@ -415,50 +417,53 @@ function intInRange(value: unknown, min: number, max: number, fallback: number):
 }
 
 /**
- * A stored `null` is the user's choice - "let the renderer decide" - so it must not fall
- * through to the env value. Anything else unset or unparseable does fall through.
+ * A stored `null` is the user's own decision - "let the renderer decide, based on the
+ * CPU" - so it must not fall through to anything else. A value that is set is clamped to
+ * the same limits the UI offers, because a row can also be written by hand.
  */
-function resolveRemotion(stored: unknown, fromEnv: number | null): number | null {
+function resolveRemotion(stored: unknown): number | null {
   if (stored === null) return null;
-  const value = numberValue(stored) ?? fromEnv;
-  return value === null || value === undefined
+  const value = numberValue(stored);
+  return value === undefined
     ? null
     : intInRange(value, CONCURRENCY_LIMITS.remotion.min, CONCURRENCY_LIMITS.remotion.max, 1);
 }
 
 /**
- * Pure resolution over already-read rows. Kept separate from SQLite so the priority
- * rules are unit-testable without a database (`tests/app-settings.test.ts`).
+ * Pure resolution over already-read rows: stored value, else built-in default.
+ *
+ * There is no env tier here on purpose. `.env.local` is where the *other* knobs live
+ * (binaries, models, CRF, upload limits) and a user who moves a value into Settings must
+ * then see one answer, not two - the page is the contract. Keeping this function free of
+ * `process.env` (and of SQLite) is also what makes the precedence rules unit-testable.
  */
 export function resolveSettings(stored: StoredSettingsRows): { effective: AppSettings; sources: SettingsSources } {
   const sources: SettingsSources = {};
 
-  /* pipeline */
-  sources.pipeline = {};
+  /* pipeline - `stored.pipeline` is already a sanitized `PipelineOptions` */
   const pipeline = stored.pipeline ?? DEFAULT_PIPELINE_OPTIONS;
-  for (const key of ['autoDetect', 'autoRender'] as const) {
-    sources.pipeline[key] = stored.pipeline ? 'app' : 'default';
-  }
-  sources.pipeline.viral = stored.pipeline ? 'app' : 'default';
+  sources.pipeline = {
+    autoDetect: stored.pipeline?.autoDetect !== undefined ? 'app' : 'default',
+    autoRender: stored.pipeline?.autoRender !== undefined ? 'app' : 'default',
+    viral: stored.pipeline?.viral ? 'app' : 'default',
+  };
 
   /* render */
-  const engineFromEnv = envText('AUTO_RENDER_CAPTION_ENGINE').toLowerCase();
   const renderStored = stored.render ?? {};
-  const storedEngine = CAPTION_ENGINES.has(stringValue(renderStored.captionEngine) ?? '')
-    ? stringValue(renderStored.captionEngine)
-    : undefined;
-  const storedLayout = LAYOUTS.has(stringValue(renderStored.layout) ?? '')
-    ? stringValue(renderStored.layout)
-    : undefined;
-  const storedFilter = FILTER_IDS.has(stringValue(renderStored.filterPreset) ?? '')
-    ? stringValue(renderStored.filterPreset)
-    : undefined;
-  const engine = storedEngine ?? (CAPTION_ENGINES.has(engineFromEnv) ? engineFromEnv : DEFAULT_RENDER_SETTINGS.captionEngine);
+  const engine = CAPTION_ENGINES.has(stringValue(renderStored.captionEngine) ?? '')
+    ? (stringValue(renderStored.captionEngine) as RenderDefaults['captionEngine'])
+    : DEFAULT_RENDER_SETTINGS.captionEngine;
+  const layout = LAYOUTS.has(stringValue(renderStored.layout) ?? '')
+    ? (stringValue(renderStored.layout) as RenderDefaults['layout'])
+    : DEFAULT_RENDER_SETTINGS.layout;
+  const filterPreset = FILTER_IDS.has(stringValue(renderStored.filterPreset) ?? '')
+    ? (stringValue(renderStored.filterPreset) as RenderDefaults['filterPreset'])
+    : DEFAULT_RENDER_SETTINGS.filterPreset;
 
   sources.render = {
-    captionEngine: storedEngine ? 'app' : CAPTION_ENGINES.has(engineFromEnv) ? 'env' : 'default',
-    filterPreset: storedFilter ? 'app' : 'default',
-    layout: storedLayout ? 'app' : 'default',
+    captionEngine: engine !== DEFAULT_RENDER_SETTINGS.captionEngine || stringValue(renderStored.captionEngine) ? 'app' : 'default',
+    layout: stringValue(renderStored.layout) ? 'app' : 'default',
+    filterPreset: stringValue(renderStored.filterPreset) ? 'app' : 'default',
     captionPresetId: renderStored.captionPresetId !== undefined ? 'app' : 'default',
     hookStylePresetId: renderStored.hookStylePresetId !== undefined ? 'app' : 'default',
     ctaStylePresetId: renderStored.ctaStylePresetId !== undefined ? 'app' : 'default',
@@ -467,9 +472,9 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
   };
 
   const render: RenderDefaults = {
-    captionEngine: engine as RenderDefaults['captionEngine'],
-    layout: (storedLayout ?? DEFAULT_RENDER_SETTINGS.layout) as RenderDefaults['layout'],
-    filterPreset: storedFilter ?? DEFAULT_RENDER_SETTINGS.filterPreset,
+    captionEngine: engine,
+    layout,
+    filterPreset,
     captionPresetId: idValue(renderStored.captionPresetId) ?? null,
     hookStylePresetId: idValue(renderStored.hookStylePresetId) ?? null,
     ctaStylePresetId: idValue(renderStored.ctaStylePresetId) ?? null,
@@ -477,75 +482,64 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
     ctaDuration: clampDuration(renderStored.ctaDuration, DEFAULT_RENDER_SETTINGS.ctaDuration),
   };
 
-  /* ai */
+  /* ai - keys exist only if they were put here, never inherited from the env file */
   const aiStored = stored.ai ?? {};
-  const envGeminiKeys = parseKeyList(envText('GEMINI_API_KEY'));
-  const storedKeys = Array.isArray(aiStored.geminiApiKeys)
+  const geminiApiKeys = Array.isArray(aiStored.geminiApiKeys)
     ? aiStored.geminiApiKeys.filter((key): key is string => typeof key === 'string' && isUsableSecret(key))
     : [];
-  const geminiApiKeys = storedKeys.length ? storedKeys : envGeminiKeys;
-
-  const envDeepgramKey = envText('DEEPGRAM_API_KEY');
-  const storedDeepgramKey = stringValue(aiStored.deepgramApiKey) ?? '';
-  const deepgramApiKey = isUsableSecret(storedDeepgramKey) ? storedDeepgramKey : isUsableSecret(envDeepgramKey) ? envDeepgramKey : '';
-
-  const envDeepgramModel = envText('DEEPGRAM_MODEL');
-  const storedDeepgramModel = stringValue(aiStored.deepgramModel) ?? '';
-  const deepgramModel = storedDeepgramModel || envDeepgramModel || 'nova-2';
-
-  const storedChoice = PROVIDER_CHOICES.has(stringValue(aiStored.transcriptionProvider) ?? '')
+  const deepgramKey = stringValue(aiStored.deepgramApiKey) ?? '';
+  const deepgramApiKey = isUsableSecret(deepgramKey) ? deepgramKey : '';
+  const deepgramModel = stringValue(aiStored.deepgramModel) ?? '';
+  const transcriptionProvider = PROVIDER_CHOICES.has(stringValue(aiStored.transcriptionProvider) ?? '')
     ? (stringValue(aiStored.transcriptionProvider) as AiProviderSettings['transcriptionProvider'])
     : DEFAULT_AI_SETTINGS.transcriptionProvider;
 
   sources.ai = {
-    geminiApiKeys: storedKeys.length ? 'app' : envGeminiKeys.length ? 'env' : 'default',
-    deepgramApiKey: isUsableSecret(storedDeepgramKey) ? 'app' : isUsableSecret(envDeepgramKey) ? 'env' : 'default',
-    deepgramModel: storedDeepgramModel ? 'app' : envDeepgramModel ? 'env' : 'default',
+    geminiApiKeys: geminiApiKeys.length ? 'app' : 'default',
+    deepgramApiKey: deepgramApiKey ? 'app' : 'default',
+    deepgramModel: deepgramModel ? 'app' : 'default',
     transcriptionProvider: stringValue(aiStored.transcriptionProvider) ? 'app' : 'default',
   };
 
-  const ai: AiProviderSettings = { geminiApiKeys, deepgramApiKey, deepgramModel, transcriptionProvider: storedChoice };
+  const ai: AiProviderSettings = {
+    geminiApiKeys,
+    deepgramApiKey,
+    deepgramModel: deepgramModel || 'nova-2',
+    transcriptionProvider,
+  };
 
   /* worker */
   const workerStored = stored.worker ?? {};
-  const envClip = envNumber('WORKER_CONCURRENCY');
-  const envViral = envNumber('VIRAL_CONCURRENCY');
-  const envRemotion = envNumber('REMOTION_CONCURRENCY');
-
   sources.worker = {
-    clipConcurrency: numberValue(workerStored.clipConcurrency) !== undefined ? 'app' : envClip ? 'env' : 'default',
-    viralConcurrency: numberValue(workerStored.viralConcurrency) !== undefined ? 'app' : envViral ? 'env' : 'default',
+    clipConcurrency: numberValue(workerStored.clipConcurrency) !== undefined ? 'app' : 'default',
+    viralConcurrency: numberValue(workerStored.viralConcurrency) !== undefined ? 'app' : 'default',
     // An explicit `null` is a choice ("let the renderer decide"), so it counts as stored.
-    remotionConcurrency:
-      workerStored.remotionConcurrency !== undefined ? 'app' : envRemotion ? 'env' : 'default',
+    remotionConcurrency: workerStored.remotionConcurrency !== undefined ? 'app' : 'default',
   };
 
-  // The limits apply to whatever the value came from - a hand-written
-  // `VIRAL_CONCURRENCY=500` in .env.local must not spawn five hundred loops.
   const worker: WorkerSettings = {
     clipConcurrency: intInRange(
-      numberValue(workerStored.clipConcurrency) ?? envClip ?? 1,
+      numberValue(workerStored.clipConcurrency) ?? DEFAULT_WORKER_SETTINGS.clipConcurrency,
       CONCURRENCY_LIMITS.clip.min,
       CONCURRENCY_LIMITS.clip.max,
       1
     ),
     viralConcurrency: intInRange(
-      numberValue(workerStored.viralConcurrency) ?? envViral ?? 1,
+      numberValue(workerStored.viralConcurrency) ?? DEFAULT_WORKER_SETTINGS.viralConcurrency,
       CONCURRENCY_LIMITS.viral.min,
       CONCURRENCY_LIMITS.viral.max,
       1
     ),
-    remotionConcurrency: resolveRemotion(workerStored.remotionConcurrency, envRemotion),
+    remotionConcurrency: resolveRemotion(workerStored.remotionConcurrency),
   };
 
   /* profanity */
   const profanityStored = stored.profanity ?? {};
-  const storedMode = AUDIO_MODES.has(stringValue(profanityStored.audioMode)?.toLowerCase() ?? '')
-    ? stringValue(profanityStored.audioMode)!.toLowerCase()
-    : undefined;
-  const envMode = envText('PROFANITY_AUDIO_MODE').toLowerCase();
-  const audioMode = storedMode ?? (AUDIO_MODES.has(envMode) ? envMode : DEFAULT_PROFANITY_SETTINGS.audioMode);
-  sources.profanity = { audioMode: storedMode ? 'app' : AUDIO_MODES.has(envMode) ? 'env' : 'default' };
+  const storedMode = stringValue(profanityStored.audioMode)?.toLowerCase() ?? '';
+  const audioMode = AUDIO_MODES.has(storedMode)
+    ? (storedMode as ProfanitySettings['audioMode'])
+    : DEFAULT_PROFANITY_SETTINGS.audioMode;
+  sources.profanity = { audioMode: AUDIO_MODES.has(storedMode) ? 'app' : 'default' };
 
   const effective: AppSettings = {
     pipeline: {
@@ -555,7 +549,7 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
     render,
     ai,
     worker,
-    profanity: { audioMode: audioMode as ProfanitySettings['audioMode'] },
+    profanity: { audioMode },
   };
 
   return { effective, sources };
@@ -656,6 +650,31 @@ const LIMITS: SettingsLimits = {
 };
 
 /**
+ * The keys `.env.local` holds, formatted as a stored `ai` section - for the ONE case
+ * where env is read on purpose: the user clicking "Copy from .env.local" on the Settings
+ * page. It is not a fallback; nothing calls it while resolving a value, and it never
+ * returns a key to the browser (the result goes straight into the table).
+ *
+ * `null` means there is nothing to copy, which is what hides the button.
+ */
+export async function envAiSectionForImport(): Promise<Record<string, unknown> | null> {
+  const geminiApiKeys = parseKeyList(envText('GEMINI_API_KEY'));
+  const deepgramRaw = envText('DEEPGRAM_API_KEY');
+  const deepgramApiKey = isUsableSecret(deepgramRaw) ? deepgramRaw : '';
+  const deepgramModel = envText('DEEPGRAM_MODEL');
+
+  if (!geminiApiKeys.length && !deepgramApiKey && !deepgramModel) return null;
+
+  const value: Record<string, unknown> = {
+    geminiApiKeys,
+    deepgramApiKey,
+    transcriptionProvider: DEFAULT_AI_SETTINGS.transcriptionProvider,
+  };
+  if (deepgramModel) value.deepgramModel = deepgramModel;
+  return value;
+}
+
+/**
  * Save one section. A form that edits two of its five fields must not wipe the other
  * three, so the submitted fields are merged over the stored row; an explicit `null`
  * still clears a field (that is how "use the database default" is selected), and
@@ -696,20 +715,22 @@ export async function clearSettingsSection(section: AppSettingsSection): Promise
  * ------------------------------------------------------------------ */
 
 /**
- * Ordered Gemini keys: the stored pool when there is one, otherwise
- * `GEMINI_API_KEY`. `index` walks the pool when the caller wants to rotate on a 429.
+ * The ordered Gemini key pool, exactly as saved on /settings. `index` lets a caller
+ * rotate to the next key on a 429 without re-reading the table.
  */
 export async function resolveGeminiApiKeys(): Promise<string[]> {
   const settings = await loadEffectiveSettings();
   return settings.ai.geminiApiKeys;
 }
 
-/** The single key a chain entry should use - `null` means "not configured". */
-export async function resolveLlmApiKey(envName: string): Promise<string | null> {
-  if (envName.toUpperCase() !== 'GEMINI_API_KEY') {
-    const value = envText(envName);
-    return isUsableSecret(value) ? value : null;
-  }
+/**
+ * The key a chain entry should start with - `null` means "not configured, do not try".
+ * Every slot is a Google AI Studio model reading the same Settings-managed pool, so the
+ * env name on the entry no longer selects anything; the argument stays because callers
+ * log it when the pool is empty.
+ */
+export async function resolveLlmApiKey(envName?: string): Promise<string | null> {
+  void envName;
   const keys = await resolveGeminiApiKeys();
   return keys[0] ?? null;
 }
@@ -729,7 +750,7 @@ export async function resolveProfanityAudioMode(): Promise<ProfanitySettings['au
   return settings.profanity.audioMode;
 }
 
-/** Sync, safe by default - used by the worker before each job so edits apply without a restart. */
+/** Used by the worker before each job so a per-job value applies without a restart. */
 export async function resolveWorkerSettings(): Promise<WorkerSettings> {
   const settings = await loadEffectiveSettings();
   return settings.worker;

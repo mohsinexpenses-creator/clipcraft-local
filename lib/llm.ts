@@ -168,30 +168,18 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * True when the entry's env var holds a real key. Empty values and the
- * `.env.example` placeholder style (`your_api_key`) count as "not set", so a
- * freshly copied .env.local skips every entry cleanly instead of failing. This is
- * the env-only view; `llmKeysFor` below is the one that also knows about a
- * Settings -> AI providers key pool, and callers that must answer "can we run at
- * all?" use that.
+ * The keys this entry can try, in order.
+ *
+ * Every chain slot is a Google AI Studio model, and they all share one pool - which
+ * lives in Settings -> AI providers, not in `.env.local`. A pool of three keys means
+ * three attempts on the same model before the next model is tried, which is the whole
+ * point: each key has its own free daily quota. An empty pool means "not configured"
+ * and every caller says so out loud rather than trying anything.
  */
-export function isLlmKeyConfigured(entry: LlmProviderEntry): boolean {
-  const value = process.env[entry.apiKeyEnv]?.trim();
-  return Boolean(value && !value.toLowerCase().includes("your_api_key"));
-}
-
-/**
- * Keys this entry can try, in order: the stored pool first, then the env var. Every
- * chain slot reads the same variable name, so a pool of three keys means three
- * attempts before the next model is tried.
- */
-export async function llmKeysFor(entry: LlmProviderEntry): Promise<string[]> {
+export async function llmKeysFor(entry?: LlmProviderEntry): Promise<string[]> {
+  void entry;
   const settings = await loadEffectiveSettings();
-  if (entry.apiKeyEnv.toUpperCase() === "GEMINI_API_KEY" && settings.ai.geminiApiKeys.length) {
-    return settings.ai.geminiApiKeys;
-  }
-  const value = process.env[entry.apiKeyEnv]?.trim() ?? "";
-  return value && !value.toLowerCase().includes("your_api_key") ? [value] : [];
+  return settings.ai.geminiApiKeys;
 }
 
 /** Pull a human-readable message out of a provider error body, when possible. */
@@ -441,7 +429,7 @@ export async function completeWithFallback(
     const keys = keyPool.get(entry.apiKeyEnv) ?? [];
 
     if (keys.length === 0) {
-      const why = `${entry.apiKeyEnv} is not set`;
+      const why = "no key is configured (Settings -> AI providers)";
       console.log(`[LLM] Skipping ${label} — ${why}`);
       attempts.push(`${label}: ${why}`);
       continue;
@@ -519,8 +507,8 @@ export async function completeWithFallback(
       status: 502,
       details: attempts.join(" • "),
       resolution:
-        "Set a working GEMINI_API_KEY in .env.local, check the per-provider reasons in the " +
-        "details above (and .env.local for typos), and retry.",
+        "Add a working key under Settings -> AI providers, check the per-provider reasons " +
+        "in the details above, and retry.",
     },
   );
 }

@@ -39,7 +39,7 @@ export async function POST(request: Request) {
           target: 'gemini',
           status: 'error',
           label: 'Google AI Studio',
-          message: 'No Gemini key to test - none is stored and GEMINI_API_KEY is empty.',
+          message: 'No Gemini key to test - none is saved under Settings -> AI providers.',
           notes: ['Paste a key in the field first to test it before saving.'],
         });
       } else {

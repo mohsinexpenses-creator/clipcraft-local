@@ -432,12 +432,12 @@ function migrateSchemaV3(db: SqliteDatabase): void {
 /**
  * Schema v4: `app_settings`, one JSON document per Settings-page section.
  *
- * Only *overrides* live here. Anything the user never touched on the Settings page
- * has no row, so the env file (`.env.local`) and the built-in defaults stay in
- * charge - which is what keeps the worker, `npm run` scripts and a fresh clone
- * working exactly as before. Secrets are stored in this file for the same reason
- * they are stored in `.env.local`: the machine is the trust boundary. They are
- * never read back out in full by an API response (see `lib/app-settings.ts`).
+ * Only what the user saved lives here: no row for a section means "the built-in defaults",
+ * because these five sections are NOT completed from `.env.local` (that file still owns
+ * paths, models, CRF, upload limits and timeouts - everything without a form field).
+ * Secrets are stored in this file for the same reason they used to live in `.env.local`:
+ * the machine is the trust boundary. They are never read back out in full by an API
+ * response (see `lib/app-settings.ts`).
  */
 function migrateSchemaV4(db: SqliteDatabase): void {
   db.exec(`
@@ -529,9 +529,9 @@ function parseJson<T>(value: string, label: string): T {
 }
 
 /**
- * Stored settings overrides, keyed by Settings-page section. Rows are written only
- * when the user saves something, and a section can be cleared again (`resetAppSettings`)
- * to fall back to `.env.local` / built-in defaults.
+ * Stored settings, keyed by Settings-page section. Rows are written only when the user
+ * saves something, and resetting a section deletes its row, which leaves the built-in
+ * defaults - `.env.local` is not consulted for these keys at any point.
  *
  * A corrupt or unknown row must never take the app down, so reading is deliberately
  * forgiving: bad JSON or an unexpected shape is reported and skipped.
@@ -969,7 +969,11 @@ export async function deleteOverlayStylePreset(id: string): Promise<boolean> {
     .immediate();
 }
 
-/** Restore the shipped overlay style presets (hook + CTA). Custom presets are kept. */
+/**
+ * Restore the shipped overlay style presets (hook + CTA). Custom presets are kept, and so
+ * is the row the user marked default; a kind with NO default at all gets its shipped one
+ * back, because every render has to resolve a style for both kinds.
+ */
 export async function resetOverlayStylePresets(): Promise<
   OverlayStylePreset[]
 > {
@@ -985,7 +989,15 @@ export async function resetOverlayStylePresets(): Promise<
   `);
 
   db.transaction(() => {
-    const defaultKinds = new Set(
+    for (const preset of DEFAULT_OVERLAY_STYLE_PRESETS) {
+      // The destructuring is not decoration: everything left in `config` is what lands in
+      // `config_json`, so the columns and the default flag (handled below) are pulled out.
+      const { _id, kind, name, isDefault, createdAt, ...config } = preset;
+      void isDefault;
+      upsert.run(_id, kind, name, 0, createdAt ?? now, now, serializeJson(config));
+    }
+
+    const kindsWithDefault = new Set(
       (
         db
           .prepare(
@@ -995,31 +1007,9 @@ export async function resetOverlayStylePresets(): Promise<
       ).map((row) => row.kind),
     );
     for (const preset of DEFAULT_OVERLAY_STYLE_PRESETS) {
-      const { _id, kind, name, isDefault, createdAt, ...config } = preset;
-      const makeDefault = isDefault === true && !defaultKinds.has(kind);
-      const result = upsert.run(
-        _id,
-        kind,
-        name,
-        Number(makeDefault),
-        createdAt ?? now,
-        now,
-        serializeJson(config),
-      );
-      if (makeDefault) {
-        const promoted =
-          result.changes > 0
-            ? result
-            : db
-                .prepare(`
-                  UPDATE overlay_style_presets SET is_default = 1 WHERE id = ? AND kind = ?
-                    AND NOT EXISTS (
-                      SELECT 1 FROM overlay_style_presets WHERE kind = ? AND is_default = 1
-                    )
-                `)
-                .run(_id, kind, kind);
-        if (promoted.changes > 0) defaultKinds.add(kind);
-      }
+      if (preset.isDefault !== true || kindsWithDefault.has(preset.kind)) continue;
+      db.prepare("UPDATE overlay_style_presets SET is_default = 1 WHERE id = ?").run(preset._id);
+      kindsWithDefault.add(preset.kind);
     }
   }).immediate();
 
@@ -1452,6 +1442,50 @@ export async function saveCaptionPreset(
   ).run(_id, name, createdAt, updatedAt, serializeJson(config));
 
   return (await getCaptionPreset(_id)) ?? preset;
+}
+
+/**
+ * Restore the shipped caption presets. Rows are identified by id, so a built-in the user
+ * edited is written back to the values in `lib/presets.ts`; presets the user created are
+ * untouched, and the row marked default stays default (a deliberate choice is not a
+ * stale value to sync). This is the fix for "the database still has last month's copy of
+ * a built-in preset", which `INSERT OR IGNORE` seeding can never repair on its own.
+ */
+export async function resetCaptionPresets(): Promise<CaptionPreset[]> {
+  const db = getDatabase();
+  const now = new Date().toISOString();
+  const upsert = db.prepare(`
+    INSERT INTO caption_presets (id, name, is_default, created_at, updated_at, config_json)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      name = excluded.name,
+      updated_at = excluded.updated_at,
+      config_json = excluded.config_json
+  `);
+
+  db.transaction(() => {
+    for (const preset of DEFAULT_CAPTION_PRESETS) {
+      // Destructuring is how the column fields stay out of `config_json`, which is
+      // everything left over. `is_default` is deliberately NOT part of the conflict update
+      // either: a default the user picked on another row must survive, and setting it here
+      // could put two rows at 1 against the unique index.
+      const { _id, name, isDefault, createdAt, updatedAt, ...config } = preset;
+      void isDefault;
+      void updatedAt;
+      upsert.run(_id, name, 0, createdAt ?? now, now, serializeJson(config));
+    }
+
+    // A database with no default at all (a half-finished migration, or a hand-edited row)
+    // is repaired, because every render needs one; a deliberate choice is left alone.
+    const hasDefault = db.prepare("SELECT 1 FROM caption_presets WHERE is_default = 1 LIMIT 1").get();
+    const shippedDefault = DEFAULT_CAPTION_PRESETS.find((preset) => preset.isDefault === true);
+    if (!hasDefault && shippedDefault) {
+      db.prepare("UPDATE caption_presets SET is_default = 1 WHERE id = ?").run(shippedDefault._id);
+    }
+  })
+    .immediate();
+
+  return listCaptionPresets();
 }
 
 export async function deleteCaptionPreset(id: string): Promise<boolean> {

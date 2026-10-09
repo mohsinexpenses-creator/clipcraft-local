@@ -19,7 +19,7 @@ opens the browser. The steps below are what it does, manually.
 |---|---|---|
 | Node.js 20+ (LTS) | Next.js 16, the worker, and `better-sqlite3` | `node -v` |
 | **Microsoft Visual C++ Redistributable (x64)** | `whisper-cli.exe` is a native build and needs `vcruntime140.dll` / `msvcp140.dll` | Install once: <https://aka.ms/vs/17/release/vc_redist.x64.exe> |
-| Google AI Studio API key (`GEMINI_API_KEY`) | Viral-segment detection + hook/CTA text | Free: <https://aistudio.google.com/app/apikey> |
+| Google AI Studio API key | Viral-segment detection + hook/CTA text — pasted into **Settings → AI providers**, not into `.env.local` | Free: <https://aistudio.google.com/app/apikey> |
 
 FFmpeg is normally provided by `ffmpeg-static` during `npm install`. VFR detection
 and `verify:clip` also use **ffprobe**; `ffmpeg-static` does not bundle it, so install
@@ -56,13 +56,18 @@ npm install
 copy .env.example .env.local
 ```
 
-Then edit `.env.local`. Set the Google AI key; SQLite creates its database and parent
-directory automatically. Set `DATABASE_PATH` only if you want a non-default location.
+Then edit `.env.local` for the machine-level knobs (paths, FFmpeg, uploads). SQLite
+creates its database and parent directory automatically, so `DATABASE_PATH` is only
+needed for a non-default location.
 
 ```ini
 DATABASE_PATH=./data/clipcraft.db
-GEMINI_API_KEY=your-key
 ```
+
+**API keys are not configured here.** The Google AI Studio key — and the optional Deepgram
+key, worker concurrency, render defaults and profanity mode — are set on **`/settings`**
+inside the app, which is their only source of truth (see
+[Defaults live in two places](#defaults-live-in-two-places)).
 
 Both `npm run dev` and `npm run worker` load `.env.local` (via `@next/env`'s
 `loadEnvConfig` in `lib/errors.ts`) — **start the worker from the repository root**.
@@ -72,8 +77,7 @@ Both `npm run dev` and `npm run worker` load `.env.local` (via `@next/env`'s
 | Variable | Default | Notes |
 |---|---|---|
 | `DATABASE_PATH` | `./data/clipcraft.db` | Path to the SQLite database, relative to the repository root unless absolute. Parent folders are created automatically. Web and worker processes must use the same path; restart both after changing it. The file is ignored by Git. |
-| `GEMINI_API_KEY` | — | Google AI Studio. The chain is Gemini-only (5 slots, newest-first: `gemini-3.8-flash` → `gemini-3.6-flash` → `gemini-3.5-flash-lite` → `gemini-3.1-flash-lite` → `gemini-2.5-flash-lite`); every slot reads this one key but draws from a separate free daily pool, so it is real 503-redundancy. Model order lives in `LLM_PROVIDER_CHAIN` in `lib/llm.ts` — append an entry there (and set the key) to add a provider back. The other free providers were removed after live testing: Groq 413 (free per-minute INPUT cap) + 429s, Cerebras 402 (paid), Mistral 429 (~1 RPM), NVIDIA NIM 404/410 (retired models) + timeouts. |
-| `DEEPGRAM_API_KEY` / `DEEPGRAM_MODEL` | off (`nova-2`) | **Optional, paid.** If set, Deepgram wins over local whisper.cpp. Leave empty to stay 100 % local/free. |
+| **moved to /settings** | — | `GEMINI_API_KEY`, `DEEPGRAM_API_KEY`, `DEEPGRAM_MODEL`, `WORKER_CONCURRENCY`, `VIRAL_CONCURRENCY`, `REMOTION_CONCURRENCY`, `AUTO_RENDER_CAPTION_ENGINE` and `PROFANITY_AUDIO_MODE` are no longer read from this file. Their values live in the `app_settings` table and are edited on **Settings** — the page even points out any of those names still sitting unused in your `.env.local`. The Gemini chain itself is unchanged: 5 slots, newest-first (`gemini-3.8-flash` → `3.6-flash` → `3.5-flash-lite` → `3.1-flash-lite` → `2.5-flash-lite`), each model with its own free daily pool, and every key you save is tried on each model before the next model — so a second key is real 503-redundancy. Model order lives in `LLM_PROVIDER_CHAIN` in `lib/llm.ts`; the other free providers were removed after live testing (Groq 413 + 429s, Cerebras 402 paid, Mistral ~1 RPM, NVIDIA NIM 404/410 + timeouts). |
 | `WHISPER_CLI_PATH` | auto-detect | Overrides binary discovery (searches `.whisper/…`, `bin/whisper-win-x64/whisper-cli.exe`, `bin/whisper-cli`). |
 | `WHISPER_MODEL_PATH` | auto-detect | Overrides model discovery (`models/ggml-*.bin`). |
 | `WHISPER_LANGUAGE` | `auto` | e.g. `ur`, `hi`, `en`. `auto` detects the spoken language (needed for Urdu/Hindi/Punjabi). |
@@ -88,14 +92,13 @@ Both `npm run dev` and `npm run worker` load `.env.local` (via `@next/env`'s
 | `SPLIT_ZOOM` | `1.5` | Maximum split crop magnification; clamped to `1–2`. Set `1.0` to avoid enlargement. Low-resolution inputs may still need enlargement to fill output. |
 | `PORT` | `3000` | Next.js port. |
 | `ALLOWED_DEV_ORIGINS` | `*.e2b.app` (built in) | Extra hostnames allowed for dev assets (tunnels, LAN). Comma-separated, no scheme/port. |
-| `WORKER_CONCURRENCY` | `1` | Clips rendered in parallel. Keep at 1 on a normal PC: each job runs FFmpeg plus transparent overlay-frame generation. |
-| `REMOTION_CONCURRENCY` | auto | Chrome tabs Remotion uses while painting transparent overlays. |
+| **worker limits** | on `/settings` | Clip concurrency, viral-detection concurrency and Chrome tabs per render are set on **Settings → Worker & limits**. Keep clips at 1 on a normal PC: each job runs FFmpeg plus transparent overlay-frame generation. |
 | `REMOTION_LOG_LEVEL` | `info` | `verbose` when debugging a render. |
 | `REMOTION_TIMEOUT_MINUTES` | `60` | Per-render ceiling. |
 
 
 | `ENABLE_YT_IMPORT` | off | Set `1` to re-enable the (fragile) YouTube download path on the upload page. |
-| `PROFANITY_AUDIO_MODE` | `mute` | Render-time audio handling of profane words from the transcript: `mute` (silence the word), `beep` (1 kHz tone), `off` (leave audio alone). Captions/overlay text are masked **regardless**; the stored transcript keeps the original words, so changing this only needs a re-render. |
+| **profanity audio mode** | on `/settings` | Chosen on **Settings → Profanity & masking**: `mute` (silence the word), `beep` (1 kHz tone), `off` (leave the audio alone). Captions and overlay text are masked **regardless**; the stored transcript keeps the original words, so changing this only needs a re-render. |
 | `UPLOAD_DIR` | `uploads` | Where source videos + in-progress upload sessions are stored. |
 | `MAX_UPLOAD_MB` | `0` (unlimited) | Optional guard rail for a single upload. Long podcasts need no limit — leave at 0. |
 | `UPLOAD_CHUNK_MB` | `8` | Chunk size the resumable uploader sends. |
@@ -104,30 +107,34 @@ Both `npm run dev` and `npm run worker` load `.env.local` (via `@next/env`'s
 
 ---
 
-### Defaults live in two places
+### Settings is the only source of truth for those values
 
-`.env.local` is the **fallback**, and the app has a **Settings** page (`/settings`, in the
-sidebar) that saves overrides for the same values into `app_settings` rows in the SQLite
-file: pipeline defaults, render clip defaults, the Gemini key pool, Deepgram key + model
-+ engine choice, worker concurrency, and the profanity audio mode. Precedence is always
-*stored value → `.env.local` → built-in default*, and every row on that page tells you
-which of the three won.
+`/settings` (in the sidebar) owns pipeline defaults, render clip defaults, the Gemini key
+pool, Deepgram key + model + engine choice, worker concurrency, and the profanity audio
+mode. The values are stored as `app_settings` rows in the same SQLite file as your videos,
+and the rule is: **what you saved there, otherwise the built-in default**. `.env.local` is
+not consulted for any of them — a value can never come from a file you are not looking at,
+which is why a row either says `settings` or shows no chip at all.
 
-That split is deliberate:
+Practical consequences worth knowing:
 
-- a fresh clone (or a script like `npm run verify:clip`) keeps working from `.env.local`
-  alone, with nothing to click first;
-- the pool in `GEMINI_API_KEY` may hold several keys separated by commas, semicolons, or
-  newlines — `lib/llm.ts` tries each one before moving to the next model;
-- keys saved in the app are returned **masked** (`AIza…9f3`). Pasting a masked entry back
-  and saving keeps the stored key, so you can reorder the pool without retyping it.
-  Secrets live in the same git-ignored SQLite file as `.env.local`, so the trust boundary
-  does not change;
-- **clip and detection concurrency need `npm run worker` restarted** — the polling loops
-  are sized when the process starts, and the page says so while an override is saved.
-  Everything else, including Chrome tabs per render, transcription, render defaults and
-  the profanity mode, applies to the next job. Use **Test** on the AI card to check a key
-  against Google or Deepgram before saving — unsaved keys are testable too.
+- **a fresh clone has no keys until you add one.** That is on purpose: paste a key into
+  Settings → AI providers, press **Test** (it calls Google before anything is saved), then
+  save. `/startup-validation` tells you the same thing if you skipped it.
+- if your `.env.local` still holds `GEMINI_API_KEY` / `DEEPGRAM_API_KEY`, the AI card shows
+  a **Copy into Settings** button once, so an existing setup is a click rather than a
+  retyping session. Nothing reads the env file at the moment a value is used; that button
+  writes into the table.
+- keys are returned **masked** (`AIza…9f3`) and never in full. Pasting a masked entry back
+  and saving means "keep that stored key", so you can reorder or trim the pool without
+  retyping. Secrets sit in the git-ignored SQLite file — the same trust boundary as
+  `.env.local` always was.
+- **clip and detection concurrency need `npm run worker` restarted** — the polling loops are
+  sized when the process starts, and the card says so while such an override is saved.
+  Everything else, including Chrome tabs per render, transcription, render defaults and the
+  profanity mode, applies to the next job.
+- `Reset to defaults` deletes a section's row, which leaves the *built-in* default — it does
+  not hand the value back to `.env.local`.
 
 ## 4. SQLite database and job queue
 
@@ -142,8 +149,9 @@ The SQLite `jobs` table replaces BullMQ/Redis. The worker polls independent
 transcription and render queues; keep `npm run worker` running while processing. It
 preserves two total attempts (one retry after 2 seconds by default; the exponential
 backoff doubles if a job is configured for more attempts) and requeues interrupted
-claims on startup. Run exactly one worker process per database: `WORKER_CONCURRENCY`
-controls parallel render slots inside that process, while transcription uses one slot.
+claims on startup. Run exactly one worker process per database: the clip-concurrency value
+on **Settings → Worker & limits** controls parallel render slots inside that process, while
+transcription uses one slot.
 A terminal job row is retained until that record is queued again or deleted; deleting
 a clip/video also removes its job rows.
 
@@ -275,8 +283,8 @@ is visible, reasonably large and well lit — then re-render.
 **Remotion overlay-frame rendering fails**
 The worker uses Remotion only to paint transparent PNG overlays; the source video
 never enters Chrome. On the first run Remotion downloads its browser shell. Check
-the `[Remotion Renderer]` log for bundle/browser errors, then retry with a lower
-`REMOTION_CONCURRENCY` if memory is constrained. Increase
+the `[Remotion Renderer]` log for bundle/browser errors, then lower **Chrome tabs per
+render** (Settings → Worker & limits) if memory is constrained. Increase
 `REMOTION_TIMEOUT_MINUTES` only for legitimately long overlay sequences.
 
 **Rendered clip has no video / black frames**
@@ -287,9 +295,9 @@ source video.
 
 **Rendered clip is silent**
 The final FFmpeg pass maps the source audio (or creates a silent `anullsrc` track
-when the source has none) and encodes it as AAC. `PROFANITY_AUDIO_MODE=mute`
-intentionally silences transcript windows; check the `[FFmpeg]` mapping/filter log
-if other audio is missing.
+when the source has none) and encodes it as AAC. The profanity audio mode (default
+**mute**) intentionally silences transcript windows; check the `[FFmpeg]` mapping/filter
+log if other audio is missing.
 
 **Captions out of sync / audio drifts / clip plays at the wrong speed**
 Run `npm run verify:clip -- <file>` to inspect avg/r frame rates, VFR classification,

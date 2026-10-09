@@ -17,6 +17,8 @@
  * ("asshole" is its own entry), never the "ass" inside other words.
  */
 
+import { DEFAULT_PROFANITY_SETTINGS } from './types';
+
 /**
  * The masked word list. Edit here to configure which words are masked - this
  * is the single source of truth for the mask. Milder words ("damn", "hell",
@@ -82,8 +84,9 @@ export function containsProfanity(text: string): boolean {
 }
 
 /**
- * How the AUDIO of a profane word is treated at render time
- * (PROFANITY_AUDIO_MODE in .env):
+ * How the AUDIO of a profane word is treated at render time. The mode is a setting
+ * managed on /settings (section `profanity`); the worker hands it down before every job,
+ * and this module-level value is what the render reads:
  *  - `mute` (default): the word is replaced with silence,
  *  - `beep`:           the word is replaced with a 1 kHz tone,
  *  - `off`:            the audio is untouched (captions are still masked).
@@ -93,8 +96,8 @@ export type ProfanityAudioMode = 'mute' | 'beep' | 'off';
 /**
  * The worker sets this from the resolved settings before every job (see
  * `worker/runtime-settings.ts`), so changing the mode on the Settings page applies to
- * the next clip rather than the next process start. Left null - a fresh clone, or a
- * process that never went through the worker - `PROFANITY_AUDIO_MODE` decides.
+ * the next clip rather than the next process start. Left null - a process that never
+ * went through the worker - the shipped default applies.
  */
 let storedModeOverride: ProfanityAudioMode | null = null;
 
@@ -103,10 +106,10 @@ export function setProfanityAudioModeOverride(mode: ProfanityAudioMode | null): 
 }
 
 export function getProfanityAudioMode(): ProfanityAudioMode {
-  if (storedModeOverride) return storedModeOverride;
-  const raw = (process.env.PROFANITY_AUDIO_MODE || 'mute').trim().toLowerCase();
-  if (raw === 'beep' || raw === 'off') return raw;
-  return 'mute';
+  // The worker refreshes the override before every job. Without it - a script that
+  // renders directly, or a settings read that failed - the shipped default applies
+  // rather than an env file nobody is looking at.
+  return storedModeOverride ?? DEFAULT_PROFANITY_SETTINGS.audioMode;
 }
 
 /**

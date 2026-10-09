@@ -35,6 +35,7 @@ import {
   Loader2,
   MonitorPlay,
   Plus,
+  RotateCcw,
   Save,
   Trash2,
 } from 'lucide-react';
@@ -90,6 +91,11 @@ export default function CaptionPresetsPage() {
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [defaultSuccess, setDefaultSuccess] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [isResetting, setIsResetting] = useState(false);
+  // Bumped after a reset so the hook/CTA editors reload from the database instead of
+  // continuing to show the values they had loaded on mount.
+  const [overlayRevision, setOverlayRevision] = useState(0);
   const [hookStyle, setHookStyle] = useState<OverlayStylePreset>(
     DEFAULT_OVERLAY_STYLE_PRESETS.find((p) => p.kind === 'hook')!
   );
@@ -319,6 +325,54 @@ export default function CaptionPresetsPage() {
     });
   };
 
+  /**
+   * Built-in presets are seeded with `INSERT OR IGNORE`, so a row created by an older
+   * build keeps its old style forever: editing `lib/presets.ts` never reaches an existing
+   * database. This is the deliberate re-sync - built-in rows are rewritten from the shipped
+   * values, while custom presets and the preset marked default are left as they are.
+   */
+  const handleResetBuiltIns = async () => {
+    const ok = window.confirm(
+      'Restore the built-in caption, hook and CTA styles from the shipped presets?\n\n' +
+        'Anything you created yourself stays, and so does the preset marked as default.'
+    );
+    if (!ok) return;
+
+    setIsResetting(true);
+    setErrorMessage(null);
+    setNotice(null);
+    try {
+      const responses = await Promise.all([
+        fetch('/api/caption-presets', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'reset' }),
+        }),
+        fetch('/api/overlay-presets', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'reset' }),
+        }),
+      ]);
+      for (const response of responses) {
+        if (!response.ok) {
+          throw new Error(await getErrorFromResponse(response, 'Failed to restore the built-in presets.'));
+        }
+      }
+
+      const list = await refreshPresets();
+      const restored = list.find((preset) => preset._id === activePreset._id);
+      if (restored) setActivePreset(restored);
+      setOverlayRevision((value) => value + 1);
+      setNotice('Built-in caption and overlay styles re-synced with the shipped presets.');
+      setTimeout(() => setNotice(null), 8000);
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : 'Failed to restore the built-in presets.');
+    } finally {
+      setIsResetting(false);
+    }
+  };
+
   return (
     <div className="space-y-8">
       {/* Page header */}
@@ -330,16 +384,35 @@ export default function CaptionPresetsPage() {
             typography, colors, card look, and animation.
           </p>
         </div>
-        <Button size="lg" onClick={handleCreateNewPreset}>
-          <Plus />
-          New preset
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => void handleResetBuiltIns()}
+            disabled={isResetting || isSaving}
+            title="Rewrite the built-in preset rows in the database from the shipped preset values"
+          >
+            {isResetting ? <Loader2 className="animate-spin" /> : <RotateCcw />}
+            Reset to shipped styles
+          </Button>
+          <Button size="lg" onClick={handleCreateNewPreset}>
+            <Plus />
+            New preset
+          </Button>
+        </div>
       </div>
 
       {errorMessage && (
         <Alert variant="destructive" className="animate-fade-up">
           <AlertCircle className="mt-0.5" />
           <AlertDescription>{errorMessage}</AlertDescription>
+        </Alert>
+      )}
+
+      {notice && (
+        <Alert className="animate-fade-up border-primary/40 bg-primary/5">
+          <CheckCircle2 className="mt-0.5 text-primary" />
+          <AlertDescription>{notice}</AlertDescription>
         </Alert>
       )}
 
@@ -815,11 +888,11 @@ export default function CaptionPresetsPage() {
             </TabsContent>
 
             <TabsContent value="hook">
-              <OverlayStyleEditor kind="hook" value={hookStyle} onChange={setHookStyle} />
+              <OverlayStyleEditor key={`hook-${overlayRevision}`} kind="hook" value={hookStyle} onChange={setHookStyle} />
             </TabsContent>
 
             <TabsContent value="cta">
-              <OverlayStyleEditor kind="cta" value={ctaStyle} onChange={setCtaStyle} />
+              <OverlayStyleEditor key={`cta-${overlayRevision}`} kind="cta" value={ctaStyle} onChange={setCtaStyle} />
             </TabsContent>
           </Tabs>
         </div>

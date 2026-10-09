@@ -3,6 +3,7 @@ import {
   deleteCaptionPreset,
   getCaptionPreset,
   listCaptionPresets,
+  resetCaptionPresets,
   saveCaptionPreset,
   setDefaultCaptionPreset,
 } from '@/lib/db';
@@ -122,6 +123,15 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const body = await request.json() as Record<string, unknown>;
+
+    // `{ "action": "reset" }` re-syncs the built-in presets from `lib/presets.ts` over
+    // whatever the database currently holds. Seeding is `INSERT OR IGNORE`, so without
+    // this a row created by an older build would keep the old style forever.
+    if (body.action === 'reset') {
+      const presets = await resetCaptionPresets();
+      return NextResponse.json({ success: true, presets });
+    }
+
     const id = typeof body._id === 'string' && body._id.trim()
       ? body._id.trim()
       : `preset_${Date.now()}_${Math.random().toString(36).substring(7)}`;

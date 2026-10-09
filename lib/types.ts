@@ -153,8 +153,12 @@ export const DEFAULT_RENDER_OPTIONS = {
 export const APP_SETTINGS_SECTIONS = ['pipeline', 'render', 'ai', 'worker', 'profanity'] as const;
 export type AppSettingsSection = (typeof APP_SETTINGS_SECTIONS)[number];
 
-/** Where an effective value came from - shown in the UI so env and app never look magical. */
-export type SettingsSource = 'app' | 'env' | 'default';
+/**
+ * Where an effective value came from. There is no `env` tier: a settings value is either
+ * one you saved, or the built-in default - `.env.local` is not consulted for these
+ * sections, so the page can never show one thing while the app does another.
+ */
+export type SettingsSource = 'app' | 'default';
 
 export interface RenderDefaults {
   /** `remotion` (premium animated overlays) or `native` (FFmpeg ASS captions). */
@@ -190,14 +194,15 @@ export type TranscriptionProviderChoice = 'auto' | 'deepgram' | 'whisper';
 
 export interface AiProviderSettings {
   /**
-   * Google AI Studio keys, tried in order. Rotation is per model: a key that is
-   * rate limited moves on to the next key before the next model is tried.
-   * Empty means "use GEMINI_API_KEY from .env.local".
+   * Google AI Studio keys, tried in order. Rotation is per key: a rate-limited key
+   * moves on to the next one before the next model is tried. This is the only place
+   * keys are configured, so an empty pool means "not configured" - the app then says
+   * so instead of quietly using an env value you cannot see.
    */
   geminiApiKeys: string[];
-  /** Empty means "use DEEPGRAM_API_KEY from .env.local" (and no cloud transcription). */
+  /** Empty means "no cloud transcription"; local whisper.cpp is used. */
   deepgramApiKey: string;
-  /** Empty means DEEPGRAM_MODEL from .env.local, else `nova-2`. */
+  /** Empty means `nova-2`. */
   deepgramModel: string;
   /**
    * `auto` prefers Deepgram when a key is configured and falls back to local
@@ -225,6 +230,17 @@ export interface WorkerSettings {
   remotionConcurrency: number | null;
 }
 
+/**
+ * One PC is not a render farm: a single clip render already runs FFmpeg plus a headless
+ * Chrome, so "one at a time" is the honest default rather than a conservative guess.
+ * `remotionConcurrency: null` means the renderer decides from the CPU count.
+ */
+export const DEFAULT_WORKER_SETTINGS: WorkerSettings = {
+  clipConcurrency: 1,
+  viralConcurrency: 1,
+  remotionConcurrency: null,
+};
+
 export interface ProfanitySettings {
   /** What happens to the AUDIO of a profane word; on-screen text is always masked. */
   audioMode: 'mute' | 'beep' | 'off';
@@ -240,7 +256,7 @@ export interface AppSettings {
   profanity: ProfanitySettings;
 }
 
-/** Per-key origin of every effective value, for the UI's `from .env` / `from app` chips. */
+/** Per-key origin of every effective value, rendered as a chip on each row. */
 export type SettingsSources = {
   [K in AppSettingsSection]?: Partial<Record<string, SettingsSource>>;
 };

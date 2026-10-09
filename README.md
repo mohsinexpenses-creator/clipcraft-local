@@ -77,21 +77,41 @@ Every default the studio asks you for lives in one sidebar page, in five section
 | Worker | clip / viral-detection / Remotion concurrency |
 | Profanity | what happens to the *audio* of a flagged word (mute / beep / leave it) |
 
-How the values combine — the same rule everywhere, in both processes:
+The rule is one line long, in both processes:
 
-**a value saved on this page → `.env.local` → the built-in default.**
-Each row shows where its value is coming from, "Reset to env" removes a section's
-override, and a fresh clone still works from `.env.local` alone. Pipeline and render
-defaults are **snapshotted onto the video at upload**, so a clip already being rendered
-is never changed from under the worker; editing a clip in the studio always wins over the
-default. Keys are stored in the local SQLite file (same trust boundary as `.env.local`)
-and the API only ever returns them masked — pasting a masked value back means "keep it".
+**what you saved on this page, otherwise the built-in default.**
+
+`.env.local` is *not* a fallback for these five sections — a value can never come from a
+file you are not looking at, so the page and the app cannot disagree. (Everything
+without a form field — binary paths, model files, CRF, upload limits, timeouts — still
+lives in `.env.local` exactly as before.) A row saved here is marked `settings`;
+"Reset to defaults" deletes the row and the shipped default applies again. Keys are
+stored in the local SQLite file (same trust boundary as `.env.local` used to be) and the
+API only ever returns them masked — pasting a masked value back means "keep it".
+
+Pipeline and render defaults are **snapshotted onto the video at upload**, so a clip
+already being rendered is never changed from under the worker, and editing a clip in the
+studio always wins over the default.
 
 The Verify column calls the real upstream APIs with `fetch` and labels each key by its
-mask, so a rotated key is obvious. Unsaved keys can be tested first (paste → test →
+mask, so a rotated key is obvious, and unsaved keys can be tested first (paste → test →
 save). Everything applies to the next job except the two loop sizes: **clip and detection
 concurrency need `npm run worker` restarted**, because those are read when its polling
 loops start (the page says so while such an override is saved).
+
+The `hook/CTA` durations are the one field with a subtlety: the rendered clip is
+`[replayed hook][full segment]`, and the replay length is **the hook interval the prompt
+returned** (`hook_timestamp.start → end`), used at its exact length. "Hook intro fallback"
+is what applies only when a clip's analysis has no usable interval, and `0` turns the
+replay and the hook text off for a clip.
+
+### Style presets
+
+`/caption-presets` edits the caption, hook and CTA styles, and the built-ins are seeded
+into SQLite once (`INSERT OR IGNORE`) so your edits survive an upgrade. That also means a
+row created by an older build never picks up a changed default — **Reset to shipped
+styles** re-syncs the built-in rows from `lib/presets.ts` while keeping every preset you
+made yourself and the preset you marked default.
 
 ## Tech stack
 
@@ -117,7 +137,7 @@ Full instructions (env vars, troubleshooting, Windows specifics) live in
 npm install
 
 # 2. configure (DATABASE_PATH is optional; this is the default)
-copy .env.example .env.local   # set GEMINI_API_KEY; optionally set DATABASE_PATH
+copy .env.example .env.local   # set DATABASE_PATH / paths here; keys live in the app
 
 # 3. whisper.cpp model (Windows build is committed; this fetches the ggml model)
 npm run setup:whisper
@@ -127,9 +147,11 @@ npm run worker
 npm run dev
 ```
 
-Then open <http://localhost:3000> and start at **`/startup-validation`** — it
-checks SQLite read/write access, WAL mode, FFmpeg, the transcription engine, the
-LLM chain, and the Remotion renderer, and tells you exactly what to fix.
+Then open <http://localhost:3000>, paste a Google AI Studio key into
+**`/settings` → AI providers** (Test it, then save — keys are configured in the app, not
+in `.env.local`), and start at **`/startup-validation`**: it checks SQLite read/write
+access, WAL mode, FFmpeg, the transcription engine, the LLM chain, and the Remotion
+renderer, and tells you exactly what to fix.
 
 ## Project structure
 
