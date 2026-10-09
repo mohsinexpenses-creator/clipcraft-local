@@ -13,6 +13,7 @@ import {
   Cloud,
   Cpu,
   Gauge,
+  InfoIcon,
   KeyRound,
   Loader2,
   Plus,
@@ -25,7 +26,12 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "cn";
-import type { AppSettingsSection, EnvHint, PipelineOptions, RenderDefaults } from "@/lib/types";
+import type {
+  AppSettingsSection,
+  EnvHint,
+  PipelineOptions,
+  RenderDefaults,
+} from "@/lib/types";
 import { useSettings, type VerifyResult } from "@/hooks/use-settings";
 import { AutomationPanel, NumberField } from "@/components/pipeline-settings";
 import { Button } from "@/components/ui/button";
@@ -33,8 +39,18 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 /**
  * One place for everything that used to need `.env.local`: how far the upload
@@ -73,14 +89,27 @@ export function SettingsWorkspace() {
             Settings
           </h1>
           <p className="max-w-2xl text-[13px] text-muted-foreground">
-            Defaults for the automatic pipeline, how clips are rendered, provider keys and worker
-            limits. Saved in the same SQLite file as everything else, and these values come
-            from this page alone - nothing here falls back to
-            <code className="rounded bg-muted px-1 py-0.5 text-[12px]">.env.local</code>.
+            Defaults for the automatic pipeline, how clips are rendered,
+            provider keys and worker limits. Saved in the same SQLite file as
+            everything else, and these values come from this page alone -
+            nothing here falls back to
+            <code className="rounded bg-muted px-1 py-0.5 text-[12px]">
+              .env.local
+            </code>
+            .
           </p>
         </div>
-        <Button variant="outline" size="sm" onClick={() => void reload()} disabled={busy === "load"}>
-          {busy === "load" ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => void reload()}
+          disabled={busy === "load"}
+        >
+          {busy === "load" ? (
+            <Loader2 className="animate-spin" />
+          ) : (
+            <RefreshCw />
+          )}
           Reload
         </Button>
       </header>
@@ -100,7 +129,10 @@ export function SettingsWorkspace() {
       {!payload && !error ? (
         <div className="grid gap-5 lg:grid-cols-2">
           {SECTIONS.map((section) => (
-            <div key={section.id} className="h-[260px] animate-pulse rounded-2xl border bg-card/40" />
+            <div
+              key={section.id}
+              className="h-[260px] animate-pulse rounded-2xl border bg-card/40"
+            />
           ))}
         </div>
       ) : null}
@@ -156,11 +188,15 @@ function SettingsCard({
   footnote,
 }: CardProps) {
   const configured = settings.configured.includes(section);
-  const busy = settings.busy === `save:${section}` || settings.busy === `reset:${section}`;
+  const busy =
+    settings.busy === `save:${section}` || settings.busy === `reset:${section}`;
 
   return (
     <section
-      className={cn("animate-fade-up flex flex-col rounded-2xl border bg-card p-4 shadow-[var(--shadow-card)]", className)}
+      className={cn(
+        "animate-fade-up flex flex-col rounded-2xl border bg-card p-4 shadow-[var(--shadow-card)]",
+        className,
+      )}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 gap-2.5">
@@ -172,7 +208,9 @@ function SettingsCard({
               {title}
               {configured ? <SourceChip source="app" /> : null}
             </h2>
-            <p className="mt-1 text-[12px] leading-snug text-muted-foreground">{description}</p>
+            <p className="mt-1 text-[12px] leading-snug text-muted-foreground">
+              {description}
+            </p>
           </div>
         </div>
       </div>
@@ -192,7 +230,9 @@ function SettingsCard({
         >
           Reset to defaults
         </Button>
-        <p className="ml-auto min-w-0 text-[11px] leading-snug text-muted-foreground">{footnote}</p>
+        <p className="ml-auto min-w-0 text-[11px] leading-snug text-muted-foreground">
+          {footnote}
+        </p>
       </div>
     </section>
   );
@@ -203,13 +243,19 @@ function SettingsCard({
  * else is the built-in default, which needs no label - `.env.local` is not consulted
  * for any of these settings, so there is nothing to disambiguate.
  */
-function SourceChip({ source, className }: { source?: string; className?: string }) {
+function SourceChip({
+  source,
+  className,
+}: {
+  source?: string;
+  className?: string;
+}) {
   if (source !== "app") return null;
   return (
     <span
       className={cn(
         "rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium tracking-wide whitespace-nowrap uppercase text-primary",
-        className
+        className,
       )}
       title="Saved on this page"
     >
@@ -236,10 +282,21 @@ function Row({
     <div className={cn("flex items-center justify-between gap-3", className)}>
       <div className="min-w-0">
         <Label className="flex items-center gap-1.5 text-[12.5px] font-medium">
-          {label}
+          <p className="flex items-center gap-2">
+            {label}
+            {hint && (
+              <Tooltip>
+                <TooltipTrigger>
+                  <InfoIcon size={13} />
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>{hint}</p>
+                </TooltipContent>
+              </Tooltip>
+            )}
+          </p>
           <SourceChip source={source} />
         </Label>
-        {hint && <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">{hint}</p>}
       </div>
       <div className="w-[190px] shrink-0">{children}</div>
     </div>
@@ -261,7 +318,11 @@ function Segmented<T extends string>({
   ariaLabel: string;
 }) {
   return (
-    <div role="group" aria-label={ariaLabel} className="flex rounded-lg border bg-muted/40 p-0.5">
+    <div
+      role="group"
+      aria-label={ariaLabel}
+      className="flex rounded-lg border bg-muted/40 p-0.5"
+    >
       {options.map((option) => {
         const active = option.value === value;
         return (
@@ -274,8 +335,10 @@ function Segmented<T extends string>({
             className={cn(
               "flex-1 rounded-md px-2 py-1 text-[11.5px] font-medium whitespace-nowrap transition-all outline-none",
               "focus-visible:ring-2 focus-visible:ring-ring/40",
-              active ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
-              disabled && "opacity-60"
+              active
+                ? "bg-background text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground",
+              disabled && "opacity-60",
             )}
           >
             {option.label}
@@ -297,15 +360,17 @@ function LeftoverEnvBadge({ hint }: { hint?: EnvHint }) {
   return (
     <Tooltip>
       <TooltipTrigger
-        render={<span className="inline-flex cursor-help items-center gap-1 text-[10.5px] text-amber-600 dark:text-amber-400" />}
+        render={
+          <span className="inline-flex cursor-help items-center gap-1 text-[10.5px] text-amber-600 dark:text-amber-400" />
+        }
       >
         <AlertTriangle className="size-3" />
         left in .env.local
       </TooltipTrigger>
       <TooltipContent className="dark">
         {`This page is the source of truth now, so ${hint.name ?? "that variable"} is ignored`}
-        {hint.masked ? ` (it holds ${hint.masked})` : ""}. Set the value here, then remove the
-        line from .env.local.
+        {hint.masked ? ` (it holds ${hint.masked})` : ""}. Set the value here,
+        then remove the line from .env.local.
       </TooltipContent>
     </Tooltip>
   );
@@ -322,7 +387,9 @@ function LeftoverEnvList({
   env: Record<string, EnvHint | undefined>;
   names: string[];
 }) {
-  const leftovers = names.filter((name) => env[name]?.present || env[name]?.inEnvFile);
+  const leftovers = names.filter(
+    (name) => env[name]?.present || env[name]?.inEnvFile,
+  );
   if (leftovers.length === 0) return null;
   return (
     <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-2.5 py-2">
@@ -407,7 +474,8 @@ function RenderCard({
   const sources = settings.sources.render ?? {};
   const limits = settings.limits;
 
-  const patch = (partial: Partial<RenderDefaults>) => setDraft((current) => ({ ...(current ?? saved), ...partial }));
+  const patch = (partial: Partial<RenderDefaults>) =>
+    setDraft((current) => ({ ...(current ?? saved), ...partial }));
 
   const save = async () => {
     if (!draft) return;
@@ -426,25 +494,41 @@ function RenderCard({
       onSave={() => void save()}
       footnote="Applies from the next detection or re-render onwards"
     >
-      <Row label="Caption engine" hint="Premium is slower and smoothest; Fast rasterizes captions with FFmpeg." source={sources.captionEngine}>
+      <Row
+        label="Caption engine"
+        hint="Premium is slower and smoothest; Fast rasterizes captions with FFmpeg."
+        source={sources.captionEngine}
+      >
         <Segmented
           ariaLabel="Caption engine"
           value={value.captionEngine}
-          onChange={(captionEngine) => patch({ captionEngine: captionEngine as RenderDefaults["captionEngine"] })}
-          options={(limits?.engines ?? ["remotion", "native"]).map((engine) => ({
-            value: engine,
-            label: engine === "remotion" ? "Premium" : "Fast",
-            hint: ENGINE_LABELS[engine],
-          }))}
+          onChange={(captionEngine) =>
+            patch({
+              captionEngine: captionEngine as RenderDefaults["captionEngine"],
+            })
+          }
+          options={(limits?.engines ?? ["remotion", "native"]).map(
+            (engine) => ({
+              value: engine,
+              label: engine === "remotion" ? "Premium" : "Fast",
+              hint: ENGINE_LABELS[engine],
+            }),
+          )}
           disabled={settings.busy === "save:render"}
         />
       </Row>
 
-      <Row label="Framing" hint="Speaker focus glides one 9:16 window; split screen gives each person a pane." source={sources.layout}>
+      <Row
+        label="Framing"
+        hint="Speaker focus glides one 9:16 window; split screen gives each person a pane."
+        source={sources.layout}
+      >
         <Segmented
           ariaLabel="Layout"
           value={value.layout}
-          onChange={(layout) => patch({ layout: layout as RenderDefaults["layout"] })}
+          onChange={(layout) =>
+            patch({ layout: layout as RenderDefaults["layout"] })
+          }
           options={[
             { value: "speaker-focus", label: "Speaker focus" },
             { value: "split-screen", label: "Split screen" },
@@ -454,7 +538,12 @@ function RenderCard({
       </Row>
 
       <Row label="Color filter" source={sources.filterPreset}>
-        <Select value={value.filterPreset} onValueChange={(next) => patch({ filterPreset: String(next ?? "vibrant") })}>
+        <Select
+          value={value.filterPreset}
+          onValueChange={(next) =>
+            patch({ filterPreset: String(next ?? "vibrant") })
+          }
+        >
           <SelectTrigger className="h-8 text-[12px]">
             <SelectValue />
           </SelectTrigger>
@@ -474,7 +563,10 @@ function RenderCard({
           value.captionPresetId ? undefined : (
             <>
               Uses the preset marked default on{" "}
-              <Link href="/caption-presets" className="underline underline-offset-2 hover:text-foreground">
+              <Link
+                href="/caption-presets"
+                className="underline underline-offset-2 hover:text-foreground"
+              >
                 Style presets
               </Link>
               , where the built-ins can also be re-synced.
@@ -485,7 +577,11 @@ function RenderCard({
       >
         <Select
           value={value.captionPresetId ?? "__default"}
-          onValueChange={(next) => patch({ captionPresetId: next === "__default" ? null : String(next ?? "") })}
+          onValueChange={(next) =>
+            patch({
+              captionPresetId: next === "__default" ? null : String(next ?? ""),
+            })
+          }
         >
           <SelectTrigger className="h-8 text-[12px]">
             <SelectValue />
@@ -503,10 +599,19 @@ function RenderCard({
       </Row>
 
       <div className="grid gap-3 sm:grid-cols-2">
-        <Row label="Hook style" source={sources.hookStylePresetId} className="sm:block">
+        <Row
+          label="Hook style"
+          source={sources.hookStylePresetId}
+          className="sm:block"
+        >
           <Select
             value={value.hookStylePresetId ?? "__default"}
-            onValueChange={(next) => patch({ hookStylePresetId: next === "__default" ? null : String(next ?? "") })}
+            onValueChange={(next) =>
+              patch({
+                hookStylePresetId:
+                  next === "__default" ? null : String(next ?? ""),
+              })
+            }
           >
             <SelectTrigger className="mt-2 h-8 w-full text-[12px]">
               <SelectValue />
@@ -523,10 +628,19 @@ function RenderCard({
             </SelectContent>
           </Select>
         </Row>
-        <Row label="CTA style" source={sources.ctaStylePresetId} className="sm:block">
+        <Row
+          label="CTA style"
+          source={sources.ctaStylePresetId}
+          className="sm:block"
+        >
           <Select
             value={value.ctaStylePresetId ?? "__default"}
-            onValueChange={(next) => patch({ ctaStylePresetId: next === "__default" ? null : String(next ?? "") })}
+            onValueChange={(next) =>
+              patch({
+                ctaStylePresetId:
+                  next === "__default" ? null : String(next ?? ""),
+              })
+            }
           >
             <SelectTrigger className="mt-2 h-8 w-full text-[12px]">
               <SelectValue />
@@ -564,7 +678,12 @@ function RenderCard({
             />
           </div>
         </Row>
-        <Row label="CTA card (s)" hint="Shown over the last seconds of the clip." source={sources.ctaDuration} className="sm:block">
+        <Row
+          label="CTA card (s)"
+          hint="Shown over the last seconds of the clip."
+          source={sources.ctaDuration}
+          className="sm:block"
+        >
           <div className="mt-2">
             <NumberField
               id="default-cta-duration"
@@ -598,22 +717,30 @@ function ProvidersCard({
   // Keys the user has staged but not saved yet. `null` = "unchanged from the server",
   // which is why nothing has to be re-synced when the snapshot refreshes: the whole
   // card is re-mounted with a new `key` after every save or reset (see `revision`).
-  const storedKeys = (settings.stored.ai as { geminiApiKeys?: string[] } | undefined)?.geminiApiKeys ?? [];
+  const storedKeys =
+    (settings.stored.ai as { geminiApiKeys?: string[] } | undefined)
+      ?.geminiApiKeys ?? [];
   const [staged, setStaged] = React.useState<string[] | null>(null);
   const pool = staged ?? storedKeys;
   const [candidate, setCandidate] = React.useState("");
   const [deepgramKey, setDeepgramKey] = React.useState("");
   const storedDeepgramMasked = String(
-    (settings.stored.ai as { deepgramApiKey?: string } | undefined)?.deepgramApiKey ?? ""
+    (settings.stored.ai as { deepgramApiKey?: string } | undefined)
+      ?.deepgramApiKey ?? "",
   );
 
   const geminiFromEnv: EnvHint | undefined = settings.env.GEMINI_API_KEY;
   const deepgramFromEnv: EnvHint | undefined = settings.env.DEEPGRAM_API_KEY;
   // Only offered while nothing is stored: after one copy, this page owns the keys and
   // the env file is never consulted again.
-  const canCopyKeysFromEnv = !settings.stored.ai && Boolean(geminiFromEnv?.present || deepgramFromEnv?.present);
+  const canCopyKeysFromEnv =
+    !settings.stored.ai &&
+    Boolean(geminiFromEnv?.present || deepgramFromEnv?.present);
 
-  const dirty = staged !== null || candidate.trim().length > 0 || deepgramKey.trim().length > 0;
+  const dirty =
+    staged !== null ||
+    candidate.trim().length > 0 ||
+    deepgramKey.trim().length > 0;
 
   const addCandidate = () => {
     const key = candidate.trim();
@@ -640,7 +767,12 @@ function ProvidersCard({
     });
 
   return (
-    <section className={cn("animate-fade-up rounded-2xl border bg-card p-4 shadow-[var(--shadow-card)]", className)}>
+    <section
+      className={cn(
+        "animate-fade-up rounded-2xl border bg-card p-4 shadow-[var(--shadow-card)]",
+        className,
+      )}
+    >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex min-w-0 gap-2.5">
           <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
@@ -649,12 +781,15 @@ function ProvidersCard({
           <div className="min-w-0">
             <h2 className="flex flex-wrap items-center gap-2 text-[15px] leading-tight font-semibold tracking-tight">
               AI providers
-              {settings.configured.includes("ai") ? <SourceChip source="app" /> : null}
+              {settings.configured.includes("ai") ? (
+                <SourceChip source="app" />
+              ) : null}
             </h2>
             <p className="mt-1 text-[12px] leading-snug text-muted-foreground">
-              Viral detection runs on Google AI Studio. Keys are tried in order and rotate on a 429,
-              so a second free key is real redundancy. Deepgram is optional: set a key only to
-              transcribe in the cloud instead of with local whisper.cpp.
+              Viral detection runs on Google AI Studio. Keys are tried in order
+              and rotate on a 429, so a second free key is real redundancy.
+              Deepgram is optional: set a key only to transcribe in the cloud
+              instead of with local whisper.cpp.
             </p>
           </div>
         </div>
@@ -664,7 +799,11 @@ function ProvidersCard({
           onClick={() => void settings.verify({ target: "all" })}
           disabled={settings.busy !== null}
         >
-          {settings.busy === "verify:all" ? <Loader2 className="animate-spin" /> : <ShieldCheck />}
+          {settings.busy === "verify:all" ? (
+            <Loader2 className="animate-spin" />
+          ) : (
+            <ShieldCheck />
+          )}
           Test everything
         </Button>
       </div>
@@ -687,16 +826,20 @@ function ProvidersCard({
           {effective.ai.geminiApiKeys.length === 0 ? (
             <div className="rounded-lg border border-dashed bg-muted/30 px-3 py-2.5 text-[11.5px] leading-snug text-muted-foreground">
               <p>
-                No key yet. Paste one below, <span className="text-foreground">Test</span> it, then save.
+                No key yet. Paste one below,{" "}
+                <span className="text-foreground">Test</span> it, then save.
                 Create keys free at aistudio.google.com/apikey.
               </p>
               {canCopyKeysFromEnv ? (
                 <div className="mt-2 flex flex-wrap items-center justify-between gap-2 border-t pt-2">
                   <p className="min-w-0 flex-1">
                     <code className="font-mono">.env.local</code> already holds
-                    {geminiFromEnv.masked ? ` <span className="font-mono text-foreground">{geminiFromEnv.masked}</span>` : " a key"}
-                    {deepgramFromEnv.present ? " and a Deepgram key" : ""}. This page does not read that file, so
-                    nothing works until the key is stored here.
+                    {geminiFromEnv.masked
+                      ? ` <span className="font-mono text-foreground">{geminiFromEnv.masked}</span>`
+                      : " a key"}
+                    {deepgramFromEnv.present ? " and a Deepgram key" : ""}. This
+                    page does not read that file, so nothing works until the key
+                    is stored here.
                   </p>
                   <Button
                     size="xs"
@@ -704,7 +847,11 @@ function ProvidersCard({
                     disabled={settings.busy === "import-env"}
                     onClick={() => void settings.importEnv()}
                   >
-                    {settings.busy === "import-env" ? <Loader2 className="animate-spin" /> : <ArrowDown />}
+                    {settings.busy === "import-env" ? (
+                      <Loader2 className="animate-spin" />
+                    ) : (
+                      <ArrowDown />
+                    )}
                     Copy into Settings
                   </Button>
                 </div>
@@ -713,7 +860,10 @@ function ProvidersCard({
           ) : (
             <ul className="space-y-1.5">
               {effective.ai.geminiApiKeys.map((masked, index) => {
-                const result = settings.results.find((entry) => entry.target === "gemini" && entry.label.includes(masked));
+                const result = settings.results.find(
+                  (entry) =>
+                    entry.target === "gemini" && entry.label.includes(masked),
+                );
                 return (
                   <li
                     key={`${masked}-${index}`}
@@ -722,13 +872,25 @@ function ProvidersCard({
                     <span className="flex size-5 shrink-0 items-center justify-center rounded-md bg-background text-[10px] font-semibold ring-1 ring-border">
                       {index + 1}
                     </span>
-                    <code className="min-w-0 flex-1 truncate font-mono text-[11.5px]">{masked}</code>
+                    <code className="min-w-0 flex-1 truncate font-mono text-[11.5px]">
+                      {masked}
+                    </code>
                     {result ? <ResultDot result={result} /> : null}
                     <Tooltip>
-                      <TooltipTrigger render={<Button size="icon-xs" variant="ghost" aria-label="Test this key" />}>
+                      <TooltipTrigger
+                        render={
+                          <Button
+                            size="icon-xs"
+                            variant="ghost"
+                            aria-label="Test this key"
+                          />
+                        }
+                      >
                         <BadgeCheck className="size-3.5" />
                       </TooltipTrigger>
-                      <TooltipContent className="dark">Ask Google AI Studio whether this key works</TooltipContent>
+                      <TooltipContent className="dark">
+                        Ask Google AI Studio whether this key works
+                      </TooltipContent>
                     </Tooltip>
                     <Button
                       size="icon-xs"
@@ -761,7 +923,12 @@ function ProvidersCard({
               className="font-mono text-[12px]"
               aria-label="New Gemini API key"
             />
-            <Button size="sm" variant="outline" onClick={addCandidate} disabled={!candidate.trim()}>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={addCandidate}
+              disabled={!candidate.trim()}
+            >
               <Plus />
               Add
             </Button>
@@ -774,17 +941,37 @@ function ProvidersCard({
                 {candidate.trim() ? " (plus the pasted one)" : ""}
                 {pool.length === 0 ? " - saving clears the stored pool" : ""}.
               </span>
-              <Button size="xs" variant="soft" onClick={() => void savePool()} disabled={settings.busy === "save:ai"}>
-                {settings.busy === "save:ai" ? <Loader2 className="animate-spin" /> : <Save />}
+              <Button
+                size="xs"
+                variant="soft"
+                onClick={() => void savePool()}
+                disabled={settings.busy === "save:ai"}
+              >
+                {settings.busy === "save:ai" ? (
+                  <Loader2 className="animate-spin" />
+                ) : (
+                  <Save />
+                )}
                 Save pool
               </Button>
-              <Button size="xs" variant="ghost" onClick={() => { setStaged(null); setCandidate(""); }}>
+              <Button
+                size="xs"
+                variant="ghost"
+                onClick={() => {
+                  setStaged(null);
+                  setCandidate("");
+                }}
+              >
                 Undo
               </Button>
             </div>
           ) : null}
 
-          <GeminiPoolEditor pool={pool} storedKeys={storedKeys} setStaged={setStaged} />
+          <GeminiPoolEditor
+            pool={pool}
+            storedKeys={storedKeys}
+            setStaged={setStaged}
+          />
 
           <details className="group rounded-lg border bg-muted/20 px-2.5 py-2">
             <summary className="cursor-pointer list-none text-[11px] font-medium text-muted-foreground transition-colors group-hover:text-foreground">
@@ -798,9 +985,10 @@ function ProvidersCard({
                   : "nothing yet - viral detection cannot run until you add a key here"}
               </p>
               <p>
-                Keys live in the SQLite file next to your videos and never leave this machine except to the
-                provider. <code className="font-mono">GEMINI_API_KEY</code> in .env.local is not read: this
-                page is the only place keys are configured.
+                Keys live in the SQLite file next to your videos and never leave
+                this machine except to the provider.{" "}
+                <code className="font-mono">GEMINI_API_KEY</code> in .env.local
+                is not read: this page is the only place keys are configured.
               </p>
             </div>
           </details>
@@ -814,7 +1002,10 @@ function ProvidersCard({
           </h3>
 
           <div className="space-y-1.5">
-            <Label htmlFor="deepgram-key" className="text-[11.5px] text-muted-foreground">
+            <Label
+              htmlFor="deepgram-key"
+              className="text-[11.5px] text-muted-foreground"
+            >
               API key
             </Label>
             <div className="flex items-center gap-1.5">
@@ -822,7 +1013,11 @@ function ProvidersCard({
                 id="deepgram-key"
                 value={deepgramKey}
                 onChange={(event) => setDeepgramKey(event.target.value)}
-                placeholder={storedDeepgramMasked ? storedDeepgramMasked : "Paste to store a key here"}
+                placeholder={
+                  storedDeepgramMasked
+                    ? storedDeepgramMasked
+                    : "Paste to store a key here"
+                }
                 spellCheck={false}
                 autoComplete="off"
                 type="password"
@@ -832,15 +1027,31 @@ function ProvidersCard({
                 size="sm"
                 variant="outline"
                 disabled={!deepgramKey.trim() || settings.busy !== null}
-                onClick={() => void settings.verify({ target: "deepgram", candidates: { deepgramApiKey: deepgramKey.trim(), deepgramModel: effective.ai.deepgramModel } })}
+                onClick={() =>
+                  void settings.verify({
+                    target: "deepgram",
+                    candidates: {
+                      deepgramApiKey: deepgramKey.trim(),
+                      deepgramModel: effective.ai.deepgramModel,
+                    },
+                  })
+                }
               >
-                {settings.busy === "verify:deepgram" ? <Loader2 className="animate-spin" /> : <ShieldCheck />}
+                {settings.busy === "verify:deepgram" ? (
+                  <Loader2 className="animate-spin" />
+                ) : (
+                  <ShieldCheck />
+                )}
                 Test
               </Button>
             </div>
           </div>
 
-          <Row label="Model" hint="Anything Deepgram understands, e.g. nova-3 or nova-2:general." source={settings.sources.ai?.deepgramModel}>
+          <Row
+            label="Model"
+            hint="Anything Deepgram understands, e.g. nova-3 or nova-2:general."
+            source={settings.sources.ai?.deepgramModel}
+          >
             <Input
               value={effective.ai.deepgramModel}
               onChange={() => undefined}
@@ -850,21 +1061,35 @@ function ProvidersCard({
             />
           </Row>
 
-          <ModelEditor save={(model) => settings.save("ai", { deepgramModel: model })} current={effective.ai.deepgramModel} busy={settings.busy === "save:ai"} />
+          <ModelEditor
+            save={(model) => settings.save("ai", { deepgramModel: model })}
+            current={effective.ai.deepgramModel}
+            busy={settings.busy === "save:ai"}
+          />
 
           <Row
             label="Transcription engine"
             hint="Auto prefers Deepgram when a key exists. Forcing an engine makes a missing setup an error instead of a silent fallback."
             source={settings.sources.ai?.transcriptionProvider}
           >
-            <EngineChoice save={(transcriptionProvider) => settings.save("ai", { transcriptionProvider })} value={effective.ai.transcriptionProvider} busy={settings.busy === "save:ai"} />
+            <EngineChoice
+              save={(transcriptionProvider) =>
+                settings.save("ai", { transcriptionProvider })
+              }
+              value={effective.ai.transcriptionProvider}
+              busy={settings.busy === "save:ai"}
+            />
           </Row>
 
           <ProviderSummary settings={settings} />
         </div>
       </div>
 
-      <VerifyResults results={settings.results} onClear={settings.clearResults} busy={settings.busy} />
+      <VerifyResults
+        results={settings.results}
+        onClear={settings.clearResults}
+        busy={settings.busy}
+      />
     </section>
   );
 }
@@ -902,22 +1127,41 @@ function GeminiPoolEditor({
       </p>
       <ul className="space-y-1">
         {pool.map((entry, index) => (
-          <li key={`${entry.slice(-6)}-${index}`} className="flex items-center gap-2 text-[11.5px]">
+          <li
+            key={`${entry.slice(-6)}-${index}`}
+            className="flex items-center gap-2 text-[11.5px]"
+          >
             <span className="min-w-0 flex-1 truncate font-mono">
               {isStored(entry) ? entry : shorten(entry)}
             </span>
             {!isStored(entry) ? <Badge variant="outline">new</Badge> : null}
-            <Button size="icon-xs" variant="ghost" aria-label="Move up" onClick={() => move(index, -1)}>
+            <Button
+              size="icon-xs"
+              variant="ghost"
+              aria-label="Move up"
+              onClick={() => move(index, -1)}
+            >
               <ArrowUp className="size-3" />
             </Button>
-            <Button size="icon-xs" variant="ghost" aria-label="Move down" onClick={() => move(index, 1)}>
+            <Button
+              size="icon-xs"
+              variant="ghost"
+              aria-label="Move down"
+              onClick={() => move(index, 1)}
+            >
               <ArrowDown className="size-3" />
             </Button>
             <Button
               size="icon-xs"
               variant="ghost"
               aria-label="Remove from pool"
-              onClick={() => setStaged((current) => (current ?? storedKeys).filter((_, position) => position !== index))}
+              onClick={() =>
+                setStaged((current) =>
+                  (current ?? storedKeys).filter(
+                    (_, position) => position !== index,
+                  ),
+                )
+              }
             >
               <Trash2 className="size-3" />
             </Button>
@@ -928,16 +1172,30 @@ function GeminiPoolEditor({
   );
 }
 
-function ModelEditor({ save, current, busy }: { save: (model: string) => Promise<boolean>; current: string; busy: boolean }) {
+function ModelEditor({
+  save,
+  current,
+  busy,
+}: {
+  save: (model: string) => Promise<boolean>;
+  current: string;
+  busy: boolean;
+}) {
   const [value, setValue] = React.useState(current);
   if (value === current) return null;
 
   return (
     <div className="flex items-center gap-1.5 rounded-lg bg-primary/5 px-2 py-1.5">
       <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
-        Model will change to <code className="font-mono text-foreground">{value}</code>
+        Model will change to{" "}
+        <code className="font-mono text-foreground">{value}</code>
       </span>
-      <Button size="xs" variant="soft" disabled={busy} onClick={() => void save(value)}>
+      <Button
+        size="xs"
+        variant="soft"
+        disabled={busy}
+        onClick={() => void save(value)}
+      >
         Save
       </Button>
       <Button size="xs" variant="ghost" onClick={() => setValue(current)}>
@@ -963,30 +1221,40 @@ function EngineChoice({
       disabled={busy}
       onChange={(next) => void save(next)}
       options={[
-        { value: "auto", label: "Auto", hint: "Deepgram when a key exists, otherwise whisper.cpp" },
+        {
+          value: "auto",
+          label: "Auto",
+          hint: "Deepgram when a key exists, otherwise whisper.cpp",
+        },
         { value: "whisper", label: "Local", hint: "Always whisper.cpp" },
-        { value: "deepgram", label: "Cloud", hint: "Always Deepgram - errors if no key" },
+        {
+          value: "deepgram",
+          label: "Cloud",
+          hint: "Always Deepgram - errors if no key",
+        },
       ]}
     />
   );
 }
 
 function ProviderSummary({ settings }: { settings: SettingsController }) {
-  const whisperOnly = settings.effective?.ai.transcriptionProvider === "whisper";
+  const whisperOnly =
+    settings.effective?.ai.transcriptionProvider === "whisper";
   const hasKey = Boolean(settings.effective?.ai.deepgramApiKey);
   if (whisperOnly || !hasKey) {
     return (
       <p className="flex items-start gap-1.5 rounded-lg bg-muted/30 px-2.5 py-2 text-[11px] leading-snug text-muted-foreground">
         <Cpu className="mt-0.5 size-3.5 shrink-0" />
-        Transcription runs locally with whisper.cpp - no audio leaves this machine.
+        Transcription runs locally with whisper.cpp - no audio leaves this
+        machine.
       </p>
     );
   }
   return (
     <p className="flex items-start gap-1.5 rounded-lg bg-sky-500/10 px-2.5 py-2 text-[11px] leading-snug text-sky-700 dark:text-sky-300">
       <Cloud className="mt-0.5 size-3.5 shrink-0" />
-      Audio is uploaded to Deepgram for transcription. Word timestamps come back and every later step
-      stays local.
+      Audio is uploaded to Deepgram for transcription. Word timestamps come back
+      and every later step stays local.
     </p>
   );
 }
@@ -1002,7 +1270,13 @@ function WorkerCard({
   settings: SettingsController;
   effective: NonNullable<SettingsController["effective"]>;
 }) {
-  const [draft, setDraft] = React.useState<Partial<{ clipConcurrency: number; viralConcurrency: number; remotionConcurrency: number | null }>>({});
+  const [draft, setDraft] = React.useState<
+    Partial<{
+      clipConcurrency: number;
+      viralConcurrency: number;
+      remotionConcurrency: number | null;
+    }>
+  >({});
   const value = { ...effective.worker, ...draft };
   const limits = settings.limits?.concurrency;
   const autoRemotion = effective.worker.remotionConcurrency === null;
@@ -1027,12 +1301,14 @@ function WorkerCard({
           <span className="flex items-center gap-1.5">
             <AlertTriangle className="size-3.5 text-amber-600 dark:text-amber-400" />
             Saved here - the loops are sized at start, so restart{" "}
-            <code className="rounded bg-muted px-1">npm run worker</code> to apply it
+            <code className="rounded bg-muted px-1">npm run worker</code> to
+            apply it
           </span>
         ) : (
           <span>
             Chrome tabs apply on the next render; the two loop sizes apply when{" "}
-            <code className="rounded bg-muted px-1">npm run worker</code> starts.
+            <code className="rounded bg-muted px-1">npm run worker</code>{" "}
+            starts.
           </span>
         )
       }
@@ -1047,7 +1323,9 @@ function WorkerCard({
           value={value.clipConcurrency}
           min={limits?.clip.min ?? 1}
           max={limits?.clip.max ?? 8}
-          onCommit={(clipConcurrency) => setDraft((current) => ({ ...current, clipConcurrency }))}
+          onCommit={(clipConcurrency) =>
+            setDraft((current) => ({ ...current, clipConcurrency }))
+          }
           disabled={settings.busy === "save:worker"}
         />
       </Row>
@@ -1062,14 +1340,20 @@ function WorkerCard({
           value={value.viralConcurrency}
           min={limits?.viral.min ?? 1}
           max={limits?.viral.max ?? 8}
-          onCommit={(viralConcurrency) => setDraft((current) => ({ ...current, viralConcurrency }))}
+          onCommit={(viralConcurrency) =>
+            setDraft((current) => ({ ...current, viralConcurrency }))
+          }
           disabled={settings.busy === "save:worker"}
         />
       </Row>
 
       <Row
         label="Chrome tabs per render"
-        hint={autoRemotion ? "Unset: the renderer picks half your CPU cores." : "Saved here and applied on the next render - no restart needed."}
+        hint={
+          autoRemotion
+            ? "Unset: the renderer picks half your CPU cores."
+            : "Saved here and applied on the next render - no restart needed."
+        }
         source={settings.sources.worker?.remotionConcurrency}
       >
         <div className="flex items-center gap-2">
@@ -1077,11 +1361,19 @@ function WorkerCard({
             id="remotion-auto"
             checked={!autoRemotion}
             onCheckedChange={(checked) =>
-              setDraft((current) => ({ ...current, remotionConcurrency: checked ? (effective.worker.remotionConcurrency ?? 2) : null }))
+              setDraft((current) => ({
+                ...current,
+                remotionConcurrency: checked
+                  ? (effective.worker.remotionConcurrency ?? 2)
+                  : null,
+              }))
             }
             disabled={settings.busy === "save:worker"}
           />
-          <Label htmlFor="remotion-auto" className="text-[11.5px] font-normal text-muted-foreground">
+          <Label
+            htmlFor="remotion-auto"
+            className="text-[11.5px] font-normal text-muted-foreground"
+          >
             Manual
           </Label>
           <div className="w-[70px]">
@@ -1091,13 +1383,22 @@ function WorkerCard({
               min={limits?.remotion.min ?? 1}
               max={limits?.remotion.max ?? 32}
               disabled={autoRemotion || settings.busy === "save:worker"}
-              onCommit={(remotionConcurrency) => setDraft((current) => ({ ...current, remotionConcurrency }))}
+              onCommit={(remotionConcurrency) =>
+                setDraft((current) => ({ ...current, remotionConcurrency }))
+              }
             />
           </div>
         </div>
       </Row>
 
-      <LeftoverEnvList env={settings.env} names={["WORKER_CONCURRENCY", "VIRAL_CONCURRENCY", "REMOTION_CONCURRENCY"]} />
+      <LeftoverEnvList
+        env={settings.env}
+        names={[
+          "WORKER_CONCURRENCY",
+          "VIRAL_CONCURRENCY",
+          "REMOTION_CONCURRENCY",
+        ]}
+      />
     </SettingsCard>
   );
 }
@@ -1113,7 +1414,9 @@ function SafetyCard({
   settings: SettingsController;
   effective: NonNullable<SettingsController["effective"]>;
 }) {
-  const [draft, setDraft] = React.useState<{ audioMode: "mute" | "beep" | "off" } | null>(null);
+  const [draft, setDraft] = React.useState<{
+    audioMode: "mute" | "beep" | "off";
+  } | null>(null);
   const value = draft ?? effective.profanity;
 
   const save = async () => {
@@ -1144,13 +1447,17 @@ function SafetyCard({
               className={cn(
                 "flex items-start gap-2.5 rounded-xl border p-2.5 text-left transition-all outline-none",
                 "focus-visible:ring-2 focus-visible:ring-ring/40",
-                active ? "border-primary/40 bg-primary/5" : "hover:border-primary/20 hover:bg-muted/40"
+                active
+                  ? "border-primary/40 bg-primary/5"
+                  : "hover:border-primary/20 hover:bg-muted/40",
               )}
             >
               <span
                 className={cn(
                   "mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border transition-colors",
-                  active ? "border-primary bg-primary text-primary-foreground" : "border-input"
+                  active
+                    ? "border-primary bg-primary text-primary-foreground"
+                    : "border-input",
                 )}
               >
                 {active ? <Check className="size-2.5" /> : null}
@@ -1158,28 +1465,47 @@ function SafetyCard({
               <span className="min-w-0">
                 <span className="flex items-center gap-1.5 text-[12.5px] font-medium">
                   {mode.label}
-                  {settings.sources.profanity?.audioMode === "app" && mode.value === effective.profanity.audioMode && !draft ? (
+                  {settings.sources.profanity?.audioMode === "app" &&
+                  mode.value === effective.profanity.audioMode &&
+                  !draft ? (
                     <SourceChip source="app" />
                   ) : null}
                 </span>
-                <span className="mt-0.5 block text-[11px] leading-snug text-muted-foreground">{mode.description}</span>
+                <span className="mt-0.5 block text-[11px] leading-snug text-muted-foreground">
+                  {mode.description}
+                </span>
               </span>
             </button>
           );
         })}
       </div>
       <p className="text-[11px] leading-snug text-muted-foreground">
-        Masking uses the word timestamps from the transcript, so changing this only needs a re-render -
-        the stored text keeps the original words.
+        Masking uses the word timestamps from the transcript, so changing this
+        only needs a re-render - the stored text keeps the original words.
       </p>
     </SettingsCard>
   );
 }
 
 const AUDIO_MODES = [
-  { value: "mute" as const, label: "Mute the word", description: "The offending word is silent. Default, and what most platforms expect." },
-  { value: "beep" as const, label: "Beep over the word", description: "A 1 kHz tone replaces it - unmistakably censored, which some audiences like." },
-  { value: "off" as const, label: "Leave the audio alone", description: "Only the text is masked. Use where you control the platform policy." },
+  {
+    value: "mute" as const,
+    label: "Mute the word",
+    description:
+      "The offending word is silent. Default, and what most platforms expect.",
+  },
+  {
+    value: "beep" as const,
+    label: "Beep over the word",
+    description:
+      "A 1 kHz tone replaces it - unmistakably censored, which some audiences like.",
+  },
+  {
+    value: "off" as const,
+    label: "Leave the audio alone",
+    description:
+      "Only the text is masked. Use where you control the platform policy.",
+  },
 ];
 
 /* -------------------------------------------------------------------------- */
@@ -1193,7 +1519,12 @@ function ResultDot({ result }: { result: VerifyResult }) {
       : result.status === "limited"
         ? "text-amber-600 dark:text-amber-400"
         : "text-destructive";
-  const Icon = result.status === "ok" ? Check : result.status === "limited" ? AlertTriangle : X;
+  const Icon =
+    result.status === "ok"
+      ? Check
+      : result.status === "limited"
+        ? AlertTriangle
+        : X;
   return <Icon className={cn("size-3.5 shrink-0", tone)} />;
 }
 
@@ -1213,7 +1544,11 @@ function VerifyResults({
     <div className="mt-4 animate-fade-in space-y-2 rounded-xl border bg-muted/20 p-3">
       <div className="flex items-center justify-between gap-2">
         <p className="flex items-center gap-1.5 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
-          {pending ? <Loader2 className="size-3 animate-spin" /> : <ShieldCheck className="size-3" />}
+          {pending ? (
+            <Loader2 className="size-3 animate-spin" />
+          ) : (
+            <ShieldCheck className="size-3" />
+          )}
           Provider checks
         </p>
         <Button size="xs" variant="ghost" onClick={onClear}>
@@ -1222,21 +1557,37 @@ function VerifyResults({
       </div>
       <ul className="space-y-1.5">
         {results.map((result) => (
-          <li key={`${result.target}-${result.label}`} className="flex items-start gap-2 rounded-lg bg-background/60 px-2.5 py-2 ring-1 ring-border/60">
+          <li
+            key={`${result.target}-${result.label}`}
+            className="flex items-start gap-2 rounded-lg bg-background/60 px-2.5 py-2 ring-1 ring-border/60"
+          >
             <ResultDot result={result} />
             <div className="min-w-0 flex-1">
               <p className="flex flex-wrap items-baseline gap-x-2 text-[11.5px]">
-                <code className="min-w-0 truncate font-mono text-[11px]">{result.label}</code>
-                {result.httpStatus ? <span className="text-muted-foreground">HTTP {result.httpStatus}</span> : null}
+                <code className="min-w-0 truncate font-mono text-[11px]">
+                  {result.label}
+                </code>
+                {result.httpStatus ? (
+                  <span className="text-muted-foreground">
+                    HTTP {result.httpStatus}
+                  </span>
+                ) : null}
                 {typeof result.latencyMs === "number" ? (
-                  <span className="text-muted-foreground">{result.latencyMs} ms</span>
+                  <span className="text-muted-foreground">
+                    {result.latencyMs} ms
+                  </span>
                 ) : null}
               </p>
-              <p className="mt-0.5 text-[11.5px] leading-snug text-muted-foreground">{result.message}</p>
+              <p className="mt-0.5 text-[11.5px] leading-snug text-muted-foreground">
+                {result.message}
+              </p>
               {result.notes?.length ? (
                 <ul className="mt-1 space-y-0.5">
                   {result.notes.map((note) => (
-                    <li key={note} className="text-[11px] leading-snug text-muted-foreground">
+                    <li
+                      key={note}
+                      className="text-[11px] leading-snug text-muted-foreground"
+                    >
                       · {note}
                     </li>
                   ))}
@@ -1247,8 +1598,8 @@ function VerifyResults({
         ))}
       </ul>
       <p className="flex items-center gap-1.5 text-[10.5px] text-muted-foreground">
-        <Clipboard className="size-3" />
-        A check contacts the provider directly with the real key - it never sends your videos.
+        <Clipboard className="size-3" />A check contacts the provider directly
+        with the real key - it never sends your videos.
       </p>
     </div>
   );
@@ -1264,7 +1615,8 @@ function shorten(value: string): string {
 function diffFields<T extends object>(base: T, next: T): Partial<T> {
   const changed: Partial<T> = {};
   for (const key of Object.keys(next) as Array<keyof T>) {
-    if (JSON.stringify(base[key]) !== JSON.stringify(next[key])) changed[key] = next[key];
+    if (JSON.stringify(base[key]) !== JSON.stringify(next[key]))
+      changed[key] = next[key];
   }
   return changed;
 }
