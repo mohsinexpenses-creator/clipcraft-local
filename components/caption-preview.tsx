@@ -2,6 +2,7 @@
 
 import React, { ComponentType } from 'react';
 import { Player } from '@remotion/player';
+import { cn } from 'cn';
 import { CaptionComposition } from '@/remotion/CaptionComposition';
 import { CaptionPreset, OverlayStylePreset } from '@/lib/types';
 
@@ -11,6 +12,8 @@ interface CaptionPreviewProps {
   ctaText?: string;
   hookStyle?: OverlayStylePreset;
   ctaStyle?: OverlayStylePreset;
+  /** Extra classes for the outer 9:16 frame (e.g. sticky-panel sizing). */
+  className?: string;
 }
 
 export const CaptionPreview: React.FC<CaptionPreviewProps> = ({
@@ -19,6 +22,7 @@ export const CaptionPreview: React.FC<CaptionPreviewProps> = ({
   ctaText = 'FOLLOW FOR MORE BREAKDOWNS',
   hookStyle,
   ctaStyle,
+  className,
 }) => {
   const sampleWords = [
     { word: 'Welcome', start: 0.2, end: 0.6 },
@@ -34,7 +38,15 @@ export const CaptionPreview: React.FC<CaptionPreviewProps> = ({
   ];
 
   return (
-    <div className="relative mx-auto aspect-[9/16] w-full max-w-xs overflow-hidden rounded-xl border bg-muted shadow-sm sm:max-w-sm">
+    // Height-first sizing: the 9:16 frame derives its width from the height, so
+    // the preview always fits the viewport (a sticky side panel) instead of
+    // pushing the page taller than the screen.
+    <div
+      className={cn(
+        'relative mx-auto aspect-[9/16] h-[min(52dvh,520px)] max-w-full overflow-hidden rounded-xl border bg-muted shadow-sm',
+        className
+      )}
+    >
       <Player
         component={CaptionComposition as unknown as ComponentType<Record<string, unknown>>}
         durationInFrames={30 * 8}

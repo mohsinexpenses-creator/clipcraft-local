@@ -76,7 +76,7 @@ test('SQLite schema is versioned, indexed, WAL-enabled, and has a five-second bu
   const version = db.prepare('SELECT version FROM schema_version WHERE id = 1').get() as
     | { version: number }
     | undefined;
-  assert.deepEqual(version, { version: 4 });
+  assert.deepEqual(version, { version: 5 });
 
   // v3 is the additive pipeline column: the per-video automation settings
   // (auto-detect / auto-render + AI clip options) captured at upload time.
@@ -100,6 +100,14 @@ test('SQLite schema is versioned, indexed, WAL-enabled, and has a five-second bu
     'an unknown settings section must not be storable'
   );
 
+  // v5 widened the section list with `paths` (upload/clips directories + binaries).
+  db.prepare(`INSERT INTO app_settings (key, value_json, updated_at) VALUES ('paths', '{}', 'now')`).run();
+  assert.equal(
+    (db.prepare(`SELECT COUNT(*) AS count FROM app_settings WHERE key = 'paths'`).get() as { count: number }).count,
+    1
+  );
+  db.prepare(`DELETE FROM app_settings WHERE key = 'paths'`).run();
+
   // A legacy database (v1/v2 without the column) migrates without touching rows.
   const legacy = new Database(':memory:');
   try {
@@ -118,7 +126,7 @@ test('SQLite schema is versioned, indexed, WAL-enabled, and has a five-second bu
     initializeSchema(legacy);
     assert.deepEqual(
       legacy.prepare('SELECT version FROM schema_version WHERE id = 1').get(),
-      { version: 4 }
+      { version: 5 }
     );
     assert.ok(
       legacy.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'app_settings'").get(),

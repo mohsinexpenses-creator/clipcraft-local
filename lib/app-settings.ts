@@ -8,10 +8,12 @@ import {
   AppSettingsSnapshot,
   CONCURRENCY_LIMITS,
   DEFAULT_AI_SETTINGS,
+  DEFAULT_PATH_SETTINGS,
   DEFAULT_PIPELINE_OPTIONS,
   DEFAULT_PROFANITY_SETTINGS,
   DEFAULT_RENDER_SETTINGS,
   DEFAULT_WORKER_SETTINGS,
+  PathSettings,
   PipelineOptions,
   EnvHint,
   ProfanitySettings,
@@ -23,6 +25,7 @@ import {
 import { OPTION_LIMITS, sanitizePipelineOptions } from './pipeline-defaults';
 import { DEFAULT_FILTER_PRESETS } from './presets';
 import { AppError } from './errors';
+import { readAppSettingsSections, saveAppSettingsSection } from './db';
 
 /**
  * The Settings page's backing store, and the only place these five sections are read.
@@ -372,9 +375,42 @@ export function sanitizeSettingsSection(
       return out;
     }
 
+    case 'paths': {
+      const input = record(value, 'Paths & binaries');
+      const out: Record<string, unknown> = {};
+      for (const field of ['uploadDir', 'clipsDir', 'ffmpegPath', 'whisperCliPath'] as const) {
+        if (!(field in input)) continue;
+        out[field] = pathString(input[field], PATH_FIELD_LABELS[field]);
+      }
+      return out;
+    }
+
     default:
       throw badRequest(`Section "${section}" has no editable fields.`);
   }
+}
+
+const PATH_FIELD_LABELS: Record<keyof PathSettings, string> = {
+  uploadDir: 'Upload directory',
+  clipsDir: 'Generated clips directory',
+  ffmpegPath: 'FFmpeg path',
+  whisperCliPath: 'Whisper CLI path',
+};
+
+/**
+ * A filesystem path entered on the Settings page. Empty means "back to the
+ * automatic value"; anything else is used as-is (Windows drive letters and
+ * backslashes are legal content, so no character allow-list - only control
+ * characters and absurd lengths are rejected).
+ */
+function pathString(value: unknown, label: string): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value !== 'string') throw badRequest(`${label} must be text.`);
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  if (trimmed.length > 500) throw badRequest(`${label} is longer than 500 characters.`);
+  if (/[\u0000-\u001f]/.test(trimmed)) throw badRequest(`${label} contains control characters.`);
+  return trimmed;
 }
 
 /* ------------------------------------------------------------------ *
@@ -393,6 +429,7 @@ export interface StoredSettingsRows {
   ai?: Partial<AiProviderSettings>;
   worker?: Partial<Record<keyof WorkerSettings, unknown>>;
   profanity?: Partial<Record<keyof ProfanitySettings, unknown>>;
+  paths?: Partial<Record<keyof PathSettings, unknown>>;
 }
 
 function stringValue(value: unknown): string | undefined {
@@ -558,6 +595,21 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
     : DEFAULT_PROFANITY_SETTINGS.audioMode;
   sources.profanity = { audioMode: AUDIO_MODES.has(storedMode) ? 'app' : 'default' };
 
+  /* paths - an empty string is the built-in "automatic" value, not a path */
+  const pathsStored = stored.paths ?? {};
+  const paths: PathSettings = {
+    uploadDir: stringValue(pathsStored.uploadDir) ?? DEFAULT_PATH_SETTINGS.uploadDir,
+    clipsDir: stringValue(pathsStored.clipsDir) ?? DEFAULT_PATH_SETTINGS.clipsDir,
+    ffmpegPath: stringValue(pathsStored.ffmpegPath) ?? DEFAULT_PATH_SETTINGS.ffmpegPath,
+    whisperCliPath: stringValue(pathsStored.whisperCliPath) ?? DEFAULT_PATH_SETTINGS.whisperCliPath,
+  };
+  sources.paths = {
+    uploadDir: paths.uploadDir ? 'app' : 'default',
+    clipsDir: paths.clipsDir ? 'app' : 'default',
+    ffmpegPath: paths.ffmpegPath ? 'app' : 'default',
+    whisperCliPath: paths.whisperCliPath ? 'app' : 'default',
+  };
+
   const effective: AppSettings = {
     pipeline: {
       ...pipeline,
@@ -567,6 +619,7 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
     ai,
     worker,
     profanity: { audioMode },
+    paths,
   };
 
   return { effective, sources };
@@ -588,6 +641,42 @@ function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
+/**
+ * The saved `paths` section, read synchronously. `getFfmpegPath()` and friends
+ * are sync and run on every spawn, so they cannot await the async store; the
+ * SQLite read behind this is a single indexed query and cached by the OS.
+ * Never throws: a settings hiccup must fall back to the automatic chain, not
+ * break a render.
+ */
+export function getStoredPathSettings(): PathSettings {
+  try {
+    const store = storeOverride ?? syncDbStore();
+    const stored = readStoredSectionsFrom(store).paths ?? {};
+    return {
+      uploadDir: stringValue(stored.uploadDir) ?? '',
+      clipsDir: stringValue(stored.clipsDir) ?? '',
+      ffmpegPath: stringValue(stored.ffmpegPath) ?? '',
+      whisperCliPath: stringValue(stored.whisperCliPath) ?? '',
+    };
+  } catch {
+    return { ...DEFAULT_PATH_SETTINGS };
+  }
+}
+
+let cachedSyncStore: SettingsStore | null = null;
+
+function syncDbStore(): SettingsStore {
+  if (!cachedSyncStore) {
+    cachedSyncStore = {
+      // `lib/db.ts` is server-only and never imports this module, so the static
+      // import cannot cycle; better-sqlite3 reads are synchronous by nature.
+      read: () => readAppSettingsSections().map((row) => ({ key: row.key, value: row.value })),
+      write: (section, value) => saveAppSettingsSection(section, value),
+    };
+  }
+  return cachedSyncStore;
+}
+
 /** Tests inject an in-memory store instead of opening SQLite. */
 export function setSettingsStoreForTests(store: SettingsStore | null): void {
   storeOverride = store;
@@ -603,6 +692,10 @@ async function defaultStore(): Promise<SettingsStore> {
 
 async function readStoredSections(): Promise<StoredSettingsRows> {
   const store = storeOverride ?? (await defaultStore());
+  return readStoredSectionsFrom(store);
+}
+
+function readStoredSectionsFrom(store: SettingsStore): StoredSettingsRows {
   const stored: StoredSettingsRows = {};
   for (const row of store.read()) {
     if (row.key === 'pipeline') stored.pipeline = sanitizePipelineOptions(row.value);
@@ -610,6 +703,7 @@ async function readStoredSections(): Promise<StoredSettingsRows> {
     else if (row.key === 'ai') stored.ai = (row.value as Partial<AiProviderSettings>) ?? {};
     else if (row.key === 'worker') stored.worker = asRecord(row.value);
     else if (row.key === 'profanity') stored.profanity = asRecord(row.value);
+    else if (row.key === 'paths') stored.paths = asRecord(row.value);
   }
   return stored;
 }
@@ -629,6 +723,7 @@ export async function buildAppSettingsSnapshot(): Promise<AppSettingsSnapshot> {
   if (stored.render) storedOut.render = stored.render;
   if (stored.worker) storedOut.worker = stored.worker;
   if (stored.profanity) storedOut.profanity = stored.profanity;
+  if (stored.paths) storedOut.paths = stored.paths;
   if (stored.ai) {
     storedOut.ai = {
       ...stored.ai,

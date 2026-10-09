@@ -1,10 +1,43 @@
 import { NextResponse } from 'next/server';
-import { APP_SETTINGS_SECTIONS, AppSettingsSection } from '@/lib/types';
+import { APP_SETTINGS_SECTIONS, AppSettingsSection, ResolvedPaths } from '@/lib/types';
 import { buildAppSettingsSnapshot, clearSettingsSection, envAiSectionForImport, saveSettingsSection } from '@/lib/app-settings';
 import { getCaptionPreset, getOverlayStylePreset, listCaptionPresets, listOverlayStylePresets } from '@/lib/db';
+import { getFfmpegPath, getFfprobePath } from '@/lib/ffmpeg';
+import { getWhisperCliPath } from '@/lib/whisper';
+import { getUploadDirValue } from '@/lib/upload';
+import { getClipsDirValue } from '@/lib/paths';
 import { AppError, toErrorMessage, toErrorStatus } from '@/lib/errors';
 
 export const runtime = 'nodejs';
+
+/**
+ * The locations/binaries the app actually uses right now (stored value,
+ * otherwise the automatic chain). Shown on the Settings page as the "current"
+ * placeholder under each field, so an empty field is never a mystery.
+ */
+function resolveCurrentPaths(): ResolvedPaths {
+  try {
+    return {
+      uploadDir: getUploadDirValue(),
+      clipsDir: getClipsDirValue(),
+      ffmpegPath: getFfmpegPath(),
+      ffprobePath: getFfprobePath(),
+      whisperCliPath: getWhisperCliPath() ?? '',
+    };
+  } catch {
+    return { uploadDir: '', clipsDir: '', ffmpegPath: '', ffprobePath: '', whisperCliPath: '' };
+  }
+}
+
+/**
+ * The snapshot the page renders, plus the resolved locations/binaries. Every
+ * response that carries a snapshot carries both, so a save can never blank the
+ * "currently in use" lines on the Paths & binaries card.
+ */
+async function settingsPayload() {
+  const snapshot = await buildAppSettingsSnapshot();
+  return { ...snapshot, resolvedPaths: resolveCurrentPaths() };
+}
 
 /**
  * GET /api/settings
@@ -17,14 +50,14 @@ export const runtime = 'nodejs';
  */
 export async function GET() {
   try {
-    const [snapshot, captions, overlays] = await Promise.all([
-      buildAppSettingsSnapshot(),
+    const [payload, captions, overlays] = await Promise.all([
+      settingsPayload(),
       listCaptionPresets(),
       listOverlayStylePresets(),
     ]);
 
     return NextResponse.json({
-      ...snapshot,
+      ...payload,
       options: {
         captionPresets: captions.map((preset) => ({
           id: preset._id,
@@ -105,7 +138,13 @@ export async function PUT(request: Request) {
       ...(section === 'render' ? { validate: assertPresetsExist } : {}),
     });
 
-    return NextResponse.json({ success: true, section, updatedAt, saved, snapshot: await buildAppSettingsSnapshot() });
+    return NextResponse.json({
+      success: true,
+      section,
+      updatedAt,
+      saved,
+      snapshot: await settingsPayload(),
+    });
   } catch (error) {
     return NextResponse.json(
       { error: toErrorMessage(error, 'These settings could not be saved.') },
@@ -142,7 +181,7 @@ export async function POST(request: Request) {
       success: true,
       // Only the shape is reported back; the values are secrets.
       copied: { geminiKeys: ((saved.geminiApiKeys as string[] | undefined) ?? []).length, deepgram: Boolean(saved.deepgramApiKey) },
-      snapshot: await buildAppSettingsSnapshot(),
+      snapshot: await settingsPayload(),
     });
   } catch (error) {
     return NextResponse.json(
@@ -164,7 +203,7 @@ export async function DELETE(request: Request) {
     const url = new URL(request.url);
     const section = readSection({ section: url.searchParams.get('section') ?? '' });
     await clearSettingsSection(section);
-    return NextResponse.json({ success: true, section, snapshot: await buildAppSettingsSnapshot() });
+    return NextResponse.json({ success: true, section, snapshot: await settingsPayload() });
   } catch (error) {
     return NextResponse.json(
       { error: toErrorMessage(error, 'Could not reset this section.') },

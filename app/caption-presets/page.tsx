@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { CaptionLineStyle, CaptionPreset, OverlayStylePreset } from '@/lib/types';
 import { CaptionPreview } from '@/components/caption-preview';
 import { OverlayStyleEditor } from '@/components/overlay-style-editor';
@@ -32,14 +32,23 @@ import {
 import {
   AlertCircle,
   CheckCircle2,
+  Layers,
   Loader2,
   MonitorPlay,
   Plus,
   RotateCcw,
   Save,
+  Search,
   Trash2,
 } from 'lucide-react';
 import { cn } from 'cn';
+
+const ANIMATION_LABELS: Record<string, string> = {
+  karaoke: 'Karaoke',
+  'word-pop': 'Word pop',
+  'fade-in': 'Fade in',
+  static: 'Static',
+};
 
 function ColorField({
   label,
@@ -82,6 +91,9 @@ async function getErrorFromResponse(response: Response, fallback: string) {
 
 export default function CaptionPresetsPage() {
   const [presets, setPresets] = useState<CaptionPreset[]>([]);
+  // Filters the style gallery - with the growing catalogue a flat chip row no
+  // longer scales, so the list is searchable and scrolls inside a fixed panel.
+  const [presetQuery, setPresetQuery] = useState('');
   const [activePresetId, setActivePresetId] = useState<string>('');
   const [activePreset, setActivePreset] = useState<CaptionPreset>(DEFAULT_CAPTION_PRESETS[0]);
   const [sampleHookText, setSampleHookText] = useState('THE 1 SECRET YOU WERE NEVER TOLD');
@@ -104,6 +116,12 @@ export default function CaptionPresetsPage() {
   );
 
   const initializedRef = useRef(false);
+
+  const filteredPresets = useMemo(() => {
+    const needle = presetQuery.trim().toLowerCase();
+    if (!needle) return presets;
+    return presets.filter((preset) => preset.name.toLowerCase().includes(needle));
+  }, [presets, presetQuery]);
 
   const loadPresets = useCallback(async (): Promise<CaptionPreset[]> => {
     const res = await fetch('/api/caption-presets');
@@ -427,26 +445,71 @@ export default function CaptionPresetsPage() {
             </TabsList>
 
             <TabsContent value="captions" className="space-y-4">
-          {/* Preset selector */}
-          <div className="flex flex-wrap gap-2">
-            {presets.map((p) => {
-              const isActive = p._id === activePresetId;
-              return (
-                <button
-                  key={p._id}
-                  onClick={() => handleSelectPreset(p._id)}
-                  className={cn(
-                    'cursor-pointer rounded-md border px-3 py-1.5 text-sm font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/40',
-                    isActive
-                      ? 'border-transparent bg-primary text-primary-foreground'
-                      : 'border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground'
-                  )}
-                >
-                  {p.name}
-                  {p.isDefault ? <Badge variant="secondary" className="ml-2 text-[10px]">Default</Badge> : null}
-                </button>
-              );
-            })}
+          {/* Style gallery: searchable, scrolls inside a fixed-height panel so a
+              growing catalogue never pushes the editor (or the preview) away. */}
+          <div className="rounded-xl border bg-card/70 p-3 shadow-[var(--shadow-card)]">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="flex items-center gap-1.5 text-[13px] font-semibold tracking-tight">
+                <Layers className="size-3.5 text-muted-foreground" />
+                Caption styles
+                <Badge variant="secondary" className="tabular">{presets.length}</Badge>
+              </h2>
+              <div className="relative">
+                <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={presetQuery}
+                  onChange={(event) => setPresetQuery(event.target.value)}
+                  placeholder="Search styles…"
+                  className="h-8 w-48 pl-7.5 text-xs"
+                  aria-label="Search caption styles"
+                />
+              </div>
+            </div>
+
+            <div className="subtle-scroll mt-2.5 grid max-h-[300px] grid-cols-1 gap-1.5 overflow-y-auto pr-1 sm:grid-cols-2">
+              {filteredPresets.length === 0 ? (
+                <p className="col-span-full rounded-lg border border-dashed px-4 py-6 text-center text-[12px] text-muted-foreground">
+                  No style matches “{presetQuery}”.
+                </p>
+              ) : (
+                filteredPresets.map((p) => {
+                  const isActive = p._id === activePresetId;
+                  const rich = Boolean(p.lineStyles?.length);
+                  return (
+                    <button
+                      key={p._id}
+                      type="button"
+                      onClick={() => handleSelectPreset(p._id)}
+                      className={cn(
+                        'group flex cursor-pointer flex-col gap-1 rounded-lg border px-3 py-2 text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/40',
+                        isActive
+                          ? 'border-primary/50 bg-primary/10'
+                          : 'border-border bg-background/50 hover:border-primary/25 hover:bg-muted'
+                      )}
+                    >
+                      <span className="flex items-center justify-between gap-2">
+                        <span
+                          className={cn(
+                            'truncate text-[12.5px] font-semibold',
+                            isActive ? 'text-foreground' : 'text-foreground/85'
+                          )}
+                        >
+                          {p.name}
+                        </span>
+                        {p.isDefault ? (
+                          <Badge variant="secondary" className="shrink-0 text-[9.5px]">Default</Badge>
+                        ) : null}
+                      </span>
+                      <span className="flex items-center gap-1.5 text-[10.5px] text-muted-foreground">
+                        <span>{ANIMATION_LABELS[p.animationStyle] ?? p.animationStyle}</span>
+                        <span className="text-muted-foreground/40">·</span>
+                        <span>{rich ? `${p.lineStyles!.length} line styles` : 'single style'}</span>
+                      </span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
           </div>
 
           <Card className="gap-5">
@@ -897,26 +960,34 @@ export default function CaptionPresetsPage() {
           </Tabs>
         </div>
 
-        {/* Live preview */}
-        <div className="animate-fade-up lg:col-span-5" style={{ animationDelay: '120ms' }}>
-          <div className="sticky top-20 space-y-3">
-            <h2 className="flex items-center gap-2 text-sm font-semibold">
-              <MonitorPlay className="size-4 text-muted-foreground" />
-              Live preview
-            </h2>
+        {/* Live preview - pinned to the viewport on large screens: the panel is
+            sticky and its player is sized from the viewport HEIGHT, so scrolling
+            through a long style list never moves (or outgrows) the preview. */}
+        <div className="animate-fade-up min-w-0 lg:col-span-5" style={{ animationDelay: '120ms' }}>
+          <div className="flex flex-col gap-3 lg:sticky lg:top-6 lg:max-h-[calc(100dvh-3rem)]">
+            <div className="rounded-xl border bg-card/70 p-3 shadow-[var(--shadow-card)]">
+              <h2 className="flex items-center gap-2 text-[13px] font-semibold tracking-tight">
+                <MonitorPlay className="size-3.5 text-muted-foreground" />
+                Live preview
+                <span className="ml-auto text-[10.5px] font-normal text-muted-foreground">
+                  9:16 · 1080×1920
+                </span>
+              </h2>
 
-            <CaptionPreview
-              preset={activePreset}
-              hookText={sampleHookText}
-              ctaText={sampleCtaText}
-              hookStyle={hookStyle}
-              ctaStyle={ctaStyle}
-            />
+              <CaptionPreview
+                preset={activePreset}
+                hookText={sampleHookText}
+                ctaText={sampleCtaText}
+                hookStyle={hookStyle}
+                ctaStyle={ctaStyle}
+                className="mt-3 h-[min(56dvh,540px)]"
+              />
 
-            <p className="text-center text-xs leading-relaxed text-muted-foreground">
-              Interactive Remotion Player showing the 9:16 layout, hook overlay, and
-              word-synced captions. Switch tabs to style the hook and CTA overlays.
-            </p>
+              <p className="mt-3 text-center text-[11px] leading-relaxed text-muted-foreground">
+                Interactive Remotion Player showing the 9:16 layout, hook overlay, and
+                word-synced captions. Switch tabs to style the hook and CTA overlays.
+              </p>
+            </div>
           </div>
         </div>
       </div>

@@ -303,6 +303,17 @@ export function getJob(id: string, db: SqliteDatabase = getDatabase()): QueueJob
   return row ? mapJob(row) : null;
 }
 
+/**
+ * Delete a job only while it is still QUEUED. Returns true when a row was
+ * removed. A running job is never deleted here - the process executing it owns
+ * that row, and the per-record cancellation flags (`clip.cancelling`) are the
+ * safe way to stop work that already started.
+ */
+export function removeJobIfQueued(id: string, db: SqliteDatabase = getDatabase()): boolean {
+  const result = db.prepare(`DELETE FROM jobs WHERE id = ? AND status = 'queued'`).run(id);
+  return result.changes > 0;
+}
+
 export function listJobs(db: SqliteDatabase = getDatabase()): QueueJob[] {
   const rows = db.prepare('SELECT * FROM jobs ORDER BY created_at, id').all() as JobRow[];
   return rows.map(mapJob);

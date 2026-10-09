@@ -10,6 +10,7 @@ import {
   updateClip,
 } from '../lib/db';
 import { AppError, RenderCancelledError, toErrorMessage } from '../lib/errors';
+import { resolveClipsDir } from '../lib/paths';
 
 import { getVideoMetadata } from '../lib/ffmpeg';
 import { getCaptionOffsetMs, shiftCaptionWords } from './caption-timing';
@@ -135,9 +136,11 @@ export async function processClipJob(
   await reportProgress(5);
 
   // Output folder mirrors the uploaded video's stored name (e.g. 001_my_recording);
-  // pre-convention uploads fall back to the video id.
+  // pre-convention uploads fall back to the video id. The root comes from
+  // Settings -> Paths & binaries (default: ./generated-clips), while the stored
+  // outputPath keeps its logical /generated-clips/ prefix for the media route.
   const outputBase = video.fileBase || videoId;
-  const outputDir = path.join(process.cwd(), 'generated-clips', outputBase);
+  const outputDir = path.join(resolveClipsDir(), outputBase);
   // Optional pre-caption diagnostic branch (SAVE_PRECAPTION_DEBUG=1). The normal
   // final render goes directly from the source into the title-named deliverable.
   const intermediateVideoPath = path.join(outputDir, `${clipId}_precaption.mp4`);

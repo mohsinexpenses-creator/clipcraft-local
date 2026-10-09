@@ -150,7 +150,7 @@ export const DEFAULT_RENDER_OPTIONS = {
  * ========================================================================== */
 
 /** One row of `app_settings`; the key is the section name. */
-export const APP_SETTINGS_SECTIONS = ['pipeline', 'render', 'ai', 'worker', 'profanity'] as const;
+export const APP_SETTINGS_SECTIONS = ['pipeline', 'render', 'ai', 'worker', 'profanity', 'paths'] as const;
 export type AppSettingsSection = (typeof APP_SETTINGS_SECTIONS)[number];
 
 /**
@@ -248,12 +248,51 @@ export interface ProfanitySettings {
 
 export const DEFAULT_PROFANITY_SETTINGS: ProfanitySettings = { audioMode: 'mute' };
 
+/**
+ * Filesystem locations and binaries the worker uses. An empty string means
+ * "automatic": the built-in location (`./uploads`, `./generated-clips`) or the
+ * auto-detected binary (bundled ffmpeg / whisper.cpp, then PATH). A saved value
+ * wins over the automatic chain - including the matching `.env.local` variable -
+ * and applies from the next upload/render onwards without a restart.
+ */
+export interface PathSettings {
+  /** Where uploaded source videos are stored. */
+  uploadDir: string;
+  /** Where rendered 9:16 clips are written (one folder per video). */
+  clipsDir: string;
+  /** Absolute path to the ffmpeg executable. */
+  ffmpegPath: string;
+  /** Absolute path to the whisper.cpp CLI (`whisper-cli`) executable. */
+  whisperCliPath: string;
+}
+
+export const DEFAULT_PATH_SETTINGS: PathSettings = {
+  uploadDir: '',
+  clipsDir: '',
+  ffmpegPath: '',
+  whisperCliPath: '',
+};
+
 export interface AppSettings {
   pipeline: PipelineOptions;
   render: RenderDefaults;
   ai: AiProviderSettings;
   worker: WorkerSettings;
   profanity: ProfanitySettings;
+  paths: PathSettings;
+}
+
+/**
+ * The locations/binary the app actually uses right now, resolved on the server.
+ * Sent to the Settings page so a field's placeholder can show the live value.
+ */
+export interface ResolvedPaths {
+  uploadDir: string;
+  clipsDir: string;
+  ffmpegPath: string;
+  ffprobePath: string;
+  /** `''` when no whisper.cpp CLI could be found anywhere. */
+  whisperCliPath: string;
 }
 
 /** Per-key origin of every effective value, rendered as a chip on each row. */

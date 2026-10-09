@@ -2,6 +2,8 @@ import fs from 'fs';
 import path from 'path';
 import { NextResponse } from 'next/server';
 import { deleteVideo, getVideo, listClips, updateVideo } from '@/lib/db';
+import { getUploadDirValue } from '@/lib/upload';
+import { getClipsDirValue } from '@/lib/paths';
 import { toErrorMessage, toErrorStatus } from '@/lib/errors';
 import { pipelineStatusForVideo } from '@/lib/pipeline-status';
 import { sanitizePipelineOptions } from '@/lib/pipeline-defaults';
@@ -98,11 +100,13 @@ export async function DELETE(
 
     await deleteVideo(id);
 
-    const uploadDir = path.join(process.cwd(), 'uploads', id);
+    // The roots come from Settings -> Paths & binaries; per-video folder names
+    // inside them never change.
+    const uploadDir = path.join(getUploadDirValue(), id);
     // Output folder: current convention names it after the stored file
     // (001_my_recording); older uploads used the video id - clean up both.
-    const clipsDir = path.join(process.cwd(), 'generated-clips', video.fileBase || id);
-    const legacyClipsDir = path.join(process.cwd(), 'generated-clips', id);
+    const clipsDir = path.join(getClipsDirValue(), video.fileBase || id);
+    const legacyClipsDir = path.join(getClipsDirValue(), id);
 
     if (fs.existsSync(uploadDir)) {
       fs.rmSync(uploadDir, { recursive: true, force: true });

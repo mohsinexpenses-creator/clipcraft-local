@@ -153,7 +153,7 @@ const VIDEO_SUMMARY_SELECT = `
      FROM clips c WHERE c.video_id = v.id) AS clip_progress
 `;
 
-const CURRENT_SCHEMA_VERSION = 4;
+const CURRENT_SCHEMA_VERSION = 5;
 
 /** Absolute path used by the web process and the worker. */
 export function getDatabasePath(): string {
@@ -449,11 +449,32 @@ function migrateSchemaV4(db: SqliteDatabase): void {
   `);
 }
 
+/**
+ * Schema v5: the Settings page gained a sixth section - `paths` (upload /
+ * generated-clips directories, FFmpeg and whisper.cpp binaries). SQLite CHECK
+ * constraints cannot be altered in place, so the table is rebuilt with the
+ * widened key list and the existing rows are carried over unchanged.
+ */
+function migrateSchemaV5(db: SqliteDatabase): void {
+  db.exec(`
+    CREATE TABLE app_settings_v5 (
+      key TEXT PRIMARY KEY CHECK (key IN ('pipeline', 'render', 'ai', 'worker', 'profanity', 'paths')),
+      value_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    INSERT INTO app_settings_v5 (key, value_json, updated_at)
+      SELECT key, value_json, updated_at FROM app_settings;
+    DROP TABLE app_settings;
+    ALTER TABLE app_settings_v5 RENAME TO app_settings;
+  `);
+}
+
 const SCHEMA_MIGRATIONS: Record<number, (db: SqliteDatabase) => void> = {
   1: migrateSchemaV1,
   2: migrateSchemaV2,
   3: migrateSchemaV3,
   4: migrateSchemaV4,
+  5: migrateSchemaV5,
 };
 
 export function initializeSchema(db: SqliteDatabase): void {

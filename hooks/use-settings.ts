@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { AppSettings, AppSettingsSection, AppSettingsSnapshot } from "@/lib/types";
+import { AppSettings, AppSettingsSection, AppSettingsSnapshot, ResolvedPaths } from "@/lib/types";
 import { useToast } from "@/components/ui/toaster";
 
 /** One provider probe, mirrored from `lib/settings-verify.ts` (kept structural so the client needs no server import). */
@@ -24,6 +24,8 @@ export interface SettingsOptions {
 export interface SettingsPayload extends AppSettingsSnapshot {
   /** The lists the selects are built from, sent with the snapshot so the page is one request. */
   options: SettingsOptions;
+  /** The directories/binaries in effect right now - placeholders for the path fields. */
+  resolvedPaths?: ResolvedPaths;
 }
 
 export type SettingsBusy =
@@ -110,11 +112,12 @@ export function useSettings() {
     async (section: AppSettingsSection, value: object) => {
       setBusy(`save:${section}`);
       try {
-        const data = await requestJson<SettingsPayload>("/api/settings", {
+        const data = await requestJson<{ snapshot: SettingsPayload }>("/api/settings", {
           method: "PUT",
           body: JSON.stringify({ section, value }),
         });
-        setPayload(data);
+        // The response wraps the fresh snapshot; the page state IS the snapshot.
+        setPayload(data.snapshot);
         setRevision((current) => current + 1);
         setError(null);
         toast({ title: "Settings saved", description: settingsToastNote(section), tone: "success" });
@@ -137,10 +140,10 @@ export function useSettings() {
     async (section: AppSettingsSection) => {
       setBusy(`reset:${section}`);
       try {
-        const data = await requestJson<SettingsPayload>(`/api/settings?section=${section}`, {
+        const data = await requestJson<{ snapshot: SettingsPayload }>(`/api/settings?section=${section}`, {
           method: "DELETE",
         });
-        setPayload(data);
+        setPayload(data.snapshot);
         setRevision((current) => current + 1);
         setResults((current) => current.filter((result) => section !== "ai" || result.target !== "gemini"));
         toast({
@@ -275,6 +278,8 @@ function settingsResetNote(section: AppSettingsSection): string {
       return "Back to one clip and one detection at a time, applied when the worker restarts.";
     case "profanity":
       return "The spoken word is muted again from the next render; text stays masked either way.";
+    case "paths":
+      return "Back to the automatic locations: ./uploads, ./generated-clips and the bundled/auto-detected binaries.";
     default:
       return "";
   }
@@ -292,6 +297,8 @@ function settingsToastNote(section: AppSettingsSection): string {
       return "Clip and detection concurrency apply after the worker restarts.";
     case "profanity":
       return "Applies to the next render; captions and overlay text stay masked either way.";
+    case "paths":
+      return "New uploads and renders use these locations from now on - no restart needed.";
     default:
       return "";
   }

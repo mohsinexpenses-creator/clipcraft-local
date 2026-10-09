@@ -53,6 +53,11 @@ export interface PipelineStep {
   /** Short line under the step ("1,482 words", "3 of 10 clips"). */
   detail?: string;
   error?: string;
+  /**
+   * Wall time this step has taken so far: finished for a done step, growing
+   * while it runs. Absent when no job of the step ever started.
+   */
+  durationMs?: number;
 }
 
 export interface PipelineJobLike {
@@ -62,6 +67,21 @@ export interface PipelineJobLike {
   error?: string;
   videoId?: string;
   clipId?: string;
+  /** ISO timestamps from the queue row; used for the per-step timings. */
+  startedAt?: string;
+  finishedAt?: string;
+}
+
+/** How long the pipeline's steps have taken, in milliseconds. */
+export interface PipelineTimings {
+  /** Transcription job duration (latest attempt). */
+  transcriptMs?: number;
+  /** Viral detection job duration (latest attempt). */
+  analyzeMs?: number;
+  /** Sum of all clip render job durations, including re-renders. */
+  renderMs?: number;
+  /** First job start to the last finish - the whole pipeline so far. */
+  totalMs?: number;
 }
 
 export interface PipelineFacts {
@@ -85,6 +105,8 @@ export interface PipelineStatus {
   activeClips: number;
   error?: string;
   pipeline: PipelineOptions;
+  /** Per-step and overall durations, derived from the queue timestamps. */
+  timings: PipelineTimings;
 }
 
 export function countClips(clips: readonly ClipRecord[]): ClipCounts {
@@ -146,6 +168,86 @@ function latestJob(
 ): PipelineJobLike | undefined {
   if (!jobs?.length) return undefined;
   return jobs.filter((job) => job.type === type).at(-1);
+}
+
+/**
+ * Wall time of one job: `finishedAt - startedAt` once done, otherwise the time
+ * since it started (a running job keeps growing on every poll). Undefined for
+ * jobs that never started - they contribute no time to any step.
+ */
+function jobDurationMs(job: PipelineJobLike, now: number): number | undefined {
+  if (!job.startedAt) return undefined;
+  const start = Date.parse(job.startedAt);
+  if (!Number.isFinite(start)) return undefined;
+  const end = job.finishedAt ? Date.parse(job.finishedAt) : now;
+  if (!Number.isFinite(end)) return Math.max(0, now - start);
+  return Math.max(0, end - start);
+}
+
+/**
+ * Per-step and overall durations from the queue rows. Pure given `now`, so the
+ * dashboard can derive live counters without storing anything.
+ */
+export function computePipelineTimings(
+  jobs: readonly PipelineJobLike[] | undefined,
+  now: number
+): { timings: PipelineTimings; stepDuration: Partial<Record<PipelineStepKey, number>> } {
+  const timings: PipelineTimings = {};
+  const stepDuration: Partial<Record<PipelineStepKey, number>> = {};
+  if (!jobs?.length) return { timings, stepDuration };
+
+  const transcriptJob = latestJob(jobs, TRANSCRIPTION_JOB_TYPE);
+  const transcriptMs = transcriptJob ? jobDurationMs(transcriptJob, now) : undefined;
+  if (transcriptMs !== undefined) {
+    timings.transcriptMs = transcriptMs;
+    stepDuration.transcript = transcriptMs;
+  }
+
+  const detectionJob = latestJob(jobs, VIRAL_DETECTION_JOB_TYPE);
+  const analyzeMs = detectionJob ? jobDurationMs(detectionJob, now) : undefined;
+  if (analyzeMs !== undefined) {
+    timings.analyzeMs = analyzeMs;
+    stepDuration.analyze = analyzeMs;
+  }
+
+  // Every render attempt counts - re-renders are time the user actually spent.
+  let renderMs = 0;
+  let sawRender = false;
+  for (const job of jobs) {
+    if (job.type !== CLIP_JOB_TYPE) continue;
+    const duration = jobDurationMs(job, now);
+    if (duration === undefined) continue;
+    sawRender = true;
+    renderMs += duration;
+  }
+  if (sawRender) {
+    timings.renderMs = renderMs;
+    stepDuration.render = renderMs;
+  }
+
+  // The whole pipeline: earliest start to the latest finish (or now while live).
+  let earliestStart = Number.POSITIVE_INFINITY;
+  let latestEnd = Number.NEGATIVE_INFINITY;
+  let live = false;
+  for (const job of jobs) {
+    if (!job.startedAt) continue;
+    const start = Date.parse(job.startedAt);
+    if (!Number.isFinite(start)) continue;
+    earliestStart = Math.min(earliestStart, start);
+    if (job.finishedAt) {
+      const end = Date.parse(job.finishedAt);
+      if (Number.isFinite(end)) latestEnd = Math.max(latestEnd, end);
+      else live = true;
+    } else {
+      live = true;
+    }
+  }
+  if (Number.isFinite(earliestStart)) {
+    const end = live || !Number.isFinite(latestEnd) ? now : latestEnd;
+    timings.totalMs = Math.max(0, end - earliestStart);
+  }
+
+  return { timings, stepDuration };
 }
 
 /** The one derivation both the list and the detail view run through. */
@@ -265,6 +367,15 @@ export function derivePipelineStatus(facts: PipelineFacts): PipelineStatus {
 
   const error = stage === 'failed' ? clipError ?? videoError : undefined;
 
+  // Per-step and overall wall time, straight from the queue timestamps. `now`
+  // is captured once so every counter on the page agrees.
+  const now = Date.now();
+  const { timings, stepDuration } = computePipelineTimings(jobs, now);
+  for (const entry of steps) {
+    const duration = stepDuration[entry.key];
+    if (duration !== undefined) entry.durationMs = duration;
+  }
+
   // A single 0-100 bar for the whole run: transcription is the first half,
   // detection the next 20%, rendering the last 30%.
   let progress: number;
@@ -285,6 +396,7 @@ export function derivePipelineStatus(facts: PipelineFacts): PipelineStatus {
     activeClips: counts.active + counts.queued,
     ...(error ? { error } : {}),
     pipeline,
+    timings,
   };
 }
 

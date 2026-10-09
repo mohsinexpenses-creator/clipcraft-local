@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   Check,
   CircleDashed,
+  Clock,
   Loader2,
   Pause,
   Play,
@@ -15,7 +16,7 @@ import {
 } from "lucide-react"
 import { cn } from "cn"
 import type { PipelineStatus, PipelineStep } from "@/lib/pipeline-status"
-import { stageMeta } from "@/lib/pipeline-ui"
+import { formatDuration, stageMeta } from "@/lib/pipeline-ui"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 
@@ -132,6 +133,23 @@ export function PipelineStepper({ status, busy, onResume, onRetryStep }: Pipelin
                 >
                   {step.error ?? step.detail ?? (step.state === "pending" ? "Waiting" : "—")}
                 </p>
+                {step.durationMs !== undefined && step.state !== "pending" && (
+                  <p
+                    className={cn(
+                      "mt-0.5 flex items-center gap-1 text-[10.5px] tabular",
+                      step.state === "active" ? "text-primary/80" : "text-muted-foreground"
+                    )}
+                    title={
+                      step.state === "active"
+                        ? "Elapsed time so far (updates live)"
+                        : "Time this step took"
+                    }
+                  >
+                    <Clock className="size-3" />
+                    {step.state === "active" ? "running " : ""}
+                    {formatDuration(step.durationMs)}
+                  </p>
+                )}
                 {step.state === "active" && (
                   <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-muted">
                     <div
@@ -174,6 +192,15 @@ export function PipelineStepper({ status, busy, onResume, onRetryStep }: Pipelin
               />
               {meta.label}
             </p>
+            {status.timings.totalMs !== undefined && (
+              <p
+                className="mt-0.5 flex items-center gap-1 text-[11px] tabular text-muted-foreground"
+                title="Total pipeline time: from the first step that started to the last one that finished (grows live while a step runs)"
+              >
+                <Clock className="size-3" />
+                {formatDuration(status.timings.totalMs)}
+              </p>
+            )}
           </div>
           <div className="flex flex-1 items-center gap-2 lg:w-full lg:flex-1">
             <div className="h-1.5 w-full overflow-hidden rounded-full bg-background lg:w-32">

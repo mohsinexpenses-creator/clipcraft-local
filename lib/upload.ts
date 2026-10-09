@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { NextResponse } from 'next/server';
 import { saveVideo, updateVideo } from './db';
+import { getStoredPathSettings } from './app-settings';
 import { AppError, getErrorResponse, toErrorMessage } from './errors';
 import { getVideoMetadata } from './ffmpeg';
 import { enqueueTranscriptionJob, findActiveJob, TRANSCRIPTION_QUEUE_NAME } from './queue';
@@ -48,10 +49,20 @@ function positiveEnvNumber(name: string): number | null {
   return Number.isFinite(value) && value > 0 ? value : null;
 }
 
-/** Absolute path of UPLOAD_DIR (defaults to ./uploads), created if missing. */
-export function resolveUploadDir(): string {
+/**
+ * The upload directory without side effects: the directory saved on the
+ * Settings page, otherwise UPLOAD_DIR, otherwise `./uploads`.
+ */
+export function getUploadDirValue(): string {
+  const saved = getStoredPathSettings().uploadDir;
+  if (saved) return path.resolve(saved);
   const configured = process.env.UPLOAD_DIR?.trim();
-  const dir = configured ? path.resolve(configured) : path.join(process.cwd(), 'uploads');
+  return configured ? path.resolve(configured) : path.join(process.cwd(), 'uploads');
+}
+
+/** Absolute path of the upload directory (defaults to ./uploads), created if missing. */
+export function resolveUploadDir(): string {
+  const dir = getUploadDirValue();
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }

@@ -6,6 +6,7 @@ import { useSearchParams } from "next/navigation";
 import {
   AlertCircle,
   ArrowUpDown,
+  Ban,
   Captions,
   CheckCircle2,
   Clock,
@@ -18,13 +19,19 @@ import {
   Search,
   Settings2,
   Sparkles,
+  Timer,
   Trash2,
   Upload,
 } from "lucide-react";
 import { cn } from "cn";
-import type { ClipRecord, PipelineOptions } from "@/lib/types";
+import type {
+  ClipRecord,
+  PipelineOptions,
+  RenderDefaults,
+  SettingsLimits,
+} from "@/lib/types";
 import { isPipelineOptionsEqual } from "@/lib/pipeline-defaults";
-import { clipScore, formatClock, stageMeta } from "@/lib/pipeline-ui";
+import { clipScore, formatClock, formatDuration, stageMeta } from "@/lib/pipeline-ui";
 import type { VideoListItem } from "@/lib/pipeline-ui";
 import { usePipeline } from "@/hooks/use-pipeline";
 import { sortClipsForGrid } from "@/lib/pipeline-ui";
@@ -32,12 +39,17 @@ import { ClipTile } from "@/components/clip-tile";
 import { ClipEditDialog } from "@/components/clip-edit-dialog";
 import { PipelineStepper } from "@/components/pipeline-stepper";
 import { AutomationPanel } from "@/components/pipeline-settings";
+import { RenderSettingsPanel } from "@/components/render-settings-panel";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useToast } from "@/components/ui/toaster";
 import {
   Dialog,
   DialogBody,
@@ -431,6 +443,33 @@ function DashboardContent() {
                   </div>
 
                   <div className="flex flex-wrap items-center gap-1.5">
+                    {(status?.stage === "transcribing" ||
+                      status?.stage === "analyzing" ||
+                      status?.stage === "rendering" ||
+                      counts.active + counts.queued > 0) && (
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        onClick={() => {
+                          if (
+                            window.confirm(
+                              "Cancel the whole pipeline for this video?\n\nRendering clips stop, queued work is dropped, and automatic steps are switched off for this video."
+                            )
+                          ) {
+                            void pipeline.cancelPipeline(video._id);
+                          }
+                        }}
+                        disabled={busy === `cancel-pipeline:${video._id}`}
+                        title="Stop rendering, drop queued work and switch off automation for this video"
+                      >
+                        {busy === `cancel-pipeline:${video._id}` ? (
+                          <Loader2 className="animate-spin" />
+                        ) : (
+                          <Ban />
+                        )}
+                        Cancel pipeline
+                      </Button>
+                    )}
                     <Button
                       size="sm"
                       variant="soft"
@@ -535,6 +574,20 @@ function DashboardContent() {
                     label="Top score"
                     value={bestScore === null ? "—" : bestScore.toFixed(1)}
                   />
+                  {status?.timings.totalMs !== undefined && (
+                    <StatChip
+                      icon={<Timer />}
+                      label="Total time"
+                      value={formatDuration(status.timings.totalMs)}
+                      tone={
+                        status.stage === "transcribing" ||
+                        status.stage === "analyzing" ||
+                        status.stage === "rendering"
+                          ? "warn"
+                          : undefined
+                      }
+                    />
+                  )}
                 </div>
 
                 {detail.video.error && (
@@ -703,33 +756,75 @@ function DashboardContent() {
         onSave={pipeline.saveClip}
       />
 
-      {/* ---------- pipeline settings ---------- */}
-      <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
+      {/* ---------- pipeline & render settings ---------- */}
+      <Dialog
+        open={settingsOpen}
+        onOpenChange={(open) => {
+          setSettingsOpen(open);
+          if (!open) setAutomationDraft(null);
+        }}
+      >
         <DialogContent size="lg">
           <DialogHeader>
-            <DialogTitle>Pipeline settings</DialogTitle>
+            <DialogTitle>Pipeline & render settings</DialogTitle>
             <DialogDescription className="text-[12px]">
-              Applies to this video from now on - including the next automatic step.
+              Both panels read from and save to the database, so what you see here is
+              exactly what the worker uses.
             </DialogDescription>
           </DialogHeader>
           <DialogBody>
-            {effectivePipeline ? (
-              <AutomationPanel
-                value={effectivePipeline}
-                onChange={setAutomationDraft}
-                onSave={() => {
-                  if (!videoId || !automationDraft) return;
-                  void pipeline.saveAutomation(videoId, automationDraft).then(() => {
-                    setSettingsOpen(false);
-                    setAutomationDraft(null);
-                  });
-                }}
-                dirty={settingsDirty}
-                busy={busy === `automation:${videoId}`}
-              />
-            ) : (
-              <p className="text-[12.5px] text-muted-foreground">Loading…</p>
-            )}
+            <Tabs defaultValue="pipeline">
+              <TabsList>
+                <TabsTrigger value="pipeline">Pipeline</TabsTrigger>
+                <TabsTrigger value="render">Render clip settings</TabsTrigger>
+              </TabsList>
+
+              <TabsContent value="pipeline" className="mt-1">
+                {effectivePipeline ? (
+                  <AutomationPanel
+                    value={effectivePipeline}
+                    onChange={setAutomationDraft}
+                    onSave={() => {
+                      if (!videoId || !automationDraft) return;
+                      void pipeline.saveAutomation(videoId, automationDraft).then((result) => {
+                        if (result) setAutomationDraft(null);
+                      });
+                    }}
+                    dirty={settingsDirty}
+                    busy={busy === `automation:${videoId}`}
+                  />
+                ) : (
+                  <p className="text-[12.5px] text-muted-foreground">Loading…</p>
+                )}
+                <p className="mt-3 text-[11px] leading-snug text-muted-foreground">
+                  Stored on this video (videos.pipeline_json) - it decides what the next
+                  automatic step does.
+                </p>
+              </TabsContent>
+
+              <TabsContent value="render" className="mt-1">
+                {videoId ? (
+                  <RenderSettingsTab
+                    key={videoId}
+                    clips={clips}
+                    onSaveDefaults={async (value) => {
+                      const response = await fetch("/api/settings", {
+                        method: "PUT",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ section: "render", value }),
+                      });
+                      const data = await response.json().catch(() => ({}));
+                      if (!response.ok) {
+                        throw new Error(String(data.error ?? "Could not save render settings."));
+                      }
+                    }}
+                    applyRenderDefaults={pipeline.applyRenderDefaults}
+                  />
+                ) : (
+                  <p className="text-[12.5px] text-muted-foreground">Loading…</p>
+                )}
+              </TabsContent>
+            </Tabs>
           </DialogBody>
           <DialogFooter>
             <Button variant="outline" onClick={() => setSettingsOpen(false)}>
@@ -738,6 +833,173 @@ function DashboardContent() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+/**
+ * The "Render clip settings" tab of the video settings dialog. Loads the stored
+ * render defaults from the database (GET /api/settings), edits them locally and
+ * writes them back (PUT /api/settings) - the same rows the Settings page edits,
+ * so the two can never disagree. Optionally pushes the fresh values onto this
+ * video's unrendered clips, because those carry the snapshot taken at detection
+ * time until someone updates them.
+ */
+function RenderSettingsTab({
+  clips,
+  onSaveDefaults,
+  applyRenderDefaults,
+}: {
+  clips: ClipRecord[];
+  onSaveDefaults: (value: RenderDefaults) => Promise<void>;
+  applyRenderDefaults: (targets: ClipRecord[], edits: Record<string, unknown>) => Promise<unknown>;
+}) {
+  const { toast } = useToast();
+  const [snapshot, setSnapshot] = React.useState<{
+    render: RenderDefaults;
+    limits?: SettingsLimits;
+    captionPresets: Array<{ id: string; name: string; isDefault: boolean }>;
+    overlayPresets: Array<{ id: string; kind: "hook" | "cta"; name: string; isDefault: boolean }>;
+  } | null>(null);
+  const [loadError, setLoadError] = React.useState<string | null>(null);
+  const [draft, setDraft] = React.useState<RenderDefaults | null>(null);
+  const [applyToClips, setApplyToClips] = React.useState(true);
+  const [saving, setSaving] = React.useState(false);
+
+  React.useEffect(() => {
+    let ignore = false;
+    queueMicrotask(() => {
+      fetch("/api/settings")
+        .then((response) => response.json().catch(() => ({})))
+        .then((data) => {
+          if (ignore) return;
+          if (!data?.effective?.render) {
+            setLoadError(String(data?.error ?? "Could not load the render defaults."));
+            return;
+          }
+          setSnapshot({
+            render: data.effective.render as RenderDefaults,
+            limits: data.limits as SettingsLimits | undefined,
+            captionPresets: (data.options?.captionPresets ?? []) as Array<{
+              id: string;
+              name: string;
+              isDefault: boolean;
+            }>,
+            overlayPresets: (data.options?.overlayPresets ?? []) as Array<{
+              id: string;
+              kind: "hook" | "cta";
+              name: string;
+              isDefault: boolean;
+            }>,
+          });
+          setLoadError(null);
+        })
+        .catch((error) => {
+          if (!ignore) setLoadError(error instanceof Error ? error.message : "Could not load the render defaults.");
+        });
+    });
+    return () => {
+      ignore = true;
+    };
+  }, []);
+
+  const unrendered = clips.filter((clip) => clip.status === "pending" || clip.status === "failed");
+
+  const save = async () => {
+    if (!draft || !snapshot) return;
+    setSaving(true);
+    try {
+      await onSaveDefaults(draft);
+      // Re-read the database so the panel shows exactly what was stored.
+      const response = await fetch("/api/settings");
+      const data = await response.json().catch(() => ({}));
+      if (data?.effective?.render) {
+        setSnapshot((current) =>
+          current ? { ...current, render: data.effective.render as RenderDefaults } : current
+        );
+      }
+      setDraft(null);
+      toast({
+        title: "Render settings saved",
+        description: "Stored in the database - the Settings page shows the same values.",
+        tone: "success",
+      });
+      if (applyToClips && unrendered.length > 0) {
+        await applyRenderDefaults(unrendered, {
+          captionEngine: draft.captionEngine,
+          layout: draft.layout,
+          filterPreset: draft.filterPreset,
+          captionPresetId: draft.captionPresetId ?? "",
+          hookStylePresetId: draft.hookStylePresetId ?? "",
+          ctaStylePresetId: draft.ctaStylePresetId ?? "",
+          hookDuration: draft.hookDuration,
+          ctaDuration: draft.ctaDuration,
+        });
+      }
+    } catch (error) {
+      toast({
+        title: "Could not save render settings",
+        description: error instanceof Error ? error.message : "The server refused these settings.",
+        tone: "error",
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loadError) {
+    return (
+      <Alert variant="destructive">
+        <AlertCircle className="mt-0.5" />
+        <AlertDescription className="text-[12px]">{loadError}</AlertDescription>
+      </Alert>
+    );
+  }
+
+  if (!snapshot) {
+    return <Skeleton className="skeleton-sheen h-64 rounded-xl" />;
+  }
+
+  return (
+    <div className="space-y-4">
+      <RenderSettingsPanel
+        value={draft ?? snapshot.render}
+        onChange={(next) => setDraft(next)}
+        limits={snapshot.limits}
+        captionPresets={snapshot.captionPresets}
+        overlayPresets={snapshot.overlayPresets}
+        disabled={saving}
+      />
+
+      <div className="space-y-2.5 rounded-xl border bg-muted/30 p-3">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <Label htmlFor="apply-to-clips" className="cursor-pointer text-[12px] font-medium">
+              Also update this video&apos;s unrendered clips ({unrendered.length})
+            </Label>
+            <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
+              Clips keep the settings they were detected with; this writes the fresh
+              defaults onto every clip that is not rendered yet.
+            </p>
+          </div>
+          <Switch
+            id="apply-to-clips"
+            checked={applyToClips}
+            onCheckedChange={setApplyToClips}
+            disabled={saving || unrendered.length === 0}
+          />
+        </div>
+
+        <div className="flex items-center justify-end gap-2 border-t pt-2.5">
+          <p className="mr-auto text-[11px] text-muted-foreground">
+            {draft ? "Not saved yet." : "In sync with the database."}
+          </p>
+          <Button size="sm" onClick={() => void save()} disabled={!draft || saving}>
+            {saving ? <Loader2 className="animate-spin" /> : <CheckCircle2 />}
+            Save render settings
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }

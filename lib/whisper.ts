@@ -5,7 +5,7 @@ import path from 'path';
 import { extractAudio16kMono } from './ffmpeg';
 import { AppError, toErrorMessage } from './errors';
 import { transcribeWithDeepgram } from './deepgram';
-import { loadEffectiveSettings } from './app-settings';
+import { getStoredPathSettings, loadEffectiveSettings } from './app-settings';
 import { TranscriptData, TranscriptSegment, WordTimestamp } from './types';
 
 export interface TranscriptionEngineInfo {
@@ -74,6 +74,16 @@ function existsAndIsFile(candidate: string): boolean {
  * show a green check for a transcription engine that could never start.
  */
 export function getWhisperCliPath(): string | null {
+  // The value saved on the Settings page wins over the env file, matching how
+  // the FFmpeg override is layered in lib/ffmpeg.ts.
+  const savedPath = getStoredPathSettings().whisperCliPath;
+  if (savedPath) {
+    if (existsAndIsFile(savedPath)) return savedPath;
+    console.warn(
+      `[Whisper] Settings -> Whisper CLI path "${savedPath}" does not exist - falling back to the bundled/searchable locations.`
+    );
+  }
+
   const customPath = process.env.WHISPER_CLI_PATH?.trim();
   if (customPath && !looksLikePlaceholder(customPath)) {
     if (existsAndIsFile(customPath)) return customPath;

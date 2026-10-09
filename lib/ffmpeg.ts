@@ -12,6 +12,7 @@ import { log } from "./logger";
  * binary actually exists before using it and fall back to PATH otherwise.
  */
 import ffmpegStaticPath from "ffmpeg-static";
+import { getStoredPathSettings } from "./app-settings";
 
 /**
  * Warning shown at most ONCE per process. The old code re-printed it before
@@ -29,7 +30,16 @@ export function getFfmpegPath(): string {
   const isWin = process.platform === "win32";
   const exeExt = isWin ? ".exe" : "";
 
-  // 1) Explicit user override (no warnings - this is what the user asked for).
+  // 1a) The value saved on the Settings page wins over everything else.
+  const saved = getStoredPathSettings().ffmpegPath;
+  if (saved) {
+    if (fs.existsSync(saved)) return saved;
+    warnFfmpegOnce(
+      `Settings -> FFmpeg path "${saved}" does not exist - falling back to bundled/PATH ffmpeg.`,
+    );
+  }
+
+  // 1b) Explicit user override (no warnings - this is what the user asked for).
   const configured = process.env.FFMPEG_PATH?.trim();
   if (configured && configured.toLowerCase() !== "your_ffmpeg_path") {
     if (fs.existsSync(configured)) return configured;
@@ -92,8 +102,8 @@ export function getFfmpegPath(): string {
   //    Only when NO binary could be found anywhere do we warn (once).
   warnFfmpegOnce(
     "No usable FFmpeg binary found - ffmpeg-static's postinstall downloads it from GitHub, which can fail behind proxies. " +
-      "Install ffmpeg (`winget install Gyan.FFmpeg`), set FFMPEG_PATH in .env.local, or re-run `npm install` with network access. " +
-      "Trying bare `ffmpeg` on PATH.",
+      "Install ffmpeg (`winget install Gyan.FFmpeg`), point Settings -> Paths & binaries (or FFMPEG_PATH in .env.local) at a binary, " +
+      "or re-run `npm install` with network access. Trying bare `ffmpeg` on PATH.",
   );
   return isWin ? "ffmpeg.exe" : "ffmpeg";
 }
@@ -126,6 +136,10 @@ export function getFfprobePath(): string {
   }
 
   const siblingDirs: string[] = [];
+  // The Settings page override wins over the env override here exactly like in
+  // getFfmpegPath(), so ffprobe is looked up beside the ffmpeg actually in use.
+  const savedFfmpeg = getStoredPathSettings().ffmpegPath;
+  if (savedFfmpeg && /[\\/]/.test(savedFfmpeg)) siblingDirs.push(path.dirname(savedFfmpeg));
   const ffmpegOverride = process.env.FFMPEG_PATH?.trim();
   if (ffmpegOverride && /[\\/]/.test(ffmpegOverride)) siblingDirs.push(path.dirname(ffmpegOverride));
   if (typeof ffmpegStaticPath === "string" && ffmpegStaticPath) siblingDirs.push(path.dirname(ffmpegStaticPath));
@@ -272,7 +286,7 @@ export function runFfmpeg(
         new AppError("Failed to start FFmpeg.", {
           details: `${ffmpegBin}: ${error.message}`,
           resolution:
-            "Install ffmpeg (`winget install Gyan.FFmpeg` on Windows) or set FFMPEG_PATH in .env.local, then retry.",
+            "Install ffmpeg (`winget install Gyan.FFmpeg` on Windows), or point Settings -> Paths & binaries at your ffmpeg binary, then retry.",
         }),
       );
     });

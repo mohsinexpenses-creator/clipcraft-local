@@ -423,29 +423,40 @@ export const OverlayStyleEditor: React.FC<OverlayStyleEditorProps> = ({ kind, va
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap gap-2">
-        {presets.map((preset) => {
-          const isActive = preset._id === activeId;
-          return (
-            <button
-              key={preset._id}
-              onClick={() => handleSelect(preset._id)}
-              className={`flex cursor-pointer items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/40 ${
-                isActive
-                  ? 'border-transparent bg-primary text-primary-foreground'
-                  : 'border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground'
-              }`}
-            >
-              <Sparkles className="size-3.5" />
-              {preset.name}
-              {preset.isDefault && <Badge variant="secondary" className="ml-1 text-[10px]">default</Badge>}
-            </button>
-          );
-        })}
-        <Button variant="outline" size="sm" onClick={handleNew} disabled={isSaving}>
-          <Plus />
-          New style
-        </Button>
+      {/* Style gallery: a bounded scroll area, so the growing hook/CTA catalogue
+          never pushes the editor form down the page. */}
+      <div className="rounded-xl border bg-card/70 p-3 shadow-sm">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-[13px] font-semibold tracking-tight">
+            {kind === 'hook' ? 'Hook styles' : 'CTA styles'}
+            <Badge variant="secondary" className="ml-2 tabular">{presets.length}</Badge>
+          </p>
+          <Button variant="outline" size="sm" onClick={handleNew} disabled={isSaving}>
+            <Plus />
+            New style
+          </Button>
+        </div>
+        <div className="subtle-scroll mt-2.5 grid max-h-[240px] grid-cols-1 gap-1.5 overflow-y-auto pr-1 sm:grid-cols-2">
+          {presets.map((preset) => {
+            const isActive = preset._id === activeId;
+            return (
+              <button
+                key={preset._id}
+                type="button"
+                onClick={() => handleSelect(preset._id)}
+                className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-left text-[12.5px] font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/40 ${
+                  isActive
+                    ? 'border-primary/50 bg-primary/10 text-foreground'
+                    : 'border-border bg-background/50 text-muted-foreground hover:border-primary/25 hover:bg-muted hover:text-foreground'
+                }`}
+              >
+                <Sparkles className="size-3.5 shrink-0" />
+                <span className="min-w-0 flex-1 truncate">{preset.name}</span>
+                {preset.isDefault && <Badge variant="secondary" className="shrink-0 text-[9.5px]">default</Badge>}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {error && <p className="text-xs text-destructive">{error}</p>}

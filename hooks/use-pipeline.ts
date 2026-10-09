@@ -314,6 +314,54 @@ export function usePipeline(selectedVideoId: string | null) {
     [run]
   );
 
+  /**
+   * Stop the whole automatic chain for one video: rendering clips are halted,
+   * queued work is dropped and automation is switched off so nothing chains
+   * back in. Running transcription/detection finishes but starts nothing new.
+   */
+  const cancelPipeline = React.useCallback(
+    (videoId: string) =>
+      run(
+        `cancel-pipeline:${videoId}`,
+        () => requestJson(`/api/videos/${videoId}/cancel-pipeline`, { method: "POST" }),
+        {
+          success:
+            "Pipeline cancelled — queued work was dropped and automatic steps switched off for this video.",
+        }
+      ),
+    [run]
+  );
+
+  /**
+   * Push fresh render defaults onto clips of this video that were never
+   * rendered (pending/failed), so "Render pending" uses the settings the user
+   * just saved instead of the snapshot taken at detection time.
+   */
+  const applyRenderDefaults = React.useCallback(
+    (targets: ClipRecord[], edits: Record<string, unknown>) =>
+      run(
+        "apply-render-defaults",
+        async () => {
+          await Promise.all(
+            targets.map((clip) =>
+              requestJson(`/api/clips/${clip._id}`, {
+                method: "PATCH",
+                body: JSON.stringify(edits),
+              })
+            )
+          );
+          return targets.length;
+        },
+        {
+          success:
+            targets.length === 1
+              ? "Render settings applied to 1 unrendered clip."
+              : `Render settings applied to ${targets.length} unrendered clips.`,
+        }
+      ),
+    [run]
+  );
+
   const deleteClip = React.useCallback(
     (clip: ClipRecord) =>
       run(`delete:${clip._id}`, () => requestJson(`/api/clips/${clip._id}`, { method: "DELETE" }), {
@@ -399,6 +447,8 @@ export function usePipeline(selectedVideoId: string | null) {
     renderClip,
     saveClip,
     cancelClip,
+    cancelPipeline,
+    applyRenderDefaults,
     deleteClip,
     deleteVideo,
     saveAutomation,

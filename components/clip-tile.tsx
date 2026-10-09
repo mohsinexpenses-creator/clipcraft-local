@@ -134,6 +134,7 @@ export function ClipTile({ clip, captionPresets, busy, onEdit, onRender, onCance
   const isProcessing = clip.status === "processing";
   const isQueued = clip.status === "pending";
   const isFailed = clip.status === "failed";
+  const isLive = isProcessing || isQueued;
   const score = clipScore(clip);
   const title = clip.aiAnalysis?.viral_packaging.video_title || clip.hookText || "Untitled clip";
   const captionName =
@@ -142,19 +143,16 @@ export function ClipTile({ clip, captionPresets, busy, onEdit, onRender, onCance
     "default captions";
   const rank = clip.aiAnalysis?.rank;
 
-  // Muted autoplay preview on hover; click hands the native controls over.
-  const handleEnter = () => {
+  // Deliberately NO autoplay: a finished clip shows its first frame and waits.
+  // Playback starts only from an explicit click on the play button (which then
+  // swaps in the native controls) - never from hovering or from the grid
+  // re-rendering when the render finishes.
+  const startPlayback = () => {
     if (!isDone || engaged) return;
-    const element = videoRef.current;
-    if (!element) return;
-    void element.play().catch(() => undefined);
-  };
-  const handleLeave = () => {
-    if (!isDone || engaged) return;
-    const element = videoRef.current;
-    if (!element) return;
-    element.pause();
-    element.currentTime = 0;
+    setEngaged(true);
+    queueMicrotask(() => {
+      void videoRef.current?.play().catch(() => undefined);
+    });
   };
 
   return (
@@ -167,11 +165,7 @@ export function ClipTile({ clip, captionPresets, busy, onEdit, onRender, onCance
       )}
     >
       {/* ---------------- media ---------------- */}
-      <div
-        className="relative aspect-9/16 w-full overflow-hidden bg-muted"
-        onMouseEnter={handleEnter}
-        onMouseLeave={handleLeave}
-      >
+      <div className="relative aspect-9/16 w-full overflow-hidden bg-muted">
         {isDone ? (
           <video
             ref={videoRef}
@@ -181,7 +175,6 @@ export function ClipTile({ clip, captionPresets, busy, onEdit, onRender, onCance
             muted={!engaged}
             loop
             preload="metadata"
-            onPlay={() => setEngaged(true)}
             className="size-full object-cover"
           />
         ) : (
@@ -257,14 +250,12 @@ export function ClipTile({ clip, captionPresets, busy, onEdit, onRender, onCance
         {isDone && !engaged && (
           <button
             type="button"
-            onClick={() => {
-              setEngaged(true);
-              void videoRef.current?.play().catch(() => undefined);
-            }}
-            aria-label="Play preview"
-            className="absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition-opacity group-hover/tile:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none"
+            onClick={startPlayback}
+            aria-label={`Play ${title}`}
+            title="Play clip"
+            className="absolute inset-0 flex items-center justify-center bg-black/0 opacity-90 transition-opacity group-hover/tile:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none"
           >
-            <span className="flex size-11 items-center justify-center rounded-full bg-white/90 text-foreground shadow-lg backdrop-blur-sm">
+            <span className="flex size-11 items-center justify-center rounded-full bg-white/90 text-foreground shadow-lg backdrop-blur-sm transition-transform group-hover/tile:scale-105">
               <Play className="ml-0.5 size-5" />
             </span>
           </button>
@@ -309,6 +300,30 @@ export function ClipTile({ clip, captionPresets, busy, onEdit, onRender, onCance
             <PencilLine />
             Edit
           </Button>
+
+          {isLive && (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    onClick={() => onCancel(clip)}
+                    disabled={busy}
+                    aria-label={`Cancel ${title}`}
+                  />
+                }
+              >
+                <XCircle />
+                Cancel
+              </TooltipTrigger>
+              <TooltipContent>
+                {isProcessing
+                  ? "Stop this render - the worker halts within a couple of seconds"
+                  : "Drop this clip from the render queue"}
+              </TooltipContent>
+            </Tooltip>
+          )}
 
           {isDone && mediaUrl && (
             <Tooltip>

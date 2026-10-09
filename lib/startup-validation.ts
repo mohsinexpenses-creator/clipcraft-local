@@ -7,6 +7,7 @@ import { toErrorMessage } from './errors';
 import { getFfmpegPath } from './ffmpeg';
 import { LLM_PROVIDER_CHAIN, llmKeysFor } from './llm';
 import { loadEffectiveSettings } from './app-settings';
+import { resolveClipsDir } from './paths';
 import {
   getPlannedTranscriptionEngine,
   getWhisperCliPath,
@@ -381,12 +382,11 @@ async function validateRemotion(): Promise<StartupCheck> {
     problems.push(`missing Remotion entry point: ${entryPoint}`);
   }
 
-  const outputDir = path.join(process.cwd(), 'generated-clips');
+  const outputDir = resolveClipsDir();
   try {
-    fs.mkdirSync(outputDir, { recursive: true });
     fs.accessSync(outputDir, fs.constants.W_OK);
   } catch (error) {
-    problems.push(`generated-clips/ is not writable (${toErrorMessage(error)})`);
+    problems.push(`generated clips directory is not writable: ${outputDir} (${toErrorMessage(error)})`);
   }
 
   if (problems.length > 0) {

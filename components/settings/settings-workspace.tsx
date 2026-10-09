@@ -1,7 +1,6 @@
 "use client";
 
 import * as React from "react";
-import Link from "next/link";
 import {
   AlertTriangle,
   ArrowDown,
@@ -12,6 +11,7 @@ import {
   Clipboard,
   Cloud,
   Cpu,
+  FolderCog,
   Gauge,
   InfoIcon,
   KeyRound,
@@ -29,23 +29,18 @@ import { cn } from "cn";
 import type {
   AppSettingsSection,
   EnvHint,
+  PathSettings,
   PipelineOptions,
   RenderDefaults,
 } from "@/lib/types";
 import { useSettings, type VerifyResult } from "@/hooks/use-settings";
 import { AutomationPanel, NumberField } from "@/components/pipeline-settings";
+import { RenderSettingsPanel } from "@/components/render-settings-panel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import {
   Tooltip,
   TooltipContent,
@@ -74,6 +69,7 @@ const SECTIONS = [
   { id: "ai", label: "AI providers" },
   { id: "worker", label: "Worker & limits" },
   { id: "profanity", label: "Safety" },
+  { id: "paths", label: "Paths & binaries" },
 ] as const;
 
 export function SettingsWorkspace() {
@@ -149,6 +145,7 @@ export function SettingsWorkspace() {
           />
           <WorkerCard settings={settings} effective={effective} />
           <SafetyCard settings={settings} effective={effective} />
+          <PathsCard settings={settings} effective={effective} />
         </div>
       ) : null}
     </div>
@@ -456,11 +453,6 @@ function PipelineCard({
 /* Render clip defaults                                                       */
 /* -------------------------------------------------------------------------- */
 
-const ENGINE_LABELS: Record<string, string> = {
-  remotion: "Premium · animated overlays",
-  native: "Fast · ASS captions in one pass",
-};
-
 function RenderCard({
   settings,
   effective,
@@ -470,12 +462,8 @@ function RenderCard({
 }) {
   const [draft, setDraft] = React.useState<RenderDefaults | null>(null);
   const value = draft ?? effective.render;
-  const saved = effective.render;
   const sources = settings.sources.render ?? {};
-  const limits = settings.limits;
-
-  const patch = (partial: Partial<RenderDefaults>) =>
-    setDraft((current) => ({ ...(current ?? saved), ...partial }));
+  const configured = Object.values(sources).some((source) => source === "app");
 
   const save = async () => {
     if (!draft) return;
@@ -494,209 +482,15 @@ function RenderCard({
       onSave={() => void save()}
       footnote="Applies from the next detection or re-render onwards"
     >
-      <Row
-        label="Caption engine"
-        hint="Premium is slower and smoothest; Fast rasterizes captions with FFmpeg."
-        source={sources.captionEngine}
-      >
-        <Segmented
-          ariaLabel="Caption engine"
-          value={value.captionEngine}
-          onChange={(captionEngine) =>
-            patch({
-              captionEngine: captionEngine as RenderDefaults["captionEngine"],
-            })
-          }
-          options={(limits?.engines ?? ["remotion", "native"]).map(
-            (engine) => ({
-              value: engine,
-              label: engine === "remotion" ? "Premium" : "Fast",
-              hint: ENGINE_LABELS[engine],
-            }),
-          )}
-          disabled={settings.busy === "save:render"}
-        />
-      </Row>
-
-      <Row
-        label="Framing"
-        hint="Speaker focus glides one 9:16 window; split screen gives each person a pane."
-        source={sources.layout}
-      >
-        <Segmented
-          ariaLabel="Layout"
-          value={value.layout}
-          onChange={(layout) =>
-            patch({ layout: layout as RenderDefaults["layout"] })
-          }
-          options={[
-            { value: "speaker-focus", label: "Speaker focus" },
-            { value: "split-screen", label: "Split screen" },
-          ]}
-          disabled={settings.busy === "save:render"}
-        />
-      </Row>
-
-      <Row label="Color filter" source={sources.filterPreset}>
-        <Select
-          value={value.filterPreset}
-          onValueChange={(next) =>
-            patch({ filterPreset: String(next ?? "vibrant") })
-          }
-        >
-          <SelectTrigger className="h-8 text-[12px]">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent className="dark">
-            {(limits?.filterPresets ?? []).map((preset) => (
-              <SelectItem key={preset.id} value={preset.id}>
-                {preset.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </Row>
-
-      <Row
-        label="Caption preset"
-        hint={
-          value.captionPresetId ? undefined : (
-            <>
-              Uses the preset marked default on{" "}
-              <Link
-                href="/caption-presets"
-                className="underline underline-offset-2 hover:text-foreground"
-              >
-                Style presets
-              </Link>
-              , where the built-ins can also be re-synced.
-            </>
-          )
-        }
-        source={sources.captionPresetId}
-      >
-        <Select
-          value={value.captionPresetId ?? "__default"}
-          onValueChange={(next) =>
-            patch({
-              captionPresetId: next === "__default" ? null : String(next ?? ""),
-            })
-          }
-        >
-          <SelectTrigger className="h-8 text-[12px]">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent className="dark">
-            <SelectItem value="__default">Database default</SelectItem>
-            {settings.options.captionPresets.map((preset) => (
-              <SelectItem key={preset.id} value={preset.id}>
-                {preset.name}
-                {preset.isDefault ? " · table default" : ""}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </Row>
-
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Row
-          label="Hook style"
-          source={sources.hookStylePresetId}
-          className="sm:block"
-        >
-          <Select
-            value={value.hookStylePresetId ?? "__default"}
-            onValueChange={(next) =>
-              patch({
-                hookStylePresetId:
-                  next === "__default" ? null : String(next ?? ""),
-              })
-            }
-          >
-            <SelectTrigger className="mt-2 h-8 w-full text-[12px]">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent className="dark">
-              <SelectItem value="__default">Database default</SelectItem>
-              {settings.options.overlayPresets
-                .filter((preset) => preset.kind === "hook")
-                .map((preset) => (
-                  <SelectItem key={preset.id} value={preset.id}>
-                    {preset.name}
-                  </SelectItem>
-                ))}
-            </SelectContent>
-          </Select>
-        </Row>
-        <Row
-          label="CTA style"
-          source={sources.ctaStylePresetId}
-          className="sm:block"
-        >
-          <Select
-            value={value.ctaStylePresetId ?? "__default"}
-            onValueChange={(next) =>
-              patch({
-                ctaStylePresetId:
-                  next === "__default" ? null : String(next ?? ""),
-              })
-            }
-          >
-            <SelectTrigger className="mt-2 h-8 w-full text-[12px]">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent className="dark">
-              <SelectItem value="__default">Database default</SelectItem>
-              {settings.options.overlayPresets
-                .filter((preset) => preset.kind === "cta")
-                .map((preset) => (
-                  <SelectItem key={preset.id} value={preset.id}>
-                    {preset.name}
-                  </SelectItem>
-                ))}
-            </SelectContent>
-          </Select>
-        </Row>
-      </div>
-
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Row
-          label="Hook intro fallback (s)"
-          hint="Only used when a clip has no usable hook interval from the prompt - that interval normally decides the length. 0 turns the intro and hook text off."
-          source={sources.hookDuration}
-          className="sm:block"
-        >
-          <div className="mt-2">
-            <NumberField
-              id="default-hook-duration"
-              value={value.hookDuration}
-              min={limits?.overlayDuration.min ?? 0}
-              max={limits?.overlayDuration.max ?? 30}
-              step={0.5}
-              onCommit={(hookDuration) => patch({ hookDuration })}
-              disabled={settings.busy === "save:render"}
-            />
-          </div>
-        </Row>
-        <Row
-          label="CTA card (s)"
-          hint="Shown over the last seconds of the clip."
-          source={sources.ctaDuration}
-          className="sm:block"
-        >
-          <div className="mt-2">
-            <NumberField
-              id="default-cta-duration"
-              value={value.ctaDuration}
-              min={limits?.overlayDuration.min ?? 0}
-              max={limits?.overlayDuration.max ?? 30}
-              step={0.5}
-              onCommit={(ctaDuration) => patch({ ctaDuration })}
-              disabled={settings.busy === "save:render"}
-            />
-          </div>
-        </Row>
-      </div>
+      {configured ? <SourceChip source="app" className="-mb-1" /> : null}
+      <RenderSettingsPanel
+        value={value}
+        onChange={(next) => setDraft(next)}
+        limits={settings.limits}
+        captionPresets={settings.options.captionPresets}
+        overlayPresets={settings.options.overlayPresets}
+        disabled={settings.busy === "save:render"}
+      />
     </SettingsCard>
   );
 }
@@ -1344,7 +1138,9 @@ function WorkerCard({
   >({});
   const value = { ...effective.worker, ...draft };
   const limits = settings.limits?.concurrency;
-  const autoRemotion = effective.worker.remotionConcurrency === null;
+  // The draft wins over the saved value: switching Manual on/off must flip the
+  // row immediately, before anything is saved.
+  const autoRemotion = value.remotionConcurrency === null;
 
   const save = async () => {
     if (Object.keys(draft).length === 0) return;
@@ -1412,49 +1208,54 @@ function WorkerCard({
         />
       </Row>
 
-      <Row
-        label="Chrome tabs per render"
-        hint={
-          autoRemotion
-            ? "Unset: the renderer picks half your CPU cores."
-            : "Saved here and applied on the next render - no restart needed."
-        }
-        source={settings.sources.worker?.remotionConcurrency}
-      >
-        <div className="flex items-center gap-2">
-          <Switch
-            id="remotion-auto"
-            checked={!autoRemotion}
-            onCheckedChange={(checked) =>
-              setDraft((current) => ({
-                ...current,
-                remotionConcurrency: checked
-                  ? (effective.worker.remotionConcurrency ?? 2)
-                  : null,
-              }))
-            }
-            disabled={settings.busy === "save:worker"}
-          />
-          <Label
-            htmlFor="remotion-auto"
-            className="text-[11.5px] font-normal text-muted-foreground"
-          >
-            Manual
-          </Label>
-          <div className="w-[70px]">
-            <NumberField
-              id="remotion-concurrency"
-              value={effective.worker.remotionConcurrency ?? 0}
-              min={limits?.remotion.min ?? 1}
-              max={limits?.remotion.max ?? 32}
-              disabled={autoRemotion || settings.busy === "save:worker"}
-              onCommit={(remotionConcurrency) =>
-                setDraft((current) => ({ ...current, remotionConcurrency }))
+      <div className="space-y-1.5">
+        <Row
+          label="Chrome tabs per render"
+          hint="Each clip render paints its captions and overlays inside ONE headless Chrome - and Chrome renders a page per tab. This setting is how many tabs that single Chrome opens to render frames in parallel: more tabs = a faster render, but each tab needs its own RAM and CPU share. Leave it on Auto unless renders are slow (raise it) or your machine runs out of memory (lower it). Applied on the next render - no restart needed."
+          source={settings.sources.worker?.remotionConcurrency}
+        >
+          <div className="flex items-center gap-2">
+            <Switch
+              id="remotion-auto"
+              checked={!autoRemotion}
+              onCheckedChange={(checked) =>
+                setDraft((current) => ({
+                  ...current,
+                  remotionConcurrency: checked
+                    ? (current.remotionConcurrency ??
+                      effective.worker.remotionConcurrency ??
+                      2)
+                    : null,
+                }))
               }
+              disabled={settings.busy === "save:worker"}
             />
+            <Label
+              htmlFor="remotion-auto"
+              className="text-[11.5px] font-normal text-muted-foreground"
+            >
+              Manual
+            </Label>
+            <div className="w-[70px]">
+              <NumberField
+                id="remotion-concurrency"
+                value={value.remotionConcurrency ?? 2}
+                min={limits?.remotion.min ?? 1}
+                max={limits?.remotion.max ?? 32}
+                disabled={autoRemotion || settings.busy === "save:worker"}
+                onCommit={(remotionConcurrency) =>
+                  setDraft((current) => ({ ...current, remotionConcurrency }))
+                }
+              />
+            </div>
           </div>
-        </div>
-      </Row>
+        </Row>
+        <p className="text-[10.5px] leading-snug text-muted-foreground">
+          {autoRemotion
+            ? "Auto: the renderer opens half of your CPU threads as tabs for every render."
+            : `Manual: every render opens ${value.remotionConcurrency ?? 2} Chrome tab${(value.remotionConcurrency ?? 2) === 1 ? "" : "s"}.`}
+        </p>
+      </div>
 
       <LeftoverEnvList
         env={settings.env}
@@ -1572,6 +1373,112 @@ const AUDIO_MODES = [
       "Only the text is masked. Use where you control the platform policy.",
   },
 ];
+
+/* -------------------------------------------------------------------------- */
+/* Paths & binaries                                                           */
+/* -------------------------------------------------------------------------- */
+
+const PATH_FIELDS = [
+  {
+    key: "uploadDir" as const,
+    label: "Upload directory",
+    hint: "Where uploaded source videos are stored. Already imported videos keep the location they were saved to - this only affects new uploads.",
+  },
+  {
+    key: "clipsDir" as const,
+    label: "Generated clips directory",
+    hint: "Where rendered 9:16 clips are written, one folder per video. Already rendered clips keep playing - the player resolves this folder at request time.",
+  },
+  {
+    key: "ffmpegPath" as const,
+    label: "FFmpeg path",
+    hint: "Absolute path to the ffmpeg executable. Leave empty to use the bundled binary (ffmpeg-static) or whatever is on PATH. ffprobe is looked up beside it.",
+  },
+  {
+    key: "whisperCliPath" as const,
+    label: "Whisper CLI path",
+    hint: "Absolute path to the whisper.cpp CLI (whisper-cli / whisper-cli.exe) used for local transcription. Leave empty to auto-detect bin/ and the bundled locations. Not needed when you transcribe with Deepgram.",
+  },
+];
+
+function PathsCard({
+  settings,
+  effective,
+}: {
+  settings: SettingsController;
+  effective: NonNullable<SettingsController["effective"]>;
+}) {
+  const [draft, setDraft] = React.useState<Partial<PathSettings>>({});
+  const value = { ...effective.paths, ...draft };
+  const resolved = settings.payload?.resolvedPaths;
+  const busy = settings.busy === "save:paths";
+
+  const save = async () => {
+    if (Object.keys(draft).length === 0) return;
+    const ok = await settings.save("paths", draft);
+    if (ok) setDraft({});
+  };
+
+  return (
+    <SettingsCard
+      section="paths"
+      title="Paths & binaries"
+      description="Default locations for uploads and rendered clips, and the FFmpeg / whisper.cpp binaries that do the work. Leave a field empty to keep the automatic value shown below it - a saved value takes over from the next upload or render, no restart needed."
+      icon={<FolderCog className="size-4" />}
+      settings={settings}
+      dirty={Object.keys(draft).length > 0}
+      onSave={() => void save()}
+      footnote="A saved value takes precedence over .env.local (UPLOAD_DIR, FFMPEG_PATH, WHISPER_CLI_PATH)"
+    >
+      <div className="grid gap-3.5">
+        {PATH_FIELDS.map((field) => {
+          const inUse =
+            field.key === "uploadDir"
+              ? resolved?.uploadDir
+              : field.key === "clipsDir"
+                ? resolved?.clipsDir
+                : field.key === "ffmpegPath"
+                  ? resolved?.ffmpegPath
+                  : resolved?.whisperCliPath ||
+                    "not found - local transcription unavailable";
+          return (
+            <div key={field.key} className="space-y-1">
+              <Row
+                label={field.label}
+                hint={field.hint}
+                source={settings.sources.paths?.[field.key]}
+                className="items-start"
+              >
+                <Input
+                  value={value[field.key]}
+                  onChange={(event) =>
+                    setDraft((currentDraft) => ({
+                      ...currentDraft,
+                      [field.key]: event.target.value,
+                    }))
+                  }
+                  placeholder={inUse}
+                  spellCheck={false}
+                  autoComplete="off"
+                  className="h-8 font-mono text-[11.5px]"
+                  aria-label={field.label}
+                  disabled={busy}
+                />
+              </Row>
+              <p
+                className="truncate font-mono text-[10.5px] text-muted-foreground/80"
+                title={inUse}
+              >
+                <span className="text-muted-foreground/60">in use: </span>
+                {inUse}
+              </p>
+            </div>
+          );
+        })}
+      </div>
+    </SettingsCard>
+  );
+}
 
 /* -------------------------------------------------------------------------- */
 /* Verification results                                                       */

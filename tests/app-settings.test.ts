@@ -366,3 +366,56 @@ test('the ai section round-trips its keys without ever returning one in full', a
     setSettingsStoreForTests(null);
   }
 });
+
+/**
+ * The `paths` section (upload/clips directories + binaries) follows the same
+ * precedence rule as everything else, with one twist: the built-in default is
+ * "automatic" (empty string), and an empty save means "back to automatic".
+ */
+test('paths settings: stored values win, empty means automatic, and resolveSettings stays pure', () => {
+  const { effective, sources } = resolveSettings({});
+  assert.deepEqual(effective.paths, { uploadDir: '', clipsDir: '', ffmpegPath: '', whisperCliPath: '' });
+  assert.deepEqual(Object.values(sources.paths ?? {}), ['default', 'default', 'default', 'default']);
+
+  const stored = resolveSettings({
+    paths: { clipsDir: '/data/clips', ffmpegPath: 'C:\\ffmpeg\\bin\\ffmpeg.exe' },
+  });
+  assert.equal(stored.effective.paths.clipsDir, '/data/clips');
+  assert.equal(stored.effective.paths.ffmpegPath, 'C:\\ffmpeg\\bin\\ffmpeg.exe');
+  assert.equal(stored.effective.paths.uploadDir, '');
+  assert.equal(stored.sources.paths?.clipsDir, 'app');
+  assert.equal(stored.sources.paths?.uploadDir, 'default');
+});
+
+test('paths settings: sanitize trims, clears on empty/null and rejects control characters', async () => {
+  const rows = new Map<AppSettingsSection, Record<string, unknown>>();
+  setSettingsStoreForTests({
+    read: () => [...rows].map(([key, value]) => ({ key, value })),
+    write: (section, value) => {
+      if (value === null) rows.delete(section);
+      else rows.set(section, value);
+      return new Date().toISOString();
+    },
+  });
+
+  try {
+    await saveSettingsSection('paths', { uploadDir: '  /mnt/videos  ', whisperCliPath: '/opt/whisper-cli' });
+    assert.equal(rows.get('paths')?.uploadDir, '/mnt/videos', 'paths are trimmed before storage');
+    assert.equal(rows.get('paths')?.whisperCliPath, '/opt/whisper-cli');
+
+    // An empty value is the user switching back to the automatic chain.
+    await saveSettingsSection('paths', { uploadDir: '' });
+    const snapshot = await buildAppSettingsSnapshot();
+    assert.equal(snapshot.effective.paths.uploadDir, '');
+    assert.equal(snapshot.sources.paths?.uploadDir, 'default');
+    assert.equal(snapshot.effective.paths.whisperCliPath, '/opt/whisper-cli', 'untouched fields survive a partial save');
+
+    await assert.rejects(
+      () => saveSettingsSection('paths', { ffmpegPath: '/bad\u0000path' }),
+      /control characters/,
+      'a NUL byte in a path is refused'
+    );
+  } finally {
+    setSettingsStoreForTests(null);
+  }
+});

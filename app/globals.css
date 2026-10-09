@@ -301,6 +301,21 @@
   }
 }
 
+/*
+ * Fullscreen playback: clips are 9:16 while monitors are 16:9, so the video
+ * must letterbox by HEIGHT (object-fit: contain) instead of filling the width
+ * and cropping the top and bottom. The tile itself crops with object-cover on
+ * purpose - only the fullscreen element switches.
+ */
+video:fullscreen {
+  object-fit: contain;
+  background: #000;
+}
+video:-webkit-full-screen {
+  object-fit: contain;
+  background: #000;
+}
+
 /* Respect the user's motion preference for every custom animation above. */
 @media (prefers-reduced-motion: reduce) {
   .animate-fade-up,

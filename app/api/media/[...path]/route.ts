@@ -1,6 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import { NextRequest, NextResponse } from 'next/server';
+import { getUploadDirValue } from '@/lib/upload';
+import { getClipsDirValue } from '@/lib/paths';
 
 /**
  * Streams files that live inside the project (uploads/, generated-clips/, public/)
@@ -8,11 +10,21 @@ import { NextRequest, NextResponse } from 'next/server';
  *
  * This route is what makes clip playback work: a <video> served from a normal HTTP
  * origin, instead of a `file://` path that headless Chrome refuses to load.
+ *
+ * `uploads` and `generated-clips` are LOGICAL prefixes: they resolve to wherever
+ * the Settings page currently points them (lib/upload.ts, lib/paths.ts), so a
+ * changed directory never breaks URLs stored on clip records.
  */
 
 export const runtime = 'nodejs';
 
 const ALLOWED_DIRS = ['uploads', 'generated-clips', 'public'];
+
+function rootForAllowedDir(dir: string): string {
+  if (dir === 'uploads') return path.resolve(getUploadDirValue());
+  if (dir === 'generated-clips') return path.resolve(getClipsDirValue());
+  return path.resolve(process.cwd(), dir);
+}
 
 function contentTypeFor(fileName: string): string {
   const ext = path.extname(fileName).toLowerCase();
@@ -48,18 +60,21 @@ function contentTypeFor(fileName: string): string {
 }
 
 /**
- * A directory prefix check MUST include the separator, otherwise a sibling directory
- * with a shared prefix is accepted too: `generated-clips-evil/x.mp4` passes
- * `startsWith('/…/generated-clips')`, and so does `uploads2/…`.
+ * Maps a request path onto its directory root and refuses anything that could
+ * escape it. The first URL segment selects the root; `..` segments are resolved
+ * FIRST and then checked against the root with a separator-terminated prefix,
+ * otherwise a sibling directory with a shared prefix would pass too
+ * (`generated-clips-evil/x.mp4` passes a plain `startsWith('…/generated-clips')`).
  */
-function isInsideAllowedDir(absolutePath: string): boolean {
-  const cwd = process.cwd();
+function resolveInsideAllowedDir(pathSegments: string[]): string | null {
+  const [first, ...rest] = pathSegments;
+  if (!first || !ALLOWED_DIRS.includes(first)) return null;
 
-  return ALLOWED_DIRS.some((dir) => {
-    const root = path.resolve(cwd, dir);
-    const rootWithSep = root.endsWith(path.sep) ? root : root + path.sep;
-    return absolutePath === root || absolutePath.startsWith(rootWithSep);
-  });
+  const root = rootForAllowedDir(first);
+  const absolutePath = path.resolve(root, rest.join('/'));
+  const rootWithSep = root.endsWith(path.sep) ? root : root + path.sep;
+  if (absolutePath !== root && !absolutePath.startsWith(rootWithSep)) return null;
+  return absolutePath;
 }
 
 function streamFile(
@@ -97,17 +112,16 @@ export async function GET(
 
   try {
     const { path: pathSegments } = await params;
-    const relativePath = (pathSegments || []).join('/');
 
-    if (!relativePath) {
+    if (!pathSegments || pathSegments.length === 0) {
       return new NextResponse('Bad request', { status: 400 });
     }
 
-    absolutePath = path.resolve(process.cwd(), relativePath);
-
-    if (!isInsideAllowedDir(absolutePath)) {
+    const resolved = resolveInsideAllowedDir(pathSegments);
+    if (!resolved) {
       return new NextResponse('Forbidden', { status: 403 });
     }
+    absolutePath = resolved;
 
     if (!fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) {
       return new NextResponse('File not found', { status: 404 });
