@@ -2,10 +2,9 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { AppError, RenderCancelledError, toErrorMessage } from '../lib/errors';
-import { runFfmpeg } from '../lib/ffmpeg';
 import { maskProfanity } from '../lib/profanity';
 import { CaptionPreset, OverlayStylePreset, WordTimestamp } from '../lib/types';
-import { HOOK_TRANSITION_SECONDS, ffmpegFpsArg, normalizeFps } from './ffmpeg-pipeline';
+import { HOOK_TRANSITION_SECONDS, normalizeFps } from './ffmpeg-pipeline';
 import { color, log } from '../lib/logger';
 import { getRemotionBundle, type PreparedCaptionOverlays } from './remotion-renderer';
 import { generateAssFile } from './captions-ass';
@@ -30,6 +29,8 @@ export interface PrepareNativeOverlaysOptions {
 
 const OUTPUT_WIDTH = 1080;
 const OUTPUT_HEIGHT = 1920;
+/** File name of the ASS burned by processVideoSegment (relative to workDir). */
+export const NATIVE_ASS_FILE = 'captions.ass';
 
 function checkCancelled(isCancelled?: () => boolean): void {
   try {
@@ -103,20 +104,25 @@ async function renderRemotionFrames(opts: {
 }
 
 /**
- * Fast caption-engine overlay preparation. Captions are rasterized from ASS to
- * transparent PNGs with FFmpeg; hook/CTA cards use the existing Remotion PNG
- * compositions. No video is opened or encoded here. `processVideoSegment()` later
- * overlays these assets onto the crop and writes the final video in one pass.
+ * Fast caption-engine overlay preparation.
+ *
+ * Captions are NOT rasterized to PNGs here: libass in current FFmpeg builds
+ * cannot produce transparent subtitle frames (the `color=c=black@0.0` canvas
+ * comes out OPAQUE - the source silently drops the `@0.0` alpha - and the ass
+ * filter never raises the alpha channel of the frame it renders onto), which
+ * used to cover the whole clip in a black screen. Instead the ASS file is
+ * handed to `processVideoSegment`, which burns it straight onto the opaque
+ * video in the final encode - same one-pass output, zero transparency
+ * pitfalls, and one fewer rasterize/encode/decode round trip.
+ *
+ * Hook/CTA cards keep the Remotion PNG route (Chrome paints true-alpha frames).
  */
 export async function prepareNativeCaptionOverlays(
   options: PrepareNativeOverlaysOptions
 ): Promise<PreparedCaptionOverlays> {
   const fps = normalizeFps(options.fps);
   const totalDuration = Math.max(0.1, options.totalDuration);
-  const durationInFrames = Math.max(1, Math.round(totalDuration * fps));
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clipcraft-native-'));
-  const captionDir = path.join(workDir, 'captions');
-  fs.mkdirSync(captionDir, { recursive: true });
 
   try {
     checkCancelled(options.isCancelled);
@@ -131,8 +137,7 @@ export async function prepareNativeCaptionOverlays(
       : 0;
     const hookOverlayEnd = Math.max(0, options.hookDuration - transitionDuration);
     const ctaStart = Math.max(0, totalDuration - options.ctaDuration);
-    const assFile = 'captions.ass';
-    fs.writeFileSync(path.join(workDir, assFile), generateAssFile({
+    fs.writeFileSync(path.join(workDir, NATIVE_ASS_FILE), generateAssFile({
       words: options.words,
       preset: options.preset,
       totalDurationSeconds: totalDuration,
@@ -142,37 +147,9 @@ export async function prepareNativeCaptionOverlays(
       hookTransitionDuration: transitionDuration,
       captionLiftScale: options.captionLiftScale,
     }), 'utf8');
+    log.detail(`Native captions: ASS burned directly onto the video (${color.bold(NATIVE_ASS_FILE)})`);
 
-    log.detail(`Native caption overlay frames for ${color.bold(`${durationInFrames} frames @ ${fps}fps`)}`);
-    await runFfmpeg(
-      [
-        '-y',
-        '-hide_banner',
-        '-loglevel', 'error',
-        '-f', 'lavfi',
-        '-i', `color=c=black@0.0:s=${OUTPUT_WIDTH}x${OUTPUT_HEIGHT}:r=${ffmpegFpsArg(fps)}:d=${totalDuration.toFixed(4)}`,
-        '-vf', `format=rgba,ass=${assFile}`,
-        '-frames:v', String(durationInFrames),
-        '-start_number', '1',
-        '-c:v', 'png',
-        '-pix_fmt', 'rgba',
-        path.join(captionDir, 'frame_%05d.png'),
-      ],
-      {
-        label: 'native-caption-pngs',
-        cwd: workDir,
-        totalDurationSeconds: totalDuration,
-        isCancelled: options.isCancelled,
-        onProgress: ({ percent }) => {
-          if (percent !== undefined && options.onProgress) options.onProgress(percent * 0.7);
-        },
-      }
-    );
-    const captionPattern = normalizePngSequence(captionDir);
-
-    const sequences: PreparedCaptionOverlays['sequences'] = [
-      { name: 'native captions', inputPattern: captionPattern, startAtSeconds: 0 },
-    ];
+    const sequences: PreparedCaptionOverlays['sequences'] = [];
     const hookEnabled = options.hookDuration > 0 && options.hookText.trim().length > 0 && hookOverlayEnd > 0.05;
     const ctaEnabled = options.ctaDuration > 0 && options.ctaText.trim().length > 0;
 
@@ -220,13 +197,13 @@ export async function prepareNativeCaptionOverlays(
 
     checkCancelled(options.isCancelled);
     if (options.onProgress) options.onProgress(100);
-    return { workDir, sequences };
+    return { workDir, sequences, assFile: NATIVE_ASS_FILE };
   } catch (error) {
     try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* best-effort */ }
     if (error instanceof RenderCancelledError || error instanceof AppError) throw error;
     throw new AppError('Native caption overlay rendering failed.', {
       details: toErrorMessage(error),
-      resolution: 'Inspect the FFmpeg and Remotion logs above, confirm libass is available, and retry.',
+      resolution: 'Inspect the Remotion log above, confirm the hook/CTA overlay bundle builds, and retry.',
     });
   }
 }

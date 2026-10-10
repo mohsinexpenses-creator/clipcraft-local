@@ -47,26 +47,22 @@ These four reproduce the previously hardcoded overlay looks 1:1.
 
 ## Overlays follow the layout
 
-The preset positions — captions (`positionY`, % from the **bottom**, 22–30 by default), hook
-(% from the top, 12) and CTA (% from the top, 64–66) — were designed for **speaker focus**: one
-person, face near the upper third, torso below. Speaker focus uses them exactly as saved.
+The **captions** own their position (`positionY`, % from the **bottom**, 22–30 by default).
+The **hook** and **CTA** cards are always placed **directly above the caption block** — one
+fixed gap above the captions' top edge, whatever the layout. That is the single rule, applied
+identically in **speaker focus** and **split screen** (`worker/overlay-layout.ts` +
+`lib/overlay-stack.ts`):
 
-In a **split screen** those same pixels land on the two faces (the caption on the lower
-person's eyes, the CTA on their forehead, the hook on the upper person's brow), so the
-placement is recomputed from where the heads really are on the 1080×1920 canvas
-(`worker/overlay-layout.ts`):
-
-- **A preset position that does not cover a face is kept** — nothing moves unless it has to.
-  In a split screen the position setting is therefore a *preference*.
-- Otherwise the **captions** move to the seam between the panes (the free band between the two
-  heads), the **hook** to the nearest face-safe spot (with the default 38% face target, often
-  below the upper head), and the **CTA** to the nearest free spot (often below the captions).
-- Overlays never cover each other, and the usual "lift the captions while the CTA card is on
-  screen" is switched off (the CTA no longer shares their area).
-- The hook and the CTA are only on screen for a few seconds, so each is placed against where
-  the faces are **during those seconds** (the replayed hook moment, the last 2.5 s) — a person
-  who briefly stands up at 0:24 does not push the end card around for the whole clip. Captions
-  are always on screen, so they avoid every place a face ever goes.
+- The **captions** keep their preset position unless, in a split screen, that position would
+  cover a face — then they move to the nearest face-free band (the seam between the two
+  heads). The hook and CTA follow the captions wherever they land, staying stacked above them.
+- The **hook** and **CTA** cards are stacked directly above the captions, never on top of a
+  face and never overlapping the caption block. Card heights are estimated from the style and
+  the text so the next element lands exactly one gap above them; if the stack would run off the
+  top of the frame it is clamped to a top margin instead.
+- Because the cards sit above the captions, the old "lift the captions while the CTA card is on
+  screen" behaviour is switched off (`captionLiftScale = 0`) — the cards never share the
+  caption area, so there is nothing to lift out of the way.
 - Only `positionY` is changed, on a copy: fonts, colours, card styling and animation are exactly
   your preset's, and the preset you saved is never modified.
 
@@ -94,8 +90,9 @@ FFmpeg composites with the source crop in the single final video pass:
 
 - **Remotion** — `CaptionOverlayComposition` paints the full-timeline captions,
   hook and CTA into one transparent PNG sequence.
-- **Native (fast)** — ASS subtitles are rasterized to transparent caption PNGs;
-  `HookOverlayComposition` / `CtaOverlayComposition` paint the hook/CTA layers.
+- **Native (fast)** — ASS captions are burned straight onto the video by libass
+  (transparent caption PNGs are impossible on current FFmpeg); hook/CTA cards are still
+  painted by `HookOverlayComposition` / `CtaOverlayComposition`.
 
 Neither engine encodes the source video, so switching engines does not introduce
 an extra lossy video generation.

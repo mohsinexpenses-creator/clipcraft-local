@@ -440,8 +440,8 @@ worker/camera-lock.ts      locked split-pane camera (hold still, re-centre only 
 worker/overlay-layout.ts   layout-aware caption / hook / CTA placement (off the faces in a split)
 worker/ffmpeg-pipeline.ts  One final FFmpeg graph: hflip → crop → colour → hook → overlays → H.264
 worker/remotion-renderer.ts  "remotion" engine: transparent full-timeline overlay PNG sequence
-worker/native-captions.ts  "native" engine: ASS caption PNGs + Remotion hook/CTA sequences
-worker/captions-ass.ts     ASS caption generation (karaoke fill, word pop, CTA lift)
+worker/native-captions.ts  "native" engine: ASS caption file (burned by libass) + Remotion hook/CTA sequences
+worker/captions-ass.ts     ASS caption generation (karaoke fill, word pop; burned by libass)
 remotion/                  CaptionComposition + AnimatedWord + Hook/CTA overlays
 scripts/setup-whisper.*    binary + ggml model downloader (.mjs and .ps1)
 scripts/setup-yunet.mjs    YuNet model downloader with SHA-256 verification

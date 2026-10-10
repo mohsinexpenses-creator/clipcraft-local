@@ -543,20 +543,13 @@ export const OverlayStyleEditor: React.FC<OverlayStyleEditorProps> = ({ kind, va
               />
             </div>
 
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <Label htmlFor={`style-position-${kind}`}>Position (from top)</Label>
-                <span className="text-xs text-muted-foreground">{draft.positionY}%</span>
-              </div>
-              <Slider
-                id={`style-position-${kind}`}
-                min={4}
-                max={80}
-                step={1}
-                value={draft.positionY}
-                onValueChange={(v) => patch({ positionY: v })}
-                aria-label="Position from top"
-              />
+            <div className="space-y-1.5 rounded-lg border bg-muted/40 p-3">
+              <p className="text-xs font-medium">Placement</p>
+              <p className="text-[11px] leading-snug text-muted-foreground">
+                The card is always stacked directly above the captions - in every
+                framing layout and both caption engines - so there is no manual
+                position to set here.
+              </p>
             </div>
 
             <div className="space-y-2">

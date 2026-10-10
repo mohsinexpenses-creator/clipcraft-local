@@ -10,6 +10,13 @@ interface HookOverlayProps {
   fps: number;
   /** Visual style preset for the hook card. */
   style?: OverlayStylePreset;
+  /**
+   * Vertical position (% from the top) chosen by the placement planner -
+   * the card is stacked directly above the captions. Wins over
+   * `style.positionY`; the preview composition computes it the same way the
+   * worker does (lib/overlay-stack).
+   */
+  topPercent?: number;
 }
 
 function animationTransform(
@@ -46,6 +53,7 @@ export const HookOverlay: React.FC<HookOverlayProps> = ({
   frame,
   fps,
   style,
+  topPercent,
 }) => {
   const text = hookText?.trim();
   if (!text || hookDurationInSeconds <= 0) return null;
@@ -85,7 +93,7 @@ export const HookOverlay: React.FC<HookOverlayProps> = ({
     <div
       style={{
         position: 'absolute',
-        top: `${style?.positionY ?? 12}%`,
+        top: `${topPercent ?? style?.positionY ?? 12}%`,
         left: '6%',
         right: '6%',
         zIndex: 30,

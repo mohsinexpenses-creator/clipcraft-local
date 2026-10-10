@@ -12,6 +12,18 @@ import { normalizeFps } from './ffmpeg-pipeline';
 export interface PreparedCaptionOverlays {
   workDir: string;
   sequences: OverlayFrameSequence[];
+  /**
+   * NATIVE ENGINE ONLY: the ASS file (relative to `workDir`) that
+   * `processVideoSegment` burns straight onto the video with libass.
+   *
+   * The old approach rasterized the ASS onto transparent PNGs first, but the
+   * `color=c=black@0.0` canvas comes out OPAQUE on FFmpeg 7 builds (the source
+   * silently drops the `@0.0` alpha, and libass never raises the alpha channel
+   * of the frame it renders onto), so the PNGs covered the whole clip in black.
+   * Burning the ASS directly onto the (opaque) video needs no transparency at
+   * all and skips an entire rasterize/encode/decode round trip.
+   */
+  assFile?: string;
 }
 
 export interface PrepareRemotionOverlaysOptions {

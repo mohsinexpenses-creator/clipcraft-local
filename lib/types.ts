@@ -471,12 +471,13 @@ export interface OverlayStylePreset {
 }
 
 /**
- * How transparent caption/overlay frames are prepared before the final FFmpeg
- * video pass:
+ * How captions and overlays reach the final FFmpeg video pass:
  * - `remotion`: the full caption + hook + CTA timeline is painted by headless
- *   Chrome (smooth spring animations, slower on long clips).
- * - `native`: ASS captions are rasterized to PNGs; hook/CTA cards are still
- *   designed in Remotion and painted as transparent frame sequences.
+ *   Chrome as transparent PNGs (smooth spring animations, slower on long clips).
+ * - `native`: captions are an ASS file burned straight onto the video with
+ *   libass (transparent caption PNGs are impossible on current FFmpeg); the
+ *   hook/CTA cards are still designed in Remotion and composited as
+ *   transparent frame sequences on top.
  */
 export type CaptionEngine = 'remotion' | 'native';
 

@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { DEFAULT_CAPTION_PRESETS } from '../lib/presets';
 
-test('eight built-in rich caption presets extend the catalogue, and exactly one preset is the default', () => {
+test('fourteen built-in rich caption presets extend the catalogue, and exactly one preset is the default', () => {
   const richPresets = DEFAULT_CAPTION_PRESETS.filter((preset) => Boolean(preset.lineStyles?.length));
-  assert.equal(richPresets.length, 8);
+  assert.equal(richPresets.length, 14);
   // One default, and it is the multi-line "Dual Beat Highlight" - the legacy
   // single-line presets stay in the catalogue, they are just no longer what a fresh
   // install starts with.

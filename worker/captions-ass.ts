@@ -1,16 +1,19 @@
 /**
  * Pure ASS (Advanced SubStation Alpha) generation for the NATIVE caption engine.
  *
- * The ASS file is rasterized onto a transparent PNG sequence by FFmpeg, which
- * runs at native speed instead of painting caption pixels in headless Chrome.
- * The final source video and these overlays are composited in one FFmpeg encode.
- * The visual language mirrors remotion/AnimatedWord:
+ * The ASS file is BURNED straight onto the composed video by libass inside the
+ * final FFmpeg encode - it is NOT rasterized to PNGs first (libass never writes
+ * the alpha channel and the transparent `color` canvas comes out opaque on
+ * FFmpeg 7, so transparent caption PNGs are not possible). Burning directly is
+ * faster and avoids the black-screen that the PNG route produced. The visual
+ * language mirrors remotion/AnimatedWord:
  *
  * - 4-word caption chunks (same buildCaptionChunks logic)
  * - line pop-in / fade-in entrances (ASS \t transforms, per animation style)
  * - karaoke styles get per-word {\k} fill highlighting (highlight colour eats
  *   through the line in sync with speech)
- * - captions lift up while the CTA card is on screen (same CTA window math)
+ * - caption lift is driven by captionLiftScale (0 today: the CTA card stacks
+ *   above the captions instead of lifting them)
  * - 0.35s hold after a chunk, like the Remotion renderer
  *
  * What ASS cannot do: spring physics (overshoot) and per-word scaling on the

@@ -53,7 +53,7 @@ pauses the chain: it recovers at the step where it stopped.
    then one FFmpeg filter graph performs the mirror/crop/colour work, hook intro,
    caption + card compositing, and the single final H.264 encode. The `remotion`
    engine (default, “Premium”) paints animated overlays in headless Chrome; `native`
-   (“Fast”) rasterizes ASS captions and uses Remotion only for the hook/CTA cards.
+   (“Fast”) burns ASS captions straight onto the video and uses Remotion only for the hook/CTA cards.
    Both produce the same 1080×1920 output path without a lossy intermediate video.
    On-screen hook/CTA text comes from user-editable **style presets** (font,
    colours, position, animation, solid or **gradient** card background).
@@ -125,7 +125,7 @@ made yourself and the preset you marked default.
 | Speech-to-text | whisper.cpp (local binary + ggml model; optional Deepgram override) |
 | Face detection | OpenCV **YuNet** ONNX on `onnxruntime-node` (no face-api, no vision APIs) |
 | LLM | Google AI Studio only — a 5-slot Gemini fallback chain in `lib/llm.ts` (plain `fetch`, no SDKs) |
-| Caption overlays | Remotion transparent frames (default) or native ASS rasterization (fast) |
+| Caption overlays | Remotion transparent frames (default) or native ASS burned straight onto the video (fast) |
 
 ## Quickstart
 
@@ -192,7 +192,7 @@ worker/                 the long-running SQLite queue consumer
   layout.ts             speaker-focus vs split-grid plans (peak-concurrent cells)
   ffmpeg-pipeline.ts    crop/overlay graph and single final H.264 encode
   remotion-renderer.ts  "remotion" transparent overlay-frame renderer
-  native-captions.ts    "native" ASS caption PNGs + hook/CTA overlay frames
+  native-captions.ts    "native" engine: ASS caption file + Remotion hook/CTA sequences
 remotion/               compositions: captions, hook overlay, CTA overlay
 scripts/                setup-whisper.{mjs,ps1}, setup-yunet.mjs, verify-clip.ts
 bin/whisper-win-x64/    committed Windows whisper.cpp build (whisper-cli + DLLs)

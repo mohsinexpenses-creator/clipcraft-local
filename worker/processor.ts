@@ -436,7 +436,7 @@ export async function processClipJob(
     const ctaStyleForRender = overlayLayout.ctaStyle ?? ctaStyle;
 
     log.step(
-      `Step 2/3 · Render transparent overlays  ${color.gray(`(${engine === 'native' ? 'native ASS + Remotion cards' : 'Remotion'}, ` +
+      `Step 2/3 · Render transparent overlays  ${color.gray(`(${engine === 'native' ? 'native ASS burn + Remotion cards' : 'Remotion'}, ` +
       `${clipWords.length} words, preset "${preset.name}")`)}`
     );
     const overlayProgressSink = (progress: number): void => {
@@ -519,6 +519,9 @@ export async function processClipJob(
         targetFps: renderFps,
         sourceHasAudio: sourceMeta.hasAudio,
         overlays: preparedOverlays.sequences,
+        assFilePath: preparedOverlays.assFile
+          ? path.join(preparedOverlays.workDir, preparedOverlays.assFile)
+          : undefined,
         words: clipWords,
         debugOutputPath: process.env.SAVE_PRECAPTION_DEBUG?.trim() === '1'
           ? intermediateVideoPath

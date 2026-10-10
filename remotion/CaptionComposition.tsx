@@ -3,7 +3,14 @@ import { AbsoluteFill, OffthreadVideo, useCurrentFrame, useVideoConfig } from 'r
 import { CaptionPreset, OverlayStylePreset, WordTimestamp } from '../lib/types';
 import { AnimatedWord, CaptionChunk } from './AnimatedWord';
 import { getCaptionChunkWordLimit } from '../lib/caption-layout';
-import { CTAOverlay, getCtaBottomLiftPercent } from './CTAOverlay';
+import {
+  captionReservedBand,
+  estimateCtaHeight,
+  estimateHookHeight,
+  stackCardAboveCaptions,
+  stackPositionPercent,
+} from '../lib/overlay-stack';
+import { CTAOverlay } from './CTAOverlay';
 import { HookOverlay } from './HookOverlay';
 
 export interface CaptionCompositionProps {
@@ -164,7 +171,8 @@ export const CaptionComposition: React.FC<CaptionCompositionProps> = ({
   preset,
   hookStyle,
   ctaStyle,
-  captionLiftScale = 1,
+  // captionLiftScale is accepted for compatibility but unused: the cards are
+  // stacked ABOVE the captions now, so captions never move out of their way.
 }) => {
   const frame = useCurrentFrame();
   const { fps, durationInFrames } = useVideoConfig();
@@ -203,10 +211,22 @@ export const CaptionComposition: React.FC<CaptionCompositionProps> = ({
     }
   );
 
-  const currentTime = frame / fps;
-  // Lift the captions while the end CTA card occupies the same bottom area.
-  const captionLiftPercent =
-    getCtaBottomLiftPercent(ctaDuration, totalDurationInSeconds, currentTime) * Math.max(0, captionLiftScale);
+  /**
+   * The hook card and the CTA card are stacked DIRECTLY ABOVE the captions -
+   * the same placement the worker computes at render time (lib/overlay-stack),
+   * so the preview matches the rendered clip in every framing layout. Because
+   * the cards never sit in the captions' own area, captions never lift.
+   */
+  const captionLiftPercent = 0;
+  const captionBand = preset ? captionReservedBand('remotion', preset) : null;
+  const hookTopPercent =
+    captionBand && hookStyle && hookText.trim()
+      ? stackPositionPercent(stackCardAboveCaptions(captionBand, estimateHookHeight(hookStyle, hookText)))
+      : undefined;
+  const ctaTopPercent =
+    captionBand && ctaStyle && ctaText.trim()
+      ? stackPositionPercent(stackCardAboveCaptions(captionBand, estimateCtaHeight(ctaStyle, ctaText)))
+      : undefined;
 
   // The FFmpeg stage outputs the processed clip at exactly the composition canvas
   // (1080x1920), so the video FILLS the frame - no black bars, and the hook/CTA/
@@ -263,6 +283,7 @@ export const CaptionComposition: React.FC<CaptionCompositionProps> = ({
           frame={frame}
           fps={fps}
           style={hookStyle}
+          topPercent={hookTopPercent}
         />
       ) : null}
 
@@ -284,6 +305,7 @@ export const CaptionComposition: React.FC<CaptionCompositionProps> = ({
           frame={frame}
           fps={fps}
           style={ctaStyle}
+          topPercent={ctaTopPercent}
         />
       ) : null}
     </AbsoluteFill>

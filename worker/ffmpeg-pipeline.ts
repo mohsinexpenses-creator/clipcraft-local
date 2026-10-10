@@ -58,6 +58,14 @@ export interface ProcessSegmentOptions {
   sourceHasAudio: boolean;
   /** Transparent PNG overlays composited before the final H.264 encode. */
   overlays?: OverlayFrameSequence[];
+  /**
+   * NATIVE caption engine only: an ASS file burned straight onto the composed
+   * video (below the PNG overlays) with libass. The native engine cannot
+   * rasterize transparent caption PNGs - libass never writes the alpha
+   * channel and the transparent `color` canvas comes out opaque on FFmpeg 7 -
+   * so the captions ride the video itself instead.
+   */
+  assFilePath?: string;
   /** Original segment-relative words, used only for render-time profanity audio handling. */
   words?: Array<{ word: string; start: number; end: number }>;
   /** Keep a pre-caption/pre-overlay debug encode when SAVE_PRECAPTION_DEBUG=1. */
@@ -297,6 +305,7 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
     audioStartOffsetSeconds = 0,
     sourceHasAudio,
     overlays = [],
+    assFilePath,
     words = [],
     debugOutputPath,
     onProgress,
@@ -393,9 +402,17 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
   const snap = (time: number, phase: number): string =>
     Math.max(0, time + phase - SEEK_GUARD_SECONDS).toFixed(4);
 
-  const inputArgs: string[] = [];
-  let nextInput = 0;
-  const hookInput = hookEnabled ? nextInput++ : -1;
+    // Native-engine captions are burned through a RELATIVE path: libass would
+    // otherwise need filter-graph escaping for OS-specific absolute paths
+    // (Windows drive letters and backslashes). The composite runs with the ASS
+    // file's directory as its cwd; every other path in the command is absolute,
+    // so nothing else resolves differently.
+    const assFileName = assFilePath ? path.basename(assFilePath) : undefined;
+    const assWorkDir = assFilePath ? path.dirname(assFilePath) : undefined;
+
+    const inputArgs: string[] = [];
+    let nextInput = 0;
+    const hookInput = hookEnabled ? nextInput++ : -1;
   if (hookEnabled) {
     inputArgs.push('-accurate_seek', '-ss', snap(start + hookOffset, hookPhase), '-t', actualHookDur.toFixed(6), '-i', sourceVideoPath);
   }
@@ -516,9 +533,15 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
     // A diagnostic output and the final video both need the pre-overlay base.
     // Split pads explicitly rather than consuming one labeled pad twice (which
     // FFmpeg rejects). Audio is split the same way after profanity processing.
-    const overlayBaseLabel = debugOutputPath ? 'vforoverlay' : 'vbase';
+    let overlayBaseLabel = debugOutputPath ? 'vforoverlay' : 'vbase';
     const debugVideoLabel = debugOutputPath ? '[vprecap]' : '';
     if (debugOutputPath) statements.push('[vbase]split=2[vprecap][vforoverlay]');
+    if (assFileName) {
+      // Native-engine captions: burned onto the (opaque) video below the PNG
+      // overlays - see assFilePath on the options for why not as PNGs.
+      statements.push(`[${overlayBaseLabel}]ass=${assFileName}[vcaptioned]`);
+      overlayBaseLabel = 'vcaptioned';
+    }
     statements.push(...buildOverlayFilterStatements(overlays, overlayInputIndices, overlayBaseLabel));
 
     const sourceAudioLabel = audioPlan?.audioLabel ?? '[a]';
@@ -558,6 +581,7 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
 
     await runFfmpeg(args, {
       label: 'trim+mirror+crop+color+overlays+encode',
+      ...(assWorkDir ? { cwd: assWorkDir } : {}),
       totalDurationSeconds: totalDuration,
       isCancelled,
       onProgress: (progress) => {

@@ -10,6 +10,13 @@ interface CTAOverlayProps {
   fps: number;
   /** Visual style preset for the CTA card. */
   style?: OverlayStylePreset;
+  /**
+   * Vertical position (% from the top) chosen by the placement planner -
+   * the card is stacked directly above the captions. Wins over
+   * `style.positionY`; the preview composition computes it the same way the
+   * worker does (lib/overlay-stack).
+   */
+  topPercent?: number;
 }
 
 export interface CtaWindow {
@@ -86,6 +93,7 @@ export const CTAOverlay: React.FC<CTAOverlayProps> = ({
   frame,
   fps,
   style,
+  topPercent,
 }) => {
   const text = ctaText?.trim();
   if (!text || ctaDurationInSeconds <= 0) return null;
@@ -118,8 +126,9 @@ export const CTAOverlay: React.FC<CTAOverlayProps> = ({
   const fontWeight =
     style?.fontWeight === 'normal' ? 400 : style?.fontWeight === 'bold' ? 700 : style?.fontWeight === 'extra-bold' ? 800 : 900;
 
-  // positionY is "% from top"; the legacy default card sat at bottom 12%.
-  const topPercent = style?.positionY ?? 70;
+  // positionY is "% from top"; the placement planner stacks the card directly
+  // above the captions and passes the result as `topPercent`.
+  const top = topPercent ?? style?.positionY ?? 70;
 
   return (
     <div
@@ -127,7 +136,7 @@ export const CTAOverlay: React.FC<CTAOverlayProps> = ({
         position: 'absolute',
         left: '7%',
         right: '7%',
-        top: `${topPercent}%`,
+        top: `${top}%`,
         zIndex: 35,
         opacity,
         transform: animationTransform(style?.animationStyle ?? 'pop', pop),

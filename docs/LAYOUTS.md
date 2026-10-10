@@ -159,8 +159,8 @@ and output scaling together. The output canvas is always 1080×1920.
   when the head leaves its safe zone. Per-pane crops use `exact=1` and Lanczos scaling,
   then compose onto the 1080×1920 canvas. Cell assignment is stable across the clip.
 - **Overlays** — the Remotion engine paints a full-timeline transparent PNG sequence;
-  the native engine rasterizes ASS captions and paints hook/CTA PNGs. FFmpeg composites
-  those layers directly over the source-derived video frames before the final encode.
+  the native engine burns ASS captions onto the video and paints hook/CTA PNGs. FFmpeg
+  composites those layers directly over the source-derived video frames before the final encode.
 - **Encoding.** The final encode uses libx264 at CRF 17 and preset `slow` by default.
   `VIDEO_CRF` is configurable from 16 to 18; `VIDEO_PRESET` accepts a libx264 preset
   (default `slow`, or `medium` for faster output). This avoids a low-quality early
