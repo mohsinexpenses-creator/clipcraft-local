@@ -8,8 +8,9 @@ import {
   RETIRED_CAPTION_PRESET_IDS,
 } from "../lib/presets";
 import { splitCaptionWordsIntoLines } from "../lib/caption-layout";
+import { CAPTION_THEME_NAMES } from "../lib/types";
 
-const EXPECTED_IDS = [
+const LEGACY_IDS = [
   "cc-bold-punch",
   "cc-spotlight",
   "cc-storyteller",
@@ -19,11 +20,23 @@ const EXPECTED_IDS = [
   "cc-kinetic",
   "cc-cinematic",
 ];
+const EXPECTED_IDS = [
+  ...LEGACY_IDS,
+  ...CAPTION_THEME_NAMES.filter((theme) => theme !== "kinetic-01").map(
+    (theme) => `caption-theme-${theme}`,
+  ),
+];
 
-test("the built-in caption catalogue is exactly the eight new styles, with one default", () => {
+test("the built-in caption catalogue keeps the eight original styles and adds all themes", () => {
   assert.deepEqual(
     DEFAULT_CAPTION_PRESETS.map((preset) => preset._id),
     EXPECTED_IDS,
+  );
+  assert.equal(DEFAULT_CAPTION_PRESETS.length, 20);
+  assert.equal(
+    DEFAULT_CAPTION_PRESETS.filter((preset) => preset.captionTheme).length,
+    13,
+    "Kinetic 01 stays represented by Bold Punch, with one separate card for each other theme",
   );
   assert.equal(
     DEFAULT_CAPTION_PRESETS.filter((preset) => preset.isDefault).length,

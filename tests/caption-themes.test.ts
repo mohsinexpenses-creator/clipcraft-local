@@ -27,7 +27,16 @@ test('all 13 upstream themes are present in the typed catalog and vendor registr
   assert.equal(CAPTION_THEME_CATALOG.length, 13);
   assert.ok(isCaptionThemeName('kinetic-01'));
   assert.ok(!isCaptionThemeName('unknown-theme'));
+
+  const themedGalleryPresets = DEFAULT_CAPTION_PRESETS.filter((preset) => preset.captionTheme);
+  assert.equal(themedGalleryPresets.length, 13, 'each upstream theme has one gallery preset');
+  assert.deepEqual(
+    themedGalleryPresets.map((preset) => preset.captionTheme).sort(),
+    [...CAPTION_THEME_NAMES].sort(),
+  );
+  assert.equal(new Set(themedGalleryPresets.map((preset) => preset.captionTheme)).size, 13);
   assert.equal(DEFAULT_CAPTION_PRESETS[0].captionTheme, 'kinetic-01');
+  assert.equal(DEFAULT_CAPTION_PRESETS[0].name, 'Bold Punch');
 });
 
 test('ClipCraft caption words adapt to the theme data contract without changing masked text or timing', () => {

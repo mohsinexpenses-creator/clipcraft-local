@@ -4,6 +4,7 @@ import {
   OverlayStylePreset,
   PromptTemplate,
 } from "./types";
+import { CAPTION_THEME_CATALOG } from "./caption-theme-styles";
 
 export const DEFAULT_FILTER_PRESETS: FilterPreset[] = [
   {
@@ -80,10 +81,49 @@ export const RETIRED_CAPTION_PRESET_IDS: readonly string[] = [
   "caption-kinetic-chrome",
 ];
 
+const REMOTION_THEME_CAPTION_PRESETS: CaptionPreset[] = CAPTION_THEME_CATALOG
+  .filter((theme) => theme.id !== "kinetic-01")
+  .map((theme) => ({
+    _id: `caption-theme-${theme.id}`,
+    name: theme.label,
+    // Native/ASS uses this bundled fallback; Premium uses the theme's own face.
+    fontFamily: "Poppins, Arial, sans-serif",
+    fontSize: 64,
+    fontWeight: "black",
+    textColor: theme.captionPrimaryColor,
+    highlightColor: theme.captionAccentColor,
+    strokeColor: "#000000",
+    strokeWidth: 4,
+    positionY: 28,
+    animationStyle: "word-pop",
+    uppercase: true,
+    lineStyles: [
+      {
+        maxWords: 3,
+        fontFamily: "Poppins, Arial, sans-serif",
+        fontSize: 64,
+        fontWeight: "black",
+        textColor: theme.captionPrimaryColor,
+        highlightColor: theme.captionAccentColor,
+        strokeColor: "#000000",
+        strokeWidth: 4,
+        uppercase: true,
+        letterSpacing: 0,
+        animationStyle: "word-pop",
+        lineHeight: 1.1,
+      },
+    ],
+    lineGap: 6,
+    lineAlignment: "center",
+    captionTheme: theme.id,
+    matchOverlayTheme: true,
+  }));
+
 /**
- * Built-in caption styles. Every style is a plain CaptionPreset, so the Remotion engine
- * (remotion/AnimatedWord.tsx) and the native ASS engine (worker/captions-ass.ts) render
- * the same data. Fonts come from public/fonts (see lib/caption-fonts.ts).
+ * Built-in caption styles. The original eight classic styles stay available, and every
+ * upstream Remotion caption theme has a named gallery entry. Bold Punch remains the
+ * existing Kinetic 01 entry; the other twelve themes are added as new preset rows.
+ * Theme presets keep a bundled Poppins/ASS fallback for Native rendering.
  * NOTE: the first entry must stay the default, with positionY 28 (tests/overlay-layout.test.ts).
  */
 export const DEFAULT_CAPTION_PRESETS: CaptionPreset[] = [
@@ -360,6 +400,7 @@ export const DEFAULT_CAPTION_PRESETS: CaptionPreset[] = [
     lineGap: 6,
     lineAlignment: "center",
   },
+  ...REMOTION_THEME_CAPTION_PRESETS,
 ];
 
 /**

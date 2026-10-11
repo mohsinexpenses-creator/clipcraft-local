@@ -121,7 +121,10 @@ export default function CaptionPresetsPage() {
   const filteredPresets = useMemo(() => {
     const needle = presetQuery.trim().toLowerCase();
     if (!needle) return presets;
-    return presets.filter((preset) => preset.name.toLowerCase().includes(needle));
+    return presets.filter((preset) => {
+      const themeLabel = getCaptionThemeDefinition(preset.captionTheme)?.label.toLowerCase();
+      return preset.name.toLowerCase().includes(needle) || Boolean(themeLabel?.includes(needle));
+    });
   }, [presets, presetQuery]);
 
   const loadPresets = useCallback(async (): Promise<CaptionPreset[]> => {
@@ -480,6 +483,7 @@ export default function CaptionPresetsPage() {
                 filteredPresets.map((p) => {
                   const isActive = p._id === activePresetId;
                   const rich = Boolean(p.lineStyles?.length);
+                  const theme = getCaptionThemeDefinition(p.captionTheme);
                   return (
                     <button
                       key={p._id}
@@ -506,10 +510,7 @@ export default function CaptionPresetsPage() {
                         ) : null}
                       </span>
                       <span className="flex items-center gap-1.5 text-[10.5px] text-muted-foreground">
-                        <span>
-                          {getCaptionThemeDefinition(p.captionTheme)?.label ??
-                            (ANIMATION_LABELS[p.animationStyle] ?? p.animationStyle)}
-                        </span>
+                        <span>{theme ? `Theme · ${theme.label}` : ANIMATION_LABELS[p.animationStyle] ?? p.animationStyle}</span>
                         <span className="text-muted-foreground/40">·</span>
                         <span>{rich ? `${p.lineStyles!.length} line styles` : 'single style'}</span>
                       </span>

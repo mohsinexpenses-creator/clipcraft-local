@@ -113,13 +113,15 @@ row created by an older build never picks up a changed default — **Reset to sh
 styles** re-syncs the built-in rows from `lib/presets.ts` while keeping every preset you
 made yourself and the preset you marked default.
 
-The caption theme selector includes all 13 locally bundled Remotion themes (Pop, Karaoke,
-Kinetic 01/02, Hustle, Grape, Beast, Poppin, Aarit, Soft AI, Gaming Stream, Simple One
-Word, and Podcast). Hook and CTA cards can match the chosen theme's font, accent, card and
-motion, while retaining their existing text and timing. These caption animations are
-Remotion-only; Fast/Native uses the preset's classic ASS caption style as a fallback.
-The shipped Bold Punch preset uses Kinetic 01; use **Reset to shipped styles** once on an
-existing database to update that built-in row. A default you previously chose is preserved.
+The caption theme selector and style gallery include all 13 locally bundled Remotion themes
+(Pop, Karaoke, Kinetic 01/02, Hustle, Grape, Beast, Poppin, Aarit, Soft AI, Gaming Stream,
+Simple One Word, and Podcast). The original eight styles are preserved; Bold Punch remains
+the Kinetic 01 style, and the other twelve themes appear as individually named gallery
+cards. New theme cards are seeded into existing databases on the next app start, without a
+reset. Hook and CTA cards can match the chosen theme's font, accent, card and motion, while
+retaining their existing text and timing. These caption animations are Remotion-only;
+Fast/Native uses the preset's classic ASS caption style as a fallback. A default you
+previously chose is preserved when built-ins are reset.
 
 Caption theme source is vendored under `remotion/caption-themes/vendor` with its MIT
 license. Caption fonts are bundled locally in `public/fonts` (including the theme fonts);

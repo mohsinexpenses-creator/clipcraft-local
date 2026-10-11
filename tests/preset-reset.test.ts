@@ -20,6 +20,7 @@ import {
   setDefaultCaptionPreset,
 } from '../lib/db';
 import { DEFAULT_CAPTION_PRESETS, DEFAULT_OVERLAY_STYLE_PRESETS } from '../lib/presets';
+import { CAPTION_THEME_NAMES } from '../lib/types';
 import type { CaptionPreset } from '../lib/types';
 import { createTemporaryDatabase } from './sqlite-test-helpers';
 
@@ -31,6 +32,28 @@ function captionFrom(id: string): CaptionPreset {
   if (!preset) throw new Error(`no shipped preset ${id}`);
   return preset;
 }
+
+test('database startup seeds each separate theme card into a pre-existing database', async (t) => {
+  const { db, openConnection } = createTemporaryDatabase(t);
+  const addedThemeIds = DEFAULT_CAPTION_PRESETS
+    .filter((preset) => preset._id.startsWith('caption-theme-'))
+    .map((preset) => preset._id);
+  assert.equal(addedThemeIds.length, 12);
+
+  // Simulate the old catalogue in an existing database, then open it as the updated app does.
+  const removeOldBuildTheme = db.prepare('DELETE FROM caption_presets WHERE id = ?');
+  for (const id of addedThemeIds) removeOldBuildTheme.run(id);
+  openConnection();
+
+  const seeded = await listCaptionPresets();
+  const themed = seeded.filter((preset) => preset.captionTheme);
+  assert.equal(seeded.length, 20, 'the eight shipped styles remain alongside twelve additions');
+  assert.equal(themed.length, 13, 'Bold Punch represents Kinetic 01 without a duplicate card');
+  assert.deepEqual(
+    themed.map((preset) => preset.captionTheme).sort(),
+    [...CAPTION_THEME_NAMES].sort(),
+  );
+});
 
 test('reset restores an edited built-in and leaves custom rows alone', async (t) => {
   createTemporaryDatabase(t);
