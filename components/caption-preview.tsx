@@ -43,7 +43,7 @@ export const CaptionPreview: React.FC<CaptionPreviewProps> = ({
     // pushing the page taller than the screen.
     <div
       className={cn(
-        'relative mx-auto aspect-[9/16] h-[min(52dvh,520px)] max-w-full overflow-hidden rounded-xl border bg-muted shadow-sm',
+        'relative mx-auto aspect-[9/16] min-h-[80vh] max-w-full overflow-hidden rounded-xl border bg-muted shadow-sm',
         className
       )}
     >

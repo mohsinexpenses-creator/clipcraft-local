@@ -523,7 +523,8 @@ export default function CaptionPresetsPage() {
         </Alert>
       )}
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+      {/* <div className="grid grid-cols-1 gap-6 lg:grid-cols-12"> */}
+      <div className="flex gap-6 ">
         {/* Editor */}
         <div
           className="animate-fade-up space-y-4 lg:col-span-7"
@@ -1379,7 +1380,7 @@ export default function CaptionPresetsPage() {
             sticky and its player is sized from the viewport HEIGHT, so scrolling
             through a long style list never moves (or outgrows) the preview. */}
         <div
-          className="animate-fade-up min-w-0 max-w-fit lg:col-span-5"
+          className="animate-fade-up min-w-fit lg:col-span-5"
           style={{ animationDelay: "120ms" }}
         >
           <div className="flex flex-col gap-3 lg:sticky lg:top-6 lg:max-h-[calc(100dvh-3rem)]">
