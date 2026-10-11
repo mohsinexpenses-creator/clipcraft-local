@@ -20,18 +20,14 @@ import { NumberField } from "@/components/pipeline-settings";
 import { cn } from "cn";
 
 /**
- * The "render clip settings" form: caption engine, framing, color filter and the
- * preset choices every automatically rendered clip starts with.
+ * The "render clip settings" form: framing, color filter and the preset
+ * choices every automatically rendered clip starts with. Captions are always
+ * rendered by Remotion (animated overlays through headless Chrome).
  *
  * One implementation serves two homes: the Render defaults card on /settings
  * (app-wide defaults) and the per-video settings dialog on the dashboard, so
  * both always edit - and show - exactly what the database stores.
  */
-
-export const ENGINE_LABELS: Record<string, string> = {
-  remotion: "Premium · animated overlays",
-  native: "Fast · ASS captions in one pass",
-};
 
 export interface RenderSettingsPanelProps {
   value: RenderDefaults;
@@ -138,25 +134,6 @@ export function RenderSettingsPanel({
   return (
     <div className={cn("space-y-3.5", className)}>
       <div className="grid gap-3 sm:grid-cols-2">
-        <Field
-          label="Caption engine"
-          hint="Premium renders animated captions through headless Chrome (smoothest, slower). Fast burns ASS captions with FFmpeg in one pass (~10x faster)."
-        >
-          <Segmented
-            ariaLabel="Caption engine"
-            value={value.captionEngine}
-            onChange={(captionEngine) =>
-              patch({ captionEngine: captionEngine as RenderDefaults["captionEngine"] })
-            }
-            options={(limits?.engines ?? ["remotion", "native"]).map((engine) => ({
-              value: engine,
-              label: engine === "remotion" ? "Premium" : "Fast",
-              hint: ENGINE_LABELS[engine],
-            }))}
-            disabled={disabled}
-          />
-        </Field>
-
         <Field
           label="Framing"
           hint="Speaker focus glides one 9:16 window to whoever talks; split screen gives each person a pane."

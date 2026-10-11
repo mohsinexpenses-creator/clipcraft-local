@@ -63,7 +63,6 @@ function renderPayload(record: ClipRecord): JobData {
     filterPreset: record.filterPreset,
     captionPresetId: record.captionPresetId ?? 'preset-bold-yellow',
     layout: record.layout,
-    captionEngine: record.captionEngine,
     hookStylePresetId: record.hookStylePresetId,
     ctaStylePresetId: record.ctaStylePresetId,
   };

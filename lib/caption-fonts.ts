@@ -1,12 +1,9 @@
 /**
  * Caption fonts that ship inside the repo (public/fonts, all SIL OFL).
  *
- * Dependency-free on purpose: the browser (Remotion Player), the Remotion
- * renderer and the native ASS generator all import it. Every entry is ONE static
- * TTF file, so the weight is baked into the file:
- *  - CSS side (Remotion): registered as FontFace(family, weight).
- *  - ASS side (libass): addressed by `assName`, which is the font's own
- *    family name (name ID 1), with the bold flag forced to 0.
+ * Dependency-free on purpose: the browser (Remotion Player) and the Remotion
+ * renderer import it. Every entry is ONE static TTF file, so the weight is
+ * baked into the file; each font is registered as FontFace(family, weight).
  */
 import type { CaptionFontWeight } from "./types";
 
@@ -19,48 +16,16 @@ export interface CaptionFontFile {
   weight: CaptionCssWeight;
   /** File name inside public/fonts. */
   file: string;
-  /** Family name libass must use (the font's internal family name). */
-  assName: string;
 }
 
 export const CAPTION_FONT_FILES: CaptionFontFile[] = [
-  {
-    family: "Poppins",
-    weight: 900,
-    file: "Poppins-Black.ttf",
-    assName: "Poppins Black",
-  },
-  {
-    family: "Poppins",
-    weight: 800,
-    file: "Poppins-ExtraBold.ttf",
-    assName: "Poppins ExtraBold",
-  },
-  {
-    family: "Poppins",
-    weight: 700,
-    file: "Poppins-SemiBold.ttf",
-    assName: "Poppins SemiBold",
-  },
-  { family: "Anton", weight: 400, file: "Anton-Regular.ttf", assName: "Anton" },
-  {
-    family: "DM Serif Display",
-    weight: 400,
-    file: "DMSerifDisplay-Regular.ttf",
-    assName: "DM Serif Display",
-  },
-  {
-    family: "Archivo Black",
-    weight: 400,
-    file: "ArchivoBlack-Regular.ttf",
-    assName: "Archivo Black",
-  },
-  {
-    family: "Bebas Neue",
-    weight: 400,
-    file: "BebasNeue-Regular.ttf",
-    assName: "Bebas Neue",
-  },
+  { family: "Poppins", weight: 900, file: "Poppins-Black.ttf" },
+  { family: "Poppins", weight: 800, file: "Poppins-ExtraBold.ttf" },
+  { family: "Poppins", weight: 700, file: "Poppins-SemiBold.ttf" },
+  { family: "Anton", weight: 400, file: "Anton-Regular.ttf" },
+  { family: "DM Serif Display", weight: 400, file: "DMSerifDisplay-Regular.ttf" },
+  { family: "Archivo Black", weight: 400, file: "ArchivoBlack-Regular.ttf" },
+  { family: "Bebas Neue", weight: 400, file: "BebasNeue-Regular.ttf" },
 ];
 
 export function cssWeightFor(

@@ -226,7 +226,7 @@ export const CaptionComposition: React.FC<CaptionCompositionProps> = ({
   const themedCtaStyle = preset && ctaStyle
     ? resolveCaptionThemeOverlayStyle(preset, ctaStyle)
     : ctaStyle;
-  const captionBand = preset ? captionReservedBand('remotion', preset) : null;
+  const captionBand = preset ? captionReservedBand(preset) : null;
   const hookTopPercent =
     captionBand && themedHookStyle && hookText.trim()
       ? stackPositionPercent(stackCardAboveCaptions(captionBand, estimateHookHeight(themedHookStyle, hookText)))

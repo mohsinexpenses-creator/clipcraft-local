@@ -1,7 +1,7 @@
 /**
  * Placement of the captions, the hook text and the CTA card.
  *
- * THE CONTRACT (every framing layout, both caption engines):
+ * THE CONTRACT (every framing layout):
  *
  *   - the captions keep their preset position; in a SPLIT SCREEN they move only
  *     when that position would cover a face (recomputed from where the heads
@@ -17,10 +17,10 @@
  *     the CTA shows" behaviour is switched off everywhere.
  *
  * Pure logic, no I/O. The result is a set of ADAPTED COPIES of the presets (only
- * `positionY` changes), so both caption engines - which already position
+ * `positionY` changes), and the Remotion compositions - which already position
  * everything from `positionY` - pick it up without any special casing.
  */
-import type { CaptionEngine, CaptionPreset, OverlayStylePreset } from '../lib/types';
+import type { CaptionPreset, OverlayStylePreset } from '../lib/types';
 import {
   OVERLAY_STACK_GAP,
   captionPositionYForBandTop,
@@ -67,7 +67,6 @@ export interface OverlayTiming {
 
 export interface OverlayAdaptationInput {
   plan: LayoutPlan;
-  engine: CaptionEngine;
   timing?: OverlayTiming;
   caption: CaptionPreset;
   /** Omit (or pass null) when the hook overlay is off for this clip. */
@@ -84,8 +83,8 @@ export interface OverlayAdaptation {
   ctaStyle?: OverlayStylePreset;
   /**
    * The CTA/hook cards are stacked ABOVE the captions, so the captions never
-   * need to dodge them: always 0. Kept in the shape because both engines and
-   * the ASS generator still multiply their lift by it.
+   * need to dodge them: always 0. Kept in the shape because the Remotion
+   * compositions still multiply their lift by it.
    */
   captionLiftScale: number;
   /** Where each overlay ended up (canvas px) - for the log and the tests. */
@@ -162,14 +161,14 @@ function searchCaption(
 // ---------------------------------------------------------------------------
 
 export function adaptOverlaysToLayout(input: OverlayAdaptationInput): OverlayAdaptation {
-  const { plan, engine } = input;
+  const { plan } = input;
   const notes: string[] = [];
   const placements: OverlayAdaptation['placements'] = {};
 
   // 1) CAPTIONS: preset position everywhere; in a split screen, moved only when
   //    that position would sit on a face (the seam between panes is the natural
   //    new home).
-  const band = captionReservedBand(engine, input.caption);
+  const band = captionReservedBand(input.caption);
   const capHeight = band.bottom - band.top;
   let captionTop = band.top;
   let caption = input.caption;
@@ -195,12 +194,12 @@ export function adaptOverlaysToLayout(input: OverlayAdaptationInput): OverlayAda
           `(the preset position covers a face)` +
           (found.clean ? '' : ' - no completely free spot, covering as little as possible')
       );
-      // The adapted band keeps the same height; the engine-specific inverse
-      // turns the new top back into the preset's positionY. The published band
-      // is re-derived from the ROUNDED preset so the two stay in lockstep.
-      const positionY = captionPositionYForBandTop(engine, input.caption, captionTop);
+      // The adapted band keeps the same height; the inverse turns the new top
+      // back into the preset's positionY. The published band is re-derived from
+      // the ROUNDED preset so the two stay in lockstep.
+      const positionY = captionPositionYForBandTop(input.caption, captionTop);
       caption = { ...input.caption, positionY: round1(Math.max(0, Math.min(100, positionY))) };
-      captionTop = captionReservedBand(engine, caption).top;
+      captionTop = captionReservedBand(caption).top;
     }
   }
   const captionBand: Band = { top: captionTop, bottom: captionTop + capHeight };

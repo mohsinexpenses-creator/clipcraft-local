@@ -33,7 +33,7 @@ export const CaptionThemeOverlay: React.FC<CaptionThemeOverlayProps> = ({
   const selected = selectThemeCaptionData(chunks, theme, currentTime);
   if (!selected) return null;
 
-  const band = captionReservedBand('remotion', preset);
+  const band = captionReservedBand(preset);
   const centerY = (band.top + band.bottom) / 2;
   const canvasScale = height / OVERLAY_CANVAS_HEIGHT;
   const offsetY = (centerY - OVERLAY_CANVAS_HEIGHT / 2) * canvasScale -

@@ -15,14 +15,13 @@ import { resolveCaptionThemeOverlayStyle } from '../lib/caption-theme-styles';
 
 import { getVideoMetadata } from '../lib/ffmpeg';
 import { getCaptionOffsetMs, shiftCaptionWords } from './caption-timing';
-import { CaptionEngine, ClipLayout, ClipRecord, JobData, OverlayStylePreset } from '../lib/types';
+import { ClipLayout, ClipRecord, JobData, OverlayStylePreset } from '../lib/types';
 import { detectSpeakerTimeline } from './asd';
 import { buildLayoutPlan, getSplitFramingSettings } from './layout';
 import { adaptOverlaysToLayout, describePlacements } from './overlay-layout';
 import { color, log } from '../lib/logger';
 import { HOOK_TRANSITION_SECONDS, normalizeFps, processVideoSegment } from './ffmpeg-pipeline';
 import { DEFAULT_HOOK_FALLBACK_SECONDS, resolveHookTiming } from './hook-timing';
-import { prepareNativeCaptionOverlays } from './native-captions';
 import {
   prepareRemotionCaptionOverlays,
   type PreparedCaptionOverlays,
@@ -88,7 +87,6 @@ export async function processClipJob(
     ctaDuration,
     filterPreset,
     captionPresetId,
-    captionEngine,
   } = jobData;
 
   log.section(
@@ -347,12 +345,6 @@ export async function processClipJob(
       });
     }
 
-    // Caption engine: explicit job payload wins, then the persisted clip
-    // choice, then the (slow but smoothest) Remotion default.
-    const engine: CaptionEngine = (captionEngine ?? clip.captionEngine ?? 'remotion') === 'native'
-      ? 'native'
-      : 'remotion';
-
     // hookDuration 0 means the hook intro/overlay was turned off for this clip
     // (detection ran with the hook-text switch off) - don't derive text that
     // would only be ignored by the overlay.
@@ -420,7 +412,6 @@ export async function processClipJob(
     // where the heads really are (speaker focus keeps the presets unchanged).
     const overlayLayout = adaptOverlaysToLayout({
       plan,
-      engine,
       // When the timed overlays are on screen (base-clip seconds): the hook card
       // shows over the replayed hook moment, minus the dip-to-black window; the CTA
       // over the last seconds of the clip.
@@ -443,8 +434,7 @@ export async function processClipJob(
     const ctaStyleForRender = overlayLayout.ctaStyle ?? themedCtaStyle;
 
     log.step(
-      `Step 2/3 · Render transparent overlays  ${color.gray(`(${engine === 'native' ? 'native ASS burn + Remotion cards' : 'Remotion'}, ` +
-      `${clipWords.length} words, preset "${preset.name}")`)}`
+      `Step 2/3 · Render transparent overlays (Remotion)  ${color.gray(`(${clipWords.length} words, preset "${preset.name}")`)}`
     );
     const overlayProgressSink = (progress: number): void => {
       const scaled = 20 + Math.max(0, Math.min(100, progress)) * 0.1;
@@ -455,42 +445,25 @@ export async function processClipJob(
 
     checkCancelled();
     const totalDuration = segmentDuration + safeHookDuration;
-    const preparedOverlays: PreparedCaptionOverlays = engine === 'native'
-      ? await prepareNativeCaptionOverlays({
-          fps: renderFps,
-          totalDuration,
-          hookText: resolvedHookText,
-          hookDuration: safeHookDuration,
-          hookStart,
-          ctaText: resolvedCtaText,
-          ctaDuration: resolvedCtaDuration,
-          words: captionWords,
-          preset: captionPresetForRender,
-          hookStyle: hookStyleForRender,
-          ctaStyle: ctaStyleForRender,
-          captionLiftScale: overlayLayout.captionLiftScale,
-          onProgress: overlayProgressSink,
-          isCancelled: () => cancelFlag,
-        })
-      : await prepareRemotionCaptionOverlays({
-          fps: renderFps,
-          totalDuration,
-          hookText: resolvedHookText,
-          hookDuration: safeHookDuration,
-          hookStart,
-          hookTransitionDuration: safeHookDuration > 0
-            ? Math.min(HOOK_TRANSITION_SECONDS, safeHookDuration / 2)
-            : 0,
-          ctaText: resolvedCtaText,
-          ctaDuration: resolvedCtaDuration,
-          words: captionWords,
-          preset: captionPresetForRender,
-          hookStyle: hookStyleForRender,
-          ctaStyle: ctaStyleForRender,
-          captionLiftScale: overlayLayout.captionLiftScale,
-          onProgress: overlayProgressSink,
-          isCancelled: () => cancelFlag,
-        });
+    const preparedOverlays: PreparedCaptionOverlays = await prepareRemotionCaptionOverlays({
+      fps: renderFps,
+      totalDuration,
+      hookText: resolvedHookText,
+      hookDuration: safeHookDuration,
+      hookStart,
+      hookTransitionDuration: safeHookDuration > 0
+        ? Math.min(HOOK_TRANSITION_SECONDS, safeHookDuration / 2)
+        : 0,
+      ctaText: resolvedCtaText,
+      ctaDuration: resolvedCtaDuration,
+      words: captionWords,
+      preset: captionPresetForRender,
+      hookStyle: hookStyleForRender,
+      ctaStyle: ctaStyleForRender,
+      captionLiftScale: overlayLayout.captionLiftScale,
+      onProgress: overlayProgressSink,
+      isCancelled: () => cancelFlag,
+    });
 
     let renderResult: {
       fps: number;
@@ -526,9 +499,6 @@ export async function processClipJob(
         targetFps: renderFps,
         sourceHasAudio: sourceMeta.hasAudio,
         overlays: preparedOverlays.sequences,
-        assFilePath: preparedOverlays.assFile
-          ? path.join(preparedOverlays.workDir, preparedOverlays.assFile)
-          : undefined,
         words: clipWords,
         debugOutputPath: process.env.SAVE_PRECAPTION_DEBUG?.trim() === '1'
           ? intermediateVideoPath
@@ -559,7 +529,6 @@ export async function processClipJob(
     clip.ctaDuration = resolvedCtaDuration;
     clip.captionPresetId = resolvedCaptionPresetId;
     clip.captionPreset = preset;
-    clip.captionEngine = engine;
     clip.hookStylePresetId = hookStyle._id;
     clip.ctaStylePresetId = ctaStyle._id;
     clip.outputPath = `/generated-clips/${outputBase}/${path.basename(finalVideoPath)}`;

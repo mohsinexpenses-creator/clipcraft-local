@@ -58,7 +58,6 @@ import { readAppSettingsSections, saveAppSettingsSection } from './db';
 export const RESTART_REQUIRED_PATHS = ['worker.clipConcurrency', 'worker.viralConcurrency'] as const;
 
 const FILTER_IDS = new Set(DEFAULT_FILTER_PRESETS.map((preset) => preset.id));
-const CAPTION_ENGINES = new Set(['remotion', 'native']);
 const LAYOUTS = new Set(['speaker-focus', 'split-screen']);
 const PROVIDER_CHOICES = new Set(['auto', 'deepgram', 'whisper']);
 const AUDIO_MODES = new Set(['mute', 'beep', 'off']);
@@ -148,7 +147,6 @@ export function envHints(): Record<string, EnvHint> {
     'VIRAL_CONCURRENCY',
     'REMOTION_CONCURRENCY',
     'PROFANITY_AUDIO_MODE',
-    'AUTO_RENDER_CAPTION_ENGINE',
   ];
 
   const fileText = readEnvFileText();
@@ -309,9 +307,6 @@ export function sanitizeSettingsSection(
     case 'render': {
       const input = record(value, 'Render defaults');
       const out: Record<string, unknown> = {};
-      if (input.captionEngine !== undefined) {
-        out.captionEngine = enumOf(input.captionEngine, CAPTION_ENGINES, 'Caption engine');
-      }
       if (input.layout !== undefined) out.layout = enumOf(input.layout, LAYOUTS, 'Layout');
       if (input.filterPreset !== undefined) {
         const filter = enumOf(input.filterPreset, FILTER_IDS, 'Filter preset');
@@ -504,9 +499,6 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
 
   /* render */
   const renderStored = stored.render ?? {};
-  const engine = CAPTION_ENGINES.has(stringValue(renderStored.captionEngine) ?? '')
-    ? (stringValue(renderStored.captionEngine) as RenderDefaults['captionEngine'])
-    : DEFAULT_RENDER_SETTINGS.captionEngine;
   const layout = LAYOUTS.has(stringValue(renderStored.layout) ?? '')
     ? (stringValue(renderStored.layout) as RenderDefaults['layout'])
     : DEFAULT_RENDER_SETTINGS.layout;
@@ -515,7 +507,6 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
     : DEFAULT_RENDER_SETTINGS.filterPreset;
 
   sources.render = {
-    captionEngine: engine !== DEFAULT_RENDER_SETTINGS.captionEngine || stringValue(renderStored.captionEngine) ? 'app' : 'default',
     layout: stringValue(renderStored.layout) ? 'app' : 'default',
     filterPreset: stringValue(renderStored.filterPreset) ? 'app' : 'default',
     captionPresetId: renderStored.captionPresetId !== undefined ? 'app' : 'default',
@@ -526,7 +517,6 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
   };
 
   const render: RenderDefaults = {
-    captionEngine: engine,
     layout,
     filterPreset,
     captionPresetId: idValue(renderStored.captionPresetId) ?? null,
@@ -766,7 +756,6 @@ const LIMITS: SettingsLimits = {
   overlayDuration: { min: 0, max: 30 },
   maxKeyPool: MAX_KEY_POOL,
   filterPresets: DEFAULT_FILTER_PRESETS.map((preset) => ({ id: preset.id, name: preset.name, description: preset.description })),
-  engines: ['remotion', 'native'] as const,
   layouts: ['speaker-focus', 'split-screen'] as const,
   audioModes: ['mute', 'beep', 'off'] as const,
   transcriptionProviders: ['auto', 'deepgram', 'whisper'] as const,

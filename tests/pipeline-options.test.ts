@@ -44,7 +44,7 @@ test('a nested { options } body is unwrapped the way the dashboard sends it', ()
 
 test('clip edits are validated and the empty-hook convention is enforced', () => {
   const edits = sanitizeClipEdits(
-    { start: '10.5', end: '70.25', hookText: '  ', ctaText: ' FOLLOW FOR MORE ', captionEngine: 'nope', layout: 'split-screen' },
+    { start: '10.5', end: '70.25', hookText: '  ', ctaText: ' FOLLOW FOR MORE ', layout: 'split-screen' },
     { duration: 600 }
   );
 
@@ -52,7 +52,6 @@ test('clip edits are validated and the empty-hook convention is enforced', () =>
   assert.equal(edits.end, 70.25);
   assert.equal(edits.hookDuration, 0, 'empty hook text means no hook intro');
   assert.equal(edits.ctaText, 'FOLLOW FOR MORE');
-  assert.equal(edits.captionEngine, 'remotion', 'unknown engine falls back to the default');
   assert.equal(edits.layout, 'split-screen');
 });
 

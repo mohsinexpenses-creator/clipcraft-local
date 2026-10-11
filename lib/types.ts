@@ -137,7 +137,6 @@ export const DEFAULT_PIPELINE_OPTIONS: PipelineOptions = {
 export const DEFAULT_RENDER_OPTIONS = {
   filterPreset: 'vibrant',
   layout: 'speaker-focus',
-  captionEngine: 'remotion',
 } as const;
 
 /* ==========================================================================
@@ -161,8 +160,6 @@ export type AppSettingsSection = (typeof APP_SETTINGS_SECTIONS)[number];
 export type SettingsSource = 'app' | 'default';
 
 export interface RenderDefaults {
-  /** `remotion` (premium animated overlays) or `native` (FFmpeg ASS captions). */
-  captionEngine: CaptionEngine;
   layout: ClipLayout;
   /** Id from `DEFAULT_FILTER_PRESETS`. */
   filterPreset: string;
@@ -180,7 +177,6 @@ export interface RenderDefaults {
 }
 
 export const DEFAULT_RENDER_SETTINGS: RenderDefaults = {
-  captionEngine: DEFAULT_RENDER_OPTIONS.captionEngine,
   layout: DEFAULT_RENDER_OPTIONS.layout,
   filterPreset: DEFAULT_RENDER_OPTIONS.filterPreset,
   captionPresetId: null,
@@ -318,7 +314,6 @@ export interface SettingsLimits {
   overlayDuration: { min: number; max: number };
   maxKeyPool: number;
   filterPresets: Array<{ id: string; name: string; description: string }>;
-  engines: readonly string[];
   layouts: readonly string[];
   audioModes: readonly string[];
   transcriptionProviders: readonly string[];
@@ -473,17 +468,6 @@ export interface OverlayStylePreset {
   updatedAt?: string;
 }
 
-/**
- * How captions and overlays reach the final FFmpeg video pass:
- * - `remotion`: the full caption + hook + CTA timeline is painted by headless
- *   Chrome as transparent PNGs (smooth spring animations, slower on long clips).
- * - `native`: captions are an ASS file burned straight onto the video with
- *   libass (transparent caption PNGs are impossible on current FFmpeg); the
- *   hook/CTA cards are still designed in Remotion and composited as
- *   transparent frame sequences on top.
- */
-export type CaptionEngine = 'remotion' | 'native';
-
 export interface FilterPreset {
   id: string;
   name: string;
@@ -494,7 +478,7 @@ export interface FilterPreset {
 export type CaptionFontWeight = 'normal' | 'bold' | 'extra-bold' | 'black';
 export type CaptionAnimationStyle = 'karaoke' | 'word-pop' | 'fade-in' | 'static';
 
-/** Theme-library captions render in the Premium/Remotion engine; Native keeps the classic ASS fallback. */
+/** Theme-library caption animations available to presets (rendered by Remotion). */
 export const CAPTION_THEME_NAMES = [
   'pop',
   'karaoke',
@@ -609,8 +593,6 @@ export interface ClipRecord {
    * speaker window was rendered). Empty/absent when the layout was applied.
    */
   layoutNote?: string;
-  /** Caption pass: `remotion` (default, smoothest) or `native` (FFmpeg ASS burn, ~10x faster). */
-  captionEngine?: CaptionEngine;
   /** Overlay STYLE presets (font/colors/animation) chosen per clip. */
   hookStylePresetId?: string;
   ctaStylePresetId?: string;
@@ -649,8 +631,6 @@ export interface JobData {
   captionPresetId: string;
   /** Framing mode for the 9:16 output (default `speaker-focus`). */
   layout?: ClipLayout;
-  /** Caption pass: `remotion` (default) or `native` (fast FFmpeg ASS burn). */
-  captionEngine?: CaptionEngine;
   /** Overlay STYLE presets (font/colors/animation) chosen per clip. */
   hookStylePresetId?: string;
   ctaStylePresetId?: string;

@@ -42,10 +42,9 @@ function withEnv<T>(values: Record<string, string | undefined>, run: () => T): T
 }
 
 test('with nothing stored, the built-in defaults win and nothing is marked as app-configured', () => {
-  withEnv({ WORKER_CONCURRENCY: '', VIRAL_CONCURRENCY: '', PROFANITY_AUDIO_MODE: '', GEMINI_API_KEY: '', DEEPGRAM_API_KEY: '', DEEPGRAM_MODEL: '', AUTO_RENDER_CAPTION_ENGINE: '' }, () => {
+  withEnv({ WORKER_CONCURRENCY: '', VIRAL_CONCURRENCY: '', PROFANITY_AUDIO_MODE: '', GEMINI_API_KEY: '', DEEPGRAM_API_KEY: '', DEEPGRAM_MODEL: '' }, () => {
     const { effective, sources } = resolveSettings({});
 
-    assert.equal(effective.render.captionEngine, 'remotion');
     assert.equal(effective.render.layout, 'speaker-focus');
     assert.equal(effective.render.filterPreset, 'vibrant');
     // The trap: an unset hook duration must NOT become 0, which would delete the hook.
@@ -72,7 +71,6 @@ test('a value that only exists in .env.local is NOT a setting - the page is the 
       VIRAL_CONCURRENCY: '2',
       REMOTION_CONCURRENCY: '6',
       PROFANITY_AUDIO_MODE: 'beep',
-      AUTO_RENDER_CAPTION_ENGINE: 'native',
       GEMINI_API_KEY: 'gemini-key-with-plenty-of-characters',
       DEEPGRAM_API_KEY: 'deepgram-key-with-plenty-of-chars',
       DEEPGRAM_MODEL: 'nova-3',
@@ -87,7 +85,6 @@ test('a value that only exists in .env.local is NOT a setting - the page is the 
       assert.equal(effective.worker.viralConcurrency, 1);
       assert.equal(effective.worker.remotionConcurrency, null);
       assert.equal(effective.profanity.audioMode, 'mute');
-      assert.equal(effective.render.captionEngine, 'remotion');
       assert.equal(effective.ai.deepgramModel, 'nova-2');
       assert.equal(effective.ai.deepgramApiKey, '');
       assert.deepEqual(effective.ai.geminiApiKeys, []);
@@ -159,7 +156,7 @@ test('stored values are clamped on the way in, not silently fixed on read', () =
   assert.throws(() => sanitizeSettingsSection('worker', { clipConcurrency: 0 }), /between 1 and 8/);
   assert.throws(() => sanitizeSettingsSection('worker', { clipConcurrency: '   ' }), /must be a number/);
   assert.throws(() => sanitizeSettingsSection('worker', { clipConcurrency: 99 }), /must be a number|between 1 and 8/);
-  assert.throws(() => sanitizeSettingsSection('render', { captionEngine: 'hand-braked' }), /Unknown Caption engine/);
+  assert.throws(() => sanitizeSettingsSection('render', { layout: 'triptych' }), /Unknown Layout/);
   assert.throws(() => sanitizeSettingsSection('render', { filterPreset: 'not-a-filter' }), /Unknown Filter preset/);
   assert.throws(() => sanitizeSettingsSection('profanity', { audioMode: 'silence-please' }), /Unknown Profanity audio mode/);
   assert.throws(() => sanitizeSettingsSection('ai', { transcriptionProvider: 'elevenlabs' }), /Unknown Transcription provider/);

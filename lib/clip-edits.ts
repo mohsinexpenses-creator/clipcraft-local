@@ -1,5 +1,5 @@
 import { AppError } from './errors';
-import { CaptionEngine, ClipLayout, ClipRecord } from './types';
+import { ClipLayout, ClipRecord } from './types';
 import { DEFAULT_FILTER_PRESETS } from './presets';
 
 /**
@@ -15,14 +15,13 @@ import { DEFAULT_FILTER_PRESETS } from './presets';
  *  - durations are clamped to what the renderer can actually do;
  *  - empty hook text means "no hook" (`hookDuration = 0`), which is the
  *    convention `worker/processor.ts` already follows;
- *  - unknown filter / layout / engine values fall back to the defaults.
+ *  - unknown filter / layout values fall back to the defaults.
  */
 
 const MAX_TEXT_LENGTH = 200;
 const HOOK_DURATION_LIMITS = { min: 0, max: 30 };
 const CTA_DURATION_LIMITS = { min: 0, max: 30 };
 const LAYOUTS: ClipLayout[] = ['speaker-focus', 'split-screen'];
-const CAPTION_ENGINES: CaptionEngine[] = ['remotion', 'native'];
 const FILTER_IDS = new Set(DEFAULT_FILTER_PRESETS.map((preset) => preset.id));
 
 type ClipEditField =
@@ -35,7 +34,6 @@ type ClipEditField =
   | 'filterPreset'
   | 'captionPresetId'
   | 'layout'
-  | 'captionEngine'
   | 'hookStylePresetId'
   | 'ctaStylePresetId';
 
@@ -144,7 +142,6 @@ export function sanitizeClipEdits(
   }
   if (typeof body.captionPresetId === 'string') edits.captionPresetId = body.captionPresetId.trim();
   if ('layout' in body) edits.layout = readEnum(body.layout, LAYOUTS, 'speaker-focus');
-  if ('captionEngine' in body) edits.captionEngine = readEnum(body.captionEngine, CAPTION_ENGINES, 'remotion');
   if (typeof body.hookStylePresetId === 'string') edits.hookStylePresetId = body.hookStylePresetId.trim();
   if (typeof body.ctaStylePresetId === 'string') edits.ctaStylePresetId = body.ctaStylePresetId.trim();
 

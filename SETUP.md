@@ -77,7 +77,7 @@ Both `npm run dev` and `npm run worker` load `.env.local` (via `@next/env`'s
 | Variable | Default | Notes |
 |---|---|---|
 | `DATABASE_PATH` | `./data/clipcraft.db` | Path to the SQLite database, relative to the repository root unless absolute. Parent folders are created automatically. Web and worker processes must use the same path; restart both after changing it. The file is ignored by Git. |
-| **moved to /settings** | — | `GEMINI_API_KEY`, `DEEPGRAM_API_KEY`, `DEEPGRAM_MODEL`, `WORKER_CONCURRENCY`, `VIRAL_CONCURRENCY`, `REMOTION_CONCURRENCY`, `AUTO_RENDER_CAPTION_ENGINE` and `PROFANITY_AUDIO_MODE` are no longer read from this file. Their values live in the `app_settings` table and are edited on **Settings** — the page even points out any of those names still sitting unused in your `.env.local`. The Gemini chain itself is unchanged: 5 slots, newest-first (`gemini-3.8-flash` → `3.6-flash` → `3.5-flash-lite` → `3.1-flash-lite` → `2.5-flash-lite`), each model with its own free daily pool, and every key you save is tried on each model before the next model — so a second key is real 503-redundancy. Model order lives in `LLM_PROVIDER_CHAIN` in `lib/llm.ts`; the other free providers were removed after live testing (Groq 413 + 429s, Cerebras 402 paid, Mistral ~1 RPM, NVIDIA NIM 404/410 + timeouts). |
+| **moved to /settings** | — | `GEMINI_API_KEY`, `DEEPGRAM_API_KEY`, `DEEPGRAM_MODEL`, `WORKER_CONCURRENCY`, `VIRAL_CONCURRENCY`, `REMOTION_CONCURRENCY` and `PROFANITY_AUDIO_MODE` are no longer read from this file. Their values live in the `app_settings` table and are edited on **Settings** — the page even points out any of those names still sitting unused in your `.env.local`. The Gemini chain itself is unchanged: 5 slots, newest-first (`gemini-3.8-flash` → `3.6-flash` → `3.5-flash-lite` → `3.1-flash-lite` → `2.5-flash-lite`), each model with its own free daily pool, and every key you save is tried on each model before the next model — so a second key is real 503-redundancy. Model order lives in `LLM_PROVIDER_CHAIN` in `lib/llm.ts`; the other free providers were removed after live testing (Groq 413 + 429s, Cerebras 402 paid, Mistral ~1 RPM, NVIDIA NIM 404/410 + timeouts). |
 | `WHISPER_CLI_PATH` | auto-detect | Overrides binary discovery (searches `.whisper/…`, `bin/whisper-win-x64/whisper-cli.exe`, `bin/whisper-cli`). |
 | `WHISPER_MODEL_PATH` | auto-detect | Overrides model discovery (`models/ggml-*.bin`). |
 | `WHISPER_LANGUAGE` | `auto` | e.g. `ur`, `hi`, `en`. `auto` detects the spoken language (needed for Urdu/Hindi/Punjabi). |
@@ -267,10 +267,10 @@ provider chain, and the Remotion renderer, and tells you exactly what to fix.
    grid first): the complete hook interval returned by viral detection
    (`hook_timestamp.start`→`hook_timestamp.end`) is duplicated to the **start**, with
    a 0.5 s dip-to-black → active-speaker layout planning (`worker/asd/` +
-   `worker/layout.ts`) → transparent caption / hook / CTA frames are prepared by
-   the selected **caption engine** (`remotion` default, or native ASS for captions)
-   → one FFmpeg graph does the source trim, mirror, crop, colour, hook intro, overlay
-   compositing, audio handling and the single final H.264 encode (1080×1920).
+   `worker/layout.ts`) → transparent caption / hook / CTA frames are painted by
+   Remotion in headless Chrome → one FFmpeg graph does the source trim, mirror,
+   crop, colour, hook intro, overlay compositing, audio handling and the single
+   final H.264 encode (1080×1920).
 6. Output: `generated-clips/001_my_recording/<clip title>.mp4`, tracked in
    SQLite. The dashboard plays it through `/api/media/...` (Range-enabled, so
    seeking works). Each clip in the grid shows its viral score and the AI analysis;
@@ -439,9 +439,7 @@ worker/layout.ts           speaker-focus vs split-grid plans (peak-concurrent ce
 worker/camera-lock.ts      locked split-pane camera (hold still, re-centre only when the head leaves)
 worker/overlay-layout.ts   layout-aware caption / hook / CTA placement (off the faces in a split)
 worker/ffmpeg-pipeline.ts  One final FFmpeg graph: hflip → crop → colour → hook → overlays → H.264
-worker/remotion-renderer.ts  "remotion" engine: transparent full-timeline overlay PNG sequence
-worker/native-captions.ts  "native" engine: ASS caption file (burned by libass) + Remotion hook/CTA sequences
-worker/captions-ass.ts     ASS caption generation (karaoke fill, word pop; burned by libass)
+worker/remotion-renderer.ts  transparent full-timeline overlay PNG sequence (Remotion)
 remotion/                  CaptionComposition + AnimatedWord + Hook/CTA overlays
 scripts/setup-whisper.*    binary + ggml model downloader (.mjs and .ps1)
 scripts/setup-yunet.mjs    YuNet model downloader with SHA-256 verification

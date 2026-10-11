@@ -5,8 +5,6 @@ import { CaptionComposition, CaptionCompositionProps } from './CaptionCompositio
 import {
   CaptionOverlayComposition,
   type CaptionOverlayCompositionProps,
-  CtaOverlayComposition,
-  HookOverlayComposition,
 } from './OverlayCompositions';
 
 /**
@@ -84,29 +82,6 @@ export const RemotionRoot: React.FC = () => {
             ctaStyle: DEFAULT_OVERLAY_STYLE_PRESETS.find((p) => p.kind === 'cta'),
           } satisfies CaptionOverlayCompositionProps
         }
-      />
-      {/*
-        Transparent PNG compositions. The native engine uses the short hook/CTA
-        layers plus an ASS-generated caption layer; the Remotion engine renders a
-        single full-timeline sequence. FFmpeg composites them with the base crop.
-      */}
-      <Composition
-        id="HookOverlayComposition"
-        component={HookOverlayComposition as unknown as React.ComponentType<Record<string, unknown>>}
-        durationInFrames={Math.round(3 * PREVIEW_FPS)}
-        fps={PREVIEW_FPS}
-        width={1080}
-        height={1920}
-        defaultProps={{ hookText: 'THE 1 SECRET YOU WERE NEVER TOLD', hookDuration: 3 }}
-      />
-      <Composition
-        id="CtaOverlayComposition"
-        component={CtaOverlayComposition as unknown as React.ComponentType<Record<string, unknown>>}
-        durationInFrames={Math.round(2.5 * PREVIEW_FPS)}
-        fps={PREVIEW_FPS}
-        width={1080}
-        height={1920}
-        defaultProps={{ ctaText: 'FOLLOW FOR MORE CLIPS LIKE THIS', ctaDuration: 2.5 }}
       />
     </>
   );

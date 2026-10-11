@@ -58,14 +58,6 @@ export interface ProcessSegmentOptions {
   sourceHasAudio: boolean;
   /** Transparent PNG overlays composited before the final H.264 encode. */
   overlays?: OverlayFrameSequence[];
-  /**
-   * NATIVE caption engine only: an ASS file burned straight onto the composed
-   * video (below the PNG overlays) with libass. The native engine cannot
-   * rasterize transparent caption PNGs - libass never writes the alpha
-   * channel and the transparent `color` canvas comes out opaque on FFmpeg 7 -
-   * so the captions ride the video itself instead.
-   */
-  assFilePath?: string;
   /** Original segment-relative words, used only for render-time profanity audio handling. */
   words?: Array<{ word: string; start: number; end: number }>;
   /** Keep a pre-caption/pre-overlay debug encode when SAVE_PRECAPTION_DEBUG=1. */
@@ -83,9 +75,8 @@ const MAX_OUTPUT_HEIGHT = 1920;
  * Length (s) of the dip-to-black transition between the hook intro and the
  * base clip: the last 0.5s of the hook fades to black (+ silence) and the
  * first 0.5s of the base clip fades in from black (+ silence). The caption
- * engines (worker/remotion-renderer.ts, worker/captions-ass.ts) blank all
- * captions/overlays across this 1s window - import this constant instead of
- * re-hard-coding 0.5.
+ * renderer (worker/remotion-renderer.ts) blanks all captions/overlays across
+ * this 1s window - import this constant instead of re-hard-coding 0.5.
  */
 export const HOOK_TRANSITION_SECONDS = 0.5;
 
@@ -162,7 +153,7 @@ export function getVideoEncodeSettings(
   return { crf, preset };
 }
 
-/** Pure overlay filter builder shared by both caption engines and unit tests. */
+/** Pure overlay filter builder shared by the pipeline and unit tests. */
 export function buildVfrNormalizationFilters(targetFps: number): string[] {
   return [
     `fps=fps=${ffmpegFpsArg(normalizeFps(targetFps))}:round=near`,
@@ -342,7 +333,6 @@ export async function processVideoSegment(
     audioStartOffsetSeconds = 0,
     sourceHasAudio,
     overlays = [],
-    assFilePath,
     words = [],
     debugOutputPath,
     onProgress,
@@ -460,14 +450,6 @@ export async function processVideoSegment(
   ]);
   const snap = (time: number, phase: number): string =>
     Math.max(0, time + phase - SEEK_GUARD_SECONDS).toFixed(4);
-
-  // Native-engine captions are burned through a RELATIVE path: libass would
-  // otherwise need filter-graph escaping for OS-specific absolute paths
-  // (Windows drive letters and backslashes). The composite runs with the ASS
-  // file's directory as its cwd; every other path in the command is absolute,
-  // so nothing else resolves differently.
-  const assFileName = assFilePath ? path.basename(assFilePath) : undefined;
-  const assWorkDir = assFilePath ? path.dirname(assFilePath) : undefined;
 
   const inputArgs: string[] = [];
   let nextInput = 0;
@@ -654,24 +636,10 @@ export async function processVideoSegment(
     // A diagnostic output and the final video both need the pre-overlay base.
     // Split pads explicitly rather than consuming one labeled pad twice (which
     // FFmpeg rejects). Audio is split the same way after profanity processing.
-    let overlayBaseLabel = debugOutputPath ? "vforoverlay" : "vbase";
+    const overlayBaseLabel = debugOutputPath ? "vforoverlay" : "vbase";
     const debugVideoLabel = debugOutputPath ? "[vprecap]" : "";
     if (debugOutputPath)
       statements.push("[vbase]split=2[vprecap][vforoverlay]");
-    if (assFileName) {
-      // Native-engine captions: burned onto the (opaque) video below the PNG
-      // overlays - see assFilePath on the options for why not as PNGs.
-      // `fonts/` (copied next to the ASS by native-captions.ts) holds the bundled caption
-      // fonts; the path is relative because ffmpeg runs with the ASS directory as cwd.
-      const assFontsOption =
-        assWorkDir && fs.existsSync(path.join(assWorkDir, "fonts"))
-          ? ":fontsdir=fonts"
-          : "";
-      statements.push(
-        `[${overlayBaseLabel}]ass=${assFileName}${assFontsOption}[vcaptioned]`,
-      );
-      overlayBaseLabel = "vcaptioned";
-    }
     statements.push(
       ...buildOverlayFilterStatements(
         overlays,
@@ -724,7 +692,6 @@ export async function processVideoSegment(
 
     await runFfmpeg(args, {
       label: "trim+mirror+crop+color+overlays+encode",
-      ...(assWorkDir ? { cwd: assWorkDir } : {}),
       totalDurationSeconds: totalDuration,
       isCancelled,
       onProgress: (progress) => {

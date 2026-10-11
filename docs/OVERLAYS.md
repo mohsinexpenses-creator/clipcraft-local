@@ -42,10 +42,8 @@ The Captions tab also offers the 13 locally bundled Remotion themes: `pop`, `kar
 `caption_presets.config_json`; no SQL column migration is needed. Caption words are adapted
 from ClipCraft's final (including hook-shifted and profanity-masked) chunks at render time.
 
-Theme captions render only in **Premium / Remotion**. **Fast / Native** keeps the classic
-ASS caption appearance from the same preset as its explicit fallback. The optional **Match
-Hook + CTA to theme** switch styles both cards with the theme's font, accent, shape and
-entrance motion; it does not change their existing copy or timing. Saved Hook/CTA styles,
+The optional **Match Hook + CTA to theme** switch styles both cards with the theme's font,
+accent, shape and entrance motion; it does not change their existing copy or timing. Saved Hook/CTA styles,
 font sizes, badge content and placement remain independent and can be used again by turning
 the switch off. Theme source is vendored under `remotion/caption-themes/vendor` with the
 upstream MIT license; local Google font assets carry OFL licenses in `public/fonts/licenses`.
@@ -101,19 +99,11 @@ covers the least, and the log line says so.
 
 ## Rendering
 
-Both engines preserve the independent Hook/CTA style presets and composite those cards
-with the source crop in the final video pass. Caption-theme matching is applied to Hook/CTA
-cards in either engine; the caption theme itself is Remotion-only:
-
-- **Remotion** — `CaptionOverlayComposition` paints the selected theme (or the classic
-  `AnimatedWord` captions), hook and CTA into one transparent PNG sequence.
-- **Native (fast)** — ASS captions are burned straight onto the video by libass using the
-  classic caption fields as fallback (transparent caption PNGs are impossible on current
-  FFmpeg); hook/CTA cards are still painted by `HookOverlayComposition` /
-  `CtaOverlayComposition`.
-
-Neither engine encodes the source video, so switching engines does not introduce
-an extra lossy video generation.
+The independent Hook/CTA style presets are preserved and composited with the source crop
+in the final video pass. `CaptionOverlayComposition` paints the selected caption theme (or
+the classic `AnimatedWord` captions), hook and CTA into one transparent PNG sequence;
+caption-theme matching is applied to the Hook/CTA cards when enabled. The overlay pass does
+not encode the source video, so it introduces no extra lossy video generation.
 
 The worker resolves the clip's `hookStylePresetId` / `ctaStylePresetId` (defaults
 `hook-bold-yellow` / `cta-gradient-green`). Each clip can pick its own pair — see

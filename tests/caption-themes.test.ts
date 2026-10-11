@@ -93,18 +93,15 @@ test('theme Hook/CTA styling follows the caption accent and preserves saved over
   assert.equal(resolveCaptionThemeOverlayStyle(disabled, hook), hook);
 });
 
-test('Remotion reserves theme-specific space while Native retains its classic ASS fallback band', () => {
+test('caption themes reserve their own band; classic presets keep the classic band', () => {
   const classic = { ...DEFAULT_CAPTION_PRESETS[0], captionTheme: undefined };
-  const nativeClassicBand = captionReservedBand('native', classic);
-  const remotionClassicBand = captionReservedBand('remotion', classic);
+  const classicBand = captionReservedBand(classic);
 
   for (const theme of CAPTION_THEME_NAMES) {
     const themed = { ...DEFAULT_CAPTION_PRESETS[0], captionTheme: theme, fontSize: 64 };
-    const nativeBand = captionReservedBand('native', themed);
-    const remotionBand = captionReservedBand('remotion', themed);
-    assert.deepEqual(nativeBand, nativeClassicBand, `${theme} keeps the Native fallback geometry`);
-    assert.ok(remotionBand.bottom > remotionBand.top, `${theme} has a visible reserved band`);
-    assert.ok(remotionBand.bottom - remotionBand.top <= 480, `${theme} stays within the safe reserve`);
-    assert.notDeepEqual(remotionBand, remotionClassicBand, `${theme} uses theme-specific Remotion geometry`);
+    const themedBand = captionReservedBand(themed);
+    assert.ok(themedBand.bottom > themedBand.top, `${theme} has a visible reserved band`);
+    assert.ok(themedBand.bottom - themedBand.top <= 480, `${theme} stays within the safe reserve`);
+    assert.notDeepEqual(themedBand, classicBand, `${theme} uses theme-specific geometry`);
   }
 });

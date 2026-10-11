@@ -274,9 +274,6 @@ export function ClipTile({ clip, captionPresets, busy, onEdit, onRender, onCance
           <span className="rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
             {captionName}
           </span>
-          <span className="rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-            {clip.captionEngine === "native" ? "fast captions" : "premium captions"}
-          </span>
           {clip.hookDuration > 0 && (
             <span className="rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
               hook

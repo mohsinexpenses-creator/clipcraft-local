@@ -2,7 +2,7 @@
  * Shared overlay geometry: how the captions, the hook card and the CTA card are
  * stacked on the 1080x1920 canvas.
  *
- * The placement contract (for EVERY framing layout and BOTH caption engines):
+ * The placement contract (for EVERY framing layout):
  *
  *   1. the captions sit at their preset position;
  *   2. the hook card and the CTA card are placed DIRECTLY ABOVE the caption
@@ -12,7 +12,7 @@
  * Pure logic, no I/O - imported by the worker (render-time placement), the
  * Remotion compositions (in-app previews) and the tests.
  */
-import type { CaptionEngine, CaptionPreset, OverlayStylePreset } from './types';
+import type { CaptionPreset, OverlayStylePreset } from './types';
 import { captionThemeReservedHeight } from './caption-theme-styles';
 import { resolveCaptionLineStyle } from './caption-layout';
 
@@ -104,11 +104,8 @@ export function estimateCtaHeight(style: OverlayStylePreset, text: string): numb
 }
 
 // ---------------------------------------------------------------------------
-// Caption block geometry
+// Caption block geometry (Remotion captions: bottom-anchored flex box)
 // ---------------------------------------------------------------------------
-
-/** libass scales the preset size up (see ASS_FONT_SCALE in worker/captions-ass.ts). */
-const ASS_FONT_SCALE = 1.2;
 
 /** A vertical band on the canvas (px). */
 export interface OverlayBand {
@@ -124,21 +121,19 @@ interface CaptionGeometry {
 }
 
 /**
- * How each caption engine turns `positionY` (% from the bottom) into pixels:
- *  - native (ASS): one line, `\an8` at y = bottomEdge - 0.625*size (the line's
- *    TOP); a wrapped second line grows downward, so two lines are reserved;
- *  - Remotion: a bottom-anchored flex box - its BOTTOM edge sits at positionY and
- *    a wrapped second line grows upward, so room for two lines is reserved.
+ * How the Remotion caption renderer turns `positionY` (% from the bottom) into
+ * pixels: a bottom-anchored flex box - its BOTTOM edge sits at positionY and a
+ * wrapped second line grows upward, so room for two lines is reserved. Theme
+ * presets reserve their own (conservative) visual band instead.
  */
-function captionGeometry(engine: CaptionEngine, preset: CaptionPreset): CaptionGeometry {
+function captionGeometry(preset: CaptionPreset): CaptionGeometry {
   const fontSize = Number.isFinite(preset.fontSize) && preset.fontSize > 0 ? preset.fontSize : 48;
   const positionY = Number.isFinite(preset.positionY) ? preset.positionY : 25;
   const bottomEdge = OVERLAY_CANVAS_HEIGHT * (1 - positionY / 100);
 
   // Theme components are centered full-frame compositions, not bottom-anchored
-  // ASS/AnimatedWord blocks. Reserve their conservative visual band only for
-  // Remotion; Native deliberately keeps its established ASS fallback geometry.
-  const themeHeight = engine === 'remotion' ? captionThemeReservedHeight(preset) : 0;
+  // AnimatedWord blocks - reserve their conservative visual band.
+  const themeHeight = captionThemeReservedHeight(preset);
   if (themeHeight > 0) {
     return {
       band: { top: bottomEdge - themeHeight, bottom: bottomEdge },
@@ -150,24 +145,11 @@ function captionGeometry(engine: CaptionEngine, preset: CaptionPreset): CaptionG
     const lineGap = Number.isFinite(preset.lineGap) ? Math.max(0, Math.min(80, preset.lineGap ?? 0)) : 4;
     const height = preset.lineStyles.reduce((sum, _line, index) => {
       const style = resolveCaptionLineStyle(preset, index);
-      const engineScale = engine === 'native' ? ASS_FONT_SCALE : 1.12;
-      return sum + style.fontSize * engineScale * style.lineHeight + style.strokeWidth * 2;
+      return sum + style.fontSize * 1.12 * style.lineHeight + style.strokeWidth * 2;
     }, 0) + Math.max(0, preset.lineStyles.length - 1) * lineGap + 16;
     return {
       band: { top: bottomEdge - height, bottom: bottomEdge },
       positionYForTop: (top) => 100 * (1 - (top + height) / OVERLAY_CANVAS_HEIGHT),
-    };
-  }
-
-  if (engine === 'native') {
-    const size = Math.round(fontSize * ASS_FONT_SCALE);
-    const stroke = preset.strokeWidth ?? 3;
-    const lineBox = size * 1.33;
-    const height = Math.ceil(2 * lineBox + 2 * stroke);
-    return {
-      // ASS \an8 anchors the line's TOP at bottomEdge - 0.625*size.
-      band: { top: bottomEdge - 0.625 * size, bottom: bottomEdge - 0.625 * size + height },
-      positionYForTop: (top) => 100 * (1 - (top + 0.625 * size) / OVERLAY_CANVAS_HEIGHT),
     };
   }
 
@@ -180,17 +162,13 @@ function captionGeometry(engine: CaptionEngine, preset: CaptionPreset): CaptionG
 }
 
 /** The vertical band the captions reserve for a preset (see captionGeometry). */
-export function captionReservedBand(engine: CaptionEngine, preset: CaptionPreset): OverlayBand {
-  return captionGeometry(engine, preset).band;
+export function captionReservedBand(preset: CaptionPreset): OverlayBand {
+  return captionGeometry(preset).band;
 }
 
 /** Inverse of captionReservedBand: the positionY that puts the band's top at `top`. */
-export function captionPositionYForBandTop(
-  engine: CaptionEngine,
-  preset: CaptionPreset,
-  top: number
-): number {
-  return captionGeometry(engine, preset).positionYForTop(top);
+export function captionPositionYForBandTop(preset: CaptionPreset, top: number): number {
+  return captionGeometry(preset).positionYForTop(top);
 }
 
 // ---------------------------------------------------------------------------

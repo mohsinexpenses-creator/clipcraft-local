@@ -158,9 +158,9 @@ and output scaling together. The output canvas is always 1080×1920.
 - **Split screen** — each locked camera uses a static crop except for an eased glide
   when the head leaves its safe zone. Per-pane crops use `exact=1` and Lanczos scaling,
   then compose onto the 1080×1920 canvas. Cell assignment is stable across the clip.
-- **Overlays** — the Remotion engine paints a full-timeline transparent PNG sequence;
-  the native engine burns ASS captions onto the video and paints hook/CTA PNGs. FFmpeg
-  composites those layers directly over the source-derived video frames before the final encode.
+- **Overlays** — Remotion paints a full-timeline transparent PNG sequence (captions,
+  hook, CTA). FFmpeg composites those layers directly over the source-derived video
+  frames before the final encode.
 - **Encoding.** The final encode uses libx264 at CRF 17 and preset `slow` by default.
   `VIDEO_CRF` is configurable from 16 to 18; `VIDEO_PRESET` accepts a libx264 preset
   (default `slow`, or `medium` for faster output). This avoids a low-quality early
@@ -176,5 +176,5 @@ and output scaling together. The output canvas is always 1080×1920.
 - Crop coordinates are evaluated in **mirrored space** (the chain flips before crop).
 
 Layout choice is stored on the clip record (`clip.layout`; `clip.layoutNote` when it
-could not be applied) alongside `captionEngine` and
-`hookStylePresetId` / `ctaStylePresetId` (see [OVERLAYS.md](./OVERLAYS.md)).
+could not be applied) alongside `hookStylePresetId` / `ctaStylePresetId`
+(see [OVERLAYS.md](./OVERLAYS.md)).
