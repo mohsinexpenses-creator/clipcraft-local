@@ -19,6 +19,7 @@ import {
   DEFAULT_CAPTION_PRESETS,
   DEFAULT_OVERLAY_STYLE_PRESETS,
   DEFAULT_PROMPT_TEMPLATES,
+  RETIRED_CAPTION_PRESET_IDS,
 } from "./presets";
 import { AppError } from "./errors";
 
@@ -381,7 +382,9 @@ function normalizePresetDefaultGroup(
     )[0]?.id ?? rows[0]?.id;
 
   if (kind) {
-    db.prepare("UPDATE overlay_style_presets SET is_default = 0 WHERE kind = ?").run(kind);
+    db.prepare(
+      "UPDATE overlay_style_presets SET is_default = 0 WHERE kind = ?",
+    ).run(kind);
     if (winner) {
       db.prepare(
         "UPDATE overlay_style_presets SET is_default = 1 WHERE id = ? AND kind = ?",
@@ -390,7 +393,9 @@ function normalizePresetDefaultGroup(
   } else {
     db.prepare("UPDATE caption_presets SET is_default = 0").run();
     if (winner) {
-      db.prepare("UPDATE caption_presets SET is_default = 1 WHERE id = ?").run(winner);
+      db.prepare("UPDATE caption_presets SET is_default = 1 WHERE id = ?").run(
+        winner,
+      );
     }
   }
 }
@@ -419,11 +424,15 @@ function migrateSchemaV2(db: SqliteDatabase): void {
  */
 function migrateSchemaV3(db: SqliteDatabase): void {
   const hasVideos = db
-    .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'videos'`)
+    .prepare(
+      `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'videos'`,
+    )
     .get();
   if (!hasVideos) return;
 
-  const columns = db.prepare(`PRAGMA table_info(videos)`).all() as Array<{ name: string }>;
+  const columns = db.prepare(`PRAGMA table_info(videos)`).all() as Array<{
+    name: string;
+  }>;
   if (!columns.some((column) => column.name === "pipeline_json")) {
     db.exec(`ALTER TABLE videos ADD COLUMN pipeline_json TEXT`);
   }
@@ -570,7 +579,8 @@ export function readAppSettingsSections(): AppSettingsRow[] {
 
   const sections: AppSettingsRow[] = [];
   for (const row of rows) {
-    if (!APP_SETTINGS_SECTIONS.includes(row.key as AppSettingsSection)) continue;
+    if (!APP_SETTINGS_SECTIONS.includes(row.key as AppSettingsSection))
+      continue;
     try {
       sections.push({
         key: row.key as AppSettingsSection,
@@ -587,7 +597,7 @@ export function readAppSettingsSections(): AppSettingsRow[] {
 /** One statement per call; `undefined` values are dropped, so rows never store noise. */
 export function saveAppSettingsSection(
   key: AppSettingsSection,
-  value: Record<string, unknown> | null
+  value: Record<string, unknown> | null,
 ): string {
   const updatedAt = new Date().toISOString();
   const db = getDatabase();
@@ -598,16 +608,63 @@ export function saveAppSettingsSection(
   }
 
   const compact = Object.fromEntries(
-    Object.entries(value).filter(([, entry]) => entry !== undefined)
+    Object.entries(value).filter(([, entry]) => entry !== undefined),
   );
 
   db.prepare(
     `INSERT INTO app_settings (key, value_json, updated_at)
      VALUES (?, ?, ?)
-     ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`
+     ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`,
   ).run(key, serializeJson(compact), updatedAt);
 
   return updatedAt;
+}
+
+/**
+ * One-way cleanup for the caption redesign: deletes the retired built-in caption presets
+ * (RETIRED_CAPTION_PRESET_IDS) from an existing database and re-points everything that
+ * still referenced them at the new default. Idempotent - a database without retired rows
+ * is untouched. User-created presets (any other id) are never touched.
+ */
+function retireOldCaptionPresets(db: SqliteDatabase): void {
+  const retired = [...RETIRED_CAPTION_PRESET_IDS];
+  const marks = retired.map(() => "?").join(", ");
+  const present = db
+    .prepare(`SELECT id FROM caption_presets WHERE id IN (${marks})`)
+    .all(...retired) as Array<{ id: string }>;
+  const newDefaultId = DEFAULT_CAPTION_PRESETS.find(
+    (preset) => preset.isDefault === true,
+  )?._id;
+  if (!newDefaultId) return;
+
+  // 1. The default must never be a retired row (clear first: the unique index allows one default).
+  const currentDefault = db
+    .prepare("SELECT id FROM caption_presets WHERE is_default = 1 LIMIT 1")
+    .get() as { id: string } | undefined;
+  if (!currentDefault || retired.includes(currentDefault.id)) {
+    db.prepare(
+      "UPDATE caption_presets SET is_default = 0 WHERE is_default = 1",
+    ).run();
+    db.prepare("UPDATE caption_presets SET is_default = 1 WHERE id = ?").run(
+      newDefaultId,
+    );
+  }
+  if (present.length === 0) return;
+
+  // 2. Clips and the saved render settings that pointed at a retired preset.
+  db.prepare(
+    `UPDATE clips SET record_json = json_set(record_json, '$.captionPresetId', ?)
+       WHERE json_extract(record_json, '$.captionPresetId') IN (${marks})`,
+  ).run(newDefaultId, ...retired);
+  db.prepare(
+    `UPDATE app_settings SET value_json = json_set(value_json, '$.captionPresetId', ?)
+       WHERE key = 'render' AND json_extract(value_json, '$.captionPresetId') IN (${marks})`,
+  ).run(newDefaultId, ...retired);
+
+  // 3. Finally the retired rows themselves.
+  db.prepare(`DELETE FROM caption_presets WHERE id IN (${marks})`).run(
+    ...retired,
+  );
 }
 
 function seedDefaults(db: SqliteDatabase): void {
@@ -629,7 +686,9 @@ function seedDefaults(db: SqliteDatabase): void {
 
   db.transaction(() => {
     let captionDefaultExists = Boolean(
-      db.prepare("SELECT 1 FROM caption_presets WHERE is_default = 1 LIMIT 1").get(),
+      db
+        .prepare("SELECT 1 FROM caption_presets WHERE is_default = 1 LIMIT 1")
+        .get(),
     );
     const overlayDefaultKinds = new Set(
       (
@@ -657,14 +716,18 @@ function seedDefaults(db: SqliteDatabase): void {
           result.changes > 0
             ? result
             : db
-                .prepare(`
+                .prepare(
+                  `
                   UPDATE caption_presets SET is_default = 1 WHERE id = ?
                     AND NOT EXISTS (SELECT 1 FROM caption_presets WHERE is_default = 1)
-                `)
+                `,
+                )
                 .run(_id);
         if (promoted.changes > 0) captionDefaultExists = true;
       }
     }
+
+    retireOldCaptionPresets(db);
 
     for (const preset of DEFAULT_OVERLAY_STYLE_PRESETS) {
       const { _id, kind, name, isDefault, createdAt, updatedAt, ...config } =
@@ -684,12 +747,14 @@ function seedDefaults(db: SqliteDatabase): void {
           result.changes > 0
             ? result
             : db
-                .prepare(`
+                .prepare(
+                  `
                   UPDATE overlay_style_presets SET is_default = 1 WHERE id = ? AND kind = ?
                     AND NOT EXISTS (
                       SELECT 1 FROM overlay_style_presets WHERE kind = ? AND is_default = 1
                     )
-                `)
+                `,
+                )
                 .run(_id, kind, kind);
         if (promoted.changes > 0) overlayDefaultKinds.add(kind);
       }
@@ -729,7 +794,12 @@ function mapVideo(row: VideoRow): VideoRecord {
       ? { transcriptionModel: row.transcription_model }
       : {}),
     ...(row.pipeline_json
-      ? { pipeline: parseJson<PipelineOptions>(row.pipeline_json, "video pipeline") }
+      ? {
+          pipeline: parseJson<PipelineOptions>(
+            row.pipeline_json,
+            "video pipeline",
+          ),
+        }
       : {}),
     ...(row.error !== null ? { error: row.error } : {}),
     createdAt: row.created_at,
@@ -758,7 +828,12 @@ function mapVideoSummary(row: VideoSummaryRow): VideoListEntry {
         ? { transcriptionModel: row.transcription_model }
         : {}),
       ...(row.pipeline_json
-        ? { pipeline: parseJson<PipelineOptions>(row.pipeline_json, "video pipeline") }
+        ? {
+            pipeline: parseJson<PipelineOptions>(
+              row.pipeline_json,
+              "video pipeline",
+            ),
+          }
         : {}),
       ...(row.error !== null ? { error: row.error } : {}),
       createdAt: row.created_at,
@@ -1015,7 +1090,15 @@ export async function resetOverlayStylePresets(): Promise<
       // `config_json`, so the columns and the default flag (handled below) are pulled out.
       const { _id, kind, name, isDefault, createdAt, ...config } = preset;
       void isDefault;
-      upsert.run(_id, kind, name, 0, createdAt ?? now, now, serializeJson(config));
+      upsert.run(
+        _id,
+        kind,
+        name,
+        0,
+        createdAt ?? now,
+        now,
+        serializeJson(config),
+      );
     }
 
     const kindsWithDefault = new Set(
@@ -1028,8 +1111,11 @@ export async function resetOverlayStylePresets(): Promise<
       ).map((row) => row.kind),
     );
     for (const preset of DEFAULT_OVERLAY_STYLE_PRESETS) {
-      if (preset.isDefault !== true || kindsWithDefault.has(preset.kind)) continue;
-      db.prepare("UPDATE overlay_style_presets SET is_default = 1 WHERE id = ?").run(preset._id);
+      if (preset.isDefault !== true || kindsWithDefault.has(preset.kind))
+        continue;
+      db.prepare(
+        "UPDATE overlay_style_presets SET is_default = 1 WHERE id = ?",
+      ).run(preset._id);
       kindsWithDefault.add(preset.kind);
     }
   }).immediate();
@@ -1162,13 +1248,17 @@ export async function listVideos(): Promise<VideoRecord[]> {
  */
 export async function listVideoSummaries(): Promise<VideoListEntry[]> {
   const rows = getDatabase()
-    .prepare(`SELECT ${VIDEO_SUMMARY_SELECT} FROM videos v ORDER BY v.created_at DESC`)
+    .prepare(
+      `SELECT ${VIDEO_SUMMARY_SELECT} FROM videos v ORDER BY v.created_at DESC`,
+    )
     .all() as VideoSummaryRow[];
   return rows.map(mapVideoSummary);
 }
 
 /** One video + its clip tally (same cheap projection as `listVideoSummaries`). */
-export async function getVideoSummary(id: string): Promise<VideoListEntry | null> {
+export async function getVideoSummary(
+  id: string,
+): Promise<VideoListEntry | null> {
   const row = getDatabase()
     .prepare(`SELECT ${VIDEO_SUMMARY_SELECT} FROM videos v WHERE v.id = ?`)
     .get(id) as VideoSummaryRow | undefined;
@@ -1427,12 +1517,16 @@ export async function setDefaultCaptionPreset(
         .prepare("SELECT 1 FROM caption_presets WHERE id = ?")
         .get(id);
       if (!exists) {
-        throw new AppError(`Caption preset ${id} was not found.`, { status: 404 });
+        throw new AppError(`Caption preset ${id} was not found.`, {
+          status: 404,
+        });
       }
       db.prepare(
         "UPDATE caption_presets SET is_default = 0 WHERE is_default = 1",
       ).run();
-      db.prepare("UPDATE caption_presets SET is_default = 1 WHERE id = ?").run(id);
+      db.prepare("UPDATE caption_presets SET is_default = 1 WHERE id = ?").run(
+        id,
+      );
       const row = db
         .prepare("SELECT * FROM caption_presets WHERE id = ?")
         .get(id) as CaptionPresetRow;
@@ -1498,13 +1592,18 @@ export async function resetCaptionPresets(): Promise<CaptionPreset[]> {
 
     // A database with no default at all (a half-finished migration, or a hand-edited row)
     // is repaired, because every render needs one; a deliberate choice is left alone.
-    const hasDefault = db.prepare("SELECT 1 FROM caption_presets WHERE is_default = 1 LIMIT 1").get();
-    const shippedDefault = DEFAULT_CAPTION_PRESETS.find((preset) => preset.isDefault === true);
+    const hasDefault = db
+      .prepare("SELECT 1 FROM caption_presets WHERE is_default = 1 LIMIT 1")
+      .get();
+    const shippedDefault = DEFAULT_CAPTION_PRESETS.find(
+      (preset) => preset.isDefault === true,
+    );
     if (!hasDefault && shippedDefault) {
-      db.prepare("UPDATE caption_presets SET is_default = 1 WHERE id = ?").run(shippedDefault._id);
+      db.prepare("UPDATE caption_presets SET is_default = 1 WHERE id = ?").run(
+        shippedDefault._id,
+      );
     }
-  })
-    .immediate();
+  }).immediate();
 
   return listCaptionPresets();
 }
@@ -1520,7 +1619,8 @@ export async function deleteCaptionPreset(id: string): Promise<boolean> {
       if (existing.is_default === 1) {
         throw new AppError("Default caption presets cannot be deleted.", {
           status: 400,
-          resolution: "Set another caption preset as the default before deleting this one.",
+          resolution:
+            "Set another caption preset as the default before deleting this one.",
         });
       }
       db.prepare("DELETE FROM caption_presets WHERE id = ?").run(id);

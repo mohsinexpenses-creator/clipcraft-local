@@ -1,13 +1,16 @@
-import fs from 'fs';
-import os from 'os';
-import path from 'path';
-import { AppError, RenderCancelledError, toErrorMessage } from '../lib/errors';
-import { maskProfanity } from '../lib/profanity';
-import { CaptionPreset, OverlayStylePreset, WordTimestamp } from '../lib/types';
-import { HOOK_TRANSITION_SECONDS, normalizeFps } from './ffmpeg-pipeline';
-import { color, log } from '../lib/logger';
-import { getRemotionBundle, type PreparedCaptionOverlays } from './remotion-renderer';
-import { generateAssFile } from './captions-ass';
+import fs from "fs";
+import os from "os";
+import path from "path";
+import { AppError, RenderCancelledError, toErrorMessage } from "../lib/errors";
+import { maskProfanity } from "../lib/profanity";
+import { CaptionPreset, OverlayStylePreset, WordTimestamp } from "../lib/types";
+import { HOOK_TRANSITION_SECONDS, normalizeFps } from "./ffmpeg-pipeline";
+import { color, log } from "../lib/logger";
+import {
+  getRemotionBundle,
+  type PreparedCaptionOverlays,
+} from "./remotion-renderer";
+import { generateAssFile } from "./captions-ass";
 
 export interface PrepareNativeOverlaysOptions {
   fps: number;
@@ -30,7 +33,7 @@ export interface PrepareNativeOverlaysOptions {
 const OUTPUT_WIDTH = 1080;
 const OUTPUT_HEIGHT = 1920;
 /** File name of the ASS burned by processVideoSegment (relative to workDir). */
-export const NATIVE_ASS_FILE = 'captions.ass';
+export const NATIVE_ASS_FILE = "captions.ass";
 
 function checkCancelled(isCancelled?: () => boolean): void {
   try {
@@ -41,25 +44,27 @@ function checkCancelled(isCancelled?: () => boolean): void {
 }
 
 function normalizePngSequence(outputDir: string): string {
-  const files = fs.readdirSync(outputDir)
-    .filter((file) => file.toLowerCase().endsWith('.png'))
+  const files = fs
+    .readdirSync(outputDir)
+    .filter((file) => file.toLowerCase().endsWith(".png"))
     .map((file) => ({ file, index: Number(file.match(/(\d+)/)?.[1] ?? -1) }))
     .filter(({ index }) => Number.isFinite(index) && index >= 0)
     .sort((a, b) => a.index - b.index);
-  if (files.length === 0) throw new Error(`no PNG frames were produced in ${outputDir}`);
+  if (files.length === 0)
+    throw new Error(`no PNG frames were produced in ${outputDir}`);
 
   const temporary = files.map(({ file }, index) => {
-    const tempName = `__normalized_${String(index + 1).padStart(6, '0')}.png`;
+    const tempName = `__normalized_${String(index + 1).padStart(6, "0")}.png`;
     fs.renameSync(path.join(outputDir, file), path.join(outputDir, tempName));
     return tempName;
   });
   temporary.forEach((file, index) => {
     fs.renameSync(
       path.join(outputDir, file),
-      path.join(outputDir, `ov_${String(index + 1).padStart(5, '0')}.png`)
+      path.join(outputDir, `ov_${String(index + 1).padStart(5, "0")}.png`),
     );
   });
-  return path.join(outputDir, 'ov_%05d.png');
+  return path.join(outputDir, "ov_%05d.png");
 }
 
 async function renderRemotionFrames(opts: {
@@ -72,13 +77,17 @@ async function renderRemotionFrames(opts: {
   label: string;
   onProgress?: (progress: number) => void;
 }): Promise<string> {
-  const { selectComposition, renderFrames } = await import('@remotion/renderer');
-  const durationInFrames = Math.max(1, Math.round(opts.durationSeconds * opts.fps));
+  const { selectComposition, renderFrames } =
+    await import("@remotion/renderer");
+  const durationInFrames = Math.max(
+    1,
+    Math.round(opts.durationSeconds * opts.fps),
+  );
   const composition = await selectComposition({
     serveUrl: opts.bundleDir,
     id: opts.compositionId,
     inputProps: opts.inputProps,
-    logLevel: 'error',
+    logLevel: "error",
   });
   await renderFrames({
     composition: {
@@ -91,12 +100,13 @@ async function renderRemotionFrames(opts: {
     serveUrl: opts.bundleDir,
     inputProps: opts.inputProps,
     outputDir: opts.outputDir,
-    imageFormat: 'png',
+    imageFormat: "png",
     onStart: () => undefined,
     onFrameUpdate: (framesRendered) => {
-      if (opts.onProgress) opts.onProgress(Math.round((framesRendered / durationInFrames) * 100));
+      if (opts.onProgress)
+        opts.onProgress(Math.round((framesRendered / durationInFrames) * 100));
     },
-    logLevel: 'error',
+    logLevel: "error",
   });
   const pattern = normalizePngSequence(opts.outputDir);
   log.detail(`${opts.label}: ${durationInFrames} transparent frames rendered`);
@@ -118,49 +128,88 @@ async function renderRemotionFrames(opts: {
  * Hook/CTA cards keep the Remotion PNG route (Chrome paints true-alpha frames).
  */
 export async function prepareNativeCaptionOverlays(
-  options: PrepareNativeOverlaysOptions
+  options: PrepareNativeOverlaysOptions,
 ): Promise<PreparedCaptionOverlays> {
   const fps = normalizeFps(options.fps);
   const totalDuration = Math.max(0.1, options.totalDuration);
-  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clipcraft-native-'));
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "clipcraft-native-"));
 
   try {
     checkCancelled(options.isCancelled);
     if (options.words.length === 0) {
-      throw new AppError('Caption overlay rendering cannot start without transcript words.', {
-        resolution: 'Re-run transcription or select a segment that overlaps transcript text.',
-      });
+      throw new AppError(
+        "Caption overlay rendering cannot start without transcript words.",
+        {
+          resolution:
+            "Re-run transcription or select a segment that overlaps transcript text.",
+        },
+      );
     }
 
-    const transitionDuration = options.hookDuration > 0
-      ? Math.max(0, Math.min(HOOK_TRANSITION_SECONDS, options.hookDuration / 2))
-      : 0;
-    const hookOverlayEnd = Math.max(0, options.hookDuration - transitionDuration);
+    const transitionDuration =
+      options.hookDuration > 0
+        ? Math.max(
+            0,
+            Math.min(HOOK_TRANSITION_SECONDS, options.hookDuration / 2),
+          )
+        : 0;
+    const hookOverlayEnd = Math.max(
+      0,
+      options.hookDuration - transitionDuration,
+    );
     const ctaStart = Math.max(0, totalDuration - options.ctaDuration);
-    fs.writeFileSync(path.join(workDir, NATIVE_ASS_FILE), generateAssFile({
-      words: options.words,
-      preset: options.preset,
-      totalDurationSeconds: totalDuration,
-      hookDuration: options.hookDuration,
-      hookStart: Math.max(0, options.hookStart),
-      ctaDuration: options.ctaDuration,
-      hookTransitionDuration: transitionDuration,
-      captionLiftScale: options.captionLiftScale,
-    }), 'utf8');
-    log.detail(`Native captions: ASS burned directly onto the video (${color.bold(NATIVE_ASS_FILE)})`);
+    fs.writeFileSync(
+      path.join(workDir, NATIVE_ASS_FILE),
+      generateAssFile({
+        words: options.words,
+        preset: options.preset,
+        totalDurationSeconds: totalDuration,
+        hookDuration: options.hookDuration,
+        hookStart: Math.max(0, options.hookStart),
+        ctaDuration: options.ctaDuration,
+        hookTransitionDuration: transitionDuration,
+        captionLiftScale: options.captionLiftScale,
+      }),
+      "utf8",
+    );
+    // Bundled caption fonts (public/fonts) travel with the ASS so libass can resolve them
+    // via `ass=...:fontsdir=fonts` (see ffmpeg-pipeline.ts).
+    const fontsSource = path.join(process.cwd(), "public", "fonts");
+    if (fs.existsSync(fontsSource)) {
+      const fontsTarget = path.join(workDir, "fonts");
+      fs.mkdirSync(fontsTarget, { recursive: true });
+      for (const file of fs.readdirSync(fontsSource)) {
+        if (/\.(ttf|otf)$/i.test(file))
+          fs.copyFileSync(
+            path.join(fontsSource, file),
+            path.join(fontsTarget, file),
+          );
+      }
+    } else {
+      log.detail(
+        "Native captions: public/fonts not found, libass will use system fonts only",
+      );
+    }
+    log.detail(
+      `Native captions: ASS burned directly onto the video (${color.bold(NATIVE_ASS_FILE)})`,
+    );
 
-    const sequences: PreparedCaptionOverlays['sequences'] = [];
-    const hookEnabled = options.hookDuration > 0 && options.hookText.trim().length > 0 && hookOverlayEnd > 0.05;
-    const ctaEnabled = options.ctaDuration > 0 && options.ctaText.trim().length > 0;
+    const sequences: PreparedCaptionOverlays["sequences"] = [];
+    const hookEnabled =
+      options.hookDuration > 0 &&
+      options.hookText.trim().length > 0 &&
+      hookOverlayEnd > 0.05;
+    const ctaEnabled =
+      options.ctaDuration > 0 && options.ctaText.trim().length > 0;
 
     if (hookEnabled || ctaEnabled) {
       const bundleDir = await getRemotionBundle();
       if (hookEnabled) {
-        const hookDir = path.join(workDir, 'hook');
+        const hookDir = path.join(workDir, "hook");
         fs.mkdirSync(hookDir, { recursive: true });
         const inputPattern = await renderRemotionFrames({
           bundleDir,
-          compositionId: 'HookOverlayComposition',
+          compositionId: "HookOverlayComposition",
           outputDir: hookDir,
           fps,
           durationSeconds: hookOverlayEnd,
@@ -169,17 +218,17 @@ export async function prepareNativeCaptionOverlays(
             hookDuration: hookOverlayEnd,
             hookStyle: options.hookStyle,
           },
-          label: 'Hook overlay',
+          label: "Hook overlay",
           onProgress: options.onProgress,
         });
-        sequences.push({ name: 'hook', inputPattern, startAtSeconds: 0 });
+        sequences.push({ name: "hook", inputPattern, startAtSeconds: 0 });
       }
       if (ctaEnabled) {
-        const ctaDir = path.join(workDir, 'cta');
+        const ctaDir = path.join(workDir, "cta");
         fs.mkdirSync(ctaDir, { recursive: true });
         const inputPattern = await renderRemotionFrames({
           bundleDir,
-          compositionId: 'CtaOverlayComposition',
+          compositionId: "CtaOverlayComposition",
           outputDir: ctaDir,
           fps,
           durationSeconds: options.ctaDuration,
@@ -188,10 +237,10 @@ export async function prepareNativeCaptionOverlays(
             ctaDuration: options.ctaDuration,
             ctaStyle: options.ctaStyle,
           },
-          label: 'CTA overlay',
+          label: "CTA overlay",
           onProgress: options.onProgress,
         });
-        sequences.push({ name: 'CTA', inputPattern, startAtSeconds: ctaStart });
+        sequences.push({ name: "CTA", inputPattern, startAtSeconds: ctaStart });
       }
     }
 
@@ -199,11 +248,17 @@ export async function prepareNativeCaptionOverlays(
     if (options.onProgress) options.onProgress(100);
     return { workDir, sequences, assFile: NATIVE_ASS_FILE };
   } catch (error) {
-    try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* best-effort */ }
-    if (error instanceof RenderCancelledError || error instanceof AppError) throw error;
-    throw new AppError('Native caption overlay rendering failed.', {
+    try {
+      fs.rmSync(workDir, { recursive: true, force: true });
+    } catch {
+      /* best-effort */
+    }
+    if (error instanceof RenderCancelledError || error instanceof AppError)
+      throw error;
+    throw new AppError("Native caption overlay rendering failed.", {
       details: toErrorMessage(error),
-      resolution: 'Inspect the Remotion log above, confirm the hook/CTA overlay bundle builds, and retry.',
+      resolution:
+        "Inspect the Remotion log above, confirm the hook/CTA overlay bundle builds, and retry.",
     });
   }
 }

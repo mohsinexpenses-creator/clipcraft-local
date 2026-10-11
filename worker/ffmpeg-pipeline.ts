@@ -1,21 +1,21 @@
-import fs from 'fs';
-import path from 'path';
-import { AppError, toErrorMessage } from '../lib/errors';
-import { DEFAULT_FILTER_PRESETS } from '../lib/presets';
+import fs from "fs";
+import path from "path";
+import { AppError, toErrorMessage } from "../lib/errors";
+import { DEFAULT_FILTER_PRESETS } from "../lib/presets";
 import {
   buildProfanityAudioFilter,
   buildProfanityWindows,
   getProfanityAudioMode,
-} from '../lib/profanity';
-import { getVideoMetadata, runFfmpeg } from '../lib/ffmpeg';
-import { log } from '../lib/logger';
+} from "../lib/profanity";
+import { getVideoMetadata, runFfmpeg } from "../lib/ffmpeg";
+import { log } from "../lib/logger";
 import {
   LayoutPlan,
   OUTPUT_HEIGHT,
   OUTPUT_WIDTH,
   buildSingleFilterParts,
   buildSplitFilterStatements,
-} from './layout';
+} from "./layout";
 
 export interface OverlayFrameSequence {
   /** Short label used in FFmpeg diagnostics. */
@@ -125,9 +125,9 @@ export function normalizeFps(sourceFps: number): number {
  */
 export function ffmpegFpsArg(fps: number): string {
   const ntsc: Array<[number, string]> = [
-    [23.976, '24000/1001'],
-    [29.97, '30000/1001'],
-    [59.94, '60000/1001'],
+    [23.976, "24000/1001"],
+    [29.97, "30000/1001"],
+    [59.94, "60000/1001"],
   ];
   for (const [value, fraction] of ntsc) {
     if (Math.abs(fps - value) < 0.0005) return fraction;
@@ -136,31 +136,48 @@ export function ffmpegFpsArg(fps: number): string {
 }
 
 const VIDEO_PRESETS = new Set([
-  'ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium',
-  'slow', 'slower', 'veryslow', 'placebo',
+  "ultrafast",
+  "superfast",
+  "veryfast",
+  "faster",
+  "fast",
+  "medium",
+  "slow",
+  "slower",
+  "veryslow",
+  "placebo",
 ]);
 
 /** Final-output H.264 settings. Invalid env values fall back to quality-first defaults. */
 export function getVideoEncodeSettings(
-  env: Record<string, string | undefined> = process.env
+  env: Record<string, string | undefined> = process.env,
 ): { crf: number; preset: string } {
   const rawCrf = Number(env.VIDEO_CRF?.trim());
-  const crf = Number.isFinite(rawCrf) && rawCrf >= 16 && rawCrf <= 18
-    ? Math.round(rawCrf)
-    : 17;
+  const crf =
+    Number.isFinite(rawCrf) && rawCrf >= 16 && rawCrf <= 18
+      ? Math.round(rawCrf)
+      : 17;
   const rawPreset = env.VIDEO_PRESET?.trim().toLowerCase();
-  const preset = rawPreset && VIDEO_PRESETS.has(rawPreset) ? rawPreset : 'slow';
+  const preset = rawPreset && VIDEO_PRESETS.has(rawPreset) ? rawPreset : "slow";
   return { crf, preset };
 }
 
 /** Pure overlay filter builder shared by both caption engines and unit tests. */
 export function buildVfrNormalizationFilters(targetFps: number): string[] {
-  return [`fps=fps=${ffmpegFpsArg(normalizeFps(targetFps))}:round=near`, 'setpts=PTS-STARTPTS'];
+  return [
+    `fps=fps=${ffmpegFpsArg(normalizeFps(targetFps))}:round=near`,
+    "setpts=PTS-STARTPTS",
+  ];
 }
 
 export function buildAudioTimestampReset(audioStartOffsetSeconds = 0): string {
-  const offset = Number.isFinite(audioStartOffsetSeconds) ? audioStartOffsetSeconds : 0;
-  const shift = Math.abs(offset) < 0.000001 ? '' : `${offset >= 0 ? '+' : ''}${offset.toFixed(6)}/TB`;
+  const offset = Number.isFinite(audioStartOffsetSeconds)
+    ? audioStartOffsetSeconds
+    : 0;
+  const shift =
+    Math.abs(offset) < 0.000001
+      ? ""
+      : `${offset >= 0 ? "+" : ""}${offset.toFixed(6)}/TB`;
   // Rebase to the video clock, then let libswresample insert/drop leading
   // samples as needed so every concat segment begins at PTS 0.
   return `asetpts=PTS-STARTPTS${shift},aresample=async=1000:first_pts=0`;
@@ -169,25 +186,27 @@ export function buildAudioTimestampReset(audioStartOffsetSeconds = 0): string {
 export function buildOverlayFilterStatements(
   overlays: OverlayFrameSequence[],
   inputIndices: number[],
-  baseLabel = 'vbase'
+  baseLabel = "vbase",
 ): string[] {
   if (overlays.length !== inputIndices.length) {
-    throw new Error(`Overlay input mismatch: ${overlays.length} sequences, ${inputIndices.length} input indices.`);
+    throw new Error(
+      `Overlay input mismatch: ${overlays.length} sequences, ${inputIndices.length} input indices.`,
+    );
   }
   let lastVideoLabel = baseLabel;
   const statements: string[] = [];
   overlays.forEach((overlay, index) => {
     const input = inputIndices[index];
     const overlayLabel = `overlay${index}`;
-    const outputLabel = index === overlays.length - 1 ? 'v' : `vcomp${index}`;
+    const outputLabel = index === overlays.length - 1 ? "v" : `vcomp${index}`;
     const start = Math.max(0, overlay.startAtSeconds);
     statements.push(
       start > 0
         ? `[${input}:v]setpts=PTS+${start.toFixed(4)}/TB,format=rgba[${overlayLabel}]`
-        : `[${input}:v]format=rgba[${overlayLabel}]`
+        : `[${input}:v]format=rgba[${overlayLabel}]`,
     );
     statements.push(
-      `[${lastVideoLabel}][${overlayLabel}]overlay=0:0:format=auto:eof_action=pass:repeatlast=0:shortest=0[${outputLabel}]`
+      `[${lastVideoLabel}][${overlayLabel}]overlay=0:0:format=auto:eof_action=pass:repeatlast=0:shortest=0[${outputLabel}]`,
     );
     lastVideoLabel = outputLabel;
   });
@@ -204,7 +223,11 @@ export function buildOverlayFilterStatements(
  * start together (lip-sync is exact) and no frame has to be invented or duplicated to
  * fill the gap. Any failure returns 0 - the caller then just cuts where it was told to.
  */
-export function computeSeekPhase(firstFramePts: number, requestedTime: number, videoStartTime = 0): number {
+export function computeSeekPhase(
+  firstFramePts: number,
+  requestedTime: number,
+  videoStartTime = 0,
+): number {
   const offset = firstFramePts - (requestedTime + videoStartTime);
   // A VFR source can have a longer-than-average frame interval, so do not cap
   // this at 1 / nominal-fps. A grossly different PTS means the probe was rebased.
@@ -214,25 +237,30 @@ export function computeSeekPhase(firstFramePts: number, requestedTime: number, v
 export async function probeFirstFrameOffset(
   sourceVideoPath: string,
   seekTo: number,
-  videoStartTime = 0
+  videoStartTime = 0,
 ): Promise<number> {
   try {
     const { stderr } = await runFfmpeg(
       [
-        '-hide_banner',
-        '-nostats',
-        '-copyts',
-        '-accurate_seek',
-        '-ss', Math.max(0, seekTo).toFixed(3),
-        '-i', sourceVideoPath,
-        '-an',
-        '-sn',
-        '-frames:v', '1',
-        '-vf', 'showinfo',
-        '-f', 'null',
-        '-',
+        "-hide_banner",
+        "-nostats",
+        "-copyts",
+        "-accurate_seek",
+        "-ss",
+        Math.max(0, seekTo).toFixed(3),
+        "-i",
+        sourceVideoPath,
+        "-an",
+        "-sn",
+        "-frames:v",
+        "1",
+        "-vf",
+        "showinfo",
+        "-f",
+        "null",
+        "-",
       ],
-      { label: 'probe-first-frame', timeoutMs: 120_000 }
+      { label: "probe-first-frame", timeoutMs: 120_000 },
     );
     const match = stderr.match(/pts_time:\s*(-?\d+(?:\.\d+)?)/);
     const firstFramePts = match ? Number(match[1]) : Number.NaN;
@@ -253,7 +281,10 @@ const SEEK_GUARD_SECONDS = 0.002;
  * (The old "never upscale" behaviour left the clip at 606x1080 centred on a
  * black 1080x1920 canvas - the user saw a small clip with pillarboxing.)
  */
-export function computeOutputSize(cropWidth: number, cropHeight: number): { width: number; height: number } {
+export function computeOutputSize(
+  cropWidth: number,
+  cropHeight: number,
+): { width: number; height: number } {
   /**
    * Validate BEFORE evenSize(): evenSize(0) clamps up to 2, so a 0x0 crop used to
    * produce a 2x2 output canvas instead of falling back to 1080x1920.
@@ -272,9 +303,13 @@ export function computeOutputSize(cropWidth: number, cropHeight: number): { widt
 
 function assertUsableFile(filePath: string, step: string): void {
   if (!fs.existsSync(filePath)) {
-    throw new AppError(`FFmpeg finished "${step}" without creating ${filePath}.`, {
-      resolution: 'Inspect the FFmpeg command and stderr printed in the worker log, then retry.',
-    });
+    throw new AppError(
+      `FFmpeg finished "${step}" without creating ${filePath}.`,
+      {
+        resolution:
+          "Inspect the FFmpeg command and stderr printed in the worker log, then retry.",
+      },
+    );
   }
 
   const { size } = fs.statSync(filePath);
@@ -282,12 +317,14 @@ function assertUsableFile(filePath: string, step: string): void {
     throw new AppError(`FFmpeg produced an empty file during "${step}".`, {
       details: `${filePath} (${size} bytes)`,
       resolution:
-        'The clip window is probably too short or the crop/filter chain is invalid - check the timestamps and retry.',
+        "The clip window is probably too short or the crop/filter chain is invalid - check the timestamps and retry.",
     });
   }
 }
 
-export async function processVideoSegment(options: ProcessSegmentOptions): Promise<string> {
+export async function processVideoSegment(
+  options: ProcessSegmentOptions,
+): Promise<string> {
   const {
     sourceVideoPath,
     outputPath,
@@ -313,19 +350,22 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
   } = options;
 
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
-    throw new AppError('Clip end time must be greater than clip start time.', {
+    throw new AppError("Clip end time must be greater than clip start time.", {
       status: 400,
       details: `start=${start}, end=${end}`,
-      resolution: 'Pick a valid clip window before rendering.',
+      resolution: "Pick a valid clip window before rendering.",
     });
   }
 
-  const filterPreset = DEFAULT_FILTER_PRESETS.find((preset) => preset.id === filterPresetId);
+  const filterPreset = DEFAULT_FILTER_PRESETS.find(
+    (preset) => preset.id === filterPresetId,
+  );
   if (!filterPreset) {
     throw new AppError(`Unknown filter preset: ${filterPresetId}.`, {
       status: 400,
-      details: `Available: ${DEFAULT_FILTER_PRESETS.map((p) => p.id).join(', ')}`,
-      resolution: 'Select one of the available filter presets from the dashboard and retry.',
+      details: `Available: ${DEFAULT_FILTER_PRESETS.map((p) => p.id).join(", ")}`,
+      resolution:
+        "Select one of the available filter presets from the dashboard and retry.",
     });
   }
 
@@ -342,7 +382,9 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
   // The hook intro replays the complete detected interval, so duration/offset
   // must fit inside the selected base segment. Do not silently clamp either one:
   // that would create a partial hook while the timestamp response looked correct.
-  const actualHookDur = Number.isFinite(hookDuration) ? Math.max(0, hookDuration) : 0;
+  const actualHookDur = Number.isFinite(hookDuration)
+    ? Math.max(0, hookDuration)
+    : 0;
   const hookEnabled = actualHookDur > 0;
   const requestedHookOffset = Number.isFinite(hookStart) ? hookStart : 0;
   const hookOffset = hookEnabled ? Math.max(0, requestedHookOffset) : 0;
@@ -350,16 +392,20 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
   if (
     hookEnabled &&
     (requestedHookOffset < -HOOK_WINDOW_EPSILON_SECONDS ||
-      hookOffset + actualHookDur > segmentDuration + HOOK_WINDOW_EPSILON_SECONDS)
+      hookOffset + actualHookDur >
+        segmentDuration + HOOK_WINDOW_EPSILON_SECONDS)
   ) {
-    throw new AppError('The complete detected hook interval does not fit inside the selected clip window.', {
-      status: 400,
-      details:
-        `hook=${hookOffset.toFixed(3)}s-${(hookOffset + actualHookDur).toFixed(3)}s, ` +
-        `clip=0.000s-${segmentDuration.toFixed(3)}s`,
-      resolution:
-        'Adjust the clip start/end so the complete hook timestamp interval is inside the selected clip, then render again.',
-    });
+    throw new AppError(
+      "The complete detected hook interval does not fit inside the selected clip window.",
+      {
+        status: 400,
+        details:
+          `hook=${hookOffset.toFixed(3)}s-${(hookOffset + actualHookDur).toFixed(3)}s, ` +
+          `clip=0.000s-${segmentDuration.toFixed(3)}s`,
+        resolution:
+          "Adjust the clip start/end so the complete hook timestamp interval is inside the selected clip, then render again.",
+      },
+    );
   }
   // Dip-to-black at the join (see HOOK_TRANSITION_SECONDS): the last half second of
   // the hook fades to black (+ silence), the first half second of the clip fades in.
@@ -373,18 +419,27 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
   // encoding; VIDEO_CRF (16-18) and VIDEO_PRESET can be tuned in .env.local.
   const encodeSettings = getVideoEncodeSettings();
   const videoArgs = [
-    '-c:v', 'libx264',
-    '-preset', encodeSettings.preset,
-    '-crf', String(encodeSettings.crf),
-    '-pix_fmt', 'yuv420p',
-    '-profile:v', 'high',
-    '-r', ffmpegFpsArg(fps),
+    "-c:v",
+    "libx264",
+    "-preset",
+    encodeSettings.preset,
+    "-crf",
+    String(encodeSettings.crf),
+    "-pix_fmt",
+    "yuv420p",
+    "-profile:v",
+    "high",
+    "-r",
+    ffmpegFpsArg(fps),
     // FFmpeg 7 removed the old -vsync alias; -fps_mode is supported since 5.1.
-    '-fps_mode', 'cfr',
-    '-movflags', '+faststart',
-    '-flags', '+global_header',
+    "-fps_mode",
+    "cfr",
+    "-movflags",
+    "+faststart",
+    "-flags",
+    "+global_header",
   ];
-  const audioArgs = ['-c:a', 'aac', '-b:a', '192k', '-ac', '2'];
+  const audioArgs = ["-c:a", "aac", "-b:a", "192k", "-ac", "2"];
 
   // `-ss` before `-i` seeks by timestamp; pair it with `-t` (duration), NOT `-to`
   // (ffmpeg warns that "-to and -t are mutually exclusive and -to takes precedence"
@@ -396,42 +451,65 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
   const [mainPhase, hookPhase] = await Promise.all([
     probeFirstFrameOffset(sourceVideoPath, start, videoStartTimeSeconds),
     hookEnabled
-      ? probeFirstFrameOffset(sourceVideoPath, start + hookOffset, videoStartTimeSeconds)
+      ? probeFirstFrameOffset(
+          sourceVideoPath,
+          start + hookOffset,
+          videoStartTimeSeconds,
+        )
       : Promise.resolve(0),
   ]);
   const snap = (time: number, phase: number): string =>
     Math.max(0, time + phase - SEEK_GUARD_SECONDS).toFixed(4);
 
-    // Native-engine captions are burned through a RELATIVE path: libass would
-    // otherwise need filter-graph escaping for OS-specific absolute paths
-    // (Windows drive letters and backslashes). The composite runs with the ASS
-    // file's directory as its cwd; every other path in the command is absolute,
-    // so nothing else resolves differently.
-    const assFileName = assFilePath ? path.basename(assFilePath) : undefined;
-    const assWorkDir = assFilePath ? path.dirname(assFilePath) : undefined;
+  // Native-engine captions are burned through a RELATIVE path: libass would
+  // otherwise need filter-graph escaping for OS-specific absolute paths
+  // (Windows drive letters and backslashes). The composite runs with the ASS
+  // file's directory as its cwd; every other path in the command is absolute,
+  // so nothing else resolves differently.
+  const assFileName = assFilePath ? path.basename(assFilePath) : undefined;
+  const assWorkDir = assFilePath ? path.dirname(assFilePath) : undefined;
 
-    const inputArgs: string[] = [];
-    let nextInput = 0;
-    const hookInput = hookEnabled ? nextInput++ : -1;
+  const inputArgs: string[] = [];
+  let nextInput = 0;
+  const hookInput = hookEnabled ? nextInput++ : -1;
   if (hookEnabled) {
-    inputArgs.push('-accurate_seek', '-ss', snap(start + hookOffset, hookPhase), '-t', actualHookDur.toFixed(6), '-i', sourceVideoPath);
+    inputArgs.push(
+      "-accurate_seek",
+      "-ss",
+      snap(start + hookOffset, hookPhase),
+      "-t",
+      actualHookDur.toFixed(6),
+      "-i",
+      sourceVideoPath,
+    );
   }
   const mainInput = nextInput++;
-  inputArgs.push('-accurate_seek', '-ss', snap(start, mainPhase), '-t', segmentDuration.toFixed(3), '-i', sourceVideoPath);
+  inputArgs.push(
+    "-accurate_seek",
+    "-ss",
+    snap(start, mainPhase),
+    "-t",
+    segmentDuration.toFixed(3),
+    "-i",
+    sourceVideoPath,
+  );
 
   const overlayInputIndices: number[] = [];
   for (const overlay of overlays) {
     overlayInputIndices.push(nextInput++);
     inputArgs.push(
-      '-framerate', ffmpegFpsArg(fps),
-      '-start_number', '1',
-      '-i', overlay.inputPattern
+      "-framerate",
+      ffmpegFpsArg(fps),
+      "-start_number",
+      "1",
+      "-i",
+      overlay.inputPattern,
     );
   }
 
   try {
     let colorFilterStr = filterPreset.ffmpegFilter.trim();
-    if (colorFilterStr === 'null' || colorFilterStr === '') colorFilterStr = '';
+    if (colorFilterStr === "null" || colorFilterStr === "") colorFilterStr = "";
 
     /**
      * Order matters: `hflip` runs BEFORE `crop`, so the crop coordinates must be
@@ -445,9 +523,9 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
      */
     log.detail(
       `Pass 1/1 · ${start}s → ${end}s ` +
-      `(dur=${segmentDuration.toFixed(2)}s${hookEnabled ? ` + ${actualHookDur.toFixed(1)}s hook` : ''}, fps=${fps}, ` +
-      `out=${outWidth}x${outHeight}, layout=${plan.mode}${plan.mode === 'split' ? ` (${plan.cells.length} cells)` : ''}, ` +
-      `audio=${sourceHasAudio ? 'source' : 'silent'})`
+        `(dur=${segmentDuration.toFixed(2)}s${hookEnabled ? ` + ${actualHookDur.toFixed(1)}s hook` : ""}, fps=${fps}, ` +
+        `out=${outWidth}x${outHeight}, layout=${plan.mode}${plan.mode === "split" ? ` (${plan.cells.length} cells)` : ""}, ` +
+        `audio=${sourceHasAudio ? "source" : "silent"})`,
     );
     if (onProgress) onProgress(10);
 
@@ -458,27 +536,45 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
       prefix: string,
       label: string,
       timeOffset: number,
-      windowSeconds?: number
+      windowSeconds?: number,
     ): void => {
-      if (plan.mode === 'single') {
+      if (plan.mode === "single") {
         const parts = buildSingleFilterParts(
-          plan, sourceWidth, sourceHeight, outWidth, outHeight, colorFilterStr, timeOffset, windowSeconds
+          plan,
+          sourceWidth,
+          sourceHeight,
+          outWidth,
+          outHeight,
+          colorFilterStr,
+          timeOffset,
+          windowSeconds,
         );
-        if (sourceIsVariableFrameRate) parts.push(...buildVfrNormalizationFilters(fps));
-        statements.push(`[${input}:v]${parts.join(',')}[${label}]`);
+        if (sourceIsVariableFrameRate)
+          parts.push(...buildVfrNormalizationFilters(fps));
+        statements.push(`[${input}:v]${parts.join(",")}[${label}]`);
       } else {
-        const splitOutput = sourceIsVariableFrameRate ? `${prefix}vfrraw` : label;
+        const splitOutput = sourceIsVariableFrameRate
+          ? `${prefix}vfrraw`
+          : label;
         statements.push(
-          ...buildSplitFilterStatements(plan, sourceWidth, sourceHeight, colorFilterStr, {
-            input: `${input}:v`,
-            output: splitOutput,
-            prefix,
-            timeOffset,
-            windowSeconds,
-          })
+          ...buildSplitFilterStatements(
+            plan,
+            sourceWidth,
+            sourceHeight,
+            colorFilterStr,
+            {
+              input: `${input}:v`,
+              output: splitOutput,
+              prefix,
+              timeOffset,
+              windowSeconds,
+            },
+          ),
         );
         if (sourceIsVariableFrameRate) {
-          statements.push(`[${splitOutput}]${buildVfrNormalizationFilters(fps).join(',')}[${label}]`);
+          statements.push(
+            `[${splitOutput}]${buildVfrNormalizationFilters(fps).join(",")}[${label}]`,
+          );
         }
       }
     };
@@ -488,15 +584,22 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
      * without audio gets generated silence of exactly the segment's length - the
      * concat and the caption pass both need an audio track.
      */
-    const audioBranch = (input: number, label: string, seconds: number, tail: string): void => {
-      const suffix = tail ? `,${tail}` : '';
+    const audioBranch = (
+      input: number,
+      label: string,
+      seconds: number,
+      tail: string,
+    ): void => {
+      const suffix = tail ? `,${tail}` : "";
       if (sourceHasAudio) {
         statements.push(
           `[${input}:a]${buildAudioTimestampReset(audioStartOffsetSeconds)},` +
-          `aformat=channel_layouts=stereo${suffix}[${label}]`
+            `aformat=channel_layouts=stereo${suffix}[${label}]`,
         );
       } else {
-        statements.push(`anullsrc=channel_layout=stereo:sample_rate=48000:d=${seconds.toFixed(3)}${suffix}[${label}]`);
+        statements.push(
+          `anullsrc=channel_layout=stereo:sample_rate=48000:d=${seconds.toFixed(3)}${suffix}[${label}]`,
+        );
       }
     };
 
@@ -507,25 +610,43 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
       : [];
     const profanityMode = getProfanityAudioMode();
     const audioPlan = sourceHasAudio
-      ? buildProfanityAudioFilter(profanityWindows, profanityMode, totalDuration, nextInput, 'a')
+      ? buildProfanityAudioFilter(
+          profanityWindows,
+          profanityMode,
+          totalDuration,
+          nextInput,
+          "a",
+        )
       : null;
 
     if (hookEnabled) {
-      videoBranch(hookInput, 'h_', 'hv', hookOffset, actualHookDur);
-      statements.push(`[hv]fade=t=out:st=${fadeSt.toFixed(3)}:d=${fadeDur.toFixed(3)},format=yuv420p[v0]`);
-      videoBranch(mainInput, 'b_', 'bv', 0);
+      videoBranch(hookInput, "h_", "hv", hookOffset, actualHookDur);
+      statements.push(
+        `[hv]fade=t=out:st=${fadeSt.toFixed(3)}:d=${fadeDur.toFixed(3)},format=yuv420p[v0]`,
+      );
+      videoBranch(mainInput, "b_", "bv", 0);
       statements.push(`[bv]fade=t=in:st=0:d=${fadeDur.toFixed(3)}[v1]`);
       // A dip - not a crossfade - keeps the total duration EXACTLY hook + clip, so the
       // caption timeline (which assumes that sum) stays in sync.
-      statements.push('[v0][v1]concat=n=2:v=1:a=0[vbase]');
+      statements.push("[v0][v1]concat=n=2:v=1:a=0[vbase]");
       // afade out reaches 0 gain exactly at the join and afade in starts from 0, so both
       // sides are fully silent across the whole dip - no floating audio under the black.
-      audioBranch(hookInput, 'a0', actualHookDur, `afade=t=out:st=${fadeSt.toFixed(3)}:d=${fadeDur.toFixed(3)}`);
-      audioBranch(mainInput, 'a1', segmentDuration, `afade=t=in:st=0:d=${fadeDur.toFixed(3)}`);
-      statements.push('[a0][a1]concat=n=2:v=0:a=1[a]');
+      audioBranch(
+        hookInput,
+        "a0",
+        actualHookDur,
+        `afade=t=out:st=${fadeSt.toFixed(3)}:d=${fadeDur.toFixed(3)}`,
+      );
+      audioBranch(
+        mainInput,
+        "a1",
+        segmentDuration,
+        `afade=t=in:st=0:d=${fadeDur.toFixed(3)}`,
+      );
+      statements.push("[a0][a1]concat=n=2:v=0:a=1[a]");
     } else {
-      videoBranch(mainInput, 'b_', 'vbase', 0);
-      audioBranch(mainInput, 'a', segmentDuration, '');
+      videoBranch(mainInput, "b_", "vbase", 0);
+      audioBranch(mainInput, "a", segmentDuration, "");
     }
 
     if (audioPlan) statements.push(...audioPlan.filters);
@@ -533,30 +654,48 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
     // A diagnostic output and the final video both need the pre-overlay base.
     // Split pads explicitly rather than consuming one labeled pad twice (which
     // FFmpeg rejects). Audio is split the same way after profanity processing.
-    let overlayBaseLabel = debugOutputPath ? 'vforoverlay' : 'vbase';
-    const debugVideoLabel = debugOutputPath ? '[vprecap]' : '';
-    if (debugOutputPath) statements.push('[vbase]split=2[vprecap][vforoverlay]');
+    let overlayBaseLabel = debugOutputPath ? "vforoverlay" : "vbase";
+    const debugVideoLabel = debugOutputPath ? "[vprecap]" : "";
+    if (debugOutputPath)
+      statements.push("[vbase]split=2[vprecap][vforoverlay]");
     if (assFileName) {
       // Native-engine captions: burned onto the (opaque) video below the PNG
       // overlays - see assFilePath on the options for why not as PNGs.
-      statements.push(`[${overlayBaseLabel}]ass=${assFileName}[vcaptioned]`);
-      overlayBaseLabel = 'vcaptioned';
+      // `fonts/` (copied next to the ASS by native-captions.ts) holds the bundled caption
+      // fonts; the path is relative because ffmpeg runs with the ASS directory as cwd.
+      const assFontsOption =
+        assWorkDir && fs.existsSync(path.join(assWorkDir, "fonts"))
+          ? ":fontsdir=fonts"
+          : "";
+      statements.push(
+        `[${overlayBaseLabel}]ass=${assFileName}${assFontsOption}[vcaptioned]`,
+      );
+      overlayBaseLabel = "vcaptioned";
     }
-    statements.push(...buildOverlayFilterStatements(overlays, overlayInputIndices, overlayBaseLabel));
+    statements.push(
+      ...buildOverlayFilterStatements(
+        overlays,
+        overlayInputIndices,
+        overlayBaseLabel,
+      ),
+    );
 
-    const sourceAudioLabel = audioPlan?.audioLabel ?? '[a]';
-    const debugAudioLabel = debugOutputPath ? '[adebug]' : '';
-    const finalAudioLabel = debugOutputPath ? '[afinal]' : sourceAudioLabel;
-    if (debugOutputPath) statements.push(`${sourceAudioLabel}asplit=2[adebug][afinal]`);
+    const sourceAudioLabel = audioPlan?.audioLabel ?? "[a]";
+    const debugAudioLabel = debugOutputPath ? "[adebug]" : "";
+    const finalAudioLabel = debugOutputPath ? "[afinal]" : sourceAudioLabel;
+    if (debugOutputPath)
+      statements.push(`${sourceAudioLabel}asplit=2[adebug][afinal]`);
 
     const args = [
-      '-y',
-      '-hide_banner',
-      '-loglevel', 'error',
-      '-stats',
+      "-y",
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-stats",
       ...inputArgs,
       ...(audioPlan?.extraArgs ?? []),
-      '-filter_complex', statements.join(';'),
+      "-filter_complex",
+      statements.join(";"),
     ];
 
     // Optional diagnostic output is a side branch from the SAME filter graph.
@@ -564,38 +703,44 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
     // this extra file exists only when SAVE_PRECAPTION_DEBUG=1 is requested.
     if (debugOutputPath) {
       args.push(
-        '-map', debugVideoLabel,
-        '-map', debugAudioLabel,
+        "-map",
+        debugVideoLabel,
+        "-map",
+        debugAudioLabel,
         ...videoArgs,
         ...audioArgs,
-        debugOutputPath
+        debugOutputPath,
       );
     }
     args.push(
-      '-map', '[v]',
-      '-map', finalAudioLabel,
+      "-map",
+      "[v]",
+      "-map",
+      finalAudioLabel,
       ...videoArgs,
       ...audioArgs,
-      outputPath
+      outputPath,
     );
 
     await runFfmpeg(args, {
-      label: 'trim+mirror+crop+color+overlays+encode',
+      label: "trim+mirror+crop+color+overlays+encode",
       ...(assWorkDir ? { cwd: assWorkDir } : {}),
       totalDurationSeconds: totalDuration,
       isCancelled,
       onProgress: (progress) => {
-        if (onProgress && progress.percent) onProgress(10 + Math.floor(progress.percent * 0.68));
+        if (onProgress && progress.percent)
+          onProgress(10 + Math.floor(progress.percent * 0.68));
       },
     });
 
-    assertUsableFile(outputPath, 'final rendered clip');
-    if (debugOutputPath) assertUsableFile(debugOutputPath, 'pre-caption debug clip');
+    assertUsableFile(outputPath, "final rendered clip");
+    if (debugOutputPath)
+      assertUsableFile(debugOutputPath, "pre-caption debug clip");
 
     const meta = await getVideoMetadata(outputPath);
     log.ok(
       `Processed clip ready: ${meta.width}x${meta.height} @ ${meta.fps}fps, ` +
-      `${meta.duration.toFixed(2)}s, audio=${meta.hasAudio ? 'yes' : 'no'}`
+        `${meta.duration.toFixed(2)}s, audio=${meta.hasAudio ? "yes" : "no"}`,
     );
 
     if (onProgress) onProgress(80);
@@ -603,10 +748,10 @@ export async function processVideoSegment(options: ProcessSegmentOptions): Promi
   } catch (error) {
     if (error instanceof AppError) throw error;
 
-    throw new AppError('FFmpeg video processing failed.', {
+    throw new AppError("FFmpeg video processing failed.", {
       details: toErrorMessage(error),
       resolution:
-        'Inspect the FFmpeg command in the worker log, verify the source clip exists and the crop window is inside the frame, and retry.',
+        "Inspect the FFmpeg command in the worker log, verify the source clip exists and the crop window is inside the frame, and retry.",
     });
   }
 }

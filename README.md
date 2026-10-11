@@ -32,7 +32,7 @@ pauses the chain: it recovers at the step where it stopped.
    clips than requested, a **top-up pass** tops the list up to the exact count.
    Clips appear in the dashboard grid as soon as they exist, each showing its **score**,
    and the full AI analysis behind it (drop-down on the tile).
-   - **Edit and re-render one clip** — *Edit* on any tile changes the window, hook/CTA
+   - **Edit and re-render one clip** — _Edit_ on any tile changes the window, hook/CTA
      text, caption and layout for that clip alone and re-renders only it. The rest of the
      grid is untouched (`POST /api/clips` = save + render in one call).
 4. **Replay the hook** — the complete `hook_timestamp.start`→`hook_timestamp.end`
@@ -47,8 +47,8 @@ pauses the chain: it recovers at the step where it stopped.
      it. Two people = two stacked halves with a **stable** assignment (left person
      always the top pane, right person the bottom) — it never swaps mid-clip. Captions,
      hook text and the CTA card are placed so they never cover a face.
-   There is **no fallback detector**: if no face can be found, the render fails
-   with a clear explanation instead of guessing.
+     There is **no fallback detector**: if no face can be found, the render fails
+     with a clear explanation instead of guessing.
 6. **Render** — the selected caption engine prepares transparent overlay frames,
    then one FFmpeg filter graph performs the mirror/crop/colour work, hook intro,
    caption + card compositing, and the single final H.264 encode. The `remotion`
@@ -69,19 +69,19 @@ pauses the chain: it recovers at the step where it stopped.
 
 Every default the studio asks you for lives in one sidebar page, in five sections:
 
-| Section | What it holds |
-|---|---|
-| Pipeline defaults | auto-detect / auto-render and the viral-detection request (clip count, duration window, hook/CTA text) |
-| Render clip defaults | caption engine, layout, filter preset, caption + hook/CTA style presets, hook/CTA durations |
-| AI providers | Gemini key pool, Deepgram key + model, and which transcription engine to use. Every key field is Test + Save on its own - Test asks the provider, Save stores it (keys are only ever shown back masked) |
-| Worker | clip / viral-detection / Remotion concurrency |
-| Profanity | what happens to the *audio* of a flagged word (mute / beep / leave it) |
+| Section              | What it holds                                                                                                                                                                                           |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Pipeline defaults    | auto-detect / auto-render and the viral-detection request (clip count, duration window, hook/CTA text)                                                                                                  |
+| Render clip defaults | caption engine, layout, filter preset, caption + hook/CTA style presets, hook/CTA durations                                                                                                             |
+| AI providers         | Gemini key pool, Deepgram key + model, and which transcription engine to use. Every key field is Test + Save on its own - Test asks the provider, Save stores it (keys are only ever shown back masked) |
+| Worker               | clip / viral-detection / Remotion concurrency                                                                                                                                                           |
+| Profanity            | what happens to the _audio_ of a flagged word (mute / beep / leave it)                                                                                                                                  |
 
 The rule is one line long, in both processes:
 
 **what you saved on this page, otherwise the built-in default.**
 
-`.env.local` is *not* a fallback for these five sections — a value can never come from a
+`.env.local` is _not_ a fallback for these five sections — a value can never come from a
 file you are not looking at, so the page and the app cannot disagree. (Everything
 without a form field — binary paths, model files, CRF, upload limits, timeouts — still
 lives in `.env.local` exactly as before.) A row saved here is marked `settings`;
@@ -113,19 +113,22 @@ row created by an older build never picks up a changed default — **Reset to sh
 styles** re-syncs the built-in rows from `lib/presets.ts` while keeping every preset you
 made yourself and the preset you marked default.
 
+Caption fonts are bundled in `public/fonts` (Poppins, Anton, DM Serif Display, Archivo Black, Bebas Neue - all SIL OFL) and are used by both caption engines.
+Old built-in caption presets are removed from existing databases on the next start; presets you created yourself are kept.
+
 ## Tech stack
 
-| Layer | Choice |
-|---|---|
-| Frontend + API | Next.js 16 (App Router), TypeScript, Tailwind v4, shadcn-style UI |
-| Persistence | SQLite via `better-sqlite3` — typed video, clip, preset, template, and job tables |
-| Queue | SQLite jobs table — separate polling loops for transcription and rendering |
-| Worker | long-running `tsx worker/index.ts` process (not serverless) |
-| Video | `ffmpeg-static` + `child_process` (no fluent-ffmpeg), mirrored before face tracking |
-| Speech-to-text | whisper.cpp (local binary + ggml model; optional Deepgram override) |
-| Face detection | OpenCV **YuNet** ONNX on `onnxruntime-node` (no face-api, no vision APIs) |
-| LLM | Google AI Studio only — a 5-slot Gemini fallback chain in `lib/llm.ts` (plain `fetch`, no SDKs) |
-| Caption overlays | Remotion transparent frames (default) or native ASS burned straight onto the video (fast) |
+| Layer            | Choice                                                                                          |
+| ---------------- | ----------------------------------------------------------------------------------------------- |
+| Frontend + API   | Next.js 16 (App Router), TypeScript, Tailwind v4, shadcn-style UI                               |
+| Persistence      | SQLite via `better-sqlite3` — typed video, clip, preset, template, and job tables               |
+| Queue            | SQLite jobs table — separate polling loops for transcription and rendering                      |
+| Worker           | long-running `tsx worker/index.ts` process (not serverless)                                     |
+| Video            | `ffmpeg-static` + `child_process` (no fluent-ffmpeg), mirrored before face tracking             |
+| Speech-to-text   | whisper.cpp (local binary + ggml model; optional Deepgram override)                             |
+| Face detection   | OpenCV **YuNet** ONNX on `onnxruntime-node` (no face-api, no vision APIs)                       |
+| LLM              | Google AI Studio only — a 5-slot Gemini fallback chain in `lib/llm.ts` (plain `fetch`, no SDKs) |
+| Caption overlays | Remotion transparent frames (default) or native ASS burned straight onto the video (fast)       |
 
 ## Quickstart
 
