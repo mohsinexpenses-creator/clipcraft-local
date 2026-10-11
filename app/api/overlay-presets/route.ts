@@ -30,6 +30,12 @@ function coercePreset(body: Record<string, unknown>, fallbackKind: 'hook' | 'cta
     animationStyle: (body.animationStyle as OverlayStylePreset['animationStyle']) || 'pop',
     showBadge: body.showBadge != null ? body.showBadge === true : kind === 'hook',
     badgeText: body.badgeText ? String(body.badgeText) : 'Hook Intro',
+    ...(typeof body.badgeBackgroundColor === 'string' && body.badgeBackgroundColor.trim()
+      ? { badgeBackgroundColor: body.badgeBackgroundColor.trim().slice(0, 64) }
+      : {}),
+    ...(typeof body.badgeTextColor === 'string' && body.badgeTextColor.trim()
+      ? { badgeTextColor: body.badgeTextColor.trim().slice(0, 64) }
+      : {}),
     isDefault: body.isDefault === true,
   };
 }

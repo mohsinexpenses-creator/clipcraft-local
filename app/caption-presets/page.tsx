@@ -1,7 +1,8 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { CaptionLineStyle, CaptionPreset, OverlayStylePreset } from '@/lib/types';
+import { CaptionLineStyle, CaptionPreset, CaptionThemeName, OverlayStylePreset } from '@/lib/types';
+import { CAPTION_THEME_CATALOG, getCaptionThemeDefinition } from '@/lib/caption-theme-styles';
 import { CaptionPreview } from '@/components/caption-preview';
 import { OverlayStyleEditor } from '@/components/overlay-style-editor';
 import { DEFAULT_CAPTION_PRESETS, DEFAULT_OVERLAY_STYLE_PRESETS } from '@/lib/presets';
@@ -207,7 +208,11 @@ export default function CaptionPresetsPage() {
       const res = await fetch('/api/caption-presets', {
         method: presets.some((preset) => preset._id === activePreset._id) ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(activePreset),
+        body: JSON.stringify({
+          ...activePreset,
+          // Explicit null lets PUT clear a previously saved theme (undefined is omitted by JSON).
+          captionTheme: activePreset.captionTheme ?? null,
+        }),
       });
 
       if (!res.ok) {
@@ -501,7 +506,10 @@ export default function CaptionPresetsPage() {
                         ) : null}
                       </span>
                       <span className="flex items-center gap-1.5 text-[10.5px] text-muted-foreground">
-                        <span>{ANIMATION_LABELS[p.animationStyle] ?? p.animationStyle}</span>
+                        <span>
+                          {getCaptionThemeDefinition(p.captionTheme)?.label ??
+                            (ANIMATION_LABELS[p.animationStyle] ?? p.animationStyle)}
+                        </span>
                         <span className="text-muted-foreground/40">·</span>
                         <span>{rich ? `${p.lineStyles!.length} line styles` : 'single style'}</span>
                       </span>
@@ -577,11 +585,78 @@ export default function CaptionPresetsPage() {
                 </div>
 
                 <div className="space-y-4 rounded-lg border p-4 sm:col-span-2">
-                  <div className="flex items-center justify-between gap-4">
+                  <div className="space-y-2">
+                    <Label id="caption-theme-label">Caption theme</Label>
+                    <Select
+                      value={activePreset.captionTheme ?? 'classic'}
+                      onValueChange={(value) => {
+                        if (value === 'classic') {
+                          setActivePreset({
+                            ...activePreset,
+                            captionTheme: undefined,
+                            matchOverlayTheme: false,
+                          });
+                          return;
+                        }
+                        const theme = getCaptionThemeDefinition(value as CaptionThemeName);
+                        if (!theme) return;
+                        setActivePreset({
+                          ...activePreset,
+                          captionTheme: theme.id,
+                          matchOverlayTheme: true,
+                          textColor: theme.captionPrimaryColor,
+                          highlightColor: theme.captionAccentColor,
+                        });
+                      }}
+                    >
+                      <SelectTrigger aria-labelledby="caption-theme-label">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="classic">ClipCraft classic</SelectItem>
+                        {CAPTION_THEME_CATALOG.map((theme) => (
+                          <SelectItem key={theme.id} value={theme.id}>{theme.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {activePreset.captionTheme ? (
+                      <p className="text-xs text-muted-foreground">
+                        {getCaptionThemeDefinition(activePreset.captionTheme)?.description}{' '}
+                        Theme font: {getCaptionThemeDefinition(activePreset.captionTheme)?.captionFontFamily.split(',')[0]}. Theme typography and motion replace the classic line/stroke controls; size, placement and caption colors remain adjustable.
+                      </p>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">
+                        Use ClipCraft’s existing customizable caption renderer.
+                      </p>
+                    )}
+                    <p className="text-xs text-muted-foreground">
+                      The 13 theme animations run with Premium / Remotion. Fast / Native keeps the classic ASS caption style as a clear fallback.
+                    </p>
+                  </div>
+
+                  {activePreset.captionTheme ? (
+                    <div className="flex items-center justify-between gap-4 rounded-md border bg-muted/30 p-3">
+                      <div className="space-y-0.5">
+                        <Label htmlFor="match-overlay-theme">Match Hook + CTA to theme</Label>
+                        <p className="text-xs text-muted-foreground">
+                          Applies the theme font, palette, card shape and motion; saved overlay sizes, badge text and placement remain.
+                        </p>
+                      </div>
+                      <Switch
+                        id="match-overlay-theme"
+                        checked={activePreset.matchOverlayTheme !== false}
+                        onCheckedChange={(matchOverlayTheme) =>
+                          setActivePreset({ ...activePreset, matchOverlayTheme })
+                        }
+                      />
+                    </div>
+                  ) : null}
+
+                  <div className="flex items-center justify-between gap-4 border-t pt-4">
                     <div className="space-y-0.5">
                       <Label htmlFor="rich-line-toggle">Rich multi-line styling</Label>
                       <p className="text-xs text-muted-foreground">
-                        Split each timed transcript chunk into styled visual lines. Off keeps the legacy renderer.
+                        Split each timed transcript chunk into styled visual lines for the classic/native renderer.
                       </p>
                     </div>
                     <Switch
@@ -797,7 +872,7 @@ export default function CaptionPresetsPage() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label id="animation-label">Animation style</Label>
+                  <Label id="animation-label">Classic / Native animation</Label>
                   <Select
                     value={activePreset.animationStyle}
                     onValueChange={(v) =>
@@ -817,6 +892,9 @@ export default function CaptionPresetsPage() {
                       <SelectItem value="static">Static</SelectItem>
                     </SelectContent>
                   </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Used by ClipCraft classic captions and the Fast / Native fallback.
+                  </p>
                 </div>
 
                 <div className="space-y-2">

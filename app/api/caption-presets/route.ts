@@ -8,6 +8,7 @@ import {
   setDefaultCaptionPreset,
 } from '@/lib/db';
 import { toErrorMessage, toErrorStatus } from '@/lib/errors';
+import { isCaptionThemeName } from '@/lib/caption-theme-styles';
 import type {
   CaptionAnimationStyle,
   CaptionFontWeight,
@@ -73,6 +74,11 @@ function coerceCaptionPreset(body: Record<string, unknown>, id: string): Caption
     : body.lineAlignment === 'center'
       ? 'center'
       : undefined;
+  const captionTheme = isCaptionThemeName(body.captionTheme) ? body.captionTheme : undefined;
+  const themeWasSpecified = Object.prototype.hasOwnProperty.call(body, 'captionTheme');
+  const matchOverlayTheme = typeof body.matchOverlayTheme === 'boolean'
+    ? body.matchOverlayTheme
+    : Boolean(captionTheme);
 
   return {
     _id: id,
@@ -92,10 +98,23 @@ function coerceCaptionPreset(body: Record<string, unknown>, id: string): Caption
     ...(lineStyles !== undefined ? { lineStyles } : {}),
     ...(body.lineGap !== undefined ? { lineGap: boundedNumber(body.lineGap, 4, 0, 80) } : {}),
     ...(lineAlignment ? { lineAlignment } : {}),
+    ...(captionTheme ? { captionTheme } : {}),
+    ...(themeWasSpecified || typeof body.matchOverlayTheme === 'boolean'
+      ? { matchOverlayTheme }
+      : {}),
     ...(typeof body.isDefault === 'boolean' ? { isDefault: body.isDefault } : {}),
     ...(typeof body.createdAt === 'string' ? { createdAt: body.createdAt } : {}),
     ...(typeof body.updatedAt === 'string' ? { updatedAt: body.updatedAt } : {}),
   };
+}
+
+function invalidThemeResponse(body: Record<string, unknown>): NextResponse | null {
+  if (!Object.prototype.hasOwnProperty.call(body, 'captionTheme')) return null;
+  const value = body.captionTheme;
+  if (value === null || value === undefined || value === '') return null;
+  return isCaptionThemeName(value)
+    ? null
+    : NextResponse.json({ error: 'Invalid caption theme.' }, { status: 400 });
 }
 
 async function getErrorResponse(error: unknown, fallback: string) {
@@ -131,6 +150,8 @@ export async function POST(request: Request) {
       const presets = await resetCaptionPresets();
       return NextResponse.json({ success: true, presets });
     }
+    const invalidTheme = invalidThemeResponse(body);
+    if (invalidTheme) return invalidTheme;
 
     const id = typeof body._id === 'string' && body._id.trim()
       ? body._id.trim()
@@ -147,6 +168,8 @@ export async function POST(request: Request) {
 export async function PUT(request: Request) {
   try {
     const body = await request.json() as Record<string, unknown>;
+    const invalidTheme = invalidThemeResponse(body);
+    if (invalidTheme) return invalidTheme;
     const id = typeof body._id === 'string' ? body._id.trim() : '';
     if (!id) return NextResponse.json({ error: 'Missing preset _id' }, { status: 400 });
     const existing = await getCaptionPreset(id);

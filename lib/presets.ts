@@ -118,6 +118,8 @@ export const DEFAULT_CAPTION_PRESETS: CaptionPreset[] = [
     ],
     lineGap: 6,
     lineAlignment: "center",
+    captionTheme: "kinetic-01",
+    matchOverlayTheme: true,
     isDefault: true,
   },
   {

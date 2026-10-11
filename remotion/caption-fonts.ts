@@ -4,11 +4,28 @@ import { CAPTION_FONT_FILES } from "../lib/caption-fonts";
 
 let loading: Promise<void> | null = null;
 
+const THEME_FONT_FILES = [
+  { family: 'Outfit', file: 'Outfit-Variable.ttf', weight: '100 900' },
+  { family: 'Montserrat', file: 'Montserrat-Variable.ttf', weight: '100 900' },
+  { family: 'Dancing Script', file: 'DancingScript-Variable.ttf', weight: '100 900' },
+  { family: 'Rajdhani', file: 'Rajdhani-Bold.ttf', weight: '700' },
+  { family: 'Bangers', file: 'Bangers-Regular.ttf', weight: '400' },
+];
+
+const FONT_FACE_FILES = [
+  ...CAPTION_FONT_FILES.map((font) => ({
+    family: font.family,
+    file: font.file,
+    weight: String(font.weight),
+  })),
+  ...THEME_FONT_FILES,
+];
+
 /** Registers every bundled caption font (public/fonts) once per page. */
 function loadCaptionFonts(): Promise<void> {
   if (!loading) {
     loading = Promise.all(
-      CAPTION_FONT_FILES.map(async (font) => {
+      FONT_FACE_FILES.map(async (font) => {
         const face = new FontFace(
           font.family,
           `url(${staticFile(`fonts/${font.file}`)})`,

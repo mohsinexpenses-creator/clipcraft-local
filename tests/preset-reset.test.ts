@@ -71,6 +71,8 @@ test('reset restores an edited built-in and leaves custom rows alone', async (t)
   assert.ok(restored, 'the built-in row is still there');
   assert.equal(restored.name, builtIn.name, 'the shipped name comes back');
   assert.equal(restored.fontSize, builtIn.fontSize);
+  assert.equal(restored.captionTheme, builtIn.captionTheme, 'theme id persists in the preset config');
+  assert.equal(restored.matchOverlayTheme, builtIn.matchOverlayTheme);
   assert.equal(restored.textColor, builtIn.textColor);
   assert.equal(restored.highlightColor, builtIn.highlightColor);
 

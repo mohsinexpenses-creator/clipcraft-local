@@ -9,6 +9,8 @@ const eslintConfig = defineConfig([
   globalIgnores([
     // Default ignores of eslint-config-next:
     ".next/**",
+    ".agents/**", // Agent reference skills are not application source.
+    "remotion/caption-themes/vendor/**", // Upstream theme files are vendored under their MIT license.
     "out/**",
     "build/**",
     "next-env.d.ts",

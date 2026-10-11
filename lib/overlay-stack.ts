@@ -13,6 +13,7 @@
  * Remotion compositions (in-app previews) and the tests.
  */
 import type { CaptionEngine, CaptionPreset, OverlayStylePreset } from './types';
+import { captionThemeReservedHeight } from './caption-theme-styles';
 import { resolveCaptionLineStyle } from './caption-layout';
 
 export const OVERLAY_CANVAS_WIDTH = 1080;
@@ -133,6 +134,17 @@ function captionGeometry(engine: CaptionEngine, preset: CaptionPreset): CaptionG
   const fontSize = Number.isFinite(preset.fontSize) && preset.fontSize > 0 ? preset.fontSize : 48;
   const positionY = Number.isFinite(preset.positionY) ? preset.positionY : 25;
   const bottomEdge = OVERLAY_CANVAS_HEIGHT * (1 - positionY / 100);
+
+  // Theme components are centered full-frame compositions, not bottom-anchored
+  // ASS/AnimatedWord blocks. Reserve their conservative visual band only for
+  // Remotion; Native deliberately keeps its established ASS fallback geometry.
+  const themeHeight = engine === 'remotion' ? captionThemeReservedHeight(preset) : 0;
+  if (themeHeight > 0) {
+    return {
+      band: { top: bottomEdge - themeHeight, bottom: bottomEdge },
+      positionYForTop: (top) => 100 * (1 - (top + themeHeight) / OVERLAY_CANVAS_HEIGHT),
+    };
+  }
 
   if (preset.lineStyles?.length) {
     const lineGap = Number.isFinite(preset.lineGap) ? Math.max(0, Math.min(80, preset.lineGap ?? 0)) : 4;

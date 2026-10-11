@@ -113,7 +113,17 @@ row created by an older build never picks up a changed default — **Reset to sh
 styles** re-syncs the built-in rows from `lib/presets.ts` while keeping every preset you
 made yourself and the preset you marked default.
 
-Caption fonts are bundled in `public/fonts` (Poppins, Anton, DM Serif Display, Archivo Black, Bebas Neue - all SIL OFL) and are used by both caption engines.
+The caption theme selector includes all 13 locally bundled Remotion themes (Pop, Karaoke,
+Kinetic 01/02, Hustle, Grape, Beast, Poppin, Aarit, Soft AI, Gaming Stream, Simple One
+Word, and Podcast). Hook and CTA cards can match the chosen theme's font, accent, card and
+motion, while retaining their existing text and timing. These caption animations are
+Remotion-only; Fast/Native uses the preset's classic ASS caption style as a fallback.
+The shipped Bold Punch preset uses Kinetic 01; use **Reset to shipped styles** once on an
+existing database to update that built-in row. A default you previously chose is preserved.
+
+Caption theme source is vendored under `remotion/caption-themes/vendor` with its MIT
+license. Caption fonts are bundled locally in `public/fonts` (including the theme fonts);
+third-party Google font OFL licenses are in `public/fonts/licenses`.
 Old built-in caption presets are removed from existing databases on the next start; presets you created yourself are kept.
 
 ## Tech stack

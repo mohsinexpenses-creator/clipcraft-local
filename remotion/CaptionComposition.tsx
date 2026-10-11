@@ -10,6 +10,8 @@ import {
   stackCardAboveCaptions,
   stackPositionPercent,
 } from '../lib/overlay-stack';
+import { resolveCaptionThemeOverlayStyle } from '../lib/caption-theme-styles';
+import { CaptionThemeOverlay } from './caption-themes/CaptionThemeOverlay';
 import { CTAOverlay } from './CTAOverlay';
 import { HookOverlay } from './HookOverlay';
 
@@ -218,14 +220,20 @@ export const CaptionComposition: React.FC<CaptionCompositionProps> = ({
    * the cards never sit in the captions' own area, captions never lift.
    */
   const captionLiftPercent = 0;
+  const themedHookStyle = preset && hookStyle
+    ? resolveCaptionThemeOverlayStyle(preset, hookStyle)
+    : hookStyle;
+  const themedCtaStyle = preset && ctaStyle
+    ? resolveCaptionThemeOverlayStyle(preset, ctaStyle)
+    : ctaStyle;
   const captionBand = preset ? captionReservedBand('remotion', preset) : null;
   const hookTopPercent =
-    captionBand && hookStyle && hookText.trim()
-      ? stackPositionPercent(stackCardAboveCaptions(captionBand, estimateHookHeight(hookStyle, hookText)))
+    captionBand && themedHookStyle && hookText.trim()
+      ? stackPositionPercent(stackCardAboveCaptions(captionBand, estimateHookHeight(themedHookStyle, hookText)))
       : undefined;
   const ctaTopPercent =
-    captionBand && ctaStyle && ctaText.trim()
-      ? stackPositionPercent(stackCardAboveCaptions(captionBand, estimateCtaHeight(ctaStyle, ctaText)))
+    captionBand && themedCtaStyle && ctaText.trim()
+      ? stackPositionPercent(stackCardAboveCaptions(captionBand, estimateCtaHeight(themedCtaStyle, ctaText)))
       : undefined;
 
   // The FFmpeg stage outputs the processed clip at exactly the composition canvas
@@ -282,19 +290,27 @@ export const CaptionComposition: React.FC<CaptionCompositionProps> = ({
           hookDurationInSeconds={hookWindowStart}
           frame={frame}
           fps={fps}
-          style={hookStyle}
+          style={themedHookStyle}
           topPercent={hookTopPercent}
         />
       ) : null}
 
       {preset ? (
-        <AnimatedWord
-          chunks={chunks}
-          frame={frame}
-          fps={fps}
-          preset={preset}
-          bottomLiftPercent={captionLiftPercent}
-        />
+        preset.captionTheme ? (
+          <CaptionThemeOverlay
+            chunks={chunks}
+            preset={preset}
+            bottomLiftPercent={captionLiftPercent}
+          />
+        ) : (
+          <AnimatedWord
+            chunks={chunks}
+            frame={frame}
+            fps={fps}
+            preset={preset}
+            bottomLiftPercent={captionLiftPercent}
+          />
+        )
       ) : null}
 
       {ctaDuration > 0 ? (
@@ -304,7 +320,7 @@ export const CaptionComposition: React.FC<CaptionCompositionProps> = ({
           totalDurationInSeconds={totalDurationInSeconds}
           frame={frame}
           fps={fps}
-          style={ctaStyle}
+          style={themedCtaStyle}
           topPercent={ctaTopPercent}
         />
       ) : null}

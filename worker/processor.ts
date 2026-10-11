@@ -11,6 +11,7 @@ import {
 } from '../lib/db';
 import { AppError, RenderCancelledError, toErrorMessage } from '../lib/errors';
 import { resolveClipsDir } from '../lib/paths';
+import { resolveCaptionThemeOverlayStyle } from '../lib/caption-theme-styles';
 
 import { getVideoMetadata } from '../lib/ffmpeg';
 import { getCaptionOffsetMs, shiftCaptionWords } from './caption-timing';
@@ -408,6 +409,12 @@ export async function processClipJob(
       throw new RenderCancelledError('Clip was deleted while presets were being resolved.');
     }
 
+    // A selected caption theme also skins the Hook and CTA card typography,
+    // palette and motion. Keep the saved standalone presets intact; these are
+    // render-time variants used identically by the preview and the worker.
+    const themedHookStyle = resolveCaptionThemeOverlayStyle(preset, hookStyle);
+    const themedCtaStyle = resolveCaptionThemeOverlayStyle(preset, ctaStyle);
+
     // Where the captions / hook / CTA go depends on the layout. In a split screen
     // the preset positions would land on the two faces, so they are re-placed from
     // where the heads really are (speaker focus keeps the presets unchanged).
@@ -424,16 +431,16 @@ export async function processClipJob(
         ctaDuration: resolvedCtaDuration,
       },
       caption: preset,
-      hook: hookOverlayEnabled ? { style: hookStyle, text: resolvedHookText } : null,
-      cta: ctaOverlayEnabled ? { style: ctaStyle, text: resolvedCtaText } : null,
+      hook: hookOverlayEnabled ? { style: themedHookStyle, text: resolvedHookText } : null,
+      cta: ctaOverlayEnabled ? { style: themedCtaStyle, text: resolvedCtaText } : null,
     });
     if (overlayLayout.adapted) {
       log.detail(`Overlay layout (split screen): ${describePlacements(overlayLayout)}`);
       for (const note of overlayLayout.notes) log.detail(`  · ${note}`);
     }
     const captionPresetForRender = overlayLayout.caption;
-    const hookStyleForRender = overlayLayout.hookStyle ?? hookStyle;
-    const ctaStyleForRender = overlayLayout.ctaStyle ?? ctaStyle;
+    const hookStyleForRender = overlayLayout.hookStyle ?? themedHookStyle;
+    const ctaStyleForRender = overlayLayout.ctaStyle ?? themedCtaStyle;
 
     log.step(
       `Step 2/3 · Render transparent overlays  ${color.gray(`(${engine === 'native' ? 'native ASS burn + Remotion cards' : 'Remotion'}, ` +

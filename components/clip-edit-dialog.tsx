@@ -339,7 +339,7 @@ function ClipEditForm({
                   </Select>
                 </Field>
 
-                <Field label="Caption engine" hint="Premium paints every frame (slowest, smoothest). Fast burns animated ASS captions in one native pass.">
+                <Field label="Caption engine" hint="Premium paints every frame (slowest, smoothest). Fast burns the classic ASS caption style in one native pass; the 13 new caption themes are Premium-only. Hook/CTA theme matching still works in Fast.">
                   <Select
                     value={draft.captionEngine}
                     onValueChange={(value) => patch({ captionEngine: value === "native" ? "native" : "remotion" })}

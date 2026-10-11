@@ -108,8 +108,8 @@ export const HookOverlay: React.FC<HookOverlayProps> = ({
       {style?.showBadge !== false && (
         <div
           style={{
-            backgroundColor: 'rgba(239, 68, 68, 0.95)',
-            color: '#FFFFFF',
+            backgroundColor: style?.badgeBackgroundColor || 'rgba(239, 68, 68, 0.95)',
+            color: style?.badgeTextColor || '#FFFFFF',
             fontSize: 14,
             fontWeight: 800,
             textTransform: 'uppercase',
@@ -117,7 +117,9 @@ export const HookOverlay: React.FC<HookOverlayProps> = ({
             padding: '4px 14px',
             borderRadius: 20,
             marginBottom: 8,
-            boxShadow: '0 4px 12px rgba(239, 68, 68, 0.5)',
+            boxShadow: style?.badgeBackgroundColor
+              ? '0 4px 12px rgba(0, 0, 0, 0.35)'
+              : '0 4px 12px rgba(239, 68, 68, 0.5)',
             fontFamily,
           }}
         >

@@ -34,6 +34,22 @@ seeded on first run with four defaults:
 
 These four reproduce the previously hardcoded overlay looks 1:1.
 
+### Caption theme matching
+
+The Captions tab also offers the 13 locally bundled Remotion themes: `pop`, `karaoke`,
+`kinetic-01`, `kinetic-02`, `hustle`, `grape`, `beast`, `poppin`, `aarit`, `soft-ai`,
+`gaming-stream`, `simple-one-word`, and `podcast`. The selected theme is stored additively in
+`caption_presets.config_json`; no SQL column migration is needed. Caption words are adapted
+from ClipCraft's final (including hook-shifted and profanity-masked) chunks at render time.
+
+Theme captions render only in **Premium / Remotion**. **Fast / Native** keeps the classic
+ASS caption appearance from the same preset as its explicit fallback. The optional **Match
+Hook + CTA to theme** switch styles both cards with the theme's font, accent, shape and
+entrance motion; it does not change their existing copy or timing. Saved Hook/CTA styles,
+font sizes, badge content and placement remain independent and can be used again by turning
+the switch off. Theme source is vendored under `remotion/caption-themes/vendor` with the
+upstream MIT license; local Google font assets carry OFL licenses in `public/fonts/licenses`.
+
 ### Fields
 
 | Field | Meaning |
@@ -43,7 +59,7 @@ These four reproduce the previously hardcoded overlay looks 1:1.
 | `textTransform` | `uppercase` or `none` |
 | `positionY` | Card position as **% from the top** of the 9:16 frame (hook default 12, CTA default 64) |
 | `animationStyle` | `pop` · `fade` · `slide-up` · `none` — the entrance animation |
-| `showBadge`, `badgeText` | (Hook only) the small chip above the text, e.g. "Hook Intro" |
+| `showBadge`, `badgeText`, `badgeBackgroundColor`, `badgeTextColor` | (Hook only) the small chip above the text, e.g. "Hook Intro"; badge colors can be theme-derived |
 
 ## Overlays follow the layout
 
@@ -85,14 +101,16 @@ covers the least, and the log line says so.
 
 ## Rendering
 
-Both caption engines honour the style presets and prepare transparent frames that
-FFmpeg composites with the source crop in the single final video pass:
+Both engines preserve the independent Hook/CTA style presets and composite those cards
+with the source crop in the final video pass. Caption-theme matching is applied to Hook/CTA
+cards in either engine; the caption theme itself is Remotion-only:
 
-- **Remotion** — `CaptionOverlayComposition` paints the full-timeline captions,
-  hook and CTA into one transparent PNG sequence.
-- **Native (fast)** — ASS captions are burned straight onto the video by libass
-  (transparent caption PNGs are impossible on current FFmpeg); hook/CTA cards are still
-  painted by `HookOverlayComposition` / `CtaOverlayComposition`.
+- **Remotion** — `CaptionOverlayComposition` paints the selected theme (or the classic
+  `AnimatedWord` captions), hook and CTA into one transparent PNG sequence.
+- **Native (fast)** — ASS captions are burned straight onto the video by libass using the
+  classic caption fields as fallback (transparent caption PNGs are impossible on current
+  FFmpeg); hook/CTA cards are still painted by `HookOverlayComposition` /
+  `CtaOverlayComposition`.
 
 Neither engine encodes the source video, so switching engines does not introduce
 an extra lossy video generation.

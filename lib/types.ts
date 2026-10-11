@@ -465,6 +465,9 @@ export interface OverlayStylePreset {
   /** Hook only: small chip shown above the text ("Hook Intro"). */
   showBadge?: boolean;
   badgeText?: string;
+  /** Optional theme-matched colors for the Hook chip; omitted styles retain the legacy red/white defaults. */
+  badgeBackgroundColor?: string;
+  badgeTextColor?: string;
   isDefault?: boolean;
   createdAt?: string;
   updatedAt?: string;
@@ -490,6 +493,25 @@ export interface FilterPreset {
 
 export type CaptionFontWeight = 'normal' | 'bold' | 'extra-bold' | 'black';
 export type CaptionAnimationStyle = 'karaoke' | 'word-pop' | 'fade-in' | 'static';
+
+/** Theme-library captions render in the Premium/Remotion engine; Native keeps the classic ASS fallback. */
+export const CAPTION_THEME_NAMES = [
+  'pop',
+  'karaoke',
+  'kinetic-01',
+  'kinetic-02',
+  'hustle',
+  'grape',
+  'beast',
+  'poppin',
+  'aarit',
+  'soft-ai',
+  'gaming-stream',
+  'simple-one-word',
+  'podcast',
+] as const;
+
+export type CaptionThemeName = (typeof CAPTION_THEME_NAMES)[number];
 
 /** Optional per-visual-line overrides; missing fields inherit from CaptionPreset. */
 export interface CaptionLineStyle {
@@ -529,6 +551,10 @@ export interface CaptionPreset {
   lineGap?: number;
   /** Horizontal alignment for rich line blocks. */
   lineAlignment?: 'left' | 'center' | 'right';
+  /** One of the 13 Remotion caption-themes; omitted uses ClipCraft's classic renderer. */
+  captionTheme?: CaptionThemeName;
+  /** When true, Hook and CTA cards inherit the selected theme's font, palette, card and motion. */
+  matchOverlayTheme?: boolean;
   isDefault?: boolean;
   createdAt?: string;
   updatedAt?: string;

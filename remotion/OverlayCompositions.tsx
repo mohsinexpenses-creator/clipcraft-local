@@ -5,6 +5,8 @@ import { getCtaBottomLiftPercent } from './CTAOverlay';
 import { AnimatedWord } from './AnimatedWord';
 import { buildFinalCaptionChunks } from './CaptionComposition';
 import { getCaptionChunkWordLimit } from '../lib/caption-layout';
+import { resolveCaptionThemeOverlayStyle } from '../lib/caption-theme-styles';
+import { CaptionThemeOverlay } from './caption-themes/CaptionThemeOverlay';
 import { CTAOverlay } from './CTAOverlay';
 import { HookOverlay } from './HookOverlay';
 
@@ -61,6 +63,12 @@ export const CaptionOverlayComposition: React.FC<CaptionOverlayCompositionProps>
   );
   const captionLift =
     getCtaBottomLiftPercent(ctaDuration, totalDuration, currentTime) * Math.max(0, captionLiftScale);
+  const themedHookStyle = hookStyle
+    ? resolveCaptionThemeOverlayStyle(preset, hookStyle)
+    : hookStyle;
+  const themedCtaStyle = ctaStyle
+    ? resolveCaptionThemeOverlayStyle(preset, ctaStyle)
+    : ctaStyle;
 
   return (
     <AbsoluteFill>
@@ -70,16 +78,24 @@ export const CaptionOverlayComposition: React.FC<CaptionOverlayCompositionProps>
           hookDurationInSeconds={hookVisibleDuration}
           frame={frame}
           fps={fps}
-          style={hookStyle}
+          style={themedHookStyle}
         />
       ) : null}
-      <AnimatedWord
-        chunks={chunks}
-        frame={frame}
-        fps={fps}
-        preset={preset}
-        bottomLiftPercent={captionLift}
-      />
+      {preset.captionTheme ? (
+        <CaptionThemeOverlay
+          chunks={chunks}
+          preset={preset}
+          bottomLiftPercent={captionLift}
+        />
+      ) : (
+        <AnimatedWord
+          chunks={chunks}
+          frame={frame}
+          fps={fps}
+          preset={preset}
+          bottomLiftPercent={captionLift}
+        />
+      )}
       {ctaDuration > 0 && ctaText.trim() ? (
         <CTAOverlay
           ctaText={ctaText}
@@ -87,7 +103,7 @@ export const CaptionOverlayComposition: React.FC<CaptionOverlayCompositionProps>
           totalDurationInSeconds={totalDuration}
           frame={frame}
           fps={fps}
-          style={ctaStyle}
+          style={themedCtaStyle}
         />
       ) : null}
     </AbsoluteFill>
