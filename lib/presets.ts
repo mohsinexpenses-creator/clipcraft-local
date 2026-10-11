@@ -86,7 +86,7 @@ const REMOTION_THEME_CAPTION_PRESETS: CaptionPreset[] = CAPTION_THEME_CATALOG
   .map((theme) => ({
     _id: `caption-theme-${theme.id}`,
     name: theme.label,
-    // Native/ASS uses this bundled fallback; Premium uses the theme's own face.
+    // Bundled fallback face; the theme usually paints with its own font.
     fontFamily: "Poppins, Arial, sans-serif",
     fontSize: 64,
     fontWeight: "black",
@@ -123,7 +123,7 @@ const REMOTION_THEME_CAPTION_PRESETS: CaptionPreset[] = CAPTION_THEME_CATALOG
  * Built-in caption styles. The original eight classic styles stay available, and every
  * upstream Remotion caption theme has a named gallery entry. Bold Punch remains the
  * existing Kinetic 01 entry; the other twelve themes are added as new preset rows.
- * Theme presets keep a bundled Poppins/ASS fallback for Native rendering.
+ * Theme presets keep a bundled Poppins fallback font.
  * NOTE: the first entry must stay the default, with positionY 28 (tests/overlay-layout.test.ts).
  */
 export const DEFAULT_CAPTION_PRESETS: CaptionPreset[] = [

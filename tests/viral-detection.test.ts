@@ -502,7 +502,6 @@ test('a detected clip renders and deletes like any other: same job payload, anal
         ctaDuration: 2.5,
         filterPreset: 'vibrant',
         captionPresetId: 'preset-bold-yellow',
-        captionEngine: 'native',
         layout: 'split-screen',
         hookStylePresetId: 'hook-volt-yellow',
         ctaStylePresetId: 'cta-aurora-gradient',
@@ -515,7 +514,6 @@ test('a detected clip renders and deletes like any other: same job payload, anal
   const queued = (await getClip(clip._id))!;
   assert.equal(queued.status, 'pending');
   assert.equal(queued.layout, 'split-screen');
-  assert.equal(queued.captionEngine, 'native');
   assert.deepEqual(queued.aiAnalysis, clipAt(0));
 
   // The worker claims it and gets the payload the processor already understands.

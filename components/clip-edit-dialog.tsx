@@ -15,7 +15,6 @@ import {
   Type,
 } from "lucide-react"
 import type {
-  CaptionEngine,
   CaptionPreset,
   ClipLayout,
   ClipRecord,
@@ -57,7 +56,6 @@ interface Draft {
   ctaDuration: string;
   filterPreset: string;
   captionPresetId: string;
-  captionEngine: CaptionEngine;
   layout: ClipLayout;
   hookStylePresetId: string;
   ctaStylePresetId: string;
@@ -74,7 +72,6 @@ function draftFrom(clip: ClipRecord, captionPresets: CaptionPreset[]): Draft {
     filterPreset: clip.filterPreset || "vibrant",
     captionPresetId:
       clip.captionPresetId || captionPresets.find((preset) => preset.isDefault)?._id || captionPresets[0]?._id || "",
-    captionEngine: clip.captionEngine === "native" ? "native" : "remotion",
     layout: clip.layout === "split-screen" ? "split-screen" : "speaker-focus",
     hookStylePresetId: clip.hookStylePresetId || "",
     ctaStylePresetId: clip.ctaStylePresetId || "",
@@ -180,7 +177,6 @@ function ClipEditForm({
       ctaDuration: Number(draft.ctaDuration) || 0,
       filterPreset: draft.filterPreset,
       captionPresetId: draft.captionPresetId,
-      captionEngine: draft.captionEngine,
       layout: draft.layout,
       ...(draft.hookStylePresetId ? { hookStylePresetId: draft.hookStylePresetId } : {}),
       ...(draft.ctaStylePresetId ? { ctaStylePresetId: draft.ctaStylePresetId } : {}),
@@ -335,21 +331,6 @@ function ClipEditForm({
                           {preset.isDefault ? " · default" : ""}
                         </SelectItem>
                       ))}
-                    </SelectContent>
-                  </Select>
-                </Field>
-
-                <Field label="Caption engine" hint="Premium paints every frame (slowest, smoothest). Fast burns the classic ASS caption style in one native pass; the 13 new caption themes are Premium-only. Hook/CTA theme matching still works in Fast.">
-                  <Select
-                    value={draft.captionEngine}
-                    onValueChange={(value) => patch({ captionEngine: value === "native" ? "native" : "remotion" })}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent className="dark">
-                      <SelectItem value="remotion">Premium · smoothest</SelectItem>
-                      <SelectItem value="native">Fast · ~10× quicker</SelectItem>
                     </SelectContent>
                   </Select>
                 </Field>

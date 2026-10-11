@@ -4,7 +4,7 @@
  *    that position would cover a face;
  *  - the hook card and the CTA card are ALWAYS stacked directly above the
  *    caption block (card bottom one gap above the captions' top), in every
- *    framing layout and for both caption engines;
+ *    framing layout;
  *  - captions never lift out of the way of a card (captionLiftScale = 0).
  */
 import assert from 'node:assert/strict';
@@ -26,7 +26,7 @@ import {
   captionReservedBand,
 } from '../lib/overlay-stack';
 import { DEFAULT_CAPTION_PRESETS, DEFAULT_OVERLAY_STYLE_PRESETS } from '../lib/presets';
-import type { CaptionEngine, CaptionPreset, OverlayStylePreset } from '../lib/types';
+import type { CaptionPreset, OverlayStylePreset } from '../lib/types';
 
 function track(id: number, cx: number, cy: number, w: number, seconds: number): Track {
   const points = Array.from({ length: Math.floor(seconds * 4) }, (_, i) => ({
@@ -88,14 +88,12 @@ const TIMING = { clipDuration: 32, hookStart: 10, hookVisibleSeconds: 2.5, ctaDu
 
 function adapt(
   plan: SplitPlan,
-  engine: CaptionEngine,
   caption: CaptionPreset = DEFAULT_CAPTION_PRESETS[0],
   hook: OverlayStylePreset = hookStyle,
   cta: OverlayStylePreset = ctaStyle
 ): OverlayAdaptation {
   return adaptOverlaysToLayout({
     plan,
-    engine,
     timing: TIMING,
     caption,
     hook: { style: hook, text: HOOK_TEXT },
@@ -121,36 +119,32 @@ test('speaker focus: captions keep their preset position', () => {
   const plan = buildLayoutPlan(asd([track(1, 900, 400, 110, 20)], 20), 'speaker-focus', 1920, 1080);
   const result = adaptOverlaysToLayout({
     plan,
-    engine: 'native',
     caption: DEFAULT_CAPTION_PRESETS[0],
     hook: { style: hookStyle, text: HOOK_TEXT },
     cta: { style: ctaStyle, text: CTA_TEXT },
   });
   assert.equal(result.caption, DEFAULT_CAPTION_PRESETS[0], 'caption preset object unchanged');
   assert.equal(result.captionLiftScale, 0, 'cards stack above captions, so captions never lift');
-  assert.deepEqual(result.placements.caption, captionReservedBand('native', DEFAULT_CAPTION_PRESETS[0]));
+  assert.deepEqual(result.placements.caption, captionReservedBand(DEFAULT_CAPTION_PRESETS[0]));
 });
 
 test('every layout: hook and CTA are stacked directly above the captions', () => {
   const single = buildLayoutPlan(asd([track(1, 900, 400, 110, 20)], 20), 'speaker-focus', 1920, 1080);
   const split = twoHostPlan();
   for (const plan of [single, split]) {
-    for (const engine of ['native', 'remotion'] as const) {
-      const result = plan.mode === 'split'
-        ? adapt(plan, engine)
-        : adaptOverlaysToLayout({
-            plan,
-            engine,
-            caption: DEFAULT_CAPTION_PRESETS[0],
-            hook: { style: hookStyle, text: HOOK_TEXT },
-            cta: { style: ctaStyle, text: CTA_TEXT },
-          });
-      const { caption, hook, cta } = result.placements;
-      assert.ok(caption && hook && cta, `placements complete (${plan.mode}/${engine})`);
-      assertStackedAbove(hook!, caption!);
-      assertStackedAbove(cta!, caption!);
-      assert.equal(result.captionLiftScale, 0);
-    }
+    const result = plan.mode === 'split'
+      ? adapt(plan)
+      : adaptOverlaysToLayout({
+          plan,
+          caption: DEFAULT_CAPTION_PRESETS[0],
+          hook: { style: hookStyle, text: HOOK_TEXT },
+          cta: { style: ctaStyle, text: CTA_TEXT },
+        });
+    const { caption, hook, cta } = result.placements;
+    assert.ok(caption && hook && cta, `placements complete (${plan.mode})`);
+    assertStackedAbove(hook!, caption!);
+    assertStackedAbove(cta!, caption!);
+    assert.equal(result.captionLiftScale, 0);
   }
 });
 
@@ -159,7 +153,6 @@ test('split-screen fallback to a single window (only one person found) still sta
   assert.equal(plan.mode, 'single', 'one person -> the explained single-window fallback');
   const result = adaptOverlaysToLayout({
     plan,
-    engine: 'native',
     caption: DEFAULT_CAPTION_PRESETS[0],
     hook: { style: hookStyle, text: HOOK_TEXT },
     cta: { style: ctaStyle, text: CTA_TEXT },
@@ -169,33 +162,31 @@ test('split-screen fallback to a single window (only one person found) still sta
   assertStackedAbove(result.placements.cta!, result.placements.caption!);
 });
 
-for (const engine of ['native', 'remotion'] as const) {
-  test(`split screen (${engine}): captions dodge the faces, the cards stack above them`, () => {
-    const plan = twoHostPlan();
-    const result = adapt(plan, engine);
-    assert.equal(result.adapted, true);
+test('split screen: captions dodge the faces, the cards stack above them', () => {
+  const plan = twoHostPlan();
+  const result = adapt(plan);
+  assert.equal(result.adapted, true);
 
-    const { caption, hook, cta } = result.placements;
-    assert.ok(caption && hook && cta, 'all three overlays are placed');
-    for (const cell of plan.cells) {
-      assert.ok(
-        !intersects(caption!, cell.faceZone),
-        `captions ${Math.round(caption!.top)}-${Math.round(caption!.bottom)} must not cover the face at ` +
-          `${Math.round(cell.faceZone.top)}-${Math.round(cell.faceZone.bottom)}`
-      );
-    }
-    assertStackedAbove(hook!, caption!);
-    assertStackedAbove(cta!, caption!);
-    assert.equal(result.captionLiftScale, 0);
-  });
-}
+  const { caption, hook, cta } = result.placements;
+  assert.ok(caption && hook && cta, 'all three overlays are placed');
+  for (const cell of plan.cells) {
+    assert.ok(
+      !intersects(caption!, cell.faceZone),
+      `captions ${Math.round(caption!.top)}-${Math.round(caption!.bottom)} must not cover the face at ` +
+        `${Math.round(cell.faceZone.top)}-${Math.round(cell.faceZone.bottom)}`
+    );
+  }
+  assertStackedAbove(hook!, caption!);
+  assertStackedAbove(cta!, caption!);
+  assert.equal(result.captionLiftScale, 0);
+});
 
 test('split screen: the caption preset position DID land on a face (so moving it was necessary)', () => {
   const plan = twoHostPlan();
   const lower = plan.cells.find((c) => c.cellY === 960)!;
   const captionPresetY = 1920 * (1 - DEFAULT_CAPTION_PRESETS[0].positionY / 100);
   assert.ok(captionPresetY > lower.faceZone.top && captionPresetY < lower.faceZone.bottom, 'caption preset is on the lower face');
-  const result = adapt(plan, 'native');
+  const result = adapt(plan);
   assert.ok(result.notes.some((n) => n.startsWith('captions moved')), result.notes.join('; '));
   assert.ok(result.notes.some((n) => n.startsWith('hook stacked')), result.notes.join('; '));
   assert.ok(result.notes.some((n) => n.startsWith('CTA stacked')), result.notes.join('; '));
@@ -203,7 +194,7 @@ test('split screen: the caption preset position DID land on a face (so moving it
 
 test('split screen: captions go to the seam between the panes', () => {
   const plan = twoHostPlan();
-  const result = adapt(plan, 'native');
+  const result = adapt(plan);
   const { caption } = result.placements;
   const upper = plan.cells.find((c) => c.cellY === 0)!;
   const lower = plan.cells.find((c) => c.cellY === 960)!;
@@ -213,12 +204,12 @@ test('split screen: captions go to the seam between the panes', () => {
 
 test('a placement that is already stacked is KEPT (re-rendering an adapted clip changes nothing)', () => {
   const plan = twoHostPlan();
-  const first = adapt(plan, 'native');
+  const first = adapt(plan);
   assert.ok(first.notes.length > 0, 'the defaults needed moving');
 
   // Feed the planner its own answer: caption is clear and the cards already sit
   // at the stacked spot, so nothing may move and no new objects are needed.
-  const second = adapt(plan, 'native', first.caption, first.hookStyle!, first.ctaStyle!);
+  const second = adapt(plan, first.caption, first.hookStyle!, first.ctaStyle!);
   assert.equal(second.adapted, false, 'no overlay moved the second time');
   assert.deepEqual(second.notes, []);
   assert.equal(second.caption, first.caption, 'same caption object');
@@ -227,7 +218,7 @@ test('a placement that is already stacked is KEPT (re-rendering an adapted clip 
 });
 
 test('only positionY changes - fonts, colours and animation of every preset are preserved', () => {
-  const result = adapt(twoHostPlan(), 'native');
+  const result = adapt(twoHostPlan());
   assert.deepEqual({ ...result.caption, positionY: 0 }, { ...DEFAULT_CAPTION_PRESETS[0], positionY: 0 });
   assert.deepEqual({ ...result.hookStyle!, positionY: 0 }, { ...hookStyle, positionY: 0 });
   assert.deepEqual({ ...result.ctaStyle!, positionY: 0 }, { ...ctaStyle, positionY: 0 });
@@ -235,29 +226,22 @@ test('only positionY changes - fonts, colours and animation of every preset are 
   assert.equal(hookStyle.positionY, DEFAULT_OVERLAY_STYLE_PRESETS.find((preset) => preset.isDefault)!.positionY);
 });
 
-test('positionY maths: hook / CTA are % from the TOP, caption bands match each engine\'s geometry', () => {
-  const plan = twoHostPlan();
-  for (const engine of ['native', 'remotion'] as const) {
-    const result = adapt(plan, engine);
-    assert.ok(Math.abs(result.hookStyle!.positionY - (result.placements.hook!.top / 1920) * 100) < 0.06);
-    assert.ok(Math.abs(result.ctaStyle!.positionY - (result.placements.cta!.top / 1920) * 100) < 0.06);
-    assert.deepEqual(
-      result.placements.caption,
-      captionReservedBand(engine, result.caption),
-      `caption band matches the ${engine} geometry`
-    );
-  }
+test('positionY maths: hook / CTA are % from the TOP, the caption band matches the caption geometry', () => {
+  const result = adapt(twoHostPlan());
+  assert.ok(Math.abs(result.hookStyle!.positionY - (result.placements.hook!.top / 1920) * 100) < 0.06);
+  assert.ok(Math.abs(result.ctaStyle!.positionY - (result.placements.cta!.top / 1920) * 100) < 0.06);
+  assert.deepEqual(result.placements.caption, captionReservedBand(result.caption));
 });
 
 test('hook / CTA switched off: nothing is placed for them', () => {
-  const result = adaptOverlaysToLayout({ plan: twoHostPlan(), engine: 'native', caption: DEFAULT_CAPTION_PRESETS[0], hook: null, cta: null });
+  const result = adaptOverlaysToLayout({ plan: twoHostPlan(), caption: DEFAULT_CAPTION_PRESETS[0], hook: null, cta: null });
   assert.equal(result.hookStyle, undefined);
   assert.equal(result.ctaStyle, undefined);
   assert.equal(result.placements.hook, undefined);
   assert.equal(result.placements.cta, undefined);
   assert.ok(result.placements.caption);
 
-  const blank = adaptOverlaysToLayout({ plan: twoHostPlan(), engine: 'native', caption: DEFAULT_CAPTION_PRESETS[0], hook: { style: hookStyle, text: '   ' } });
+  const blank = adaptOverlaysToLayout({ plan: twoHostPlan(), caption: DEFAULT_CAPTION_PRESETS[0], hook: { style: hookStyle, text: '   ' } });
   assert.equal(blank.placements.hook, undefined, 'whitespace-only hook text draws nothing, so it reserves nothing');
 });
 
@@ -266,7 +250,6 @@ test('captions pinned very high: the cards clamp to the top margin instead of es
   const highCaptions: CaptionPreset = { ...DEFAULT_CAPTION_PRESETS[0], positionY: 96 };
   const result = adaptOverlaysToLayout({
     plan,
-    engine: 'remotion',
     caption: highCaptions,
     hook: { style: hookStyle, text: HOOK_TEXT },
     cta: { style: ctaStyle, text: CTA_TEXT },
@@ -290,7 +273,7 @@ test('three and four pane grids: captions clear of every face, cards stacked abo
     assert.equal(plan.mode, 'split');
     const split = plan as SplitPlan;
     const result = adaptOverlaysToLayout({
-      plan: split, engine: 'native', caption: DEFAULT_CAPTION_PRESETS[0],
+      plan: split, caption: DEFAULT_CAPTION_PRESETS[0],
       hook: { style: hookStyle, text: HOOK_TEXT }, cta: { style: ctaStyle, text: CTA_TEXT },
     });
     const { caption, hook, cta } = result.placements;
@@ -310,7 +293,7 @@ test('faces so big that no free band exists: still valid, on-canvas positions', 
   );
   assert.equal(plan.mode, 'split');
   const result = adaptOverlaysToLayout({
-    plan, engine: 'native', caption: DEFAULT_CAPTION_PRESETS[0],
+    plan, caption: DEFAULT_CAPTION_PRESETS[0],
     hook: { style: hookStyle, text: HOOK_TEXT }, cta: { style: ctaStyle, text: CTA_TEXT },
   });
   for (const band of Object.values(result.placements)) {

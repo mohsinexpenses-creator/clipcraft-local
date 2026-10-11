@@ -11,7 +11,7 @@ import { CTAOverlay } from './CTAOverlay';
 import { HookOverlay } from './HookOverlay';
 
 /**
- * One transparent, full-duration overlay layer for the Remotion caption engine.
+ * One transparent, full-duration overlay layer (captions + hook + CTA).
  * The base video and audio are deliberately absent: FFmpeg composites this PNG
  * sequence with the source crop and performs the only final video encode.
  */
@@ -106,52 +106,6 @@ export const CaptionOverlayComposition: React.FC<CaptionOverlayCompositionProps>
           style={themedCtaStyle}
         />
       ) : null}
-    </AbsoluteFill>
-  );
-};
-
-/**
- * Transparent hook-only composition used by the native engine. The root paints
- * no background so the rendered PNGs retain alpha and can be composited by FFmpeg.
- */
-export const HookOverlayComposition: React.FC<{
-  hookText: string;
-  hookDuration: number;
-  hookStyle?: OverlayStylePreset;
-}> = ({ hookText, hookDuration, hookStyle }) => {
-  const frame = useCurrentFrame();
-  const { fps } = useVideoConfig();
-  return (
-    <AbsoluteFill>
-      <HookOverlay
-        hookText={hookText}
-        hookDurationInSeconds={hookDuration}
-        style={hookStyle}
-        frame={frame}
-        fps={fps}
-      />
-    </AbsoluteFill>
-  );
-};
-
-export const CtaOverlayComposition: React.FC<{
-  ctaText: string;
-  ctaDuration: number;
-  ctaStyle?: OverlayStylePreset;
-}> = ({ ctaText, ctaDuration, ctaStyle }) => {
-  const frame = useCurrentFrame();
-  const { fps } = useVideoConfig();
-  return (
-    <AbsoluteFill>
-      {/* The card's window covers the whole composition; FFmpeg shifts it to the end. */}
-      <CTAOverlay
-        ctaText={ctaText}
-        ctaDurationInSeconds={ctaDuration}
-        totalDurationInSeconds={ctaDuration}
-        style={ctaStyle}
-        frame={frame}
-        fps={fps}
-      />
     </AbsoluteFill>
   );
 };

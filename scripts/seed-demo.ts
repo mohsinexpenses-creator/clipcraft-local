@@ -65,7 +65,6 @@ const record = (clipId: string, extra: Record<string, unknown>) => ({
   ctaDuration: 3,
   filterPreset: 'filter-none',
   layout: 'speaker-focus',
-  captionEngine: 'remotion',
   createdAt: iso(0),
   updatedAt: iso(60),
   ...extra,
@@ -107,7 +106,6 @@ const clipJobData = (clipId: string) => ({
   filterPreset: 'filter-none',
   captionPresetId: '',
   layout: 'speaker-focus',
-  captionEngine: 'remotion',
 });
 
 const clipJob = (

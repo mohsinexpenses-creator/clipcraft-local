@@ -49,12 +49,10 @@ pauses the chain: it recovers at the step where it stopped.
      hook text and the CTA card are placed so they never cover a face.
      There is **no fallback detector**: if no face can be found, the render fails
      with a clear explanation instead of guessing.
-6. **Render** — the selected caption engine prepares transparent overlay frames,
-   then one FFmpeg filter graph performs the mirror/crop/colour work, hook intro,
-   caption + card compositing, and the single final H.264 encode. The `remotion`
-   engine (default, “Premium”) paints animated overlays in headless Chrome; `native`
-   (“Fast”) burns ASS captions straight onto the video and uses Remotion only for the hook/CTA cards.
-   Both produce the same 1080×1920 output path without a lossy intermediate video.
+6. **Render** — Remotion paints the animated caption + hook + CTA overlay frames
+   in headless Chrome, then one FFmpeg filter graph performs the mirror/crop/colour
+   work, hook intro, caption + card compositing, and the single final H.264 encode.
+   The result is a 1080×1920 output with no lossy intermediate video.
    On-screen hook/CTA text comes from user-editable **style presets** (font,
    colours, position, animation, solid or **gradient** card background).
 7. **Mask profanity** — captions and overlay text are always masked on screen
@@ -72,7 +70,7 @@ Every default the studio asks you for lives in one sidebar page, in five section
 | Section              | What it holds                                                                                                                                                                                           |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Pipeline defaults    | auto-detect / auto-render and the viral-detection request (clip count, duration window, hook/CTA text)                                                                                                  |
-| Render clip defaults | caption engine, layout, filter preset, caption + hook/CTA style presets, hook/CTA durations                                                                                                             |
+| Render clip defaults | layout, filter preset, caption + hook/CTA style presets, hook/CTA durations                                                                                                             |
 | AI providers         | Gemini key pool, Deepgram key + model, and which transcription engine to use. Every key field is Test + Save on its own - Test asks the provider, Save stores it (keys are only ever shown back masked) |
 | Worker               | clip / viral-detection / Remotion concurrency                                                                                                                                                           |
 | Profanity            | what happens to the _audio_ of a flagged word (mute / beep / leave it)                                                                                                                                  |
@@ -119,9 +117,8 @@ Simple One Word, and Podcast). The original eight styles are preserved; Bold Pun
 the Kinetic 01 style, and the other twelve themes appear as individually named gallery
 cards. New theme cards are seeded into existing databases on the next app start, without a
 reset. Hook and CTA cards can match the chosen theme's font, accent, card and motion, while
-retaining their existing text and timing. These caption animations are Remotion-only;
-Fast/Native uses the preset's classic ASS caption style as a fallback. A default you
-previously chose is preserved when built-ins are reset.
+retaining their existing text and timing. A default you previously chose is preserved
+when built-ins are reset.
 
 Caption theme source is vendored under `remotion/caption-themes/vendor` with its MIT
 license. Caption fonts are bundled locally in `public/fonts` (including the theme fonts);
@@ -140,7 +137,7 @@ Old built-in caption presets are removed from existing databases on the next sta
 | Speech-to-text   | whisper.cpp (local binary + ggml model; optional Deepgram override)                             |
 | Face detection   | OpenCV **YuNet** ONNX on `onnxruntime-node` (no face-api, no vision APIs)                       |
 | LLM              | Google AI Studio only — a 5-slot Gemini fallback chain in `lib/llm.ts` (plain `fetch`, no SDKs) |
-| Caption overlays | Remotion transparent frames (default) or native ASS burned straight onto the video (fast)       |
+| Caption overlays | Remotion transparent frames painted in headless Chrome       |
 
 ## Quickstart
 
@@ -206,8 +203,7 @@ worker/                 the long-running SQLite queue consumer
   yunet-detector.ts     YuNet ONNX pre/post-processing (OpenCV-exact)
   layout.ts             speaker-focus vs split-grid plans (peak-concurrent cells)
   ffmpeg-pipeline.ts    crop/overlay graph and single final H.264 encode
-  remotion-renderer.ts  "remotion" transparent overlay-frame renderer
-  native-captions.ts    "native" engine: ASS caption file + Remotion hook/CTA sequences
+  remotion-renderer.ts  transparent overlay-frame renderer (Remotion)
 remotion/               compositions: captions, hook overlay, CTA overlay
 scripts/                setup-whisper.{mjs,ps1}, setup-yunet.mjs, verify-clip.ts
 bin/whisper-win-x64/    committed Windows whisper.cpp build (whisper-cli + DLLs)

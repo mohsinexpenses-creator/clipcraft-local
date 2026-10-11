@@ -770,9 +770,8 @@ export default function CaptionPresetsPage() {
                           </p>
                         )}
                         <p className="text-xs text-muted-foreground">
-                          The 13 theme animations run with Premium / Remotion.
-                          Fast / Native keeps the classic ASS caption style as a
-                          clear fallback.
+                          The 13 theme animations are rendered by Remotion in
+                          headless Chrome.
                         </p>
                       </div>
 
@@ -808,7 +807,7 @@ export default function CaptionPresetsPage() {
                           </Label>
                           <p className="text-xs text-muted-foreground">
                             Split each timed transcript chunk into styled visual
-                            lines for the classic/native renderer.
+                            lines for the classic caption renderer.
                           </p>
                         </div>
                         <Switch
@@ -1175,7 +1174,7 @@ export default function CaptionPresetsPage() {
 
                     <div className="space-y-2">
                       <Label id="animation-label">
-                        Classic / Native animation
+                        Classic animation
                       </Label>
                       <Select
                         value={activePreset.animationStyle}
@@ -1199,8 +1198,8 @@ export default function CaptionPresetsPage() {
                         </SelectContent>
                       </Select>
                       <p className="text-xs text-muted-foreground">
-                        Used by ClipCraft classic captions and the Fast / Native
-                        fallback.
+                        Used by ClipCraft classic captions (when no caption
+                        theme is selected).
                       </p>
                     </div>
 

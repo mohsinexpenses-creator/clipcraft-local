@@ -926,7 +926,6 @@ function RenderSettingsTab({
       });
       if (applyToClips && unrendered.length > 0) {
         await applyRenderDefaults(unrendered, {
-          captionEngine: draft.captionEngine,
           layout: draft.layout,
           filterPreset: draft.filterPreset,
           captionPresetId: draft.captionPresetId ?? "",
