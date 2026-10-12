@@ -6,7 +6,10 @@ import {
   Check,
   ChevronDown,
   Copy,
+  Download,
+  ExternalLink,
   Gauge,
+  Image as ImageIcon,
   Megaphone,
   Quote,
   ShieldAlert,
@@ -14,7 +17,7 @@ import {
   Target,
 } from "lucide-react"
 import { cn } from "cn"
-import type { SafetyRisk, ViralClip } from "@/lib/types"
+import type { ClipVisualOverlay, SafetyRisk, ViralClip } from "@/lib/types"
 import { scoreTone } from "@/lib/pipeline-ui"
 
 /**
@@ -91,12 +94,20 @@ function Group({ title, icon, children }: { title: string; icon: React.ReactNode
 }
 
 export interface ClipAnalysisPanelProps {
+  clipId?: string
   analysis?: ViralClip
+  visualOverlays?: ClipVisualOverlay[]
   open: boolean
   onOpenChange: (open: boolean) => void
 }
 
-export function ClipAnalysisPanel({ analysis, open, onOpenChange }: ClipAnalysisPanelProps) {
+export function ClipAnalysisPanel({
+  clipId,
+  analysis,
+  visualOverlays,
+  open,
+  onOpenChange,
+}: ClipAnalysisPanelProps) {
   const [copied, setCopied] = React.useState(false);
 
   const toggle = () => onOpenChange(!open);
@@ -239,6 +250,115 @@ export function ClipAnalysisPanel({ analysis, open, onOpenChange }: ClipAnalysis
               </p>
             )}
           </Group>
+
+          {((visualOverlays && visualOverlays.length > 0) ||
+            (analysis.visualMoments && analysis.visualMoments.length > 0)) && (
+            <Group title="Contextual visuals" icon={<ImageIcon />}>
+              <div className="space-y-2">
+                {visualOverlays && visualOverlays.length > 0
+                  ? visualOverlays.map((vis) => (
+                      <div
+                        key={vis.id}
+                        className="rounded-lg border bg-card/70 p-2 space-y-1.5 text-[11px]"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0 flex-1 space-y-0.5">
+                            <p className="font-medium text-foreground truncate">
+                              “{vis.quote}”
+                            </p>
+                            <p className="text-[10.5px] text-muted-foreground">
+                              {vis.sourceStart.toFixed(1)}s–{vis.sourceEnd.toFixed(1)}s ·{" "}
+                              {vis.category}
+                              {vis.entityName ? ` (${vis.entityName})` : ""} ·{" "}
+                              {vis.placement}
+                              {vis.framing === "illustrative" ? " · illustrative" : ""}
+                            </p>
+                          </div>
+                          {vis.mediaUrl && (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={vis.mediaUrl}
+                              alt={vis.attribution?.title || vis.visualIntent}
+                              className="h-11 w-11 shrink-0 rounded-md object-cover border"
+                            />
+                          )}
+                        </div>
+                        {vis.attribution && (
+                          <div className="flex flex-wrap items-center justify-between gap-1.5 border-t pt-1 text-[10px] text-muted-foreground">
+                            <span>
+                              {vis.attribution.provider === "pexels" ? (
+                                <a
+                                  href="https://www.pexels.com"
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="underline underline-offset-2 hover:text-foreground font-medium"
+                                >
+                                  Photos provided by Pexels
+                                </a>
+                              ) : (
+                                <span className="uppercase font-medium">
+                                  {vis.attribution.provider}
+                                </span>
+                              )}{" "}
+                              · {vis.attribution.license} ·{" "}
+                              {vis.attribution.creatorUrl ? (
+                                <a
+                                  href={vis.attribution.creatorUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="underline underline-offset-2 hover:text-foreground"
+                                >
+                                  {vis.attribution.creator}
+                                </a>
+                              ) : (
+                                vis.attribution.creator
+                              )}
+                            </span>
+                            <a
+                              href={vis.attribution.sourcePageUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-0.5 underline underline-offset-2 hover:text-foreground"
+                            >
+                              Source
+                              <ExternalLink className="size-2.5" />
+                            </a>
+                          </div>
+                        )}
+                      </div>
+                    ))
+                  : (analysis.visualMoments ?? []).map((moment, idx) => (
+                      <div
+                        key={`${moment.timestamp.start}-${idx}`}
+                        className="rounded-lg border bg-card/70 p-2 text-[11px] space-y-0.5"
+                      >
+                        <p className="font-medium text-foreground truncate">
+                          “{moment.quote}”
+                        </p>
+                        <p className="text-[10.5px] text-muted-foreground">
+                          {moment.timestamp.start}–{moment.timestamp.end} · {moment.category}
+                          {moment.entity_name ? ` (${moment.entity_name})` : ""} ·{" "}
+                          {moment.search_queries.slice(0, 2).join(", ")}
+                        </p>
+                      </div>
+                    ))}
+                {clipId &&
+                  visualOverlays &&
+                  visualOverlays.some((v) => v.status === "resolved") && (
+                    <div className="flex justify-end pt-0.5">
+                      <a
+                        href={`/api/clips/${clipId}/credits?format=txt`}
+                        download
+                        className="inline-flex items-center gap-1 rounded-md border bg-background px-2 py-1 text-[10.5px] font-medium hover:bg-muted"
+                      >
+                        <Download className="size-3" />
+                        Download credits.txt
+                      </a>
+                    </div>
+                  )}
+              </div>
+            </Group>
+          )}
         </div>
       )}
 

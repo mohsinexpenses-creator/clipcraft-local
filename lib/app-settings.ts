@@ -20,6 +20,11 @@ import {
   RenderDefaults,
   SettingsLimits,
   SettingsSources,
+  VISUAL_OVERLAY_ANIMATIONS,
+  VISUAL_PROVIDERS,
+  VisualOverlayAnimation,
+  VisualProviderName,
+  VisualProviderToggles,
   WorkerSettings,
 } from './types';
 import { OPTION_LIMITS, sanitizePipelineOptions } from './pipeline-defaults';
@@ -61,12 +66,14 @@ const FILTER_IDS = new Set(DEFAULT_FILTER_PRESETS.map((preset) => preset.id));
 const LAYOUTS = new Set(['speaker-focus', 'split-screen']);
 const PROVIDER_CHOICES = new Set(['auto', 'deepgram', 'whisper']);
 const AUDIO_MODES = new Set(['mute', 'beep', 'off']);
+const VISUAL_ANIMATIONS = new Set<string>(VISUAL_OVERLAY_ANIMATIONS);
+const VISUAL_PROVIDER_SET = new Set<string>(VISUAL_PROVIDERS);
 
 /** A key long enough to be real; the `.env.example` placeholder is explicitly rejected. */
 const MIN_SECRET_LENGTH = 20;
 const MAX_KEY_POOL = 8;
 
-export type SecretKind = 'gemini' | 'deepgram';
+export type SecretKind = 'gemini' | 'deepgram' | 'pexels' | 'openverse';
 
 /* ------------------------------------------------------------------ *
  * Env access
@@ -128,6 +135,9 @@ export function maskAiSecrets(values: Record<string, unknown>): Record<string, u
     out.geminiApiKeys = (out.geminiApiKeys as unknown[]).map((key) => maskSecret(String(key)));
   }
   if (typeof out.deepgramApiKey === 'string') out.deepgramApiKey = maskSecret(out.deepgramApiKey);
+  if (typeof out.pexelsApiKey === 'string') out.pexelsApiKey = maskSecret(out.pexelsApiKey);
+  if (typeof out.openverseClientId === 'string') out.openverseClientId = maskSecret(out.openverseClientId);
+  if (typeof out.openverseClientSecret === 'string') out.openverseClientSecret = maskSecret(out.openverseClientSecret);
   return out;
 }
 
@@ -143,6 +153,10 @@ export function envHints(): Record<string, EnvHint> {
     'GEMINI_API_KEY',
     'DEEPGRAM_API_KEY',
     'DEEPGRAM_MODEL',
+    'PEXELS_API_KEY',
+    'OPENVERSE_CLIENT_ID',
+    'OPENVERSE_CLIENT_SECRET',
+    'WIKIMEDIA_USER_AGENT',
     'WORKER_CONCURRENCY',
     'VIRAL_CONCURRENCY',
     'REMOTION_CONCURRENCY',
@@ -205,7 +219,7 @@ function badRequest(message: string, resolution?: string): AppError {
  */
 function numberIn(
   value: unknown,
-  { min, max, label, precision = 0 }: { min: number; max: number; label: string; precision?: 0 | 1 }
+  { min, max, label, precision = 0 }: { min: number; max: number; label: string; precision?: 0 | 1 | 2 }
 ): number {
   // `Number('')` is 0, so an empty field has to be rejected here rather than silently
   // turning into "zero renders at a time".
@@ -215,12 +229,53 @@ function numberIn(
   if (typeof numeric !== 'number' || !Number.isFinite(numeric)) {
     throw badRequest(`${label} must be a number.`);
   }
-  const factor = precision === 1 ? 10 : 1;
+  const factor = precision === 2 ? 100 : precision === 1 ? 10 : 1;
   const step = Math.round(numeric * factor) / factor;
   if (step < min || step > max) {
     throw badRequest(`${label} must be between ${min} and ${max}.`, `Use a value from ${min} to ${max}.`);
   }
   return step;
+}
+
+function boolOf(value: unknown, label: string): boolean {
+  if (typeof value === 'boolean') return value;
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  throw badRequest(`${label} must be true or false.`);
+}
+
+function sanitizeVisualProviders(value: unknown): VisualProviderToggles {
+  const input = record(value, 'Visual providers');
+  return {
+    pexels: input.pexels === undefined ? DEFAULT_RENDER_SETTINGS.visualProviders.pexels : boolOf(input.pexels, 'Pexels toggle'),
+    openverse:
+      input.openverse === undefined
+        ? DEFAULT_RENDER_SETTINGS.visualProviders.openverse
+        : boolOf(input.openverse, 'Openverse toggle'),
+    wikimedia:
+      input.wikimedia === undefined
+        ? DEFAULT_RENDER_SETTINGS.visualProviders.wikimedia
+        : boolOf(input.wikimedia, 'Wikimedia toggle'),
+  };
+}
+
+function sanitizeVisualProviderPriority(value: unknown): VisualProviderName[] {
+  if (!Array.isArray(value)) {
+    throw badRequest('Visual provider priority must be a list.');
+  }
+  const seen = new Set<VisualProviderName>();
+  const ordered: VisualProviderName[] = [];
+  for (const item of value) {
+    const provider = enumOf<VisualProviderName>(item, VISUAL_PROVIDER_SET, 'Visual provider');
+    if (!seen.has(provider)) {
+      seen.add(provider);
+      ordered.push(provider);
+    }
+  }
+  for (const fallback of VISUAL_PROVIDERS) {
+    if (!seen.has(fallback)) ordered.push(fallback);
+  }
+  return ordered;
 }
 
 function textOf(value: unknown, max: number, label: string): string {
@@ -321,6 +376,53 @@ export function sanitizeSettingsSection(
       if (input.ctaDuration !== undefined) {
         out.ctaDuration = numberIn(input.ctaDuration, { min: 0, max: 30, precision: 1, label: 'CTA duration' });
       }
+      if (input.autoVisuals !== undefined) {
+        out.autoVisuals = boolOf(input.autoVisuals, 'Auto contextual visuals');
+      }
+      if (input.maxVisualMoments !== undefined) {
+        out.maxVisualMoments = numberIn(input.maxVisualMoments, {
+          ...OPTION_LIMITS.maxVisualMoments,
+          precision: 0,
+          label: 'Max visual moments',
+        });
+      }
+      if (input.visualConfidenceThreshold !== undefined) {
+        out.visualConfidenceThreshold = numberIn(input.visualConfidenceThreshold, {
+          ...OPTION_LIMITS.visualConfidence,
+          precision: 2,
+          label: 'Visual confidence threshold',
+        });
+      }
+      if (input.visualMinDuration !== undefined) {
+        out.visualMinDuration = numberIn(input.visualMinDuration, {
+          ...OPTION_LIMITS.visualDuration,
+          precision: 1,
+          label: 'Minimum visual duration',
+        });
+      }
+      if (input.visualDefaultDuration !== undefined) {
+        out.visualDefaultDuration = numberIn(input.visualDefaultDuration, {
+          ...OPTION_LIMITS.visualDuration,
+          precision: 1,
+          label: 'Default visual duration',
+        });
+      }
+      if (input.visualAnimation !== undefined) {
+        out.visualAnimation = enumOf<VisualOverlayAnimation>(
+          input.visualAnimation,
+          VISUAL_ANIMATIONS,
+          'Visual animation'
+        );
+      }
+      if (input.visualProviders !== undefined) {
+        out.visualProviders = sanitizeVisualProviders(input.visualProviders);
+      }
+      if (input.visualProviderPriority !== undefined) {
+        out.visualProviderPriority = sanitizeVisualProviderPriority(input.visualProviderPriority);
+      }
+      if (input.visualShowOnVideoCredit !== undefined) {
+        out.visualShowOnVideoCredit = boolOf(input.visualShowOnVideoCredit, 'On-video visual credit');
+      }
       return out;
     }
 
@@ -341,6 +443,50 @@ export function sanitizeSettingsSection(
       if ('deepgramModel' in input) out.deepgramModel = textOf(input.deepgramModel, 64, 'Deepgram model');
       if (input.transcriptionProvider !== undefined) {
         out.transcriptionProvider = enumOf(input.transcriptionProvider, PROVIDER_CHOICES, 'Transcription provider');
+      }
+      if ('pexelsApiKey' in input) {
+        const carried = context.storedAi?.pexelsApiKey ?? '';
+        const raw = isMaskedPlaceholder(input.pexelsApiKey) ? carried : textOf(input.pexelsApiKey, 300, 'Pexels API key');
+        if (raw && !isUsableSecret(raw)) {
+          throw badRequest(
+            'That does not look like a Pexels API key.',
+            `Keys are at least ${MIN_SECRET_LENGTH} characters with no spaces. Submit an empty value to remove the stored key.`
+          );
+        }
+        out.pexelsApiKey = raw;
+      }
+      if ('openverseClientId' in input) {
+        const carried = context.storedAi?.openverseClientId ?? '';
+        const raw = isMaskedPlaceholder(input.openverseClientId)
+          ? carried
+          : textOf(input.openverseClientId, 300, 'Openverse client id');
+        if (raw && !isUsableSecret(raw)) {
+          throw badRequest(
+            'That does not look like an Openverse client id.',
+            `Credentials are at least ${MIN_SECRET_LENGTH} characters with no spaces. Submit an empty value to remove.`
+          );
+        }
+        out.openverseClientId = raw;
+      }
+      if ('openverseClientSecret' in input) {
+        const carried = context.storedAi?.openverseClientSecret ?? '';
+        const raw = isMaskedPlaceholder(input.openverseClientSecret)
+          ? carried
+          : textOf(input.openverseClientSecret, 300, 'Openverse client secret');
+        if (raw && !isUsableSecret(raw)) {
+          throw badRequest(
+            'That does not look like an Openverse client secret.',
+            `Credentials are at least ${MIN_SECRET_LENGTH} characters with no spaces. Submit an empty value to remove.`
+          );
+        }
+        out.openverseClientSecret = raw;
+      }
+      if ('wikimediaUserAgent' in input) {
+        const raw = textOf(input.wikimediaUserAgent, 250, 'Wikimedia User-Agent');
+        if (/[\u0000-\u001f]/.test(raw)) {
+          throw badRequest('Wikimedia User-Agent contains control characters.');
+        }
+        out.wikimediaUserAgent = raw;
       }
       return out;
     }
@@ -478,6 +624,49 @@ function resolveRemotion(stored: unknown): number | null {
     : intInRange(value, CONCURRENCY_LIMITS.remotion.min, CONCURRENCY_LIMITS.remotion.max, 1);
 }
 
+function boolValue(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') return value;
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  return undefined;
+}
+
+function clampFloatInRange(value: unknown, min: number, max: number, fallback: number, precision: 1 | 2): number {
+  const numeric = numberValue(value);
+  if (numeric === undefined) return fallback;
+  const factor = precision === 2 ? 100 : 10;
+  return Math.max(min, Math.min(max, Math.round(numeric * factor) / factor));
+}
+
+function resolveVisualProvidersStored(value: unknown): VisualProviderToggles {
+  const raw = asRecord(value);
+  return {
+    pexels: boolValue(raw.pexels) ?? DEFAULT_RENDER_SETTINGS.visualProviders.pexels,
+    openverse: boolValue(raw.openverse) ?? DEFAULT_RENDER_SETTINGS.visualProviders.openverse,
+    wikimedia: boolValue(raw.wikimedia) ?? DEFAULT_RENDER_SETTINGS.visualProviders.wikimedia,
+  };
+}
+
+function resolveVisualProviderPriorityStored(value: unknown): VisualProviderName[] {
+  if (!Array.isArray(value)) return [...DEFAULT_RENDER_SETTINGS.visualProviderPriority];
+  const seen = new Set<VisualProviderName>();
+  const ordered: VisualProviderName[] = [];
+  for (const item of value) {
+    const str = stringValue(item);
+    if (str && VISUAL_PROVIDER_SET.has(str)) {
+      const provider = str as VisualProviderName;
+      if (!seen.has(provider)) {
+        seen.add(provider);
+        ordered.push(provider);
+      }
+    }
+  }
+  for (const fallback of VISUAL_PROVIDERS) {
+    if (!seen.has(fallback)) ordered.push(fallback);
+  }
+  return ordered;
+}
+
 /**
  * Pure resolution over already-read rows: stored value, else built-in default.
  *
@@ -505,6 +694,9 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
   const filterPreset = FILTER_IDS.has(stringValue(renderStored.filterPreset) ?? '')
     ? (stringValue(renderStored.filterPreset) as RenderDefaults['filterPreset'])
     : DEFAULT_RENDER_SETTINGS.filterPreset;
+  const visualAnimation = VISUAL_ANIMATIONS.has(stringValue(renderStored.visualAnimation) ?? '')
+    ? (stringValue(renderStored.visualAnimation) as VisualOverlayAnimation)
+    : DEFAULT_RENDER_SETTINGS.visualAnimation;
 
   sources.render = {
     layout: stringValue(renderStored.layout) ? 'app' : 'default',
@@ -514,6 +706,15 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
     ctaStylePresetId: renderStored.ctaStylePresetId !== undefined ? 'app' : 'default',
     hookDuration: numberValue(renderStored.hookDuration) !== undefined ? 'app' : 'default',
     ctaDuration: numberValue(renderStored.ctaDuration) !== undefined ? 'app' : 'default',
+    autoVisuals: boolValue(renderStored.autoVisuals) !== undefined ? 'app' : 'default',
+    maxVisualMoments: numberValue(renderStored.maxVisualMoments) !== undefined ? 'app' : 'default',
+    visualConfidenceThreshold: numberValue(renderStored.visualConfidenceThreshold) !== undefined ? 'app' : 'default',
+    visualMinDuration: numberValue(renderStored.visualMinDuration) !== undefined ? 'app' : 'default',
+    visualDefaultDuration: numberValue(renderStored.visualDefaultDuration) !== undefined ? 'app' : 'default',
+    visualAnimation: stringValue(renderStored.visualAnimation) ? 'app' : 'default',
+    visualProviders: renderStored.visualProviders !== undefined ? 'app' : 'default',
+    visualProviderPriority: Array.isArray(renderStored.visualProviderPriority) ? 'app' : 'default',
+    visualShowOnVideoCredit: boolValue(renderStored.visualShowOnVideoCredit) !== undefined ? 'app' : 'default',
   };
 
   const render: RenderDefaults = {
@@ -524,6 +725,39 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
     ctaStylePresetId: idValue(renderStored.ctaStylePresetId) ?? null,
     hookDuration: clampDuration(renderStored.hookDuration, DEFAULT_RENDER_SETTINGS.hookDuration),
     ctaDuration: clampDuration(renderStored.ctaDuration, DEFAULT_RENDER_SETTINGS.ctaDuration),
+    autoVisuals: boolValue(renderStored.autoVisuals) ?? DEFAULT_RENDER_SETTINGS.autoVisuals,
+    maxVisualMoments: intInRange(
+      renderStored.maxVisualMoments,
+      OPTION_LIMITS.maxVisualMoments.min,
+      OPTION_LIMITS.maxVisualMoments.max,
+      DEFAULT_RENDER_SETTINGS.maxVisualMoments
+    ),
+    visualConfidenceThreshold: clampFloatInRange(
+      renderStored.visualConfidenceThreshold,
+      OPTION_LIMITS.visualConfidence.min,
+      OPTION_LIMITS.visualConfidence.max,
+      DEFAULT_RENDER_SETTINGS.visualConfidenceThreshold,
+      2
+    ),
+    visualMinDuration: clampFloatInRange(
+      renderStored.visualMinDuration,
+      OPTION_LIMITS.visualDuration.min,
+      OPTION_LIMITS.visualDuration.max,
+      DEFAULT_RENDER_SETTINGS.visualMinDuration,
+      1
+    ),
+    visualDefaultDuration: clampFloatInRange(
+      renderStored.visualDefaultDuration,
+      OPTION_LIMITS.visualDuration.min,
+      OPTION_LIMITS.visualDuration.max,
+      DEFAULT_RENDER_SETTINGS.visualDefaultDuration,
+      1
+    ),
+    visualAnimation,
+    visualProviders: resolveVisualProvidersStored(renderStored.visualProviders),
+    visualProviderPriority: resolveVisualProviderPriorityStored(renderStored.visualProviderPriority),
+    visualShowOnVideoCredit:
+      boolValue(renderStored.visualShowOnVideoCredit) ?? DEFAULT_RENDER_SETTINGS.visualShowOnVideoCredit,
   };
 
   /* ai - keys exist only if they were put here, never inherited from the env file */
@@ -537,12 +771,23 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
   const transcriptionProvider = PROVIDER_CHOICES.has(stringValue(aiStored.transcriptionProvider) ?? '')
     ? (stringValue(aiStored.transcriptionProvider) as AiProviderSettings['transcriptionProvider'])
     : DEFAULT_AI_SETTINGS.transcriptionProvider;
+  const pexelsRaw = stringValue(aiStored.pexelsApiKey) ?? '';
+  const pexelsApiKey = isUsableSecret(pexelsRaw) ? pexelsRaw : '';
+  const openverseClientIdRaw = stringValue(aiStored.openverseClientId) ?? '';
+  const openverseClientId = isUsableSecret(openverseClientIdRaw) ? openverseClientIdRaw : '';
+  const openverseClientSecretRaw = stringValue(aiStored.openverseClientSecret) ?? '';
+  const openverseClientSecret = isUsableSecret(openverseClientSecretRaw) ? openverseClientSecretRaw : '';
+  const wikimediaUserAgentStored = stringValue(aiStored.wikimediaUserAgent) ?? '';
 
   sources.ai = {
     geminiApiKeys: geminiApiKeys.length ? 'app' : 'default',
     deepgramApiKey: deepgramApiKey ? 'app' : 'default',
     deepgramModel: deepgramModel ? 'app' : 'default',
     transcriptionProvider: stringValue(aiStored.transcriptionProvider) ? 'app' : 'default',
+    ...(pexelsApiKey ? { pexelsApiKey: 'app' as const } : {}),
+    ...(openverseClientId ? { openverseClientId: 'app' as const } : {}),
+    ...(openverseClientSecret ? { openverseClientSecret: 'app' as const } : {}),
+    ...(wikimediaUserAgentStored ? { wikimediaUserAgent: 'app' as const } : {}),
   };
 
   const ai: AiProviderSettings = {
@@ -550,6 +795,10 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
     deepgramApiKey,
     deepgramModel: deepgramModel || 'nova-2',
     transcriptionProvider,
+    pexelsApiKey,
+    openverseClientId,
+    openverseClientSecret,
+    wikimediaUserAgent: wikimediaUserAgentStored || DEFAULT_AI_SETTINGS.wikimediaUserAgent,
   };
 
   /* worker */
@@ -719,6 +968,9 @@ export async function buildAppSettingsSnapshot(): Promise<AppSettingsSnapshot> {
       ...stored.ai,
       geminiApiKeys: (stored.ai.geminiApiKeys ?? []).map(maskSecret),
       deepgramApiKey: maskSecret(stored.ai.deepgramApiKey ?? ''),
+      pexelsApiKey: maskSecret(stored.ai.pexelsApiKey ?? ''),
+      openverseClientId: maskSecret(stored.ai.openverseClientId ?? ''),
+      openverseClientSecret: maskSecret(stored.ai.openverseClientSecret ?? ''),
     };
   }
 
@@ -734,6 +986,9 @@ export async function buildAppSettingsSnapshot(): Promise<AppSettingsSnapshot> {
         ...effective.ai,
         geminiApiKeys: effective.ai.geminiApiKeys.map(maskSecret),
         deepgramApiKey: maskSecret(effective.ai.deepgramApiKey),
+        pexelsApiKey: maskSecret(effective.ai.pexelsApiKey),
+        openverseClientId: maskSecret(effective.ai.openverseClientId),
+        openverseClientSecret: maskSecret(effective.ai.openverseClientSecret),
       },
     },
     sources,
@@ -759,6 +1014,11 @@ const LIMITS: SettingsLimits = {
   layouts: ['speaker-focus', 'split-screen'] as const,
   audioModes: ['mute', 'beep', 'off'] as const,
   transcriptionProviders: ['auto', 'deepgram', 'whisper'] as const,
+  maxVisualMoments: OPTION_LIMITS.maxVisualMoments,
+  visualConfidence: OPTION_LIMITS.visualConfidence,
+  visualDuration: OPTION_LIMITS.visualDuration,
+  visualAnimations: VISUAL_OVERLAY_ANIMATIONS,
+  visualProviders: VISUAL_PROVIDERS,
 };
 
 /**
@@ -774,8 +1034,25 @@ export async function envAiSectionForImport(): Promise<Record<string, unknown> |
   const deepgramRaw = envText('DEEPGRAM_API_KEY');
   const deepgramApiKey = isUsableSecret(deepgramRaw) ? deepgramRaw : '';
   const deepgramModel = envText('DEEPGRAM_MODEL');
+  const pexelsRaw = envText('PEXELS_API_KEY');
+  const pexelsApiKey = isUsableSecret(pexelsRaw) ? pexelsRaw : '';
+  const openverseIdRaw = envText('OPENVERSE_CLIENT_ID');
+  const openverseClientId = isUsableSecret(openverseIdRaw) ? openverseIdRaw : '';
+  const openverseSecretRaw = envText('OPENVERSE_CLIENT_SECRET');
+  const openverseClientSecret = isUsableSecret(openverseSecretRaw) ? openverseSecretRaw : '';
+  const wikimediaUserAgent = envText('WIKIMEDIA_USER_AGENT');
 
-  if (!geminiApiKeys.length && !deepgramApiKey && !deepgramModel) return null;
+  if (
+    !geminiApiKeys.length &&
+    !deepgramApiKey &&
+    !deepgramModel &&
+    !pexelsApiKey &&
+    !openverseClientId &&
+    !openverseClientSecret &&
+    !wikimediaUserAgent
+  ) {
+    return null;
+  }
 
   const value: Record<string, unknown> = {
     geminiApiKeys,
@@ -783,6 +1060,10 @@ export async function envAiSectionForImport(): Promise<Record<string, unknown> |
     transcriptionProvider: DEFAULT_AI_SETTINGS.transcriptionProvider,
   };
   if (deepgramModel) value.deepgramModel = deepgramModel;
+  if (pexelsApiKey) value.pexelsApiKey = pexelsApiKey;
+  if (openverseClientId) value.openverseClientId = openverseClientId;
+  if (openverseClientSecret) value.openverseClientSecret = openverseClientSecret;
+  if (wikimediaUserAgent) value.wikimediaUserAgent = wikimediaUserAgent;
   return value;
 }
 
@@ -868,6 +1149,23 @@ export async function resolveProfanityAudioMode(): Promise<ProfanitySettings['au
 export async function resolveWorkerSettings(): Promise<WorkerSettings> {
   const settings = await loadEffectiveSettings();
   return settings.worker;
+}
+
+export async function resolveVisualProviderSettings(): Promise<{
+  render: RenderDefaults;
+  pexelsApiKey: string;
+  openverseClientId: string;
+  openverseClientSecret: string;
+  wikimediaUserAgent: string;
+}> {
+  const settings = await loadEffectiveSettings();
+  return {
+    render: settings.render,
+    pexelsApiKey: settings.ai.pexelsApiKey,
+    openverseClientId: settings.ai.openverseClientId,
+    openverseClientSecret: settings.ai.openverseClientSecret,
+    wikimediaUserAgent: settings.ai.wikimediaUserAgent,
+  };
 }
 
 export { DEFAULT_RENDER_SETTINGS, OPTION_LIMITS };

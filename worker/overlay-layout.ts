@@ -252,4 +252,91 @@ export function describePlacements(result: OverlayAdaptation): string {
   return `captions ${fmt(result.placements.caption)}, hook ${fmt(result.placements.hook)}, CTA ${fmt(result.placements.cta)}`;
 }
 
+export interface VisualCardPlacement {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  top: number;
+  bottom: number;
+}
+
+function bandOverlap(a: Band, b: { top: number; bottom: number }): number {
+  return Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+}
+
+/**
+ * Computes a safe on-canvas 9:16 card placement for contextual visual overlays
+ * that avoids the caption band, hook/CTA cards, and split-screen face zones.
+ */
+export function planVisualCardPlacement(params: {
+  plan: LayoutPlan;
+  captionBand?: Band;
+  hookBand?: Band;
+  ctaBand?: Band;
+  cardWidth?: number;
+  cardHeight?: number;
+}): VisualCardPlacement {
+  const { plan, hookBand, ctaBand } = params;
+  const captionBand: Band = params.captionBand ?? { top: 1320, bottom: 1620 };
+  const width = Math.max(320, Math.min(960, Math.round(params.cardWidth ?? 760)));
+  const height = Math.max(240, Math.min(720, Math.round(params.cardHeight ?? 460)));
+  const x = Math.round((CANVAS_WIDTH - width) / 2);
+
+  const reservedBands: Band[] = [captionBand];
+  if (hookBand) reservedBands.push(hookBand);
+  if (ctaBand) reservedBands.push(ctaBand);
+
+  const stackTop = Math.min(...reservedBands.map((b) => b.top));
+  const stackBottom = Math.max(...reservedBands.map((b) => b.bottom));
+
+  const candidateTops: number[] = [
+    108,
+    Math.max(EDGE_MARGIN, stackTop - height - OVERLAY_STACK_GAP),
+    Math.min(CANVAS_HEIGHT - height - EDGE_MARGIN, stackBottom + OVERLAY_STACK_GAP),
+    CANVAS_HEIGHT - height - 120,
+  ];
+
+  const faceZones: Array<{ top: number; bottom: number }> =
+    plan.mode === 'split' ? plan.cells.map((c) => c.faceZone) : [];
+
+  let bestTop = 108;
+  let bestPenalty = Number.POSITIVE_INFINITY;
+
+  for (const rawTop of candidateTops) {
+    const top = Math.max(EDGE_MARGIN, Math.min(CANVAS_HEIGHT - height - EDGE_MARGIN, Math.round(rawTop)));
+    const bottom = top + height;
+    const candidateBand: Band = { top, bottom };
+
+    let captionPenalty = 0;
+    for (const r of reservedBands) {
+      captionPenalty += bandOverlap(candidateBand, r) * 10;
+    }
+
+    let facePenalty = 0;
+    for (const fz of faceZones) {
+      facePenalty += bandOverlap(candidateBand, fz) * 2;
+    }
+
+    // Slight preference for the upper contextual zone when clear
+    const positionPreference = Math.abs(top - 108) * 0.05;
+    const totalPenalty = captionPenalty + facePenalty + positionPreference;
+
+    if (totalPenalty < bestPenalty) {
+      bestPenalty = totalPenalty;
+      bestTop = top;
+    }
+  }
+
+  return {
+    x,
+    y: bestTop,
+    width,
+    height,
+    top: bestTop,
+    bottom: bestTop + height,
+  };
+}
+
+
 

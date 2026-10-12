@@ -18,14 +18,26 @@ import { getCaptionOffsetMs, shiftCaptionWords } from './caption-timing';
 import { ClipLayout, ClipRecord, JobData, OverlayStylePreset } from '../lib/types';
 import { detectSpeakerTimeline } from './asd';
 import { buildLayoutPlan, getSplitFramingSettings } from './layout';
-import { adaptOverlaysToLayout, describePlacements } from './overlay-layout';
+import { adaptOverlaysToLayout, describePlacements, planVisualCardPlacement } from './overlay-layout';
 import { color, log } from '../lib/logger';
-import { HOOK_TRANSITION_SECONDS, normalizeFps, processVideoSegment } from './ffmpeg-pipeline';
+import {
+  HOOK_TRANSITION_SECONDS,
+  StillVisualOverlayInput,
+  normalizeFps,
+  processVideoSegment,
+} from './ffmpeg-pipeline';
 import { DEFAULT_HOOK_FALLBACK_SECONDS, resolveHookTiming } from './hook-timing';
 import {
   prepareRemotionCaptionOverlays,
   type PreparedCaptionOverlays,
 } from './remotion-renderer';
+import { resolveVisualProviderSettings } from '../lib/app-settings';
+import {
+  buildClipCreditsManifest,
+  mapVisualMomentToOutputTimeline,
+  planClipVisualMoments,
+} from '../lib/contextual-visuals';
+import { resolveVisualOverlaysForClip } from '../lib/visual-providers';
 
 /** How far either side of the window we still accept transcript words. */
 const WORD_SLACK_SECONDS = 0.5;
@@ -474,9 +486,124 @@ export async function processClipJob(
     };
     try {
       checkCancelled();
+
+      // Resolve contextual visual overlays before the final video encode (never per frame).
+      // Any provider failure or missing image falls back gracefully and never aborts the render.
+      const ffmpegVisualOverlays: StillVisualOverlayInput[] = [];
+      try {
+        const visualSettings = await resolveVisualProviderSettings();
+        const autoVisualsEnabled =
+          (jobData.autoVisuals ?? clip.autoVisuals ?? visualSettings.render.autoVisuals) !== false;
+
+        if (autoVisualsEnabled) {
+          let planned = jobData.visualOverlays ?? clip.visualOverlays ?? [];
+          if (planned.length === 0 && clip.aiAnalysis?.visualMoments?.length) {
+            planned = planClipVisualMoments({
+              rawMoments: clip.aiAnalysis.visualMoments,
+              clipStart: start,
+              clipEnd: end,
+              transcript: video.transcript,
+              hookTiming: {
+                start: hookStart,
+                duration: safeHookDuration,
+              },
+              options: {
+                autoVisuals: true,
+                maxVisualMoments: visualSettings.render.maxVisualMoments,
+                confidenceThreshold: visualSettings.render.visualConfidenceThreshold,
+                minDuration: visualSettings.render.visualMinDuration,
+                defaultDuration: visualSettings.render.visualDefaultDuration,
+                defaultAnimation: visualSettings.render.visualAnimation,
+              },
+            });
+          } else if (planned.length > 0) {
+            // Re-map onto the exact resolved hook/main output timeline for this render.
+            planned = planned.map((overlay) => {
+              const { effectivePlacement, outputWindows } = mapVisualMomentToOutputTimeline({
+                sourceStart: overlay.sourceStart,
+                sourceEnd: overlay.sourceEnd,
+                clipStart: start,
+                clipEnd: end,
+                placement: overlay.placement,
+                hookTiming: {
+                  start: hookStart,
+                  duration: safeHookDuration,
+                },
+                allowDuplicateHookReplay: overlay.placement === 'both',
+              });
+              return {
+                ...overlay,
+                placement: effectivePlacement,
+                outputWindows,
+              };
+            });
+          }
+
+          if (planned.length > 0) {
+            const resolvedVisuals = await resolveVisualOverlaysForClip(planned, {
+              renderSettings: visualSettings.render,
+              pexelsApiKey: visualSettings.pexelsApiKey,
+              openverseClientId: visualSettings.openverseClientId,
+              openverseClientSecret: visualSettings.openverseClientSecret,
+              wikimediaUserAgent: visualSettings.wikimediaUserAgent,
+            });
+            clip.visualOverlays = resolvedVisuals;
+            await updateClip(clip).catch(() => undefined);
+
+            const cardPlacement = planVisualCardPlacement({
+              plan,
+              captionBand: overlayLayout.placements.caption,
+              hookBand: overlayLayout.placements.hook,
+              ctaBand: overlayLayout.placements.cta,
+            });
+
+            for (const item of resolvedVisuals) {
+              if (
+                item.status !== 'resolved' ||
+                !item.localFilePath ||
+                !fs.existsSync(item.localFilePath)
+              ) {
+                continue;
+              }
+              for (const win of item.outputWindows) {
+                if (win.end - win.start < 0.5) continue;
+                ffmpegVisualOverlays.push({
+                  id: `${item.id}_${win.segment}`,
+                  imagePath: item.localFilePath,
+                  x: cardPlacement.x,
+                  y: cardPlacement.y,
+                  width: cardPlacement.width,
+                  height: cardPlacement.height,
+                  start: win.start,
+                  end: win.end,
+                  animation: item.animation,
+                });
+              }
+            }
+
+            if (ffmpegVisualOverlays.length > 0) {
+              const manifest = buildClipCreditsManifest({
+                clipId: clip._id,
+                videoId: clip.videoId,
+                clipTitle: clip.aiAnalysis?.viral_packaging.video_title || clip.videoTitle,
+                visualOverlays: resolvedVisuals,
+              });
+              const creditsPath = `${finalVideoPath.replace(/\.mp4$/i, '')}.credits.txt`;
+              fs.writeFileSync(creditsPath, manifest.plainText, 'utf8');
+            }
+          }
+        }
+      } catch (visualError) {
+        log.warn(
+          `Contextual visuals skipped for ${clipId}: ${toErrorMessage(visualError)}`
+        );
+      }
+
       log.step(
         `Step 3/3 · FFmpeg crop + hook + overlays + one final encode ` +
-        color.gray(`(${preparedOverlays.sequences.length} transparent layer(s))`)
+        color.gray(
+          `(${preparedOverlays.sequences.length} transparent layer(s), ${ffmpegVisualOverlays.length} visual card(s))`
+        )
       );
       const progressSink = (progress: number): void => {
         const scaled = 30 + Math.max(0, Math.min(80, progress)) * 0.85;
@@ -499,6 +626,7 @@ export async function processClipJob(
         targetFps: renderFps,
         sourceHasAudio: sourceMeta.hasAudio,
         overlays: preparedOverlays.sequences,
+        visualOverlays: ffmpegVisualOverlays,
         words: clipWords,
         debugOutputPath: process.env.SAVE_PRECAPTION_DEBUG?.trim() === '1'
           ? intermediateVideoPath

@@ -16,6 +16,7 @@ import {
   buildSingleFilterParts,
   buildSplitFilterStatements,
 } from "./layout";
+import { VisualOverlayAnimation } from "../lib/types";
 
 export interface OverlayFrameSequence {
   /** Short label used in FFmpeg diagnostics. */
@@ -24,6 +25,18 @@ export interface OverlayFrameSequence {
   inputPattern: string;
   /** Time on the final output timeline where frame 1 appears. */
   startAtSeconds: number;
+}
+
+export interface StillVisualOverlayInput {
+  id: string;
+  imagePath: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  start: number;
+  end: number;
+  animation: VisualOverlayAnimation;
 }
 
 export interface ProcessSegmentOptions {
@@ -58,6 +71,8 @@ export interface ProcessSegmentOptions {
   sourceHasAudio: boolean;
   /** Transparent PNG overlays composited before the final H.264 encode. */
   overlays?: OverlayFrameSequence[];
+  /** Contextual still-image visual overlays composited in the same FFmpeg pass. */
+  visualOverlays?: StillVisualOverlayInput[];
   /** Original segment-relative words, used only for render-time profanity audio handling. */
   words?: Array<{ word: string; start: number; end: number }>;
   /** Keep a pre-caption/pre-overlay debug encode when SAVE_PRECAPTION_DEBUG=1. */
@@ -174,18 +189,88 @@ export function buildAudioTimestampReset(audioStartOffsetSeconds = 0): string {
   return `asetpts=PTS-STARTPTS${shift},aresample=async=1000:first_pts=0`;
 }
 
+export function buildVisualOverlayFilterStatements(
+  visualOverlays: StillVisualOverlayInput[],
+  visualInputIndices: number[],
+  baseLabel = "vbase",
+  outputFinalLabel = "vvis",
+): { statements: string[]; lastLabel: string } {
+  if (visualOverlays.length !== visualInputIndices.length) {
+    throw new Error(
+      `Visual overlay input mismatch: ${visualOverlays.length} visuals, ${visualInputIndices.length} input indices.`,
+    );
+  }
+  if (visualOverlays.length === 0) {
+    return { statements: [], lastLabel: baseLabel };
+  }
+
+  let lastVideoLabel = baseLabel;
+  const statements: string[] = [];
+
+  visualOverlays.forEach((visual, index) => {
+    const input = visualInputIndices[index];
+    const visLabel = `visimg${index}`;
+    const outLabel =
+      index === visualOverlays.length - 1 ? outputFinalLabel : `vvis${index}`;
+    const w = evenSize(visual.width, 64);
+    const h = evenSize(visual.height, 64);
+    const x = Math.round(visual.x);
+    const y = Math.round(visual.y);
+    const st = Math.max(0, visual.start);
+    const en = Math.max(st + 0.3, visual.end);
+    const fadeDur = Math.min(0.25, (en - st) / 3);
+    const fadeOutSt = Math.max(st, en - fadeDur);
+
+    statements.push(
+      `[${input}:v]scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},` +
+        `format=rgba,fade=t=in:st=${st.toFixed(3)}:d=${fadeDur.toFixed(3)}:alpha=1,` +
+        `fade=t=out:st=${fadeOutSt.toFixed(3)}:d=${fadeDur.toFixed(3)}:alpha=1[${visLabel}]`,
+    );
+
+    let yExpr = String(y);
+    if (visual.animation === "slide-up") {
+      yExpr = `if(lt(t-${st.toFixed(3)},0.25),${y}+36*(1-(t-${st.toFixed(3)})/0.25),${y})`;
+    } else if (visual.animation === "pop") {
+      yExpr = `if(lt(t-${st.toFixed(3)},0.20),${y}+18*(1-(t-${st.toFixed(3)})/0.20),${y})`;
+    }
+
+    statements.push(
+      `[${lastVideoLabel}][${visLabel}]overlay=x=${x}:y='${yExpr}':format=auto:` +
+        `enable='between(t,${st.toFixed(3)},${en.toFixed(3)})':eof_action=pass:shortest=0[${outLabel}]`,
+    );
+    lastVideoLabel = outLabel;
+  });
+
+  return { statements, lastLabel: lastVideoLabel };
+}
+
 export function buildOverlayFilterStatements(
   overlays: OverlayFrameSequence[],
   inputIndices: number[],
   baseLabel = "vbase",
+  visualOverlays: StillVisualOverlayInput[] = [],
+  visualInputIndices: number[] = [],
 ): string[] {
   if (overlays.length !== inputIndices.length) {
     throw new Error(
       `Overlay input mismatch: ${overlays.length} sequences, ${inputIndices.length} input indices.`,
     );
   }
-  let lastVideoLabel = baseLabel;
   const statements: string[] = [];
+  let lastVideoLabel = baseLabel;
+
+  if (visualOverlays.length > 0) {
+    const targetVisLabel = overlays.length === 0 ? "v" : "vvis";
+    const visGraph = buildVisualOverlayFilterStatements(
+      visualOverlays,
+      visualInputIndices,
+      baseLabel,
+      targetVisLabel,
+    );
+    statements.push(...visGraph.statements);
+    lastVideoLabel = visGraph.lastLabel;
+  }
+
   overlays.forEach((overlay, index) => {
     const input = inputIndices[index];
     const overlayLabel = `overlay${index}`;
@@ -201,7 +286,9 @@ export function buildOverlayFilterStatements(
     );
     lastVideoLabel = outputLabel;
   });
-  if (overlays.length === 0) statements.push(`[${baseLabel}]null[v]`);
+  if (overlays.length === 0 && visualOverlays.length === 0) {
+    statements.push(`[${baseLabel}]null[v]`);
+  }
   return statements;
 }
 
@@ -333,6 +420,7 @@ export async function processVideoSegment(
     audioStartOffsetSeconds = 0,
     sourceHasAudio,
     overlays = [],
+    visualOverlays = [],
     words = [],
     debugOutputPath,
     onProgress,
@@ -486,6 +574,19 @@ export async function processVideoSegment(
       "1",
       "-i",
       overlay.inputPattern,
+    );
+  }
+
+  const visualInputIndices: number[] = [];
+  for (const visual of visualOverlays) {
+    visualInputIndices.push(nextInput++);
+    inputArgs.push(
+      "-loop",
+      "1",
+      "-t",
+      Math.max(0.5, totalDuration + 0.5).toFixed(3),
+      "-i",
+      visual.imagePath,
     );
   }
 
@@ -645,6 +746,8 @@ export async function processVideoSegment(
         overlays,
         overlayInputIndices,
         overlayBaseLabel,
+        visualOverlays,
+        visualInputIndices,
       ),
     );
 

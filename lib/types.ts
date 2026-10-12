@@ -31,7 +31,7 @@ export interface PipelineOptions {
   /** Render every detected clip with the default render configuration. */
   autoRender: boolean;
   /** Options for the detection run (clip count, clip length, hook/CTA text). */
-  viral: Required<ViralDetectionOptions>;
+  viral: ViralDetectionOptions;
 }
 
 export interface VideoRecord {
@@ -109,14 +109,23 @@ export interface ViralDetectionOptions {
   includeHookText: boolean;
   /** When false, no on-screen CTA card is generated or rendered. */
   includeCta: boolean;
+  /** When false, automatic contextual visual overlays are disabled for this run. */
+  includeVisuals?: boolean;
+  /** Maximum high-value visual moments per clip (default 2, configurable up to 3). */
+  maxVisualMoments?: number;
+  /** Minimum confidence score (0-1) required for a visual moment (default 0.65). */
+  visualConfidenceThreshold?: number;
 }
 
-export const DEFAULT_VIRAL_OPTIONS: ViralDetectionOptions = {
+export const DEFAULT_VIRAL_OPTIONS: Required<ViralDetectionOptions> = {
   clipCount: 10,
   minClipDuration: 60,
   maxClipDuration: 90,
   includeHookText: true,
   includeCta: true,
+  includeVisuals: true,
+  maxVisualMoments: 2,
+  visualConfidenceThreshold: 0.65,
 };
 
 /**
@@ -159,6 +168,46 @@ export type AppSettingsSection = (typeof APP_SETTINGS_SECTIONS)[number];
  */
 export type SettingsSource = 'app' | 'default';
 
+export const VISUAL_PROVIDERS = ['pexels', 'openverse', 'wikimedia'] as const;
+export type VisualProviderName = (typeof VISUAL_PROVIDERS)[number];
+
+export const VISUAL_OVERLAY_ANIMATIONS = ['subtle-zoom', 'fade', 'slide-up', 'pop'] as const;
+export type VisualOverlayAnimation = (typeof VISUAL_OVERLAY_ANIMATIONS)[number];
+
+export const VISUAL_MOMENT_CATEGORIES = [
+  'person',
+  'place',
+  'named_event',
+  'situation',
+  'action',
+  'emotion',
+  'concept',
+  'statistic',
+  'comparison',
+] as const;
+export type VisualMomentCategory = (typeof VISUAL_MOMENT_CATEGORIES)[number];
+
+export const VISUAL_EMOTIONAL_POLARITIES = [
+  'positive',
+  'negative',
+  'neutral',
+  'tense',
+  'humorous',
+  'cautionary',
+] as const;
+export type VisualEmotionalPolarity = (typeof VISUAL_EMOTIONAL_POLARITIES)[number];
+
+export const VISUAL_MOMENT_PLACEMENTS = ['main', 'hook', 'both'] as const;
+export type VisualMomentPlacement = (typeof VISUAL_MOMENT_PLACEMENTS)[number];
+
+export type VisualLicenseCode = 'pexels' | 'cc0' | 'pdm' | 'cc-by' | 'cc-by-sa';
+
+export interface VisualProviderToggles {
+  pexels: boolean;
+  openverse: boolean;
+  wikimedia: boolean;
+}
+
 export interface RenderDefaults {
   layout: ClipLayout;
   /** Id from `DEFAULT_FILTER_PRESETS`. */
@@ -174,6 +223,24 @@ export interface RenderDefaults {
    */
   hookDuration: number;
   ctaDuration: number;
+  /** Global toggle for automatic contextual image overlays. */
+  autoVisuals: boolean;
+  /** Maximum visual moments per clip (default 2, configurable up to 3). */
+  maxVisualMoments: number;
+  /** Minimum confidence score (0.1-1.0) required to keep a planned visual moment. */
+  visualConfidenceThreshold: number;
+  /** Minimum display duration in seconds for a visual moment beat (never a 1s flash). */
+  visualMinDuration: number;
+  /** Default display duration in seconds when a beat's span is short. */
+  visualDefaultDuration: number;
+  /** Default entrance/display motion for visual overlays. */
+  visualAnimation: VisualOverlayAnimation;
+  /** Enabled free-to-use image providers. */
+  visualProviders: VisualProviderToggles;
+  /** Ordered provider priority for generic/illustrative queries. */
+  visualProviderPriority: VisualProviderName[];
+  /** Burn a subtle credit badge onto visual cards that require attribution. */
+  visualShowOnVideoCredit: boolean;
 }
 
 export const DEFAULT_RENDER_SETTINGS: RenderDefaults = {
@@ -184,9 +251,21 @@ export const DEFAULT_RENDER_SETTINGS: RenderDefaults = {
   ctaStylePresetId: null,
   hookDuration: 3,
   ctaDuration: 2.5,
+  autoVisuals: true,
+  maxVisualMoments: 2,
+  visualConfidenceThreshold: 0.65,
+  visualMinDuration: 2.5,
+  visualDefaultDuration: 3.5,
+  visualAnimation: 'subtle-zoom',
+  visualProviders: { pexels: true, openverse: true, wikimedia: true },
+  visualProviderPriority: ['pexels', 'openverse', 'wikimedia'],
+  visualShowOnVideoCredit: true,
 };
 
 export type TranscriptionProviderChoice = 'auto' | 'deepgram' | 'whisper';
+
+export const DEFAULT_WIKIMEDIA_USER_AGENT =
+  'ClipCraftLocal/1.0 (https://github.com/clipcraft-local; local-video-editor)';
 
 export interface AiProviderSettings {
   /**
@@ -206,6 +285,14 @@ export interface AiProviderSettings {
    * surfaces as a real error, which is what "forced" should mean).
    */
   transcriptionProvider: TranscriptionProviderChoice;
+  /** Optional existing Pexels API key (masked in UI, never logged). */
+  pexelsApiKey: string;
+  /** Optional Openverse registered-app OAuth2 client_id for higher rate limits. */
+  openverseClientId: string;
+  /** Optional Openverse registered-app OAuth2 client_secret (masked in UI). */
+  openverseClientSecret: string;
+  /** Meaningful User-Agent / contact string sent to Wikimedia Commons APIs. */
+  wikimediaUserAgent: string;
 }
 
 export const DEFAULT_AI_SETTINGS: AiProviderSettings = {
@@ -213,6 +300,10 @@ export const DEFAULT_AI_SETTINGS: AiProviderSettings = {
   deepgramApiKey: '',
   deepgramModel: '',
   transcriptionProvider: 'auto',
+  pexelsApiKey: '',
+  openverseClientId: '',
+  openverseClientSecret: '',
+  wikimediaUserAgent: DEFAULT_WIKIMEDIA_USER_AGENT,
 };
 
 export const CONCURRENCY_LIMITS = { clip: { min: 1, max: 8 }, viral: { min: 1, max: 8 }, remotion: { min: 1, max: 32 } } as const;
@@ -317,6 +408,11 @@ export interface SettingsLimits {
   layouts: readonly string[];
   audioModes: readonly string[];
   transcriptionProviders: readonly string[];
+  maxVisualMoments: { min: number; max: number };
+  visualConfidence: { min: number; max: number };
+  visualDuration: { min: number; max: number };
+  visualAnimations: readonly VisualOverlayAnimation[];
+  visualProviders: readonly VisualProviderName[];
 }
 
 /**
@@ -360,6 +456,88 @@ export type PsychologicalTrigger = (typeof PSYCHOLOGICAL_TRIGGERS)[number];
 
 export const RISKY_WORD_ACTIONS = ['censor', 'replace', 'mute', 'remove'] as const;
 export type RiskyWordAction = (typeof RISKY_WORD_ACTIONS)[number];
+
+export interface VisualMomentPlan {
+  /** Exact transcript anchor quote, phrase or sentence reference for the semantic beat. */
+  quote: string;
+  /** Source-video start/end for the complete semantic beat. */
+  timestamp: { start: string; end: string };
+  /** Semantic category / entity type. */
+  category: VisualMomentCategory;
+  /** Specific person, place or named event when applicable; empty string otherwise. */
+  entity_name: string;
+  /** Concise description of the visual scene/meaning to show. */
+  visual_intent: string;
+  /** Emotional direction/polarity so contradictory stock imagery is avoided. */
+  emotional_polarity: VisualEmotionalPolarity;
+  /** Short, provider-friendly English search queries. */
+  search_queries: string[];
+  /** Negative/avoid cues that exclude contradictory imagery. */
+  negative_cues: string[];
+  /** Confidence / relevance score (0-1 or 0-10). */
+  confidence: number;
+  /** Suggested display duration in seconds (never a single-word flash). */
+  suggested_duration: number;
+  /** Suggested display animation style. */
+  animation: VisualOverlayAnimation;
+  /** Where the visual belongs: 'main' (default), 'hook', or 'both'. */
+  placement: VisualMomentPlacement;
+}
+
+export interface VisualAssetAttribution {
+  provider: VisualProviderName;
+  assetId: string;
+  title: string;
+  creator: string;
+  creatorUrl?: string;
+  license: string;
+  licenseCode: VisualLicenseCode;
+  licenseVersion?: string;
+  licenseUrl?: string;
+  sourcePageUrl: string;
+  imageUrl: string;
+  attributionText: string;
+  requiresAttribution: boolean;
+  shareAlike: boolean;
+  providerAttributionText?: string;
+  providerAttributionUrl?: string;
+}
+
+export interface VisualTimelineWindow {
+  segment: 'hook' | 'main';
+  start: number;
+  end: number;
+}
+
+export interface ClipVisualOverlay {
+  id: string;
+  quote: string;
+  sourceStart: number;
+  sourceEnd: number;
+  clipRelativeStart: number;
+  clipRelativeEnd: number;
+  displayDuration: number;
+  outputWindows: VisualTimelineWindow[];
+  category: VisualMomentCategory;
+  entityName: string;
+  visualIntent: string;
+  emotionalPolarity: VisualEmotionalPolarity;
+  searchQueries: string[];
+  negativeCues: string[];
+  confidence: number;
+  animation: VisualOverlayAnimation;
+  placement: VisualMomentPlacement;
+  framing: 'illustrative' | 'editorial';
+  status: 'planned' | 'resolved' | 'skipped' | 'removed';
+  skipReason?: string;
+  localFilePath?: string;
+  mediaUrl?: string;
+  contentHash?: string;
+  width?: number;
+  height?: number;
+  relevanceScore?: number;
+  attribution?: VisualAssetAttribution;
+}
 
 /**
  * One clip exactly as the viral_detection prompt's JSON schema returns it:
@@ -414,6 +592,8 @@ export interface ViralClip {
     controversy_score: number;
     shareability_score: number;
   };
+  /** Optional contextual visual moments planned for this clip. */
+  visualMoments?: VisualMomentPlan[];
 }
 
 /** A validated AI clip with its numeric render window (seconds), ready to become a ClipRecord. */
@@ -604,6 +784,10 @@ export interface ClipRecord {
    * Absent on clips created before the new AI schema.
    */
   aiAnalysis?: ViralClip;
+  /** Whether automatic contextual image overlays are enabled for this clip. */
+  autoVisuals?: boolean;
+  /** Validated contextual visual moments and resolved image/attribution metadata. */
+  visualOverlays?: ClipVisualOverlay[];
   // relative path to output mp4, e.g. /generated-clips/001_my_recording/<clip title>.mp4
   outputPath?: string;
   outputFileSize?: number; // bytes, 0/undefined means the render did not produce a usable file
@@ -634,6 +818,10 @@ export interface JobData {
   /** Overlay STYLE presets (font/colors/animation) chosen per clip. */
   hookStylePresetId?: string;
   ctaStylePresetId?: string;
+  /** Whether automatic contextual visuals are enabled for this render job. */
+  autoVisuals?: boolean;
+  /** Optional contextual visual overlays for this render job. */
+  visualOverlays?: ClipVisualOverlay[];
 }
 
 /**

@@ -23,8 +23,10 @@ import {
   enqueueViralDetectionJob,
   findActiveJob,
 } from './queue';
-import { sanitizePipelineOptions } from './pipeline-defaults';
+import { sanitizePipelineOptions, sanitizeViralOptions } from './pipeline-defaults';
 import { loadEffectiveSettings } from './app-settings';
+import { planClipVisualMoments } from './contextual-visuals';
+import { parseTimestamp } from './viral-response';
 import {
   ClipLayout,
   ClipRecord,
@@ -87,6 +89,8 @@ export async function jobDataFromClip(
     layout: (clip.layout ?? render.layout) as ClipLayout,
     hookStylePresetId: clip.hookStylePresetId,
     ctaStylePresetId: clip.ctaStylePresetId,
+    ...(clip.autoVisuals !== undefined ? { autoVisuals: clip.autoVisuals } : {}),
+    ...(clip.visualOverlays !== undefined ? { visualOverlays: clip.visualOverlays } : {}),
     ...overrides,
   };
 }
@@ -193,7 +197,7 @@ export async function runViralDetection(
 
   const pipeline = resolvePipeline(video, input.pipeline);
   if (input.autoRender !== undefined) pipeline.autoRender = input.autoRender;
-  const options = pipeline.viral;
+  const options = sanitizeViralOptions(pipeline.viral);
   const mode = input.mode ?? 'manual';
 
   if (mode === 'auto') {
@@ -291,6 +295,45 @@ export async function runViralDetection(
       ? await resolveOverlayText(cta_text, () => generateCtaText(overlayTranscript), 'CTA')
       : '';
 
+    const effectiveHookDuration = options.includeHookText && hookText ? render.hookDuration : 0;
+    const hookTs = segment.clip.hook_line_analysis?.hook_timestamp;
+    const hookStartSec = hookTs?.start ? parseTimestamp(hookTs.start) : null;
+    const hookEndSec = hookTs?.end ? parseTimestamp(hookTs.end) : null;
+    const hookStartOffset =
+      hookStartSec !== null && hookStartSec >= segment.start && hookStartSec < segment.end
+        ? hookStartSec - segment.start
+        : 0;
+    const hookIntervalDuration =
+      effectiveHookDuration > 0
+        ? hookStartSec !== null &&
+          hookEndSec !== null &&
+          hookEndSec > hookStartSec &&
+          hookStartSec >= segment.start &&
+          hookEndSec <= segment.end
+          ? hookEndSec - hookStartSec
+          : effectiveHookDuration
+        : 0;
+
+    const autoVisualsEnabled = Boolean(options.includeVisuals && render.autoVisuals);
+    const plannedVisualOverlays = planClipVisualMoments({
+      rawMoments: segment.clip.visualMoments,
+      clipStart: segment.start,
+      clipEnd: segment.end,
+      transcript: video.transcript,
+      hookTiming: {
+        start: hookStartOffset,
+        duration: hookIntervalDuration,
+      },
+      options: {
+        autoVisuals: autoVisualsEnabled,
+        maxVisualMoments: options.maxVisualMoments ?? render.maxVisualMoments,
+        confidenceThreshold: options.visualConfidenceThreshold ?? render.visualConfidenceThreshold,
+        minDuration: render.visualMinDuration,
+        defaultDuration: render.visualDefaultDuration,
+        defaultAnimation: render.visualAnimation,
+      },
+    });
+
     const clipRecord: ClipRecord = {
       _id: clipId,
       videoId,
@@ -298,7 +341,7 @@ export async function runViralDetection(
       start: segment.start,
       end: segment.end,
       // hookDuration 0 means "no hook intro / no hook overlay" downstream.
-      hookDuration: options.includeHookText && hookText ? render.hookDuration : 0,
+      hookDuration: effectiveHookDuration,
       hookText,
       ctaText,
       // 0 = no CTA overlay (CTA switch was off for this run).
@@ -314,6 +357,8 @@ export async function runViralDetection(
       // Everything the AI said about the clip, stored as returned; the card,
       // the analysis panel and the worker read it from here.
       aiAnalysis: segment.clip,
+      autoVisuals: autoVisualsEnabled,
+      ...(plannedVisualOverlays.length > 0 ? { visualOverlays: plannedVisualOverlays } : {}),
       status: 'pending',
       progress: 0,
       error: undefined,

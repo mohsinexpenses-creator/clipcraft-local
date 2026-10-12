@@ -6,7 +6,7 @@ import { useToast } from "@/components/ui/toaster";
 
 /** One provider probe, mirrored from `lib/settings-verify.ts` (kept structural so the client needs no server import). */
 export interface VerifyResult {
-  target: "gemini" | "deepgram";
+  target: "gemini" | "deepgram" | "pexels" | "openverse" | "wikimedia";
   status: "ok" | "rejected" | "limited" | "unreachable" | "error";
   label: string;
   message: string;
@@ -35,6 +35,9 @@ export type SettingsBusy =
   | "import-env"
   | "verify:gemini"
   | "verify:deepgram"
+  | "verify:pexels"
+  | "verify:openverse"
+  | "verify:wikimedia"
   | "verify:all"
   | null;
 
@@ -203,7 +206,7 @@ export function useSettings() {
 
   const verify = React.useCallback(
     async (input: {
-      target: "gemini" | "deepgram" | "all";
+      target: "gemini" | "deepgram" | "pexels" | "openverse" | "wikimedia" | "all";
       candidates?: Record<string, string | undefined>;
       withGeneration?: boolean;
       keyIndex?: number;

@@ -944,12 +944,285 @@ function ProvidersCard({
         </div>
       </div>
 
+      <VisualProvidersSection settings={settings} effective={effective} />
+
       <VerifyResults
         results={settings.results}
         onClear={settings.clearResults}
         busy={settings.busy}
       />
     </section>
+  );
+}
+
+function VisualProvidersSection({
+  settings,
+  effective,
+}: {
+  settings: SettingsController;
+  effective: NonNullable<SettingsController["effective"]>;
+}) {
+  const [pexelsKey, setPexelsKey] = React.useState("");
+  const [openverseClientId, setOpenverseClientId] = React.useState("");
+  const [openverseClientSecret, setOpenverseClientSecret] = React.useState("");
+  const [wikimediaUa, setWikimediaUa] = React.useState(
+    effective.ai.wikimediaUserAgent || ""
+  );
+
+  const savePexels = async () => {
+    const key = pexelsKey.trim();
+    if (!key) return;
+    if (await settings.save("ai", { pexelsApiKey: key })) {
+      setPexelsKey("");
+    }
+  };
+
+  const saveOpenverse = async () => {
+    const id = openverseClientId.trim();
+    const secret = openverseClientSecret.trim();
+    if (!id && !secret) return;
+    if (
+      await settings.save("ai", {
+        ...(id ? { openverseClientId: id } : {}),
+        ...(secret ? { openverseClientSecret: secret } : {}),
+      })
+    ) {
+      setOpenverseClientId("");
+      setOpenverseClientSecret("");
+    }
+  };
+
+  const saveWikimedia = async () => {
+    const ua = wikimediaUa.trim();
+    if (!ua) return;
+    await settings.save("ai", { wikimediaUserAgent: ua });
+  };
+
+  return (
+    <div className="mt-5 border-t pt-4 space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h3 className="text-[13px] font-semibold">
+            Contextual visual providers (Pexels · Openverse · Wikimedia Commons)
+          </h3>
+          <p className="text-[11.5px] text-muted-foreground">
+            Free-to-use image sources for automatic clip overlays. Openverse and Wikimedia Commons work immediately without paid keys; add your existing Pexels API key for curated stock situations.
+          </p>
+        </div>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-3">
+        {/* Pexels */}
+        <div className="rounded-xl border bg-muted/20 p-3 space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[12px] font-semibold flex items-center gap-1.5">
+              Pexels API key
+              <LeftoverEnvBadge hint={settings.env.PEXELS_API_KEY} />
+            </span>
+            <a
+              href="https://www.pexels.com"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[10.5px] text-muted-foreground underline underline-offset-2 hover:text-foreground"
+            >
+              Photos provided by Pexels
+            </a>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <Input
+              value={pexelsKey}
+              onChange={(e) => setPexelsKey(e.target.value)}
+              placeholder={
+                effective.ai.pexelsApiKey || "Paste existing PEXELS_API_KEY"
+              }
+              type="password"
+              spellCheck={false}
+              autoComplete="off"
+              className="font-mono text-[11.5px]"
+              aria-label="Pexels API key"
+            />
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={settings.busy !== null}
+              onClick={() =>
+                void settings.verify({
+                  target: "pexels",
+                  ...(pexelsKey.trim()
+                    ? { candidates: { pexelsApiKey: pexelsKey.trim() } }
+                    : {}),
+                })
+              }
+            >
+              Test
+            </Button>
+            <Button
+              size="xs"
+              variant="soft"
+              disabled={!pexelsKey.trim() || settings.busy !== null}
+              onClick={() => void savePexels()}
+            >
+              Save
+            </Button>
+          </div>
+          {effective.ai.pexelsApiKey ? (
+            <div className="flex items-center justify-between gap-2 text-[10.5px] text-muted-foreground">
+              <span>
+                Saved:{" "}
+                <code className="font-mono text-foreground">
+                  {effective.ai.pexelsApiKey}
+                </code>
+              </span>
+              <Button
+                size="xs"
+                variant="ghost"
+                disabled={settings.busy === "save:ai"}
+                onClick={() => void settings.save("ai", { pexelsApiKey: "" })}
+              >
+                Remove
+              </Button>
+            </div>
+          ) : (
+            <p className="text-[10.5px] text-muted-foreground">
+              Optional. Tracks live <code className="font-mono">X-Ratelimit-*</code> headers and falls back to Openverse when unconfigured or rate-limited.
+            </p>
+          )}
+        </div>
+
+        {/* Openverse */}
+        <div className="rounded-xl border bg-muted/20 p-3 space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[12px] font-semibold">
+              Openverse (CC0 / PD / CC-BY)
+            </span>
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={settings.busy !== null}
+              onClick={() =>
+                void settings.verify({
+                  target: "openverse",
+                  candidates: {
+                    ...(openverseClientId.trim()
+                      ? { openverseClientId: openverseClientId.trim() }
+                      : {}),
+                    ...(openverseClientSecret.trim()
+                      ? { openverseClientSecret: openverseClientSecret.trim() }
+                      : {}),
+                  },
+                })
+              }
+            >
+              Test
+            </Button>
+          </div>
+          <div className="grid gap-1.5 sm:grid-cols-2">
+            <Input
+              value={openverseClientId}
+              onChange={(e) => setOpenverseClientId(e.target.value)}
+              placeholder={
+                effective.ai.openverseClientId || "Client ID (optional)"
+              }
+              type="password"
+              spellCheck={false}
+              autoComplete="off"
+              className="font-mono text-[11.5px]"
+              aria-label="Openverse Client ID"
+            />
+            <Input
+              value={openverseClientSecret}
+              onChange={(e) => setOpenverseClientSecret(e.target.value)}
+              placeholder={
+                effective.ai.openverseClientSecret || "Client secret (optional)"
+              }
+              type="password"
+              spellCheck={false}
+              autoComplete="off"
+              className="font-mono text-[11.5px]"
+              aria-label="Openverse Client Secret"
+            />
+          </div>
+          <div className="flex items-center justify-between gap-2 text-[10.5px] text-muted-foreground">
+            <span>
+              {effective.ai.openverseClientId
+                ? `OAuth2 configured (${effective.ai.openverseClientId})`
+                : "Anonymous access active (no key required)"}
+            </span>
+            <div className="flex items-center gap-1">
+              {effective.ai.openverseClientId ? (
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  disabled={settings.busy === "save:ai"}
+                  onClick={() =>
+                    void settings.save("ai", {
+                      openverseClientId: "",
+                      openverseClientSecret: "",
+                    })
+                  }
+                >
+                  Clear
+                </Button>
+              ) : null}
+              <Button
+                size="xs"
+                variant="soft"
+                disabled={
+                  (!openverseClientId.trim() && !openverseClientSecret.trim()) ||
+                  settings.busy !== null
+                }
+                onClick={() => void saveOpenverse()}
+              >
+                Save OAuth
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        {/* Wikimedia Commons */}
+        <div className="rounded-xl border bg-muted/20 p-3 space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[12px] font-semibold">
+              Wikimedia Commons User-Agent
+            </span>
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={settings.busy !== null}
+              onClick={() =>
+                void settings.verify({
+                  target: "wikimedia",
+                  candidates: { wikimediaUserAgent: wikimediaUa.trim() },
+                })
+              }
+            >
+              Test
+            </Button>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <Input
+              value={wikimediaUa}
+              onChange={(e) => setWikimediaUa(e.target.value)}
+              placeholder="ClipCraftLocal/1.0 (https://github.com/clipcraft-local; local-app)"
+              spellCheck={false}
+              className="font-mono text-[11.5px]"
+              aria-label="Wikimedia Commons User-Agent"
+            />
+            <Button
+              size="xs"
+              variant="soft"
+              disabled={!wikimediaUa.trim() || settings.busy !== null}
+              onClick={() => void saveWikimedia()}
+            >
+              Save
+            </Button>
+          </div>
+          <p className="text-[10.5px] text-muted-foreground">
+            Required by Wikimedia API policy for identified rate limits (max 2 concurrent requests, respects <code className="font-mono">Retry-After</code>).
+          </p>
+        </div>
+      </div>
+    </div>
   );
 }
 

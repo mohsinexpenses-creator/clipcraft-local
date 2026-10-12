@@ -3,9 +3,10 @@ import path from 'path';
 import { NextRequest, NextResponse } from 'next/server';
 import { getUploadDirValue } from '@/lib/upload';
 import { getClipsDirValue } from '@/lib/paths';
+import { getVisualCacheDir } from '@/lib/visual-providers';
 
 /**
- * Streams files that live inside the project (uploads/, generated-clips/, public/)
+ * Streams files that live inside the project (uploads/, generated-clips/, public/, visual-cache/)
  * to the browser.
  *
  * This route is what makes clip playback work: a <video> served from a normal HTTP
@@ -18,11 +19,12 @@ import { getClipsDirValue } from '@/lib/paths';
 
 export const runtime = 'nodejs';
 
-const ALLOWED_DIRS = ['uploads', 'generated-clips', 'public'];
+const ALLOWED_DIRS = ['uploads', 'generated-clips', 'public', 'visual-cache'];
 
 function rootForAllowedDir(dir: string): string {
   if (dir === 'uploads') return path.resolve(getUploadDirValue());
   if (dir === 'generated-clips') return path.resolve(getClipsDirValue());
+  if (dir === 'visual-cache') return path.resolve(getVisualCacheDir());
   return path.resolve(process.cwd(), dir);
 }
 

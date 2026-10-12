@@ -12,6 +12,10 @@ import {
   RETENTION_STRENGTHS,
   RISKY_WORD_ACTIONS,
   SAFETY_RISKS,
+  VISUAL_EMOTIONAL_POLARITIES,
+  VISUAL_MOMENT_CATEGORIES,
+  VISUAL_MOMENT_PLACEMENTS,
+  VISUAL_OVERLAY_ANIMATIONS,
   type ViralClip,
   type ViralSegment,
 } from './types';
@@ -93,6 +97,39 @@ const isRiskyWord = (word: unknown): boolean => {
   );
 };
 
+export const isVisualMomentPlan = (moment: unknown): boolean => {
+  const entry = moment as Record<string, unknown> | null;
+  if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return false;
+  const ts = entry.timestamp as Record<string, unknown> | null;
+  return (
+    typeof entry.quote === 'string' &&
+    typeof ts === 'object' &&
+    ts !== null &&
+    !Array.isArray(ts) &&
+    typeof ts.start === 'string' &&
+    typeof ts.end === 'string' &&
+    VISUAL_MOMENT_CATEGORIES.includes(entry.category as (typeof VISUAL_MOMENT_CATEGORIES)[number]) &&
+    typeof entry.entity_name === 'string' &&
+    typeof entry.visual_intent === 'string' &&
+    VISUAL_EMOTIONAL_POLARITIES.includes(
+      entry.emotional_polarity as (typeof VISUAL_EMOTIONAL_POLARITIES)[number]
+    ) &&
+    Array.isArray(entry.search_queries) &&
+    entry.search_queries.every((q) => typeof q === 'string') &&
+    Array.isArray(entry.negative_cues) &&
+    entry.negative_cues.every((c) => typeof c === 'string') &&
+    typeof entry.confidence === 'number' &&
+    Number.isFinite(entry.confidence) &&
+    entry.confidence >= 0 &&
+    entry.confidence <= 10 &&
+    typeof entry.suggested_duration === 'number' &&
+    Number.isFinite(entry.suggested_duration) &&
+    entry.suggested_duration >= 0 &&
+    VISUAL_OVERLAY_ANIMATIONS.includes(entry.animation as (typeof VISUAL_OVERLAY_ANIMATIONS)[number]) &&
+    VISUAL_MOMENT_PLACEMENTS.includes(entry.placement as (typeof VISUAL_MOMENT_PLACEMENTS)[number])
+  );
+};
+
 /** null when `value` is what `kind` requires, otherwise a description of what was required. */
 function expected(value: unknown, kind: Kind): string | null {
   if (typeof kind !== 'string') return kind.includes(value as string) ? null : `one of: ${kind.join(', ')}`;
@@ -131,6 +168,12 @@ function schemaProblem(clip: unknown, where: string): string | null {
       .reduce<unknown>((node, key) => (node as Record<string, unknown> | null | undefined)?.[key], clip);
     const wanted = expected(value, kind);
     if (wanted) return `${where}.${path} must be ${wanted} (got ${show(value)})`;
+  }
+  const visualMoments = (clip as Record<string, unknown>).visualMoments;
+  if (visualMoments !== undefined) {
+    if (!Array.isArray(visualMoments) || !visualMoments.every(isVisualMomentPlan)) {
+      return `${where}.visualMoments must be an array of visual moment objects (got ${show(visualMoments)})`;
+    }
   }
   return null;
 }

@@ -14,8 +14,10 @@ const VERIFY_TIMEOUT_MS = 15_000;
 
 export type VerifyStatus = 'ok' | 'rejected' | 'limited' | 'unreachable' | 'error';
 
+export type VerifyTarget = 'gemini' | 'deepgram' | 'pexels' | 'openverse' | 'wikimedia';
+
 export interface VerifyProbeResult {
-  target: 'gemini' | 'deepgram';
+  target: VerifyTarget;
   status: VerifyStatus;
   label: string;
   message: string;
@@ -309,7 +311,7 @@ async function probeProjects(apiKey: string): Promise<{ ok: boolean; projects: n
 const TRANSCRIPTION_SCOPES = new Set(['admin:all', 'usage:write', 'scopes:member']);
 
 function unreachable(
-  target: 'gemini' | 'deepgram',
+  target: VerifyTarget,
   label: string,
   error: unknown,
   host: string
@@ -323,5 +325,202 @@ function unreachable(
     message: timeout
       ? `The request to ${host} timed out after ${Math.round(VERIFY_TIMEOUT_MS / 1000)}s.`
       : `Could not reach ${host}: ${message}`,
+  };
+}
+
+export async function verifyPexelsKey(apiKey: string, label = 'Pexels API'): Promise<VerifyProbeResult> {
+  const startedAt = Date.now();
+  let response: Response;
+  try {
+    response = await fetchWithTimeout('https://api.pexels.com/v1/search?query=nature&per_page=1', {
+      method: 'GET',
+      headers: { Authorization: apiKey, Accept: 'application/json' },
+    });
+  } catch (error) {
+    return unreachable('pexels', label, error, 'https://api.pexels.com');
+  }
+  const latencyMs = Date.now() - startedAt;
+  const remaining = response.headers.get('x-ratelimit-remaining');
+  const limit = response.headers.get('x-ratelimit-limit');
+  const quotaNote =
+    remaining !== null && limit !== null ? `${remaining}/${limit} requests remaining in window` : '';
+
+  if (!response.ok) {
+    const status = classifyStatus(response.status);
+    const detail = await readErrorDetail(response);
+    return {
+      target: 'pexels',
+      status,
+      label,
+      latencyMs,
+      httpStatus: response.status,
+      message:
+        status === 'rejected'
+          ? 'Pexels rejected this API key (401/403).'
+          : status === 'limited'
+            ? 'Pexels rate limit reached (HTTP 429).'
+            : `Pexels returned HTTP ${response.status}.`,
+      ...(detail ? { notes: [detail] } : {}),
+    };
+  }
+
+  return {
+    target: 'pexels',
+    status: 'ok',
+    label,
+    latencyMs,
+    httpStatus: response.status,
+    message: quotaNote
+      ? `Key accepted by api.pexels.com (${quotaNote}).`
+      : 'Key accepted by api.pexels.com.',
+  };
+}
+
+export async function verifyOpenverseCredentials(
+  clientId?: string,
+  clientSecret?: string
+): Promise<VerifyProbeResult> {
+  const startedAt = Date.now();
+  const hasCredentials = Boolean(clientId?.trim() && clientSecret?.trim());
+  const label = hasCredentials ? 'Openverse (OAuth2)' : 'Openverse (Anonymous)';
+
+  let bearerToken: string | null = null;
+  if (hasCredentials) {
+    let tokenRes: Response;
+    try {
+      const body = new URLSearchParams({
+        grant_type: 'client_credentials',
+        client_id: clientId!.trim(),
+        client_secret: clientSecret!.trim(),
+      });
+      tokenRes = await fetchWithTimeout('https://api.openverse.org/v1/auth_tokens/token/', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Accept: 'application/json',
+        },
+        body: body.toString(),
+      });
+    } catch (error) {
+      return unreachable('openverse', label, error, 'https://api.openverse.org');
+    }
+
+    if (!tokenRes.ok) {
+      const detail = await readErrorDetail(tokenRes);
+      return {
+        target: 'openverse',
+        status: tokenRes.status === 400 || tokenRes.status === 401 ? 'rejected' : classifyStatus(tokenRes.status),
+        label,
+        latencyMs: Date.now() - startedAt,
+        httpStatus: tokenRes.status,
+        message: 'Openverse rejected the OAuth2 client credentials.',
+        ...(detail ? { notes: [detail] } : {}),
+      };
+    }
+
+    const tokenPayload = (await tokenRes.json().catch(() => null)) as { access_token?: string } | null;
+    bearerToken = tokenPayload?.access_token ?? null;
+  }
+
+  let response: Response;
+  try {
+    response = await fetchWithTimeout(
+      'https://api.openverse.org/v1/images/?q=mountain&page_size=1&license_type=modification&mature=false',
+      {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+          ...(bearerToken ? { Authorization: `Bearer ${bearerToken}` } : {}),
+        },
+      }
+    );
+  } catch (error) {
+    return unreachable('openverse', label, error, 'https://api.openverse.org');
+  }
+
+  const latencyMs = Date.now() - startedAt;
+  const remaining =
+    response.headers.get('x-ratelimit-remaining') ?? response.headers.get('ratelimit-remaining');
+  const limit =
+    response.headers.get('x-ratelimit-limit') ?? response.headers.get('ratelimit-limit');
+  const quotaNote =
+    remaining !== null && limit !== null ? `${remaining}/${limit} requests remaining` : '';
+
+  if (!response.ok) {
+    return {
+      target: 'openverse',
+      status: classifyStatus(response.status),
+      label,
+      latencyMs,
+      httpStatus: response.status,
+      message: `Openverse returned HTTP ${response.status}.`,
+    };
+  }
+
+  return {
+    target: 'openverse',
+    status: 'ok',
+    label,
+    latencyMs,
+    httpStatus: response.status,
+    message: hasCredentials
+      ? `Openverse OAuth2 authenticated${quotaNote ? ` (${quotaNote})` : ''}.`
+      : `Openverse anonymous access ready${quotaNote ? ` (${quotaNote})` : ''}.`,
+  };
+}
+
+export async function verifyWikimediaAccess(userAgent: string): Promise<VerifyProbeResult> {
+  const startedAt = Date.now();
+  const ua = userAgent.trim();
+  const label = 'Wikimedia Commons';
+  const notes: string[] = [];
+
+  if (ua.length < 12 || !/[(@/]/.test(ua)) {
+    notes.push(
+      'Wikimedia API guidelines recommend a User-Agent that includes an app name/version and a URL or contact email.'
+    );
+  }
+
+  let response: Response;
+  try {
+    response = await fetchWithTimeout(
+      'https://commons.wikimedia.org/w/api.php?action=query&meta=siteinfo&format=json',
+      {
+        method: 'GET',
+        headers: {
+          'User-Agent': ua || 'ClipCraftLocal/1.0',
+          'Api-User-Agent': ua || 'ClipCraftLocal/1.0',
+          Accept: 'application/json',
+        },
+      }
+    );
+  } catch (error) {
+    return unreachable('wikimedia', label, error, 'https://commons.wikimedia.org');
+  }
+
+  const latencyMs = Date.now() - startedAt;
+  if (!response.ok) {
+    return {
+      target: 'wikimedia',
+      status: classifyStatus(response.status),
+      label,
+      latencyMs,
+      httpStatus: response.status,
+      message:
+        response.status === 429
+          ? 'Wikimedia Commons rate-limited the request (HTTP 429).'
+          : `Wikimedia Commons returned HTTP ${response.status}.`,
+      ...(notes.length ? { notes } : {}),
+    };
+  }
+
+  return {
+    target: 'wikimedia',
+    status: 'ok',
+    label,
+    latencyMs,
+    httpStatus: response.status,
+    message: 'Wikimedia Commons API reachable with configured User-Agent.',
+    ...(notes.length ? { notes } : {}),
   };
 }

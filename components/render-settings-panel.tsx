@@ -292,6 +292,190 @@ export function RenderSettingsPanel({
           />
         </Field>
       </div>
+
+      <div className="rounded-xl border bg-muted/20 p-3 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <p className="text-[12px] font-semibold">Auto contextual visuals</p>
+            <p className="text-[11px] text-muted-foreground">
+              Automatically plans and composites up to {value.maxVisualMoments ?? 2} free-to-use images per clip from Pexels, Openverse, and Wikimedia Commons.
+            </p>
+          </div>
+          <div className="w-36">
+            <Segmented
+              ariaLabel="Auto contextual visuals"
+              value={(value.autoVisuals ?? true) ? "on" : "off"}
+              onChange={(mode) => patch({ autoVisuals: mode === "on" })}
+              options={[
+                { value: "on", label: "Enabled" },
+                { value: "off", label: "Off" },
+              ]}
+              disabled={disabled}
+            />
+          </div>
+        </div>
+
+        {(value.autoVisuals ?? true) && (
+          <>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <Field
+                label="Max visuals / clip"
+                hint="Default 2 high-value visual beats per short clip (up to 3)."
+              >
+                <NumberField
+                  id="default-max-visual-moments"
+                  value={value.maxVisualMoments ?? 2}
+                  min={limits?.maxVisualMoments?.min ?? 0}
+                  max={limits?.maxVisualMoments?.max ?? 3}
+                  step={1}
+                  onCommit={(maxVisualMoments) => patch({ maxVisualMoments })}
+                  disabled={disabled}
+                />
+              </Field>
+
+              <Field
+                label="Min confidence"
+                hint="Moments below this threshold are skipped."
+              >
+                <NumberField
+                  id="default-visual-confidence"
+                  value={value.visualConfidenceThreshold ?? 0.65}
+                  min={limits?.visualConfidence?.min ?? 0.4}
+                  max={limits?.visualConfidence?.max ?? 0.95}
+                  step={0.05}
+                  onCommit={(visualConfidenceThreshold) =>
+                    patch({ visualConfidenceThreshold })
+                  }
+                  disabled={disabled}
+                />
+              </Field>
+
+              <Field
+                label="Card animation"
+                hint="Entrance style for contextual visual cards."
+              >
+                <Select
+                  value={value.visualAnimation ?? "subtle-zoom"}
+                  onValueChange={(next) =>
+                    patch({
+                      visualAnimation: (next ??
+                        "subtle-zoom") as RenderDefaults["visualAnimation"],
+                    })
+                  }
+                  disabled={disabled}
+                >
+                  <SelectTrigger className="h-8 text-[12px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="dark">
+                    <SelectItem value="subtle-zoom">Subtle zoom</SelectItem>
+                    <SelectItem value="slide-up">Slide up</SelectItem>
+                    <SelectItem value="fade">Smooth fade</SelectItem>
+                    <SelectItem value="pop">Pop in</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3 pt-1 text-[11.5px]">
+              <span className="text-muted-foreground font-medium">Image sources:</span>
+              <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={value.visualProviders?.pexels ?? true}
+                  onChange={(e) =>
+                    patch({
+                      visualProviders: {
+                        ...(value.visualProviders ?? {
+                          pexels: true,
+                          openverse: true,
+                          wikimedia: true,
+                        }),
+                        pexels: e.target.checked,
+                      },
+                    })
+                  }
+                  disabled={disabled}
+                  className="rounded border-border"
+                />
+                <span>Pexels (stock situations)</span>
+              </label>
+              <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={value.visualProviders?.openverse ?? true}
+                  onChange={(e) =>
+                    patch({
+                      visualProviders: {
+                        ...(value.visualProviders ?? {
+                          pexels: true,
+                          openverse: true,
+                          wikimedia: true,
+                        }),
+                        openverse: e.target.checked,
+                      },
+                    })
+                  }
+                  disabled={disabled}
+                  className="rounded border-border"
+                />
+                <span>Openverse (CC0 / PD / CC-BY)</span>
+              </label>
+              <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={value.visualProviders?.wikimedia ?? true}
+                  onChange={(e) =>
+                    patch({
+                      visualProviders: {
+                        ...(value.visualProviders ?? {
+                          pexels: true,
+                          openverse: true,
+                          wikimedia: true,
+                        }),
+                        wikimedia: e.target.checked,
+                      },
+                    })
+                  }
+                  disabled={disabled}
+                  className="rounded border-border"
+                />
+                <span>Wikimedia Commons (entities &amp; places)</span>
+              </label>
+            </div>
+            <p className="text-[10.5px] text-muted-foreground">
+              Photos provided by{" "}
+              <a
+                href="https://www.pexels.com"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline underline-offset-2 hover:text-foreground"
+              >
+                Pexels
+              </a>
+              ,{" "}
+              <a
+                href="https://openverse.org"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline underline-offset-2 hover:text-foreground"
+              >
+                Openverse
+              </a>
+              , and{" "}
+              <a
+                href="https://commons.wikimedia.org"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline underline-offset-2 hover:text-foreground"
+              >
+                Wikimedia Commons
+              </a>
+              . Only assets permitting reuse and modification are selected (NC and ND licenses excluded).
+            </p>
+          </>
+        )}
+      </div>
     </div>
   );
 }

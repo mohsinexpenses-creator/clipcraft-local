@@ -1,6 +1,15 @@
 import { AppError } from './errors';
-import { ClipLayout, ClipRecord } from './types';
+import {
+  ClipLayout,
+  ClipRecord,
+  ClipVisualOverlay,
+  VISUAL_EMOTIONAL_POLARITIES,
+  VISUAL_MOMENT_CATEGORIES,
+  VISUAL_MOMENT_PLACEMENTS,
+  VISUAL_OVERLAY_ANIMATIONS,
+} from './types';
 import { DEFAULT_FILTER_PRESETS } from './presets';
+import { mapVisualMomentToOutputTimeline } from './contextual-visuals';
 
 /**
  * The one validator for "the user edited this clip".
@@ -35,7 +44,9 @@ type ClipEditField =
   | 'captionPresetId'
   | 'layout'
   | 'hookStylePresetId'
-  | 'ctaStylePresetId';
+  | 'ctaStylePresetId'
+  | 'autoVisuals'
+  | 'visualOverlays';
 
 export type ClipEdits = Pick<ClipRecord, ClipEditField>;
 
@@ -144,6 +155,93 @@ export function sanitizeClipEdits(
   if ('layout' in body) edits.layout = readEnum(body.layout, LAYOUTS, 'speaker-focus');
   if (typeof body.hookStylePresetId === 'string') edits.hookStylePresetId = body.hookStylePresetId.trim();
   if (typeof body.ctaStylePresetId === 'string') edits.ctaStylePresetId = body.ctaStylePresetId.trim();
+
+  if (typeof body.autoVisuals === 'boolean') {
+    edits.autoVisuals = body.autoVisuals;
+  }
+
+  if (Array.isArray(body.visualOverlays)) {
+    const sanitizedOverlays: ClipVisualOverlay[] = [];
+    for (let i = 0; i < Math.min(body.visualOverlays.length, 3); i++) {
+      const item = body.visualOverlays[i];
+      if (typeof item !== 'object' || item === null || Array.isArray(item)) continue;
+      const raw = item as Partial<ClipVisualOverlay> & Record<string, unknown>;
+      const sourceStart = Number(raw.sourceStart);
+      const sourceEnd = Number(raw.sourceEnd);
+      if (!Number.isFinite(sourceStart) || !Number.isFinite(sourceEnd) || sourceEnd <= sourceStart) {
+        continue;
+      }
+      const clipStartVal = edits.start ?? Number(sourceStart - (raw.clipRelativeStart ?? 0));
+      const clipEndVal = edits.end ?? clipStartVal + 65;
+      const placement = readEnum(raw.placement, VISUAL_MOMENT_PLACEMENTS, 'main');
+      const animation = readEnum(raw.animation, VISUAL_OVERLAY_ANIMATIONS, 'subtle-zoom');
+      const category = readEnum(raw.category, VISUAL_MOMENT_CATEGORIES, 'situation');
+      const emotionalPolarity = readEnum(raw.emotionalPolarity, VISUAL_EMOTIONAL_POLARITIES, 'neutral');
+      const status =
+        raw.status === 'resolved' || raw.status === 'skipped' || raw.status === 'removed'
+          ? raw.status
+          : 'planned';
+
+      const { effectivePlacement, outputWindows } = mapVisualMomentToOutputTimeline({
+        sourceStart,
+        sourceEnd,
+        clipStart: Number.isFinite(clipStartVal) ? clipStartVal : sourceStart,
+        clipEnd: Number.isFinite(clipEndVal) && clipEndVal > clipStartVal ? clipEndVal : sourceEnd + 30,
+        placement,
+        hookTiming: {
+          start: 0,
+          duration: edits.hookDuration ?? 0,
+        },
+        allowDuplicateHookReplay: placement === 'both',
+      });
+
+      sanitizedOverlays.push({
+        id: typeof raw.id === 'string' && raw.id.trim() ? raw.id.trim() : `vm-${i + 1}`,
+        quote: typeof raw.quote === 'string' ? raw.quote.trim().slice(0, 300) : '',
+        sourceStart: Math.round(sourceStart * 100) / 100,
+        sourceEnd: Math.round(sourceEnd * 100) / 100,
+        clipRelativeStart: Math.max(0, Math.round((sourceStart - clipStartVal) * 100) / 100),
+        clipRelativeEnd: Math.max(0, Math.round((sourceEnd - clipStartVal) * 100) / 100),
+        displayDuration: Math.max(1.5, Math.round((sourceEnd - sourceStart) * 100) / 100),
+        outputWindows,
+        category,
+        entityName: typeof raw.entityName === 'string' ? raw.entityName.trim().slice(0, 120) : '',
+        visualIntent: typeof raw.visualIntent === 'string' ? raw.visualIntent.trim().slice(0, 300) : '',
+        emotionalPolarity,
+        searchQueries: Array.isArray(raw.searchQueries)
+          ? raw.searchQueries
+              .filter((q): q is string => typeof q === 'string' && Boolean(q.trim()))
+              .map((q) => q.trim().slice(0, 120))
+              .slice(0, 4)
+          : [],
+        negativeCues: Array.isArray(raw.negativeCues)
+          ? raw.negativeCues
+              .filter((c): c is string => typeof c === 'string' && Boolean(c.trim()))
+              .map((c) => c.trim().slice(0, 80))
+              .slice(0, 8)
+          : [],
+        confidence:
+          typeof raw.confidence === 'number' && Number.isFinite(raw.confidence)
+            ? Math.max(0, Math.min(1, raw.confidence))
+            : 0.8,
+        animation,
+        placement: effectivePlacement,
+        framing: raw.framing === 'editorial' ? 'editorial' : 'illustrative',
+        status,
+        ...(typeof raw.skipReason === 'string' ? { skipReason: raw.skipReason } : {}),
+        ...(typeof raw.localFilePath === 'string' ? { localFilePath: raw.localFilePath } : {}),
+        ...(typeof raw.mediaUrl === 'string' ? { mediaUrl: raw.mediaUrl } : {}),
+        ...(typeof raw.contentHash === 'string' ? { contentHash: raw.contentHash } : {}),
+        ...(typeof raw.width === 'number' ? { width: raw.width } : {}),
+        ...(typeof raw.height === 'number' ? { height: raw.height } : {}),
+        ...(typeof raw.relevanceScore === 'number' ? { relevanceScore: raw.relevanceScore } : {}),
+        ...(raw.attribution && typeof raw.attribution === 'object'
+          ? { attribution: raw.attribution }
+          : {}),
+      });
+    }
+    edits.visualOverlays = sanitizedOverlays;
+  }
 
   return edits;
 }

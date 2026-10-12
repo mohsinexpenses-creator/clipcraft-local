@@ -284,6 +284,11 @@ export function ClipTile({ clip, captionPresets, busy, onEdit, onRender, onCance
               cta
             </span>
           ) : null}
+          {clip.visualOverlays && clip.visualOverlays.length > 0 ? (
+            <span className="rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+              {clip.visualOverlays.length} visual{clip.visualOverlays.length === 1 ? "" : "s"}
+            </span>
+          ) : null}
         </div>
 
         {clip.layoutNote && (
@@ -385,7 +390,9 @@ export function ClipTile({ clip, captionPresets, busy, onEdit, onRender, onCance
       </div>
 
       <ClipAnalysisPanel
+        clipId={clip._id}
         analysis={clip.aiAnalysis}
+        visualOverlays={clip.visualOverlays}
         open={analysisOpen}
         onOpenChange={setAnalysisOpen}
       />

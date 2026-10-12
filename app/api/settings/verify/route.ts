@@ -1,6 +1,13 @@
 import { NextResponse } from 'next/server';
 import { loadEffectiveSettings, maskSecret } from '@/lib/app-settings';
-import { verifyDeepgramKey, verifyGeminiKey, type VerifyProbeResult } from '@/lib/settings-verify';
+import {
+  verifyDeepgramKey,
+  verifyGeminiKey,
+  verifyOpenverseCredentials,
+  verifyPexelsKey,
+  verifyWikimediaAccess,
+  type VerifyProbeResult,
+} from '@/lib/settings-verify';
 import { LLM_PROVIDER_CHAIN } from '@/lib/llm';
 import { toErrorMessage, toErrorStatus } from '@/lib/errors';
 
@@ -78,6 +85,48 @@ export async function POST(request: Request) {
       } else {
         results.push(await verifyDeepgramKey(key, model));
       }
+    }
+
+    if (target === 'pexels') {
+      const candidateKey =
+        typeof candidates.pexelsApiKey === 'string' && candidates.pexelsApiKey.trim()
+          ? candidates.pexelsApiKey.trim()
+          : '';
+      const key =
+        candidateKey && !candidateKey.includes('…') ? candidateKey : settings.ai.pexelsApiKey;
+      if (!key) {
+        results.push({
+          target: 'pexels',
+          status: 'error',
+          label: 'Pexels API',
+          message: 'No Pexels API key is configured. Openverse and Wikimedia Commons remain active.',
+        });
+      } else {
+        const res = await verifyPexelsKey(key);
+        results.push({ ...res, label: `${maskSecret(key)} · ${res.label}` });
+      }
+    }
+
+    if (target === 'openverse') {
+      const candId =
+        typeof candidates.openverseClientId === 'string' ? candidates.openverseClientId.trim() : '';
+      const candSecret =
+        typeof candidates.openverseClientSecret === 'string'
+          ? candidates.openverseClientSecret.trim()
+          : '';
+      const clientId =
+        candId && !candId.includes('…') ? candId : settings.ai.openverseClientId;
+      const clientSecret =
+        candSecret && !candSecret.includes('…') ? candSecret : settings.ai.openverseClientSecret;
+      results.push(await verifyOpenverseCredentials(clientId, clientSecret));
+    }
+
+    if (target === 'wikimedia') {
+      const ua =
+        typeof candidates.wikimediaUserAgent === 'string' && candidates.wikimediaUserAgent.trim()
+          ? candidates.wikimediaUserAgent.trim()
+          : settings.ai.wikimediaUserAgent;
+      results.push(await verifyWikimediaAccess(ua));
     }
 
     const chainModel = LLM_PROVIDER_CHAIN[0]?.model ?? '';

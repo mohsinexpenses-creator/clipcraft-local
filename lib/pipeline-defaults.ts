@@ -24,12 +24,26 @@ import {
 export const OPTION_LIMITS = {
   clipCount: { min: 1, max: 25 },
   minClipDuration: { min: 5, max: 600 },
+  maxVisualMoments: { min: 0, max: 3 },
+  visualConfidence: { min: 0.1, max: 1 },
+  visualDuration: { min: 1.5, max: 8 },
 } as const;
 
 function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
   return Math.min(max, Math.max(min, n));
+}
+
+function clampFloat(value: unknown, fallback: number, min: number, max: number, decimals = 2): number {
+  if (value === undefined || value === null || (typeof value === 'string' && value.trim() === '')) {
+    return fallback;
+  }
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  const clamped = Math.min(max, Math.max(min, n));
+  const factor = Math.pow(10, decimals);
+  return Math.round(clamped * factor) / factor;
 }
 
 /** Booleans arrive as real booleans from the UI and as "true"/"false" strings from curl/scripts. */
@@ -68,12 +82,28 @@ export function resolveViralOptions(
       ? Number(partial?.maxClipDuration)
       : DEFAULT_VIRAL_OPTIONS.maxClipDuration
   );
+  const maxVisualMoments =
+    partial?.maxVisualMoments !== undefined && Number.isFinite(Number(partial.maxVisualMoments))
+      ? Math.min(
+          OPTION_LIMITS.maxVisualMoments.max,
+          Math.max(OPTION_LIMITS.maxVisualMoments.min, Math.round(Number(partial.maxVisualMoments)))
+        )
+      : DEFAULT_VIRAL_OPTIONS.maxVisualMoments;
+  const visualConfidenceThreshold = clampFloat(
+    partial?.visualConfidenceThreshold,
+    DEFAULT_VIRAL_OPTIONS.visualConfidenceThreshold,
+    OPTION_LIMITS.visualConfidence.min,
+    OPTION_LIMITS.visualConfidence.max
+  );
   return {
     clipCount,
     minClipDuration,
     maxClipDuration,
     includeHookText: partial?.includeHookText ?? DEFAULT_VIRAL_OPTIONS.includeHookText,
     includeCta: partial?.includeCta ?? DEFAULT_VIRAL_OPTIONS.includeCta,
+    includeVisuals: partial?.includeVisuals ?? DEFAULT_VIRAL_OPTIONS.includeVisuals,
+    maxVisualMoments,
+    visualConfidenceThreshold,
   };
 }
 
@@ -104,6 +134,22 @@ export function sanitizeViralOptions(input: unknown): Required<ViralDetectionOpt
     maxClipDuration: DEFAULT_VIRAL_OPTIONS.maxClipDuration,
     includeHookText: readFlag(source.includeHookText, DEFAULT_VIRAL_OPTIONS.includeHookText),
     includeCta: readFlag(source.includeCta, DEFAULT_VIRAL_OPTIONS.includeCta),
+    includeVisuals: readFlag(source.includeVisuals, DEFAULT_VIRAL_OPTIONS.includeVisuals),
+    maxVisualMoments:
+      source.maxVisualMoments !== undefined && source.maxVisualMoments !== ''
+        ? clampNumber(
+            source.maxVisualMoments,
+            DEFAULT_VIRAL_OPTIONS.maxVisualMoments,
+            OPTION_LIMITS.maxVisualMoments.min,
+            OPTION_LIMITS.maxVisualMoments.max
+          )
+        : DEFAULT_VIRAL_OPTIONS.maxVisualMoments,
+    visualConfidenceThreshold: clampFloat(
+      source.visualConfidenceThreshold,
+      DEFAULT_VIRAL_OPTIONS.visualConfidenceThreshold,
+      OPTION_LIMITS.visualConfidence.min,
+      OPTION_LIMITS.visualConfidence.max
+    ),
   });
 }
 
@@ -137,6 +183,9 @@ export function isPipelineOptionsEqual(a: PipelineOptions | undefined, b: Pipeli
     a.viral.clipCount === b.viral.clipCount &&
     a.viral.minClipDuration === b.viral.minClipDuration &&
     a.viral.includeHookText === b.viral.includeHookText &&
-    a.viral.includeCta === b.viral.includeCta
+    a.viral.includeCta === b.viral.includeCta &&
+    a.viral.includeVisuals === b.viral.includeVisuals &&
+    a.viral.maxVisualMoments === b.viral.maxVisualMoments &&
+    a.viral.visualConfidenceThreshold === b.viral.visualConfidenceThreshold
   );
 }

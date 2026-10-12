@@ -59,6 +59,22 @@ export function validClip(): ViralClip {
       controversy_score: 6,
       shareability_score: 8,
     },
+    visualMoments: [
+      {
+        quote: 'Segment 7 talks about money and risk.',
+        timestamp: { start: '00:01:10', end: '00:01:14' },
+        category: 'situation',
+        entity_name: '',
+        visual_intent: 'Tense financial decision with an empty wallet and calculator on a desk.',
+        emotional_polarity: 'tense',
+        search_queries: ['empty wallet financial stress desk', 'checking bank balance worried'],
+        negative_cues: ['celebration', 'luxury'],
+        confidence: 0.86,
+        suggested_duration: 3.5,
+        animation: 'subtle-zoom',
+        placement: 'main',
+      },
+    ],
   };
 }
 

@@ -5,20 +5,28 @@ import {
   Captions,
   Clock,
   Crop,
+  Download,
+  ExternalLink,
+  Image as ImageIcon,
   Info,
   Loader2,
   MoveHorizontal,
   Palette,
   Quote,
+  RefreshCw,
   Rocket,
   Save,
+  Trash2,
   Type,
 } from "lucide-react"
 import type {
   CaptionPreset,
   ClipLayout,
   ClipRecord,
+  ClipVisualOverlay,
   OverlayStylePreset,
+  VisualMomentPlacement,
+  VisualOverlayAnimation,
 } from "@/lib/types"
 import { DEFAULT_FILTER_PRESETS } from "@/lib/presets"
 import { formatTime } from "@/lib/pipeline-ui"
@@ -59,6 +67,8 @@ interface Draft {
   layout: ClipLayout;
   hookStylePresetId: string;
   ctaStylePresetId: string;
+  autoVisuals: boolean;
+  visualOverlays: ClipVisualOverlay[];
 }
 
 function draftFrom(clip: ClipRecord, captionPresets: CaptionPreset[]): Draft {
@@ -75,6 +85,8 @@ function draftFrom(clip: ClipRecord, captionPresets: CaptionPreset[]): Draft {
     layout: clip.layout === "split-screen" ? "split-screen" : "speaker-focus",
     hookStylePresetId: clip.hookStylePresetId || "",
     ctaStylePresetId: clip.ctaStylePresetId || "",
+    autoVisuals: clip.autoVisuals !== false,
+    visualOverlays: clip.visualOverlays ? [...clip.visualOverlays] : [],
   };
 }
 
@@ -149,6 +161,8 @@ function ClipEditForm({
   // seeded once on mount rather than re-derived in an effect.
   const [draft, setDraft] = React.useState<Draft>(() => draftFrom(clip, captionPresets));
   const [error, setError] = React.useState<string | null>(null);
+  const [visualBusy, setVisualBusy] = React.useState<string | null>(null);
+  const [customQueries, setCustomQueries] = React.useState<Record<string, string>>({});
 
   const patch = (partial: Partial<Draft>) => setDraft((current) => ({ ...current, ...partial }));
 
@@ -166,6 +180,50 @@ function ClipEditForm({
     void element.play().catch(() => undefined);
   };
 
+  const resolveVisualsNow = async (overlayId?: string, customQuery?: string) => {
+    setVisualBusy(overlayId || "all");
+    setError(null);
+    try {
+      const response = await fetch(`/api/clips/${clip._id}/visuals`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...(overlayId ? { overlayId } : {}),
+          ...(customQuery?.trim() ? { customQuery: customQuery.trim() } : {}),
+        }),
+      });
+      const data = (await response.json()) as {
+        visualOverlays?: ClipVisualOverlay[];
+        error?: string;
+      };
+      if (!response.ok) {
+        setError(data.error || "Could not resolve contextual visuals.");
+        return;
+      }
+      if (Array.isArray(data.visualOverlays)) {
+        patch({ visualOverlays: data.visualOverlays });
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not resolve contextual visuals.");
+    } finally {
+      setVisualBusy(null);
+    }
+  };
+
+  const updateVisualItem = (id: string, partial: Partial<ClipVisualOverlay>) => {
+    patch({
+      visualOverlays: draft.visualOverlays.map((item) =>
+        item.id === id ? { ...item, ...partial } : item
+      ),
+    });
+  };
+
+  const removeVisualItem = (id: string) => {
+    patch({
+      visualOverlays: draft.visualOverlays.filter((item) => item.id !== id),
+    });
+  };
+
   const submit = async (andRender: boolean) => {
     setError(null);
     const edits = {
@@ -178,6 +236,8 @@ function ClipEditForm({
       filterPreset: draft.filterPreset,
       captionPresetId: draft.captionPresetId,
       layout: draft.layout,
+      autoVisuals: draft.autoVisuals,
+      visualOverlays: draft.visualOverlays,
       ...(draft.hookStylePresetId ? { hookStylePresetId: draft.hookStylePresetId } : {}),
       ...(draft.ctaStylePresetId ? { ctaStylePresetId: draft.ctaStylePresetId } : {}),
     };
@@ -421,6 +481,242 @@ function ClipEditForm({
                   — profanity is always masked in captions at render time.
                 </p>
               ) : null}
+            </Section>
+
+            <div className="h-px bg-border/70" />
+
+            <Section
+              title="Contextual visuals"
+              icon={<ImageIcon />}
+              description="Free-to-use images aligned to transcript beats and composited in safe 9:16 zones."
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/20 px-3 py-2">
+                <label className="inline-flex items-center gap-2 text-[12px] font-medium cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={draft.autoVisuals}
+                    onChange={(e) => patch({ autoVisuals: e.target.checked })}
+                    className="rounded border-border"
+                  />
+                  <span>Enable contextual visuals for this clip</span>
+                </label>
+
+                <div className="flex items-center gap-1.5">
+                  {draft.visualOverlays.some((v) => v.status === "resolved") && (
+                    <a
+                      href={`/api/clips/${clip._id}/credits?format=txt`}
+                      download
+                      className="inline-flex items-center gap-1 rounded-md border bg-background px-2 py-1 text-[11px] font-medium hover:bg-muted"
+                    >
+                      <Download className="size-3" />
+                      Credits
+                    </a>
+                  )}
+                  <Button
+                    type="button"
+                    size="xs"
+                    variant="outline"
+                    disabled={visualBusy !== null}
+                    onClick={() => void resolveVisualsNow()}
+                  >
+                    {visualBusy === "all" ? (
+                      <Loader2 className="animate-spin" />
+                    ) : (
+                      <RefreshCw />
+                    )}
+                    {draft.visualOverlays.length > 0
+                      ? "Resolve / refresh images"
+                      : "Plan & resolve images"}
+                  </Button>
+                </div>
+              </div>
+
+              {draft.visualOverlays.length === 0 ? (
+                <p className="text-[11px] text-muted-foreground">
+                  No visual moments planned yet. Click &ldquo;Plan &amp; resolve images&rdquo; to preview or let the worker resolve them automatically on render.
+                </p>
+              ) : (
+                <div className="space-y-2.5">
+                  {draft.visualOverlays.map((vis) => (
+                    <div
+                      key={vis.id}
+                      className="rounded-xl border bg-muted/15 p-3 space-y-2 text-[11.5px]"
+                    >
+                      <div className="flex items-start justify-between gap-2.5">
+                        <div className="min-w-0 flex-1 space-y-1">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => seekTo(vis.sourceStart)}
+                              className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary hover:bg-primary/20"
+                              title="Jump video preview to this moment"
+                            >
+                              {vis.sourceStart.toFixed(1)}s–{vis.sourceEnd.toFixed(1)}s
+                            </button>
+                            <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                              {vis.category}
+                              {vis.entityName ? ` · ${vis.entityName}` : ""}
+                            </span>
+                            {vis.framing === "illustrative" && (
+                              <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300">
+                                Illustrative stock
+                              </span>
+                            )}
+                          </div>
+                          <p className="font-medium text-foreground">
+                            &ldquo;{vis.quote}&rdquo;
+                          </p>
+                          <p className="text-[11px] text-muted-foreground">
+                            {vis.visualIntent}
+                          </p>
+                        </div>
+
+                        {vis.mediaUrl && (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={vis.mediaUrl}
+                            alt={vis.attribution?.title || vis.visualIntent}
+                            className="h-16 w-16 shrink-0 rounded-lg object-cover border"
+                          />
+                        )}
+
+                        <Button
+                          type="button"
+                          size="icon-xs"
+                          variant="ghost"
+                          onClick={() => removeVisualItem(vis.id)}
+                          aria-label="Remove visual moment"
+                        >
+                          <Trash2 className="size-3.5 text-muted-foreground hover:text-destructive" />
+                        </Button>
+                      </div>
+
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <Field label="Placement">
+                          <Select
+                            value={vis.placement}
+                            onValueChange={(value) =>
+                              updateVisualItem(vis.id, {
+                                placement: (value ?? "main") as VisualMomentPlacement,
+                              })
+                            }
+                          >
+                            <SelectTrigger className="h-7 text-[11px]">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent className="dark">
+                              <SelectItem value="main">Main clip only</SelectItem>
+                              <SelectItem value="hook">Hook replay only</SelectItem>
+                              <SelectItem value="both">Both hook &amp; main</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </Field>
+
+                        <Field label="Animation">
+                          <Select
+                            value={vis.animation}
+                            onValueChange={(value) =>
+                              updateVisualItem(vis.id, {
+                                animation: (value ??
+                                  "subtle-zoom") as VisualOverlayAnimation,
+                              })
+                            }
+                          >
+                            <SelectTrigger className="h-7 text-[11px]">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent className="dark">
+                              <SelectItem value="subtle-zoom">Subtle zoom</SelectItem>
+                              <SelectItem value="slide-up">Slide up</SelectItem>
+                              <SelectItem value="fade">Smooth fade</SelectItem>
+                              <SelectItem value="pop">Pop in</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </Field>
+                      </div>
+
+                      <div className="flex items-center gap-1.5">
+                        <Input
+                          value={
+                            customQueries[vis.id] ??
+                            (vis.searchQueries[0] || "")
+                          }
+                          onChange={(e) =>
+                            setCustomQueries((prev) => ({
+                              ...prev,
+                              [vis.id]: e.target.value,
+                            }))
+                          }
+                          placeholder="Search query to replace image..."
+                          className="h-7 text-[11px]"
+                        />
+                        <Button
+                          type="button"
+                          size="xs"
+                          variant="outline"
+                          disabled={visualBusy !== null}
+                          onClick={() =>
+                            void resolveVisualsNow(
+                              vis.id,
+                              customQueries[vis.id] ?? vis.searchQueries[0]
+                            )
+                          }
+                        >
+                          {visualBusy === vis.id ? (
+                            <Loader2 className="animate-spin" />
+                          ) : (
+                            <RefreshCw />
+                          )}
+                          Replace
+                        </Button>
+                      </div>
+
+                      {vis.attribution && (
+                        <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-1.5 text-[10.5px] text-muted-foreground">
+                          <span>
+                            {vis.attribution.provider === "pexels" ? (
+                              <a
+                                href="https://www.pexels.com"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="underline underline-offset-2 hover:text-foreground font-medium"
+                              >
+                                Photos provided by Pexels
+                              </a>
+                            ) : (
+                              <span className="uppercase font-medium">
+                                {vis.attribution.provider}
+                              </span>
+                            )}{" "}
+                            · {vis.attribution.license} ·{" "}
+                            {vis.attribution.creatorUrl ? (
+                              <a
+                                href={vis.attribution.creatorUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="underline underline-offset-2 hover:text-foreground"
+                              >
+                                {vis.attribution.creator}
+                              </a>
+                            ) : (
+                              vis.attribution.creator
+                            )}
+                          </span>
+                          <a
+                            href={vis.attribution.sourcePageUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-0.5 underline underline-offset-2 hover:text-foreground"
+                          >
+                            Source page
+                            <ExternalLink className="size-3" />
+                          </a>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </Section>
 
             {error && (

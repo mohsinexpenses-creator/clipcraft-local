@@ -1134,6 +1134,20 @@ For every clip, provide:
 
 (Lock)
 
+7. Contextual Visual Moments Plan (Optional, High-Value Only)
+
+For each clip, identify 0 to 2 (at most 3) meaningful visual beats where a free-to-use contextual image overlay would genuinely strengthen comprehension or retention:
+
+- Base each visual moment on the full sentence, idea, action, consequence, comparison, statistic, or emotional beat — NEVER trigger a visual merely because a single noun was spoken.
+- Understand surrounding context and emotional polarity: a celebratory scene and a scene going badly must produce different visual intents, search queries, and negative/avoid cues.
+- Identify when a named person, place, or historical/cultural event is central ("category": "person", "place", or "named_event", with exact "entity_name").
+- Never invent or return raw image URLs. Return short, provider-friendly English "search_queries" and "negative_cues" that exclude contradictory imagery.
+- Set "suggested_duration" to cover the full semantic beat (typically 2.5 to 5.0 seconds, NEVER a 1-second single-word flash).
+- Default "placement" to "main" unless a visual is specifically meant for "hook" or "both".
+- If no visual would add clear value, return "visualMoments": [].
+
+(Lock)
+
 Rank all clips based on viral potential, with the highest viral probability first.
 
 For every clip, keep the same structure:
@@ -1148,6 +1162,7 @@ For every clip, keep the same structure:
 - Safety Analysis
 - Viral Packaging
 - Viral Scores
+- Contextual Visual Moments
 
 Make the final output clean, highly organized, professional, and strictly follow every instruction above.
 
@@ -1160,8 +1175,8 @@ Return ONLY a single valid JSON object. No markdown, no code fences, no explanat
 - Use double quotes, escape internal quotes and newlines properly, and use no trailing commas.
 - The "clips" array MUST be sorted by viral ranking (rank 1 = most viral), not by transcript order.
 - Timestamps must be strings in the same format as the transcript (for example "125.5s"). Durations must be calculated from them.
-- "rank", every "duration" value and the four "scores" are plain numbers (scores from 0 to 10, no "/10"). Every other value is a string, a boolean (true or false) or an array, exactly as in the schema.
-- Where the schema lists options separated by "|" (predicted_retention, dominant_trigger, risk_level, action), output exactly ONE of those options, spelled exactly as shown - never the whole list.
+- "rank", every "duration" value, the four "scores", and visual moment "confidence" / "suggested_duration" are plain numbers (scores from 0 to 10, no "/10"; confidence from 0 to 1). Every other value is a string, a boolean (true or false) or an array, exactly as in the schema.
+- Where the schema lists options separated by "|" (predicted_retention, dominant_trigger, risk_level, action, category, emotional_polarity, animation, placement), output exactly ONE of those options, spelled exactly as shown - never the whole list.
 - Never output null. Use "" or [] if something is not applicable.
 
 JSON SCHEMA:
@@ -1213,7 +1228,23 @@ JSON SCHEMA:
         "retention_score": 0,
         "controversy_score": 0,
         "shareability_score": 0
-      }
+      },
+      "visualMoments": [
+        {
+          "quote": "",
+          "timestamp": { "start": "", "end": "" },
+          "category": "person | place | named_event | situation | action | emotion | concept | statistic | comparison",
+          "entity_name": "",
+          "visual_intent": "",
+          "emotional_polarity": "positive | negative | neutral | tense | humorous | cautionary",
+          "search_queries": ["", ""],
+          "negative_cues": [""],
+          "confidence": 0.85,
+          "suggested_duration": 3.5,
+          "animation": "subtle-zoom | fade | slide-up | pop",
+          "placement": "main | hook | both"
+        }
+      ]
     }
   ]
 }
