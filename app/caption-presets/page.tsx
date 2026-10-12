@@ -527,7 +527,7 @@ export default function CaptionPresetsPage() {
       <div className="flex gap-6 ">
         {/* Editor */}
         <div
-          className="animate-fade-up space-y-4 lg:col-span-7"
+          className="animate-fade-up space-y-4 lg:col-span-7 w-full"
           style={{ animationDelay: "60ms" }}
         >
           <Tabs defaultValue="captions">
