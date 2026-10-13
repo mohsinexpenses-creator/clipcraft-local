@@ -509,22 +509,31 @@ function normalizeBeatKind(value: unknown): VisualBeatKind {
 export function extractKeywordPopCallout(
   overlay: Pick<ClipVisualOverlay, 'entityName' | 'visualIntent' | 'quote' | 'searchQueries'>
 ): { text: string; subtext?: string } {
-  const entity = (overlay.entityName ?? '').trim();
-  const intent = (overlay.visualIntent ?? '').trim();
+  const stripInstructionPrefix = (val: string): string =>
+    val
+      .replace(
+        /^(?:please\s+)?(?:show|display|illustrate|depict|feature|use|render|include|present)\s+(?:something\s+like\s+|a\s+photo\s+of\s+|an?\s+image\s+of\s+|a\s+picture\s+of\s+|a\s+visual\s+of\s+|a\s+scene\s+of\s+|a\s+shot\s+of\s+)?/i,
+        ''
+      )
+      .replace(/^(?:something\s+like|a?\s*photo\s+of|an?\s*image\s+of|a?\s*picture\s+of|visual\s+of)\s+/i, '')
+      .trim();
+
+  const entity = stripInstructionPrefix((overlay.entityName ?? '').trim());
+  const intent = stripInstructionPrefix((overlay.visualIntent ?? '').trim());
   const quote = (overlay.quote ?? '').trim();
-  const query = (overlay.searchQueries?.[0] ?? '').trim();
+  const query = stripInstructionPrefix((overlay.searchQueries?.[0] ?? '').trim());
 
   // Prefer short explicit entity/stat if <= 36 chars
   if (entity && entity.length <= 36) {
     const sub =
-      intent && intent.toLowerCase() !== entity.toLowerCase()
-        ? intent.split(/[.;!?]/)[0].trim().slice(0, 56)
+      quote && quote.toLowerCase() !== entity.toLowerCase()
+        ? quote.split(/[.;!?]/)[0].trim().slice(0, 56)
         : undefined;
     return { text: entity.toUpperCase(), subtext: sub };
   }
 
-  // Otherwise condense quote/intent/query into 2-5 high-signal content words
-  const source = quote || intent || query;
+  // Otherwise condense quote/query/intent into 2-5 high-signal content words
+  const source = quote || query || intent;
   const numberMatch = source.match(
     /(?:\$?\d[\d,.]*(?:\s*(?:%|percent|million|billion|thousand|k|m|x|hours|days|years|seconds|minutes))?)/i
   );

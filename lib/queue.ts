@@ -401,6 +401,34 @@ export function removeJobIfQueued(id: string, db: SqliteDatabase = getDatabase()
   return result.changes > 0;
 }
 
+/**
+ * Cancels a job in the queue regardless of whether it is `queued` or `running`:
+ * - `queued`: deletes the row immediately and returns `'removed'`.
+ * - `running`: marks the row `failed` with `'Cancelled by user.'` and returns `'running'`.
+ * - otherwise: returns `'none'`.
+ */
+export function cancelJob(
+  id: string,
+  db: SqliteDatabase = getDatabase()
+): 'removed' | 'running' | 'none' {
+  const removed = db
+    .prepare(`DELETE FROM jobs WHERE id = ? AND status = 'queued'`)
+    .run(id);
+  if (removed.changes > 0) return 'removed';
+
+  const now = new Date().toISOString();
+  const running = db
+    .prepare(
+      `UPDATE jobs
+       SET status = 'failed', error = 'Cancelled by user.', finished_at = ?
+       WHERE id = ? AND status = 'running'`
+    )
+    .run(now, id);
+  if (running.changes > 0) return 'running';
+
+  return 'none';
+}
+
 export function listJobs(db: SqliteDatabase = getDatabase()): QueueJob[] {
   const rows = db.prepare('SELECT * FROM jobs ORDER BY created_at, id').all() as JobRow[];
   return rows.map(mapJob);
@@ -433,6 +461,8 @@ export async function enqueueClipJob(jobData: JobData): Promise<void> {
   if (jobData.layout !== undefined) clip.layout = jobData.layout;
   if (jobData.hookStylePresetId !== undefined) clip.hookStylePresetId = jobData.hookStylePresetId;
   if (jobData.ctaStylePresetId !== undefined) clip.ctaStylePresetId = jobData.ctaStylePresetId;
+  if (jobData.autoVisuals !== undefined) clip.autoVisuals = jobData.autoVisuals;
+  if (jobData.visualOverlays !== undefined) clip.visualOverlays = jobData.visualOverlays;
   clip.status = 'pending';
   clip.progress = 0;
   clip.error = undefined;

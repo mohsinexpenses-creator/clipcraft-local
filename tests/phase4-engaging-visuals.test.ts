@@ -144,14 +144,37 @@ test('buildVisualOverlayFilterStatements includes Ken-Burns zoom, thin border, r
   );
 
   assert.equal(statements.length, 2);
-  // Ken-Burns dynamic scale(eval=frame) + crop + pad border + rounded-corner geq alpha mask + fade in/out
-  assert.match(statements[0], /scale=w='trunc\(712\*\(1\+0\.08\*/);
-  assert.match(statements[0], /eval=frame:force_original_aspect_ratio=increase,crop=712:892/);
+  // Static overscan scale + time-expression crop drift + pad border + fade in/out
+  assert.match(statements[0], /scale=768:962:force_original_aspect_ratio=increase/);
+  assert.match(statements[0], /crop=w=712:h=892:x='trunc\(\(iw-712\)\/2\)':y='trunc\(\(ih-892\)\*/);
   assert.match(statements[0], /pad=720:900:4:4:color=white@0\.88/);
-  assert.match(statements[0], /geq=r='r\(X,Y\)':g='g\(X,Y\)':b='b\(X,Y\)':a=/);
   assert.match(statements[0], /fade=t=in:st=4\.000:d=0\.180:alpha=1,fade=t=out:st=6\.720:d=0\.280:alpha=1\[visimg0\]/);
   // Overshoot entrance on overlay y expression
   assert.match(statements[1], /108-6\+6\*/);
+
+  // Behind-captions mode places the image in the lower/caption-background zone without covering the upper speaker face
+  const behind = planVisualCardPlacement({
+    plan: {
+      mode: 'single',
+      cropW: 608,
+      cropH: 1080,
+      points: [],
+      faceAnchorY: 0.35, // face center at y=672, face bottom at y=912
+    },
+    captionBand: { top: 1320, bottom: 1620 },
+    cardAspect: 'portrait',
+    placeBehindCaptions: true,
+  });
+  assert.ok(behind.top >= 912, `expected card top (${behind.top}) below speaker face bottom (912)`);
+  assert.ok(behind.bottom >= 1500, 'card covers the caption background zone');
+
+  const stripped = extractKeywordPopCallout({
+    entityName: 'Show something like a crashing market',
+    visualIntent: 'Show something like this on screen',
+    quote: '',
+    searchQueries: ['market crash'],
+  });
+  assert.ok(!stripped.text.toLowerCase().includes('show something'));
 });
 
 test('Phase 3 SFX cues wire into every dense card and keyword pop beat', () => {

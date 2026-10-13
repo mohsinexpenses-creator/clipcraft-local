@@ -232,6 +232,16 @@ function DashboardContent() {
   const selectedVideo = videoId ? videos.find((video) => video._id === videoId) ?? null : null;
   const video = detail?.video;
 
+  // Automatically open the first queued/available video on the dashboard when no videoId is selected.
+  React.useEffect(() => {
+    if (!videoId && !isLoading && videos.length > 0) {
+      const firstTarget = videos.find((v) => v.queuePosition === 1) ?? videos[0];
+      if (firstTarget) {
+        pipeline.selectVideo(firstTarget._id);
+      }
+    }
+  }, [videoId, isLoading, videos, pipeline]);
+
   // Defaults for the settings dialog come from the video, then from the
   // browser's "next upload" defaults.
   const effectivePipeline = automationDraft ?? detail?.status.pipeline ?? video?.pipeline ?? null;
@@ -456,22 +466,15 @@ function DashboardContent() {
                   </div>
 
                   <div className="flex flex-wrap items-center gap-1.5">
-                    {(status?.stage === "transcribing" ||
+                    {(status?.stage === "queued" ||
+                      status?.stage === "transcribing" ||
                       status?.stage === "analyzing" ||
                       status?.stage === "rendering" ||
                       counts.active + counts.queued > 0) && (
                       <Button
                         size="sm"
                         variant="destructive"
-                        onClick={() => {
-                          if (
-                            window.confirm(
-                              "Cancel the whole pipeline for this video?\n\nRendering clips stop, queued work is dropped, and automatic steps are switched off for this video."
-                            )
-                          ) {
-                            void pipeline.cancelPipeline(video._id);
-                          }
-                        }}
+                        onClick={() => void pipeline.cancelPipeline(video._id)}
                         disabled={busy === `cancel-pipeline:${video._id}`}
                         title="Stop rendering, drop queued work and switch off automation for this video"
                       >

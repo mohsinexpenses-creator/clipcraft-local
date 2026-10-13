@@ -993,7 +993,7 @@ test('planVisualCardPlacement and buildOverlayFilterStatements composite visual 
     'vvis'
   );
   assert.equal(visStatements.statements.length, 2);
-  assert.match(visStatements.statements[0], /^\[3:v\]scale=w='trunc\(712\*\(1\+0\.08\*/);
+  assert.match(visStatements.statements[0], /^\[3:v\]scale=768:962:force_original_aspect_ratio=increase,crop=w=712:h=892/);
   assert.match(visStatements.statements[1], /enable='between\(t,6\.500,10\.000\)'/);
 
   const combined = buildOverlayFilterStatements(

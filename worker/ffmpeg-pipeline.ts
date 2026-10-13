@@ -565,7 +565,6 @@ export function buildVisualOverlayFilterStatements(
     const borderPx = showBorder ? 4 : 0;
     const innerW = Math.max(64, w - borderPx * 2);
     const innerH = Math.max(64, h - borderPx * 2);
-    const r = Math.max(0, Math.min(48, Math.round(visual.cornerRadius ?? 24)));
     const x = Math.round(visual.x);
     const y = Math.round(visual.y);
     const st = Math.max(0, visual.start);
@@ -575,23 +574,21 @@ export function buildVisualOverlayFilterStatements(
     const fadeOutDur = Math.min(0.28, dur / 3);
     const fadeOutSt = Math.max(st, en - fadeOutDur);
 
-    // Slow Ken-Burns zoom (1.00 -> 1.08 over card lifetime) using scale(eval=frame)+crop
-    // (faster and jitter-free vs single-threaded zoompan), optional thin border via pad,
-    // rounded-corner alpha mask via geq, and soft alpha fade in/out.
+    // Static 1.08x overscan scale + time-expression crop drift (constant output dimensions
+    // on every frame so pad/fade never reconfigure mid-stream), optional thin border via pad,
+    // and soft alpha fade in/out.
+    const overscanW = evenSize(Math.round(innerW * 1.08), 64);
+    const overscanH = evenSize(Math.round(innerH * 1.08), 64);
     const progressExpr = `min(1,max(0,(t-${st.toFixed(3)})/${dur.toFixed(3)}))`;
-    const scaleWExpr = `trunc(${innerW}*(1+0.08*${progressExpr})/2)*2`;
-    const scaleHExpr = `trunc(${innerH}*(1+0.08*${progressExpr})/2)*2`;
+    const cropXExpr = `trunc((iw-${innerW})/2)`;
+    const cropYExpr = `trunc((ih-${innerH})*(0.5-0.35*${progressExpr}))`;
     const borderFilter = showBorder
       ? `,pad=${w}:${h}:${borderPx}:${borderPx}:color=white@0.88`
       : "";
-    const roundedMaskFilter =
-      r > 0
-        ? `,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(gt(abs(X-W/2),W/2-${r})*gt(abs(Y-H/2),H/2-${r}),if(lte(hypot(abs(X-W/2)-(W/2-${r}),abs(Y-H/2)-(H/2-${r})),${r}),255,0),255)'`
-        : "";
 
     statements.push(
-      `[${input}:v]scale=w='${scaleWExpr}':h='${scaleHExpr}':eval=frame:force_original_aspect_ratio=increase,` +
-        `crop=${innerW}:${innerH}${borderFilter},format=rgba${roundedMaskFilter},` +
+      `[${input}:v]scale=${overscanW}:${overscanH}:force_original_aspect_ratio=increase,` +
+        `crop=w=${innerW}:h=${innerH}:x='${cropXExpr}':y='${cropYExpr}'${borderFilter},format=rgba,` +
         `fade=t=in:st=${st.toFixed(3)}:d=${fadeInDur.toFixed(3)}:alpha=1,` +
         `fade=t=out:st=${fadeOutSt.toFixed(3)}:d=${fadeOutDur.toFixed(3)}:alpha=1[${visLabel}]`,
     );
@@ -946,11 +943,17 @@ export async function processVideoSegment(
   const visualInputIndices: number[] = [];
   for (const visual of visualOverlays) {
     visualInputIndices.push(nextInput++);
+    const loopDuration = Math.min(
+      totalDuration + 0.5,
+      Math.max(0.5, visual.end + 0.5),
+    );
     inputArgs.push(
+      "-framerate",
+      ffmpegFpsArg(fps),
       "-loop",
       "1",
       "-t",
-      Math.max(0.5, totalDuration + 0.5).toFixed(3),
+      loopDuration.toFixed(3),
       "-i",
       visual.imagePath,
     );

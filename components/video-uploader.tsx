@@ -86,11 +86,9 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({ pipeline }) => {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const syncItems = (updater: (prev: UploadQueueItem[]) => UploadQueueItem[]) => {
-    setItems((prev) => {
-      const next = updater(prev);
-      itemsRef.current = next;
-      return next;
-    });
+    const next = updater(itemsRef.current);
+    itemsRef.current = next;
+    setItems(next);
   };
 
   const addFiles = (fileList: FileList | File[]) => {
@@ -280,12 +278,17 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({ pipeline }) => {
 
     setIsProcessing(false);
 
-    const allDone = itemsRef.current.length > 0 && itemsRef.current.every((i) => i.status === 'done');
-    if (allDone && firstVideoId) {
+    const allDone =
+      itemsRef.current.length > 0 &&
+      itemsRef.current.every((i) => i.status === 'done');
+    const resolvedFirstVideoId =
+      itemsRef.current.find((i) => i.videoId)?.videoId ?? firstVideoId;
+
+    if ((allDone || (completedCount > 0 && failedCount === 0)) && resolvedFirstVideoId) {
       setStatusMessage(
         `Uploaded ${itemsRef.current.length} video${itemsRef.current.length === 1 ? '' : 's'}. Opening dashboard…`
       );
-      router.push(`/?videoId=${firstVideoId}`);
+      router.push(`/?videoId=${resolvedFirstVideoId}`);
     } else if (failedCount > 0) {
       setStatusMessage(
         completedCount > 0
@@ -306,6 +309,21 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({ pipeline }) => {
     if (active?.sessionId) {
       void deleteUploadSession(active.sessionId);
     }
+    syncItems((prev) =>
+      prev.map((entry) =>
+        entry.status === 'uploading' || entry.status === 'finalizing'
+          ? {
+              ...entry,
+              status: 'queued',
+              progress: null,
+              sessionId: null,
+              error: undefined,
+            }
+          : entry
+      )
+    );
+    setIsProcessing(false);
+    setStatusMessage('Upload cancelled.');
   };
 
   const pendingOrFailedCount = items.filter(

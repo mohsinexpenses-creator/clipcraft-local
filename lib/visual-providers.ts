@@ -431,7 +431,7 @@ export function findMatchingImageBankEntry(params: {
         if (tagSet.has(qt)) overlap += 1;
       }
 
-      const minOverlap = entityTokens.length > 0 ? entityTokens.length : Math.min(2, queryTokens.size);
+      const minOverlap = entityTokens.length > 0 ? entityTokens.length : 1;
       if (overlap < minOverlap) continue;
 
       let attribution: VisualAssetAttribution;
@@ -441,11 +441,17 @@ export function findMatchingImageBankEntry(params: {
         continue;
       }
 
+      const resolvedLocalPath = preScaleCachedVisualImage(
+        row.local_path,
+        row.width || 1200,
+        row.height || 1200
+      );
+
       const record: ImageBankRecord = {
         id: row.id,
         provider: row.provider,
         assetId: row.asset_id,
-        localPath: row.local_path,
+        localPath: resolvedLocalPath,
         tags: parsedTags,
         width: row.width,
         height: row.height,
@@ -470,6 +476,100 @@ export function findMatchingImageBankEntry(params: {
   } catch {
     return null;
   }
+}
+
+/**
+ * Fallback helper for render time: if a visual moment did not match by exact tag
+ * or provider query, reuses any unused downloaded image from `image_bank` or
+ * `data/visual-cache/` on disk so downloaded cache images are shown rather than dropped.
+ */
+export function findFallbackCachedVisualFile(usedFilePaths: Set<string>): {
+  localFilePath: string;
+  mediaUrl: string;
+  width: number;
+  height: number;
+  attribution?: VisualAssetAttribution;
+} | null {
+  try {
+    const db = getDatabase();
+    const rows = db
+      .prepare(`SELECT * FROM image_bank ORDER BY last_used DESC LIMIT 100`)
+      .all() as Array<{
+      local_path: string;
+      width: number;
+      height: number;
+      attribution_json: string;
+    }>;
+    for (const row of rows) {
+      if (!row.local_path || !fs.existsSync(row.local_path)) continue;
+      const converted = preScaleCachedVisualImage(
+        row.local_path,
+        row.width || 1200,
+        row.height || 1200
+      );
+      const norm = path.resolve(converted);
+      if (usedFilePaths.has(norm) || usedFilePaths.has(path.resolve(row.local_path))) continue;
+      usedFilePaths.add(norm);
+      usedFilePaths.add(path.resolve(row.local_path));
+      let attribution: VisualAssetAttribution | undefined;
+      try {
+        attribution = JSON.parse(row.attribution_json) as VisualAssetAttribution;
+      } catch {
+        attribution = undefined;
+      }
+      return {
+        localFilePath: converted,
+        mediaUrl: `/api/media/visual-cache/${path.basename(converted)}`,
+        width: row.width || 1200,
+        height: row.height || 1200,
+        ...(attribution ? { attribution } : {}),
+      };
+    }
+  } catch {
+    // ignore DB errors and check disk directory directly
+  }
+
+  try {
+    const dir = getVisualCacheDir();
+    if (!fs.existsSync(dir)) return null;
+    const files = fs
+      .readdirSync(dir)
+      .filter((name) => /\.(?:jpe?g|png|webp)$/i.test(name) && !name.endsWith('.tmp'));
+
+    // Prefer already-converted .2x.jpg or .jpg/.png files first
+    files.sort((a, b) => {
+      const aWebp = /\.webp$/i.test(a) ? 1 : 0;
+      const bWebp = /\.webp$/i.test(b) ? 1 : 0;
+      return aWebp - bWebp;
+    });
+
+    for (const name of files) {
+      const fullPath = path.resolve(dir, name);
+      if (usedFilePaths.has(fullPath)) continue;
+      let stat: fs.Stats;
+      try {
+        stat = fs.statSync(fullPath);
+      } catch {
+        continue;
+      }
+      if (!stat.isFile() || stat.size < 24) continue;
+      const converted = preScaleCachedVisualImage(fullPath, 1200, 1200);
+      const normConverted = path.resolve(converted);
+      if (usedFilePaths.has(normConverted)) continue;
+      usedFilePaths.add(fullPath);
+      usedFilePaths.add(normConverted);
+      return {
+        localFilePath: converted,
+        mediaUrl: `/api/media/visual-cache/${path.basename(converted)}`,
+        width: 1200,
+        height: 1200,
+      };
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
 }
 
 /**
@@ -2324,7 +2424,8 @@ export function preScaleCachedVisualImage(
   maxHeight = 1800
 ): string {
   if (!localFilePath || !fs.existsSync(localFilePath)) return localFilePath;
-  if (width <= maxWidth && height <= maxHeight) return localFilePath;
+  const isWebp = /\.webp$/i.test(localFilePath);
+  if (!isWebp && width <= maxWidth && height <= maxHeight) return localFilePath;
 
   const parsed = path.parse(localFilePath);
   const prescaledPath = path.join(parsed.dir, `${parsed.name}.2x.jpg`);

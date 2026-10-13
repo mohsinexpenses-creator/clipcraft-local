@@ -6,6 +6,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 
 import {
+  findFallbackCachedVisualFile,
   getProviderOrderForMoment,
   resetVisualProviderStateForTests,
   resolveVisualOverlaysForClip,
@@ -18,6 +19,9 @@ import {
   type RawProviderCandidate,
 } from '../lib/visual-providers';
 import { maskAiSecrets, resolveSettings, sanitizeSettingsSection } from '../lib/app-settings';
+import { getClip, getVideo, saveClip, saveVideo, updateClip } from '../lib/db';
+import { POST as cancelClipPost } from '../app/api/clips/[id]/cancel/route';
+import { POST as cancelPipelinePost } from '../app/api/videos/[id]/cancel-pipeline/route';
 import { createTemporaryDatabase } from './sqlite-test-helpers';
 import type { ClipVisualOverlay } from '../lib/types';
 
@@ -361,3 +365,121 @@ test('Gemini vision relevance check sends one batch call per clip and can promot
     fs.rmSync(tempCache, { recursive: true, force: true });
   }
 });
+
+test('Clip cancel, pipeline cancel, and visual cache disk fallback work reliably', async (t) => {
+  createTemporaryDatabase(t);
+  const tempCache = fs.mkdtempSync(path.join(os.tmpdir(), 'clipcraft-fallback-cache-'));
+  setVisualCacheDirForTests(tempCache);
+
+  try {
+    // 1. Visual cache disk fallback finds downloaded images in data/visual-cache/
+    const sampleImgPath = path.join(tempCache, 'cached_photo.png');
+    fs.writeFileSync(sampleImgPath, makeSamplePngBuffer(800, 1000));
+    const usedPaths = new Set<string>();
+    const found = findFallbackCachedVisualFile(usedPaths);
+    assert.ok(found);
+    assert.ok(found.localFilePath.endsWith('cached_photo.png'));
+    assert.equal(findFallbackCachedVisualFile(usedPaths), null);
+
+    // 2. Cancel clip and cancel pipeline transition clips/video out of pending/processing
+    // and prevent worker progress updates from overwriting the cancelled state.
+    const now = new Date().toISOString();
+    await saveVideo({
+      _id: 'vid-cancel-1',
+      originalName: 'test.mp4',
+      fileName: 'test.mp4',
+      filePath: '/tmp/test.mp4',
+      duration: 120,
+      width: 1920,
+      height: 1080,
+      fileSize: 1000,
+      status: 'transcribing',
+      pipeline: {
+        autoDetect: true,
+        autoRender: true,
+        viral: {
+          clipCount: 5,
+          minClipDuration: 60,
+          maxClipDuration: 90,
+          includeHookText: true,
+          includeCta: true,
+          includeVisuals: true,
+          maxVisualMoments: 12,
+          visualConfidenceThreshold: 0.65,
+        },
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const staleWorkerCopy = await saveClip({
+      _id: 'clip-cancel-1',
+      videoId: 'vid-cancel-1',
+      videoTitle: 'test.mp4',
+      start: 0,
+      end: 60,
+      hookDuration: 3,
+      hookText: 'HOOK',
+      filterPreset: 'none',
+      captionPresetId: 'preset-bold-yellow',
+      status: 'processing',
+      progress: 45,
+      cancelling: false,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const cancelRes = await cancelClipPost(new Request('http://localhost/api/clips/clip-cancel-1/cancel', { method: 'POST' }), {
+      params: Promise.resolve({ id: 'clip-cancel-1' }),
+    });
+    assert.equal(cancelRes.status, 200);
+
+    const afterCancel = await getClip('clip-cancel-1');
+    assert.equal(afterCancel?.status, 'failed');
+    assert.equal(afterCancel?.error, 'Cancelled by user.');
+    assert.equal(afterCancel?.cancelling, true);
+
+    // Simulate in-flight worker progress tick trying to save stale `status: 'processing', cancelling: false`
+    staleWorkerCopy.progress = 55;
+    await updateClip(staleWorkerCopy);
+    assert.equal(staleWorkerCopy.cancelling, true, 'worker in-memory copy receives cancelling=true signal');
+    const afterStaleTick = await getClip('clip-cancel-1');
+    assert.equal(afterStaleTick?.status, 'failed', 'cancelled status in DB is not overwritten by progress tick');
+
+    // Cancel pipeline stops video transcription/automation and any remaining pending clips
+    await saveClip({
+      _id: 'clip-cancel-2',
+      videoId: 'vid-cancel-1',
+      videoTitle: 'test.mp4',
+      start: 60,
+      end: 120,
+      hookDuration: 3,
+      hookText: 'HOOK',
+      filterPreset: 'none',
+      captionPresetId: 'preset-bold-yellow',
+      status: 'pending',
+      progress: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const pipeRes = await cancelPipelinePost(new Request('http://localhost/api/videos/vid-cancel-1/cancel-pipeline', { method: 'POST' }), {
+      params: Promise.resolve({ id: 'vid-cancel-1' }),
+    });
+    assert.equal(pipeRes.status, 200);
+
+    const vidAfter = await getVideo('vid-cancel-1');
+    assert.equal(vidAfter?.status, 'failed');
+    assert.equal(vidAfter?.error, 'Cancelled by user.');
+    assert.equal(vidAfter?.pipeline?.autoDetect, false);
+    assert.equal(vidAfter?.pipeline?.autoRender, false);
+
+    const clip2After = await getClip('clip-cancel-2');
+    assert.equal(clip2After?.status, 'failed');
+    assert.equal(clip2After?.error, 'Cancelled by user.');
+  } finally {
+    setVisualCacheDirForTests(null);
+    fs.rmSync(tempCache, { recursive: true, force: true });
+  }
+});
+

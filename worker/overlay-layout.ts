@@ -278,15 +278,106 @@ export function planVisualCardPlacement(params: {
   cardAspect?: 'portrait' | 'square';
   cardWidth?: number;
   cardHeight?: number;
+  /**
+   * When true, places the visual card in the caption-background zone (behind the
+   * transparent Remotion captions, which composite on top of `[vvis]`) while
+   * strictly avoiding speaker face zones so faces are never covered.
+   */
+  placeBehindCaptions?: boolean;
 }): VisualCardPlacement {
-  const { plan, hookBand, ctaBand } = params;
+  const { plan, hookBand, ctaBand, placeBehindCaptions = false } = params;
   const captionBand: Band = params.captionBand ?? { top: 1320, bottom: 1620 };
   const aspect = params.cardAspect ?? 'portrait';
-  const defaultWidth = 720;
-  const defaultHeight = aspect === 'square' ? 720 : 900;
+  const defaultWidth = placeBehindCaptions ? 920 : 720;
+  const defaultHeight = placeBehindCaptions
+    ? aspect === 'square'
+      ? 860
+      : 920
+    : aspect === 'square'
+      ? 720
+      : 900;
 
-  let width = Math.max(320, Math.min(960, Math.round((params.cardWidth ?? defaultWidth) / 2) * 2));
-  let height = Math.max(240, Math.min(960, Math.round((params.cardHeight ?? defaultHeight) / 2) * 2));
+  let width = Math.max(320, Math.min(1040, Math.round((params.cardWidth ?? defaultWidth) / 2) * 2));
+  let height = Math.max(240, Math.min(1080, Math.round((params.cardHeight ?? defaultHeight) / 2) * 2));
+
+  if (placeBehindCaptions) {
+    if (plan.mode === 'single') {
+      const anchorY = Number.isFinite(plan.faceAnchorY) ? (plan.faceAnchorY as number) : 0.35;
+      const faceCenterY = Math.round(anchorY * CANVAS_HEIGHT);
+      const faceTop = Math.max(0, faceCenterY - 240);
+      const faceBottom = Math.min(CANVAS_HEIGHT, faceCenterY + 240);
+
+      if (anchorY <= 0.54) {
+        // Speaker face is in the upper half -> place the image in the lower half
+        // directly behind the captions without touching the face zone.
+        const minSafeTop = Math.max(880, faceBottom + 20);
+        const maxBottom = CANVAS_HEIGHT - 56;
+        const availableH = maxBottom - minSafeTop;
+        if (availableH >= 420 && height > availableH) {
+          height = Math.floor(availableH / 2) * 2;
+        }
+        const captionCenter = Math.round((captionBand.top + captionBand.bottom) / 2);
+        const desiredTop = Math.round(captionCenter - height * 0.55);
+        const top = Math.max(minSafeTop, Math.min(maxBottom - height, desiredTop));
+        const x = Math.round((CANVAS_WIDTH - width) / 2);
+        return {
+          x,
+          y: top,
+          width,
+          height,
+          top,
+          bottom: top + height,
+        };
+      } else {
+        // Speaker face is in the lower half -> place the image in the upper half above the face.
+        const maxSafeBottom = Math.max(480, faceTop - 20);
+        const minTop = 64;
+        const availableH = maxSafeBottom - minTop;
+        if (availableH >= 360 && height > availableH) {
+          height = Math.floor(availableH / 2) * 2;
+        }
+        const top = minTop;
+        const x = Math.round((CANVAS_WIDTH - width) / 2);
+        return {
+          x,
+          y: top,
+          width,
+          height,
+          top,
+          bottom: top + height,
+        };
+      }
+    }
+
+    // Split-screen mode: find the vertical position that strictly avoids all cell faceZones
+    // while preferring the lower/caption-background region.
+    const splitFaces = plan.cells.map((c) => c.faceZone);
+    const x = Math.round((CANVAS_WIDTH - width) / 2);
+    let bestTop = Math.max(64, CANVAS_HEIGHT - height - 64);
+    let bestScore = Number.POSITIVE_INFINITY;
+    for (let candidateTop = 64; candidateTop <= CANVAS_HEIGHT - height - 64; candidateTop += 40) {
+      const band: Band = { top: candidateTop, bottom: candidateTop + height };
+      let faceOverlap = 0;
+      for (const fz of splitFaces) {
+        faceOverlap += bandOverlap(band, fz) * 40;
+      }
+      // Prefer overlapping the caption band (behind captions)
+      const capOverlap = bandOverlap(band, captionBand);
+      const score = faceOverlap - capOverlap * 2;
+      if (score < bestScore) {
+        bestScore = score;
+        bestTop = candidateTop;
+      }
+    }
+    return {
+      x,
+      y: bestTop,
+      width,
+      height,
+      top: bestTop,
+      bottom: bestTop + height,
+    };
+  }
 
   const reservedBands: Band[] = [captionBand];
   if (hookBand) reservedBands.push(hookBand);

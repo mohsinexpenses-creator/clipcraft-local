@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getVideo, listClips, updateClip, updateVideo } from '@/lib/db';
 import { toErrorMessage, toErrorStatus } from '@/lib/errors';
-import { removeJobIfQueued } from '@/lib/queue';
+import { cancelJob } from '@/lib/queue';
 import { sanitizePipelineOptions } from '@/lib/pipeline-defaults';
 
 export const runtime = 'nodejs';
@@ -9,19 +9,15 @@ export const runtime = 'nodejs';
 /**
  * POST /api/videos/[id]/cancel-pipeline
  *
- * The dashboard's "Cancel pipeline" button. Stops as much of the automatic
- * chain as can be stopped:
+ * The dashboard's "Cancel pipeline" button. Stops the automatic chain and all
+ * queued/running jobs for the video immediately:
  *
- *  - every RENDERING clip gets clip.cancelling = true (the worker kills the
- *    in-flight render within ~2s and marks it "Cancelled by user."),
- *  - every QUEUED clip loses its render job and is marked cancelled; if the
- *    worker claimed one a moment earlier it is cancelled the running way,
- *  - a transcription or detection job that is still QUEUED is deleted,
- *  - auto-detect / auto-render are switched OFF for this video, so a step that
- *    is already running cannot chain the next one back in after it finishes.
- *
- * A transcription/detection pass that is ALREADY RUNNING finishes - there is
- * no mid-flight abort for those - but nothing follows it automatically.
+ *  - every RENDERING or QUEUED clip has its queue job cancelled and is marked
+ *    "Cancelled by user." (`clip.cancelling = true` signals the worker to kill
+ *    any in-flight FFmpeg / Remotion render within <500ms),
+ *  - queued or running transcription / viral-detection jobs are cancelled,
+ *  - auto-detect / auto-render are switched OFF for this video, so nothing
+ *    chains back in automatically.
  */
 export async function POST(
   _request: Request,
@@ -39,30 +35,32 @@ export async function POST(
     let queuedCancels = 0;
 
     for (const clip of clips) {
-      if (clip.status === 'processing') {
-        clip.cancelling = true;
-        await updateClip(clip);
-        runningStops += 1;
-      } else if (clip.status === 'pending') {
-        if (removeJobIfQueued(`clip:${clip._id}`)) {
-          clip.status = 'failed';
-          clip.error = 'Cancelled by user.';
-          clip.progress = 0;
-          clip.cancelling = false;
-          queuedCancels += 1;
-        } else {
-          clip.cancelling = true;
+      if (clip.status === 'processing' || clip.status === 'pending') {
+        const wasProcessing = clip.status === 'processing';
+        const outcome = cancelJob(`clip:${clip._id}`);
+        clip.status = 'failed';
+        clip.error = 'Cancelled by user.';
+        clip.progress = 0;
+        clip.cancelling = wasProcessing || outcome === 'running';
+        if (wasProcessing || outcome === 'running') {
           runningStops += 1;
+        } else {
+          queuedCancels += 1;
         }
         await updateClip(clip);
       }
     }
 
-    // Queued (not yet running) transcription / detection jobs can simply go.
-    const removedJobs = [
-      removeJobIfQueued(`transcription:${id}`),
-      removeJobIfQueued(`viral-detection:${id}`),
-    ].filter(Boolean).length;
+    const transOutcome = cancelJob(`transcription:${id}`);
+    const detectOutcome = cancelJob(`viral-detection:${id}`);
+    const removedJobs = [transOutcome !== 'none', detectOutcome !== 'none'].filter(Boolean).length;
+
+    if (!video.transcript && (video.status === 'uploaded' || video.status === 'transcribing' || transOutcome !== 'none')) {
+      video.status = 'failed';
+      video.error = 'Cancelled by user.';
+    } else if (detectOutcome !== 'none' && clips.length === 0) {
+      video.error = 'Cancelled by user.';
+    }
 
     // Stop the chain from restarting itself: a running transcription would
     // otherwise queue detection on completion (and detection would queue the

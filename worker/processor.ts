@@ -36,12 +36,17 @@ import {
 import { resolveVisualProviderSettings } from '../lib/app-settings';
 import {
   buildClipCreditsManifest,
-  extractKeywordPopCallout,
   mapVisualMomentToOutputTimeline,
   planClipVisualMoments,
 } from '../lib/contextual-visuals';
 import type { KeywordPopOverlayItem } from '../lib/types';
-import { findMatchingImageBankEntry, getProviderOrderForMoment } from '../lib/visual-providers';
+import {
+  findFallbackCachedVisualFile,
+  findMatchingImageBankEntry,
+  getProviderOrderForMoment,
+  preScaleCachedVisualImage,
+  resolveVisualOverlaysForClip,
+} from '../lib/visual-providers';
 import { appendClipTimingRecord, formatClipTimingSummary } from '../lib/timings';
 import { buildSfxCueSheet, filterPlayableSfxCues } from '../lib/sfx-cues';
 
@@ -165,7 +170,7 @@ export async function processClipJob(
   const finalVideoPath = uniqueClipPath(outputDir, clipFileBase);
 
   // Cancellation: the UI flips clip.cancelling (POST /api/clips/<id>/cancel).
-  // A watcher polls the DB every 2s; the FFmpeg passes check the flag
+  // A watcher polls the DB every 500ms; the FFmpeg passes check the flag
   // continuously and each step boundary aborts immediately.
   let cancelFlag = false;
   let cancelWatcher: NodeJS.Timeout | null = null;
@@ -173,12 +178,12 @@ export async function processClipJob(
     cancelWatcher = setInterval(() => {
       void getClip(clipId)
         .then((fresh) => {
-          // A deleted clip is also a cancellation signal; updateClip() is update-only
+          // A deleted clip or failed/cancelled clip is a cancellation signal; updateClip() is update-only
           // and prevents this worker from recreating its database row.
-          if (!fresh || fresh.cancelling) cancelFlag = true;
+          if (!fresh || fresh.cancelling || fresh.status === 'failed') cancelFlag = true;
         })
         .catch(() => undefined);
-    }, 2000);
+    }, 500);
     const checkCancelled = (): void => {
       if (cancelFlag) throw new RenderCancelledError();
     };
@@ -475,7 +480,26 @@ export async function processClipJob(
         (jobData.autoVisuals ?? clip.autoVisuals ?? visualSettings.render.autoVisuals) !== false;
 
       if (autoVisualsEnabled) {
-        let planned = jobData.visualOverlays ?? clip.visualOverlays ?? [];
+        // Merge jobData.visualOverlays and clip.visualOverlays, preferring whichever
+        // entry already has a resolved localFilePath on disk.
+        const fromJob = jobData.visualOverlays ?? [];
+        const fromClip = clip.visualOverlays ?? [];
+        const baseList = fromClip.length >= fromJob.length ? fromClip : fromJob;
+        const otherById = new Map(
+          (baseList === fromClip ? fromJob : fromClip).map((ov) => [ov.id, ov])
+        );
+        let planned = baseList.map((ov) => {
+          const alt = otherById.get(ov.id);
+          if (
+            (!ov.localFilePath || !fs.existsSync(ov.localFilePath)) &&
+            alt?.localFilePath &&
+            fs.existsSync(alt.localFilePath)
+          ) {
+            return { ...ov, ...alt };
+          }
+          return ov;
+        });
+
         if (planned.length === 0 && clip.aiAnalysis?.visualMoments?.length) {
           planned = planClipVisualMoments({
             rawMoments: clip.aiAnalysis.visualMoments,
@@ -493,7 +517,7 @@ export async function processClipJob(
               minDuration: visualSettings.render.visualMinDuration,
               defaultDuration: visualSettings.render.visualDefaultDuration,
               defaultAnimation: visualSettings.render.visualAnimation,
-              fillDensityGaps: visualSettings.render.maxVisualMoments >= 6,
+              fillDensityGaps: false,
             },
           });
         } else if (planned.length > 0) {
@@ -520,21 +544,33 @@ export async function processClipJob(
         }
 
         if (planned.length > 0) {
-          // Render path stays strictly offline: only use local files already prefetched/cached
-          // in data/visual-cache or SQLite image_bank; any unready photo moment falls back to a keyword pop.
+          // 1. Check local files and SQLite image_bank first.
           const usedBankAssets = new Set<string>();
-          const resolvedVisuals = planned.map((item) => {
+          const usedFilePaths = new Set<string>();
+          let resolvedVisuals = planned.map((item) => {
             if (item.status === 'removed') return item;
-            if (item.kind === 'keyword-pop' || item.kind === 'zoom-beat') {
-              return { ...item, kind: 'keyword-pop' as const, status: 'resolved' as const };
-            }
             if (item.localFilePath && fs.existsSync(item.localFilePath)) {
-              return { ...item, status: 'resolved' as const };
+              const converted = preScaleCachedVisualImage(
+                item.localFilePath,
+                item.width ?? 1200,
+                item.height ?? 1200
+              );
+              usedFilePaths.add(path.resolve(item.localFilePath));
+              usedFilePaths.add(path.resolve(converted));
+              return {
+                ...item,
+                kind: 'photo-card' as const,
+                status: 'resolved' as const,
+                localFilePath: converted,
+                mediaUrl: `/api/media/visual-cache/${path.basename(converted)}`,
+              };
             }
             const allowedProviders = getProviderOrderForMoment({
               moment: item,
               renderSettings: visualSettings.render,
               hasPexelsKey: Boolean(visualSettings.pexelsApiKey),
+              hasPixabayKey: Boolean(visualSettings.pixabayApiKey),
+              hasUnsplashKey: Boolean(visualSettings.unsplashAccessKey),
             });
             const bankHit = findMatchingImageBankEntry({
               moment: item,
@@ -543,8 +579,10 @@ export async function processClipJob(
             });
             if (bankHit && fs.existsSync(bankHit.localPath)) {
               usedBankAssets.add(bankHit.id);
+              usedFilePaths.add(path.resolve(bankHit.localPath));
               return {
                 ...item,
+                kind: 'photo-card' as const,
                 status: 'resolved' as const,
                 localFilePath: bankHit.localPath,
                 mediaUrl: `/api/media/visual-cache/${path.basename(bankHit.localPath)}`,
@@ -556,27 +594,85 @@ export async function processClipJob(
             }
             return {
               ...item,
-              kind: 'keyword-pop' as const,
-              status: 'resolved' as const,
-              skipReason: item.skipReason ?? 'Fallback to keyword pop (no local image ready at render start).',
+              kind: 'photo-card' as const,
+              status: 'planned' as const,
             };
           });
+
+          // 2. If any moment still lacks a local image (e.g. clip was queued before prefetch or re-rendered),
+          // resolve from cached search results / providers, then fall back to any downloaded image in data/visual-cache.
+          const needsProviderResolve = resolvedVisuals.some(
+            (item) =>
+              item.status !== 'removed' &&
+              (!item.localFilePath || !fs.existsSync(item.localFilePath))
+          );
+          if (needsProviderResolve) {
+            resolvedVisuals = await resolveVisualOverlaysForClip(resolvedVisuals, {
+              renderSettings: { ...visualSettings.render, visualVisionVerify: false },
+              geminiApiKeys: visualSettings.geminiApiKeys,
+              pexelsApiKey: visualSettings.pexelsApiKey,
+              pixabayApiKey: visualSettings.pixabayApiKey,
+              unsplashAccessKey: visualSettings.unsplashAccessKey,
+              openverseClientId: visualSettings.openverseClientId,
+              openverseClientSecret: visualSettings.openverseClientSecret,
+              wikimediaUserAgent: visualSettings.wikimediaUserAgent,
+            });
+          }
+
+          resolvedVisuals = resolvedVisuals.map((item) => {
+            if (item.status === 'removed') return item;
+            if (item.localFilePath && fs.existsSync(item.localFilePath)) {
+              const converted = preScaleCachedVisualImage(
+                item.localFilePath,
+                item.width ?? 1200,
+                item.height ?? 1200
+              );
+              usedFilePaths.add(path.resolve(item.localFilePath));
+              usedFilePaths.add(path.resolve(converted));
+              return {
+                ...item,
+                kind: 'photo-card' as const,
+                status: 'resolved' as const,
+                localFilePath: converted,
+                mediaUrl: `/api/media/visual-cache/${path.basename(converted)}`,
+              };
+            }
+            const fallbackCached = findFallbackCachedVisualFile(usedFilePaths);
+            if (fallbackCached) {
+              return {
+                ...item,
+                kind: 'photo-card' as const,
+                status: 'resolved' as const,
+                localFilePath: fallbackCached.localFilePath,
+                mediaUrl: fallbackCached.mediaUrl,
+                width: fallbackCached.width,
+                height: fallbackCached.height,
+                ...(fallbackCached.attribution ? { attribution: fallbackCached.attribution } : {}),
+              };
+            }
+            return {
+              ...item,
+              status: 'skipped' as const,
+              skipReason: item.skipReason ?? 'No local image available.',
+            };
+          });
+
           clip.visualOverlays = resolvedVisuals;
           await updateClip(clip).catch(() => undefined);
 
+          // Place contextual images behind the captions without covering speaker faces.
           const cardPlacement = planVisualCardPlacement({
             plan,
             captionBand: overlayLayout.placements.caption,
             hookBand: overlayLayout.placements.hook,
             ctaBand: overlayLayout.placements.cta,
             cardAspect: visualSettings.render.visualCardAspect ?? 'portrait',
+            placeBehindCaptions: true,
           });
 
           for (const item of resolvedVisuals) {
             if (item.status === 'removed' || item.status === 'skipped') continue;
-            const hasLocalPhoto =
-              (item.kind ?? 'photo-card') === 'photo-card' &&
-              Boolean(item.localFilePath && fs.existsSync(item.localFilePath));
+            const hasLocalPhoto = Boolean(item.localFilePath && fs.existsSync(item.localFilePath));
 
             if (hasLocalPhoto && item.localFilePath) {
               for (const win of item.outputWindows) {
@@ -592,23 +688,6 @@ export async function processClipJob(
                   end: win.end,
                   animation: item.animation,
                   border: visualSettings.render.visualCardBorder ?? true,
-                });
-              }
-            } else {
-              // Keyword-pop beat (or photo moment that fell back when no local image was ready)
-              const callout = extractKeywordPopCallout(item);
-              for (const win of item.outputWindows) {
-                if (win.end - win.start < 0.5) continue;
-                keywordPops.push({
-                  id: `${item.id}_${win.segment}`,
-                  text: callout.text,
-                  subtext: callout.subtext,
-                  start: win.start,
-                  end: win.end,
-                  x: cardPlacement.x,
-                  y: Math.round(cardPlacement.y + cardPlacement.height * 0.28),
-                  width: cardPlacement.width,
-                  animation: item.animation,
                 });
               }
             }
@@ -637,9 +716,14 @@ export async function processClipJob(
       `Step 2/3 · Render transparent overlays (Remotion)  ${color.gray(`(${clipWords.length} words, ${keywordPops.length} keyword pop(s), preset "${preset.name}")`)}`
     );
     const overlayProgressSink = (progress: number): void => {
+      if (cancelFlag) return;
       const scaled = 20 + Math.max(0, Math.min(100, progress)) * 0.1;
       clip.progress = Math.max(clip.progress ?? 0, Math.round(scaled));
-      void updateClip(clip).catch((error) => log.warn('progress save failed: ' + toErrorMessage(error)));
+      void updateClip(clip)
+        .then(() => {
+          if (clip.cancelling) cancelFlag = true;
+        })
+        .catch((error) => log.warn('progress save failed: ' + toErrorMessage(error)));
       void reportProgress(scaled);
     };
 
@@ -721,9 +805,14 @@ export async function processClipJob(
         )
       );
       const progressSink = (progress: number): void => {
+        if (cancelFlag) return;
         const scaled = 30 + Math.max(0, Math.min(80, progress)) * 0.85;
         clip.progress = Math.max(clip.progress ?? 0, Math.round(scaled));
-        void updateClip(clip).catch((error) => log.warn('progress save failed: ' + toErrorMessage(error)));
+        void updateClip(clip)
+          .then(() => {
+            if (clip.cancelling) cancelFlag = true;
+          })
+          .catch((error) => log.warn('progress save failed: ' + toErrorMessage(error)));
         void reportProgress(scaled);
       };
 

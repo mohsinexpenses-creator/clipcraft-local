@@ -121,9 +121,20 @@ async function requestJson(
   init: RequestInit,
   signal?: AbortSignal
 ): Promise<{ status: number; ok: boolean; data: JsonRecord }> {
-  const response = await fetch(url, { ...init, signal });
-  const text = await response.text();
-  return { status: response.status, ok: response.ok, data: parseJson(text) };
+  abortIfRequested(signal);
+  try {
+    const response = await fetch(url, { ...init, signal });
+    const text = await response.text();
+    return { status: response.status, ok: response.ok, data: parseJson(text) };
+  } catch (error) {
+    if (
+      signal?.aborted ||
+      (error instanceof Error && error.name === 'AbortError')
+    ) {
+      throw new UploadAbortedError();
+    }
+    throw error;
+  }
 }
 
 /** PUT one chunk with XMLHttpRequest - `fetch()` cannot report upload progress. */

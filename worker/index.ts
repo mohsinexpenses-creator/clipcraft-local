@@ -53,9 +53,11 @@ async function transcribeVideoJob(
 
   try {
     const transcript = await transcribeVideo(data.filePath);
-    // A user may delete the source while whisper is running. Do not recreate its row.
+    // A user may delete the source or cancel the pipeline while whisper is running.
     const current = await getVideo(data.videoId);
-    if (!current) return { status: 'cancelled', videoId: data.videoId };
+    if (!current || (current.status === 'failed' && current.error === 'Cancelled by user.')) {
+      return { status: 'cancelled', videoId: data.videoId };
+    }
 
     current.transcript = transcript;
     current.status = 'transcribed';

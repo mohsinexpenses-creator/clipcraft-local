@@ -1391,6 +1391,28 @@ export function updateClipRecordSync(
   db: SqliteDatabase,
   clip: ClipRecord,
 ): boolean {
+  if (clip.status === "processing" && !clip.cancelling && (clip.progress ?? 0) > 5) {
+    const existingRow = db
+      .prepare("SELECT status, record_json FROM clips WHERE id = ?")
+      .get(clip._id) as { status: string; record_json: string } | undefined;
+    if (existingRow) {
+      try {
+        const existingParsed = JSON.parse(existingRow.record_json) as Partial<ClipRecord>;
+        if (
+          existingParsed.cancelling ||
+          (existingRow.status === "failed" && existingParsed.error === "Cancelled by user.")
+        ) {
+          clip.cancelling = true;
+          if (existingRow.status === "failed") {
+            return true;
+          }
+        }
+      } catch {
+        // ignore malformed json
+      }
+    }
+  }
+
   clip.updatedAt = new Date().toISOString();
   const result = db
     .prepare(

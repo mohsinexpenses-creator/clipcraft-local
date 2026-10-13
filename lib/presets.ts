@@ -1158,13 +1158,11 @@ For every clip, provide:
 
 7. Contextual Visual Moments Plan (Dense, Multi-Beat Pacing)
 
-For each clip, plan roughly 10 to 14 engaging visual beats per 60 seconds (~1 beat every 4 to 5 seconds) so the viewer gets continuous visual variety across the clip:
+For each clip, plan roughly 10 to 14 engaging visual beats per 60 seconds (~1 beat every 4 to 5 seconds) so the viewer gets continuous contextual image overlays across the clip:
 
-- Mix three beat kinds via the "kind" field:
-  (a) "photo-card": contextual portrait/square photo card for concrete scenes, named people/places/events, objects, or emotional situations.
-  (b) "keyword-pop": bold on-screen keyword/stat callout card (rendered directly in Remotion with zero image fetch) for punchy numbers, statistics, contrasts, or 2-5 word takeaway phrases. Put the short punchy callout text in "entity_name" or "visual_intent".
-  (c) "zoom-beat": subtle speaker emphasis beat when neither a photo card nor a keyword pop is needed.
+- Default "kind" to "photo-card" so each moment displays a contextual portrait/square photo behind the captions without covering the speaker's face.
 - Base each visual moment on the full sentence, idea, action, consequence, comparison, statistic, or emotional beat — NEVER trigger a photo card merely because a single noun was spoken.
+- In "visual_intent", describe the concrete visual subject (e.g. "crowded trading floor during market crash"), NEVER write instructions like "show something like this" or "show an image of".
 - Understand surrounding context and emotional polarity: a celebratory scene and a scene going badly must produce different visual intents, search queries, and negative/avoid cues.
 - Identify when a named person, place, or historical/cultural event is central ("category": "person", "place", or "named_event", with exact "entity_name").
 - Never invent or return raw image URLs. Return short, provider-friendly English "search_queries" and "negative_cues" that exclude contradictory imagery.
