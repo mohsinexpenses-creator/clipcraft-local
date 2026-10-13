@@ -2,7 +2,12 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { AppError, RenderCancelledError, toErrorMessage } from '../lib/errors';
-import { CaptionPreset, OverlayStylePreset, WordTimestamp } from '../lib/types';
+import {
+  CaptionPreset,
+  KeywordPopOverlayItem,
+  OverlayStylePreset,
+  WordTimestamp,
+} from '../lib/types';
 import { maskProfanity } from '../lib/profanity';
 import { log } from '../lib/logger';
 import { CaptionOverlayCompositionProps } from '../remotion/OverlayCompositions';
@@ -28,6 +33,7 @@ export interface PrepareRemotionOverlaysOptions {
   hookStyle: OverlayStylePreset;
   ctaStyle: OverlayStylePreset;
   captionLiftScale?: number;
+  keywordPops?: KeywordPopOverlayItem[];
   onProgress?: (progress: number) => void;
   isCancelled?: () => boolean;
 }
@@ -137,6 +143,11 @@ export async function prepareRemotionCaptionOverlays(
       hookStyle: options.hookStyle,
       ctaStyle: options.ctaStyle,
       captionLiftScale: options.captionLiftScale ?? 1,
+      keywordPops: (options.keywordPops ?? []).map((item) => ({
+        ...item,
+        text: maskProfanity(item.text),
+        subtext: item.subtext ? maskProfanity(item.subtext) : undefined,
+      })),
     };
 
     const composition = await withTimeout(

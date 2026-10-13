@@ -1156,15 +1156,19 @@ For every clip, provide:
 
 (Lock)
 
-7. Contextual Visual Moments Plan (Optional, High-Value Only)
+7. Contextual Visual Moments Plan (Dense, Multi-Beat Pacing)
 
-For each clip, identify 0 to 2 (at most 3) meaningful visual beats where a free-to-use contextual image overlay would genuinely strengthen comprehension or retention:
+For each clip, plan roughly 10 to 14 engaging visual beats per 60 seconds (~1 beat every 4 to 5 seconds) so the viewer gets continuous visual variety across the clip:
 
-- Base each visual moment on the full sentence, idea, action, consequence, comparison, statistic, or emotional beat — NEVER trigger a visual merely because a single noun was spoken.
+- Mix three beat kinds via the "kind" field:
+  (a) "photo-card": contextual portrait/square photo card for concrete scenes, named people/places/events, objects, or emotional situations.
+  (b) "keyword-pop": bold on-screen keyword/stat callout card (rendered directly in Remotion with zero image fetch) for punchy numbers, statistics, contrasts, or 2-5 word takeaway phrases. Put the short punchy callout text in "entity_name" or "visual_intent".
+  (c) "zoom-beat": subtle speaker emphasis beat when neither a photo card nor a keyword pop is needed.
+- Base each visual moment on the full sentence, idea, action, consequence, comparison, statistic, or emotional beat — NEVER trigger a photo card merely because a single noun was spoken.
 - Understand surrounding context and emotional polarity: a celebratory scene and a scene going badly must produce different visual intents, search queries, and negative/avoid cues.
 - Identify when a named person, place, or historical/cultural event is central ("category": "person", "place", or "named_event", with exact "entity_name").
 - Never invent or return raw image URLs. Return short, provider-friendly English "search_queries" and "negative_cues" that exclude contradictory imagery.
-- Set "suggested_duration" to cover the full semantic beat (typically 2.5 to 5.0 seconds, NEVER a 1-second single-word flash).
+- Set "suggested_duration" to cover the semantic beat (typically 2.0 to 3.5 seconds, NEVER a 1-second single-word flash).
 - Default "placement" to "main" unless a visual is specifically meant for "hook" or "both".
 - If no visual would add clear value, return "visualMoments": [].
 
@@ -1264,7 +1268,8 @@ JSON SCHEMA:
           "confidence": 0.85,
           "suggested_duration": 3.5,
           "animation": "subtle-zoom | fade | slide-up | pop",
-          "placement": "main | hook | both"
+          "placement": "main | hook | both",
+          "kind": "photo-card | keyword-pop | zoom-beat"
         }
       ]
     }

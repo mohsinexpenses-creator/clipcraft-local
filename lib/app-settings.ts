@@ -423,6 +423,16 @@ export function sanitizeSettingsSection(
       if (input.visualShowOnVideoCredit !== undefined) {
         out.visualShowOnVideoCredit = boolOf(input.visualShowOnVideoCredit, 'On-video visual credit');
       }
+      if (input.visualCardAspect !== undefined) {
+        const aspect = stringValue(input.visualCardAspect);
+        if (aspect !== 'portrait' && aspect !== 'square') {
+          throw badRequest('Invalid visual card aspect ratio.', 'Choose portrait (4:5) or square (1:1).');
+        }
+        out.visualCardAspect = aspect;
+      }
+      if (input.visualCardBorder !== undefined) {
+        out.visualCardBorder = boolOf(input.visualCardBorder, 'Visual card border');
+      }
       if (input.sfxEnabled !== undefined) {
         out.sfxEnabled = boolOf(input.sfxEnabled, 'Sound effects enabled');
       }
@@ -771,6 +781,12 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
     visualProviderPriority: resolveVisualProviderPriorityStored(renderStored.visualProviderPriority),
     visualShowOnVideoCredit:
       boolValue(renderStored.visualShowOnVideoCredit) ?? DEFAULT_RENDER_SETTINGS.visualShowOnVideoCredit,
+    visualCardAspect:
+      renderStored.visualCardAspect === 'square' || renderStored.visualCardAspect === 'portrait'
+        ? renderStored.visualCardAspect
+        : (DEFAULT_RENDER_SETTINGS.visualCardAspect ?? 'portrait'),
+    visualCardBorder:
+      boolValue(renderStored.visualCardBorder) ?? (DEFAULT_RENDER_SETTINGS.visualCardBorder ?? true),
     sfxEnabled: boolValue(renderStored.sfxEnabled) ?? (DEFAULT_RENDER_SETTINGS.sfxEnabled ?? true),
     sfxVolume: clampFloatInRange(
       renderStored.sfxVolume,

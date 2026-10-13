@@ -317,16 +317,16 @@ export function RenderSettingsPanel({
 
         {(value.autoVisuals ?? true) && (
           <>
-            <div className="grid gap-3 sm:grid-cols-3">
+            <div className="grid gap-3 sm:grid-cols-4">
               <Field
                 label="Max visuals / clip"
-                hint="Default 2 high-value visual beats per short clip (up to 3)."
+                hint="Default 12 beats per 60s clip (~1 every 4-5s, up to 16)."
               >
                 <NumberField
                   id="default-max-visual-moments"
-                  value={value.maxVisualMoments ?? 2}
+                  value={value.maxVisualMoments ?? 12}
                   min={limits?.maxVisualMoments?.min ?? 0}
-                  max={limits?.maxVisualMoments?.max ?? 3}
+                  max={limits?.maxVisualMoments?.max ?? 16}
                   step={1}
                   onCommit={(maxVisualMoments) => patch({ maxVisualMoments })}
                   disabled={disabled}
@@ -348,6 +348,30 @@ export function RenderSettingsPanel({
                   }
                   disabled={disabled}
                 />
+              </Field>
+
+              <Field
+                label="Card shape"
+                hint="Portrait 4:5 (720x900) or Square 1:1 (720x720)."
+              >
+                <Select
+                  value={value.visualCardAspect ?? "portrait"}
+                  onValueChange={(next) =>
+                    patch({
+                      visualCardAspect: (next ??
+                        "portrait") as RenderDefaults["visualCardAspect"],
+                    })
+                  }
+                  disabled={disabled}
+                >
+                  <SelectTrigger className="h-8 text-[12px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="dark">
+                    <SelectItem value="portrait">Portrait 4:5 (720×900)</SelectItem>
+                    <SelectItem value="square">Square 1:1 (720×720)</SelectItem>
+                  </SelectContent>
+                </Select>
               </Field>
 
               <Field

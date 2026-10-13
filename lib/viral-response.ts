@@ -12,6 +12,7 @@ import {
   RETENTION_STRENGTHS,
   RISKY_WORD_ACTIONS,
   SAFETY_RISKS,
+  VISUAL_BEAT_KINDS,
   VISUAL_EMOTIONAL_POLARITIES,
   VISUAL_MOMENT_CATEGORIES,
   VISUAL_MOMENT_PLACEMENTS,
@@ -126,7 +127,9 @@ export const isVisualMomentPlan = (moment: unknown): boolean => {
     Number.isFinite(entry.suggested_duration) &&
     entry.suggested_duration >= 0 &&
     VISUAL_OVERLAY_ANIMATIONS.includes(entry.animation as (typeof VISUAL_OVERLAY_ANIMATIONS)[number]) &&
-    VISUAL_MOMENT_PLACEMENTS.includes(entry.placement as (typeof VISUAL_MOMENT_PLACEMENTS)[number])
+    VISUAL_MOMENT_PLACEMENTS.includes(entry.placement as (typeof VISUAL_MOMENT_PLACEMENTS)[number]) &&
+    (entry.kind === undefined ||
+      VISUAL_BEAT_KINDS.includes(entry.kind as (typeof VISUAL_BEAT_KINDS)[number]))
   );
 };
 

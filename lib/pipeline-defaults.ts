@@ -24,9 +24,9 @@ import {
 export const OPTION_LIMITS = {
   clipCount: { min: 1, max: 25 },
   minClipDuration: { min: 5, max: 600 },
-  maxVisualMoments: { min: 0, max: 3 },
+  maxVisualMoments: { min: 0, max: 16 },
   visualConfidence: { min: 0.1, max: 1 },
-  visualDuration: { min: 1.5, max: 8 },
+  visualDuration: { min: 1.2, max: 8 },
   sfxVolume: { min: -36, max: 0 },
 } as const;
 

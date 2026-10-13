@@ -267,21 +267,26 @@ function bandOverlap(a: Band, b: { top: number; bottom: number }): number {
 
 /**
  * Computes a safe on-canvas 9:16 card placement for contextual visual overlays
- * that avoids the caption band, hook/CTA cards, and split-screen face zones.
+ * (portrait ~720x900 4:5 by default, or square 720x720 1:1) in the upper/center
+ * safe area without colliding with captions, hook/CTA cards, or detected faces.
  */
 export function planVisualCardPlacement(params: {
   plan: LayoutPlan;
   captionBand?: Band;
   hookBand?: Band;
   ctaBand?: Band;
+  cardAspect?: 'portrait' | 'square';
   cardWidth?: number;
   cardHeight?: number;
 }): VisualCardPlacement {
   const { plan, hookBand, ctaBand } = params;
   const captionBand: Band = params.captionBand ?? { top: 1320, bottom: 1620 };
-  const width = Math.max(320, Math.min(960, Math.round(params.cardWidth ?? 760)));
-  const height = Math.max(240, Math.min(720, Math.round(params.cardHeight ?? 460)));
-  const x = Math.round((CANVAS_WIDTH - width) / 2);
+  const aspect = params.cardAspect ?? 'portrait';
+  const defaultWidth = 720;
+  const defaultHeight = aspect === 'square' ? 720 : 900;
+
+  let width = Math.max(320, Math.min(960, Math.round((params.cardWidth ?? defaultWidth) / 2) * 2));
+  let height = Math.max(240, Math.min(960, Math.round((params.cardHeight ?? defaultHeight) / 2) * 2));
 
   const reservedBands: Band[] = [captionBand];
   if (hookBand) reservedBands.push(hookBand);
@@ -290,15 +295,38 @@ export function planVisualCardPlacement(params: {
   const stackTop = Math.min(...reservedBands.map((b) => b.top));
   const stackBottom = Math.max(...reservedBands.map((b) => b.bottom));
 
+  // If the upper safe area above the overlay stack is tighter than the card height,
+  // scale proportionally while preserving the portrait (4:5) or square (1:1) aspect ratio.
+  const upperAvailableHeight = stackTop - OVERLAY_STACK_GAP - EDGE_MARGIN;
+  if (upperAvailableHeight >= 360 && upperAvailableHeight < height) {
+    const ratio = width / height;
+    height = Math.max(360, Math.floor(upperAvailableHeight / 2) * 2);
+    width = Math.max(320, Math.floor((height * ratio) / 2) * 2);
+  }
+
+  const x = Math.round((CANVAS_WIDTH - width) / 2);
+
+  const upperMaxTop = Math.max(EDGE_MARGIN, stackTop - height - OVERLAY_STACK_GAP);
+  const upperMidTop = Math.round((EDGE_MARGIN + upperMaxTop) / 2);
   const candidateTops: number[] = [
     108,
-    Math.max(EDGE_MARGIN, stackTop - height - OVERLAY_STACK_GAP),
+    upperMidTop,
+    upperMaxTop,
     Math.min(CANVAS_HEIGHT - height - EDGE_MARGIN, stackBottom + OVERLAY_STACK_GAP),
     CANVAS_HEIGHT - height - 120,
   ];
 
   const faceZones: Array<{ top: number; bottom: number }> =
-    plan.mode === 'split' ? plan.cells.map((c) => c.faceZone) : [];
+    plan.mode === 'split'
+      ? plan.cells.map((c) => c.faceZone)
+      : Number.isFinite(plan.faceAnchorY)
+        ? [
+            {
+              top: Math.max(0, Math.round(plan.faceAnchorY * CANVAS_HEIGHT - 160)),
+              bottom: Math.min(CANVAS_HEIGHT, Math.round(plan.faceAnchorY * CANVAS_HEIGHT + 160)),
+            },
+          ]
+        : [];
 
   let bestTop = 108;
   let bestPenalty = Number.POSITIVE_INFINITY;
@@ -315,7 +343,7 @@ export function planVisualCardPlacement(params: {
 
     let facePenalty = 0;
     for (const fz of faceZones) {
-      facePenalty += bandOverlap(candidateBand, fz) * 2;
+      facePenalty += bandOverlap(candidateBand, fz) * 1.5;
     }
 
     // Slight preference for the upper contextual zone when clear

@@ -3,11 +3,13 @@ import {
   DEFAULT_RENDER_SETTINGS,
   DEFAULT_VIRAL_OPTIONS,
   TranscriptData,
+  VISUAL_BEAT_KINDS,
   VISUAL_EMOTIONAL_POLARITIES,
   VISUAL_MOMENT_CATEGORIES,
   VISUAL_MOMENT_PLACEMENTS,
   VISUAL_OVERLAY_ANIMATIONS,
   VisualAssetAttribution,
+  VisualBeatKind,
   VisualEmotionalPolarity,
   VisualMomentCategory,
   VisualMomentPlacement,
@@ -486,6 +488,72 @@ export interface PlanClipVisualMomentsOptions {
   defaultDuration?: number;
   defaultAnimation?: VisualOverlayAnimation;
   allowDuplicateHookReplay?: boolean;
+  /** When true (or when maxVisualMoments >= 8 and transcript is present), fills uncovered ~4.5-5s windows with keyword-pop beats. */
+  fillDensityGaps?: boolean;
+}
+
+function normalizeBeatKind(value: unknown): VisualBeatKind {
+  if (
+    typeof value === 'string' &&
+    VISUAL_BEAT_KINDS.includes(value as VisualBeatKind)
+  ) {
+    return value as VisualBeatKind;
+  }
+  return 'photo-card';
+}
+
+/**
+ * Extracts a short, punchy 1-6 word callout headline (`text`) and optional `subtext`
+ * for rendering a `keyword-pop` beat (or a `photo-card` beat that fell back to a keyword pop).
+ */
+export function extractKeywordPopCallout(
+  overlay: Pick<ClipVisualOverlay, 'entityName' | 'visualIntent' | 'quote' | 'searchQueries'>
+): { text: string; subtext?: string } {
+  const entity = (overlay.entityName ?? '').trim();
+  const intent = (overlay.visualIntent ?? '').trim();
+  const quote = (overlay.quote ?? '').trim();
+  const query = (overlay.searchQueries?.[0] ?? '').trim();
+
+  // Prefer short explicit entity/stat if <= 36 chars
+  if (entity && entity.length <= 36) {
+    const sub =
+      intent && intent.toLowerCase() !== entity.toLowerCase()
+        ? intent.split(/[.;!?]/)[0].trim().slice(0, 56)
+        : undefined;
+    return { text: entity.toUpperCase(), subtext: sub };
+  }
+
+  // Otherwise condense quote/intent/query into 2-5 high-signal content words
+  const source = quote || intent || query;
+  const numberMatch = source.match(
+    /(?:\$?\d[\d,.]*(?:\s*(?:%|percent|million|billion|thousand|k|m|x|hours|days|years|seconds|minutes))?)/i
+  );
+  const words = source
+    .replace(/[^\p{L}\p{N}$%\s-]/gu, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+  const contentWords = words.filter((w) => !STOP_WORDS.has(w.toLowerCase()));
+
+  let headline = '';
+  if (numberMatch && contentWords.length > 0) {
+    const rest = contentWords
+      .filter((w) => !numberMatch[0].toLowerCase().includes(w.toLowerCase()))
+      .slice(0, 3)
+      .join(' ');
+    headline = `${numberMatch[0]} ${rest}`.trim();
+  } else if (contentWords.length > 0) {
+    headline = contentWords.slice(0, 4).join(' ');
+  } else {
+    headline = words.slice(0, 4).join(' ');
+  }
+
+  const cleanHeadline = (headline || 'KEY MOMENT').slice(0, 36).toUpperCase();
+  const cleanSubtext =
+    quote && quote.length > cleanHeadline.length + 6
+      ? quote.split(/[.;!?]/)[0].trim().slice(0, 64)
+      : undefined;
+
+  return { text: cleanHeadline, subtext: cleanSubtext };
 }
 
 /**
@@ -670,6 +738,7 @@ export function planClipVisualMoments(params: {
       category === 'person' || category === 'place' || category === 'named_event'
         ? 'editorial'
         : 'illustrative';
+    const kind = normalizeBeatKind(item.kind);
 
     candidates.push({
       id: `vm-${idx + 1}-${Math.round(finalStart * 10)}`,
@@ -690,7 +759,8 @@ export function planClipVisualMoments(params: {
       animation,
       placement: effectivePlacement,
       framing,
-      status: 'planned',
+      kind,
+      status: kind === 'keyword-pop' ? 'resolved' : 'planned',
     });
   }
 
@@ -766,7 +836,7 @@ export function planClipVisualMoments(params: {
   );
 
   const selected: ClipVisualOverlay[] = [];
-  const MIN_BEAT_GAP_SECONDS = 1.5;
+  const MIN_BEAT_GAP_SECONDS = maxVisualMoments > 4 ? 1.0 : 1.5;
 
   for (const item of byConfidence) {
     if (selected.length >= maxVisualMoments) break;
@@ -780,6 +850,88 @@ export function planClipVisualMoments(params: {
     });
     if (!conflicts) {
       selected.push(item);
+    }
+  }
+
+  // Dense beat pacing: when targeting ~10-14 beats per 60s (maxVisualMoments >= 8) and
+  // fillDensityGaps is enabled, fill uncovered >= 4.8s transcript intervals with keyword-pop beats.
+  const targetDensityCount = Math.min(
+    maxVisualMoments,
+    Math.max(1, Math.round(clipDuration / 4.6))
+  );
+  const shouldFillGaps = options?.fillDensityGaps === true;
+
+  if (shouldFillGaps && selected.length < targetDensityCount && transcript) {
+    const gapDuration = Math.max(2.0, Math.min(2.6, minDuration));
+    const step = 4.6;
+    for (
+      let cursor = clipStart + 1.5;
+      cursor + gapDuration <= clipEnd - 1.0 && selected.length < targetDensityCount;
+      cursor += step
+    ) {
+      const winStart = round2(cursor);
+      const winEnd = round2(cursor + gapDuration);
+      const overlapsExisting = selected.some(
+        (chosen) =>
+          winStart < chosen.sourceEnd + MIN_BEAT_GAP_SECONDS &&
+          winEnd + MIN_BEAT_GAP_SECONDS > chosen.sourceStart
+      );
+      if (overlapsExisting) continue;
+
+      // Find transcript words or segment inside [winStart, winEnd]
+      const wordsInWin = (transcript.words ?? []).filter(
+        (w) => w.end > winStart && w.start < winEnd
+      );
+      let phrase = wordsInWin.map((w) => w.word).join(' ').trim();
+      if (!phrase && transcript.segments?.length) {
+        const seg = transcript.segments.find(
+          (s) => s.end > winStart && s.start < winEnd
+        );
+        if (seg) phrase = seg.text.trim();
+      }
+      const tokens = tokenizeContentWords(phrase);
+      if (tokens.length < 2) continue;
+
+      const { effectivePlacement, outputWindows } = mapVisualMomentToOutputTimeline({
+        sourceStart: winStart,
+        sourceEnd: winEnd,
+        clipStart,
+        clipEnd,
+        placement: 'main',
+        hookTiming,
+        allowDuplicateHookReplay: false,
+      });
+      if (outputWindows.length === 0) continue;
+
+      const callout = extractKeywordPopCallout({
+        entityName: '',
+        visualIntent: phrase,
+        quote: phrase,
+        searchQueries: [tokens.slice(0, 4).join(' ')],
+      });
+
+      selected.push({
+        id: `vm-kw-${Math.round(winStart * 10)}`,
+        quote: phrase.slice(0, 120),
+        sourceStart: winStart,
+        sourceEnd: winEnd,
+        clipRelativeStart: round2(winStart - clipStart),
+        clipRelativeEnd: round2(winEnd - clipStart),
+        displayDuration: round2(winEnd - winStart),
+        outputWindows,
+        category: 'concept',
+        entityName: callout.text,
+        visualIntent: callout.subtext ?? phrase.slice(0, 80),
+        emotionalPolarity: 'neutral',
+        searchQueries: [tokens.slice(0, 4).join(' ')],
+        negativeCues: [],
+        confidence: 0.72,
+        animation: 'pop',
+        placement: effectivePlacement,
+        framing: 'illustrative',
+        kind: 'keyword-pop',
+        status: 'resolved',
+      });
     }
   }
 

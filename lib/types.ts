@@ -124,7 +124,7 @@ export const DEFAULT_VIRAL_OPTIONS: Required<ViralDetectionOptions> = {
   includeHookText: true,
   includeCta: true,
   includeVisuals: true,
-  maxVisualMoments: 2,
+  maxVisualMoments: 12,
   visualConfidenceThreshold: 0.65,
 };
 
@@ -241,6 +241,10 @@ export interface RenderDefaults {
   visualProviderPriority: VisualProviderName[];
   /** Burn a subtle credit badge onto visual cards that require attribution. */
   visualShowOnVideoCredit: boolean;
+  /** Aspect ratio for visual cards: 'portrait' (~720x900, 4:5, default) or 'square' (720x720, 1:1). */
+  visualCardAspect?: VisualCardAspect;
+  /** Render a crisp thin border around visual cards (default true). */
+  visualCardBorder?: boolean;
   /** Master toggle for sound effects on hooks, transitions, visual cards, and CTAs. */
   sfxEnabled?: boolean;
   /** Master SFX volume in dB (default -14 dB). */
@@ -256,14 +260,16 @@ export const DEFAULT_RENDER_SETTINGS: RenderDefaults = {
   hookDuration: 3,
   ctaDuration: 2.5,
   autoVisuals: true,
-  maxVisualMoments: 2,
+  maxVisualMoments: 12,
   visualConfidenceThreshold: 0.65,
-  visualMinDuration: 2.5,
-  visualDefaultDuration: 3.5,
+  visualMinDuration: 2.0,
+  visualDefaultDuration: 2.8,
   visualAnimation: 'subtle-zoom',
   visualProviders: { pexels: true, openverse: true, wikimedia: true },
   visualProviderPriority: ['pexels', 'openverse', 'wikimedia'],
   visualShowOnVideoCredit: true,
+  visualCardAspect: 'portrait',
+  visualCardBorder: true,
   sfxEnabled: true,
   sfxVolume: -14,
 };
@@ -468,6 +474,21 @@ export type RiskyWordAction = (typeof RISKY_WORD_ACTIONS)[number];
 
 export const VISUAL_BEAT_KINDS = ['photo-card', 'keyword-pop', 'zoom-beat'] as const;
 export type VisualBeatKind = (typeof VISUAL_BEAT_KINDS)[number];
+
+export const VISUAL_CARD_ASPECTS = ['portrait', 'square'] as const;
+export type VisualCardAspect = (typeof VISUAL_CARD_ASPECTS)[number];
+
+export interface KeywordPopOverlayItem {
+  id: string;
+  text: string;
+  subtext?: string;
+  start: number;
+  end: number;
+  x: number;
+  y: number;
+  width: number;
+  animation?: VisualOverlayAnimation;
+}
 
 export interface VisualMomentPlan {
   /** Exact transcript anchor quote, phrase or sentence reference for the semantic beat. */

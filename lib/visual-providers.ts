@@ -1,7 +1,9 @@
 import crypto from 'crypto';
+import { spawnSync } from 'child_process';
 import fs from 'fs';
 import net from 'net';
 import path from 'path';
+import { getFfmpegPath } from './ffmpeg';
 import {
   ClipVisualOverlay,
   DEFAULT_AI_SETTINGS,
@@ -1977,13 +1979,75 @@ export async function downloadVisualAssetSafely(params: {
     fs.renameSync(tempPath, localFilePath);
   }
 
+  const finalPath = preScaleCachedVisualImage(
+    localFilePath,
+    inspected.width,
+    inspected.height
+  );
+
   return {
     buffer,
     contentHash,
     inspected,
-    localFilePath,
-    mediaUrl: `/api/media/visual-cache/${fileName}`,
+    localFilePath: finalPath,
+    mediaUrl: `/api/media/visual-cache/${path.basename(finalPath)}`,
   };
+}
+
+/**
+ * Pre-scales a cached visual image once to ~2x card crop size (<= 1440x1800) so the
+ * per-frame FFmpeg Ken-Burns filter never has to resample a 12-24 MP raw stock photo.
+ * Falls back silently to `localFilePath` if the image is already <= 1440x1800 or if
+ * FFmpeg is unavailable in a unit-test environment.
+ */
+export function preScaleCachedVisualImage(
+  localFilePath: string,
+  width: number,
+  height: number,
+  maxWidth = 1440,
+  maxHeight = 1800
+): string {
+  if (!localFilePath || !fs.existsSync(localFilePath)) return localFilePath;
+  if (width <= maxWidth && height <= maxHeight) return localFilePath;
+
+  const parsed = path.parse(localFilePath);
+  const prescaledPath = path.join(parsed.dir, `${parsed.name}.2x.jpg`);
+  if (fs.existsSync(prescaledPath)) {
+    try {
+      if (fs.statSync(prescaledPath).size > 256) return prescaledPath;
+    } catch {
+      // fall through
+    }
+  }
+
+  try {
+    const ffmpegBin = getFfmpegPath();
+    const res = spawnSync(
+      ffmpegBin,
+      [
+        '-y',
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-i',
+        localFilePath,
+        '-vf',
+        `scale='min(${maxWidth},iw)':'min(${maxHeight},ih)':force_original_aspect_ratio=decrease`,
+        '-frames:v',
+        '1',
+        '-q:v',
+        '2',
+        prescaledPath,
+      ],
+      { windowsHide: true, timeout: 8_000 }
+    );
+    if (res.status === 0 && fs.existsSync(prescaledPath) && fs.statSync(prescaledPath).size > 256) {
+      return prescaledPath;
+    }
+  } catch {
+    // Non-fatal: keep original localFilePath
+  }
+  return localFilePath;
 }
 
 /* ------------------------------------------------------------------ *
@@ -2136,6 +2200,16 @@ export async function resolveSingleVisualOverlay(
   usedAssetIds: Set<string> = new Set()
 ): Promise<ClipVisualOverlay> {
   if (overlay.status === 'removed') return overlay;
+
+  // Keyword-pop and zoom-beat moments render directly in Remotion overlays with zero network/image lookup
+  if (overlay.kind === 'keyword-pop' || overlay.kind === 'zoom-beat') {
+    return {
+      ...overlay,
+      kind: 'keyword-pop',
+      status: 'resolved',
+      skipReason: undefined,
+    };
+  }
 
   // If already resolved and its cached file exists on disk, reuse without any network request!
   if (

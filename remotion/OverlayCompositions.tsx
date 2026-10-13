@@ -1,6 +1,11 @@
 import React from 'react';
 import { AbsoluteFill, useCurrentFrame, useVideoConfig } from 'remotion';
-import { CaptionPreset, OverlayStylePreset, WordTimestamp } from '../lib/types';
+import {
+  CaptionPreset,
+  KeywordPopOverlayItem,
+  OverlayStylePreset,
+  WordTimestamp,
+} from '../lib/types';
 import { getCtaBottomLiftPercent } from './CTAOverlay';
 import { AnimatedWord } from './AnimatedWord';
 import { buildFinalCaptionChunks } from './CaptionComposition';
@@ -9,9 +14,10 @@ import { resolveCaptionThemeOverlayStyle } from '../lib/caption-theme-styles';
 import { CaptionThemeOverlay } from './caption-themes/CaptionThemeOverlay';
 import { CTAOverlay } from './CTAOverlay';
 import { HookOverlay } from './HookOverlay';
+import { KeywordPopOverlay } from './KeywordPopOverlay';
 
 /**
- * One transparent, full-duration overlay layer (captions + hook + CTA).
+ * One transparent, full-duration overlay layer (captions + hook + CTA + keyword pops).
  * The base video and audio are deliberately absent: FFmpeg composites this PNG
  * sequence with the source crop and performs the only final video encode.
  */
@@ -28,6 +34,7 @@ export interface CaptionOverlayCompositionProps extends Record<string, unknown> 
   hookStyle?: OverlayStylePreset;
   ctaStyle?: OverlayStylePreset;
   captionLiftScale?: number;
+  keywordPops?: KeywordPopOverlayItem[];
 }
 
 export const CaptionOverlayComposition: React.FC<CaptionOverlayCompositionProps> = ({
@@ -43,6 +50,7 @@ export const CaptionOverlayComposition: React.FC<CaptionOverlayCompositionProps>
   hookStyle,
   ctaStyle,
   captionLiftScale = 1,
+  keywordPops = [],
 }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
@@ -72,6 +80,15 @@ export const CaptionOverlayComposition: React.FC<CaptionOverlayCompositionProps>
 
   return (
     <AbsoluteFill>
+      {keywordPops.length > 0 ? (
+        <KeywordPopOverlay
+          items={keywordPops}
+          frame={frame}
+          fps={fps}
+          transitionStart={transition > 0 ? transitionStart : -1}
+          transitionEnd={transition > 0 ? transitionEnd : -1}
+        />
+      ) : null}
       {hookVisibleDuration > 0.05 && hookText.trim() ? (
         <HookOverlay
           hookText={hookText}

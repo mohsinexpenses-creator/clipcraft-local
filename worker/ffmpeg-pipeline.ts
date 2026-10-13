@@ -38,6 +38,8 @@ export interface StillVisualOverlayInput {
   start: number;
   end: number;
   animation: VisualOverlayAnimation;
+  border?: boolean;
+  cornerRadius?: number;
 }
 
 export interface SfxCueInput {
@@ -559,24 +561,51 @@ export function buildVisualOverlayFilterStatements(
       index === visualOverlays.length - 1 ? outputFinalLabel : `vvis${index}`;
     const w = evenSize(visual.width, 64);
     const h = evenSize(visual.height, 64);
+    const showBorder = visual.border !== false;
+    const borderPx = showBorder ? 4 : 0;
+    const innerW = Math.max(64, w - borderPx * 2);
+    const innerH = Math.max(64, h - borderPx * 2);
+    const r = Math.max(0, Math.min(48, Math.round(visual.cornerRadius ?? 24)));
     const x = Math.round(visual.x);
     const y = Math.round(visual.y);
     const st = Math.max(0, visual.start);
     const en = Math.max(st + 0.3, visual.end);
-    const fadeDur = Math.min(0.25, (en - st) / 3);
-    const fadeOutSt = Math.max(st, en - fadeDur);
+    const dur = Math.max(0.3, en - st);
+    const fadeInDur = Math.min(0.18, dur / 4);
+    const fadeOutDur = Math.min(0.28, dur / 3);
+    const fadeOutSt = Math.max(st, en - fadeOutDur);
+
+    // Slow Ken-Burns zoom (1.00 -> 1.08 over card lifetime) using scale(eval=frame)+crop
+    // (faster and jitter-free vs single-threaded zoompan), optional thin border via pad,
+    // rounded-corner alpha mask via geq, and soft alpha fade in/out.
+    const progressExpr = `min(1,max(0,(t-${st.toFixed(3)})/${dur.toFixed(3)}))`;
+    const scaleWExpr = `trunc(${innerW}*(1+0.08*${progressExpr})/2)*2`;
+    const scaleHExpr = `trunc(${innerH}*(1+0.08*${progressExpr})/2)*2`;
+    const borderFilter = showBorder
+      ? `,pad=${w}:${h}:${borderPx}:${borderPx}:color=white@0.88`
+      : "";
+    const roundedMaskFilter =
+      r > 0
+        ? `,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(gt(abs(X-W/2),W/2-${r})*gt(abs(Y-H/2),H/2-${r}),if(lte(hypot(abs(X-W/2)-(W/2-${r}),abs(Y-H/2)-(H/2-${r})),${r}),255,0),255)'`
+        : "";
 
     statements.push(
-      `[${input}:v]scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},` +
-        `format=rgba,fade=t=in:st=${st.toFixed(3)}:d=${fadeDur.toFixed(3)}:alpha=1,` +
-        `fade=t=out:st=${fadeOutSt.toFixed(3)}:d=${fadeDur.toFixed(3)}:alpha=1[${visLabel}]`,
+      `[${input}:v]scale=w='${scaleWExpr}':h='${scaleHExpr}':eval=frame:force_original_aspect_ratio=increase,` +
+        `crop=${innerW}:${innerH}${borderFilter},format=rgba${roundedMaskFilter},` +
+        `fade=t=in:st=${st.toFixed(3)}:d=${fadeInDur.toFixed(3)}:alpha=1,` +
+        `fade=t=out:st=${fadeOutSt.toFixed(3)}:d=${fadeOutDur.toFixed(3)}:alpha=1[${visLabel}]`,
     );
 
+    // Pop / slide-up entrance with slight spring overshoot settling onto y
+    const dt = `(t-${st.toFixed(3)})`;
     let yExpr = String(y);
     if (visual.animation === "slide-up") {
-      yExpr = `if(lt(t-${st.toFixed(3)},0.25),${y}+36*(1-(t-${st.toFixed(3)})/0.25),${y})`;
-    } else if (visual.animation === "pop") {
-      yExpr = `if(lt(t-${st.toFixed(3)},0.20),${y}+18*(1-(t-${st.toFixed(3)})/0.20),${y})`;
+      yExpr = `if(lt(${dt},0.18),${y}+44-52*${dt}/0.18,if(lt(${dt},0.26),${y}-8+8*(${dt}-0.18)/0.08,${y}))`;
+    } else if (
+      visual.animation === "pop" ||
+      visual.animation === "subtle-zoom"
+    ) {
+      yExpr = `if(lt(${dt},0.14),${y}+24-30*${dt}/0.14,if(lt(${dt},0.22),${y}-6+6*(${dt}-0.14)/0.08,${y}))`;
     }
 
     statements.push(

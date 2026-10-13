@@ -36,10 +36,12 @@ import {
 import { resolveVisualProviderSettings } from '../lib/app-settings';
 import {
   buildClipCreditsManifest,
+  extractKeywordPopCallout,
   mapVisualMomentToOutputTimeline,
   planClipVisualMoments,
 } from '../lib/contextual-visuals';
-import { resolveVisualOverlaysForClip } from '../lib/visual-providers';
+import type { KeywordPopOverlayItem } from '../lib/types';
+import { findMatchingImageBankEntry, getProviderOrderForMoment } from '../lib/visual-providers';
 import { appendClipTimingRecord, formatClipTimingSummary } from '../lib/timings';
 import { buildSfxCueSheet, filterPlayableSfxCues } from '../lib/sfx-cues';
 
@@ -452,8 +454,187 @@ export async function processClipJob(
     const hookStyleForRender = overlayLayout.hookStyle ?? themedHookStyle;
     const ctaStyleForRender = overlayLayout.ctaStyle ?? themedCtaStyle;
 
+    checkCancelled();
+    const prepMs = performance.now() - prepStartMs;
+    const totalDuration = segmentDuration + safeHookDuration;
+    let visualsResolveMs = 0;
+    let remotionOverlayMs = 0;
+    let ffmpegEncodeMs = 0;
+
+    // Resolve contextual visual overlays before Remotion & FFmpeg so keyword-pop beats
+    // (including any photo moment that falls back when no local image is ready) render
+    // directly inside the single Remotion overlay composition.
+    const visualsStartMs = performance.now();
+    const ffmpegVisualOverlays: StillVisualOverlayInput[] = [];
+    const keywordPops: KeywordPopOverlayItem[] = [];
+    let effectiveRenderSettings = (await resolveVisualProviderSettings()).render;
+    try {
+      const visualSettings = await resolveVisualProviderSettings();
+      effectiveRenderSettings = visualSettings.render;
+      const autoVisualsEnabled =
+        (jobData.autoVisuals ?? clip.autoVisuals ?? visualSettings.render.autoVisuals) !== false;
+
+      if (autoVisualsEnabled) {
+        let planned = jobData.visualOverlays ?? clip.visualOverlays ?? [];
+        if (planned.length === 0 && clip.aiAnalysis?.visualMoments?.length) {
+          planned = planClipVisualMoments({
+            rawMoments: clip.aiAnalysis.visualMoments,
+            clipStart: start,
+            clipEnd: end,
+            transcript: video.transcript,
+            hookTiming: {
+              start: hookStart,
+              duration: safeHookDuration,
+            },
+            options: {
+              autoVisuals: true,
+              maxVisualMoments: visualSettings.render.maxVisualMoments,
+              confidenceThreshold: visualSettings.render.visualConfidenceThreshold,
+              minDuration: visualSettings.render.visualMinDuration,
+              defaultDuration: visualSettings.render.visualDefaultDuration,
+              defaultAnimation: visualSettings.render.visualAnimation,
+              fillDensityGaps: visualSettings.render.maxVisualMoments >= 6,
+            },
+          });
+        } else if (planned.length > 0) {
+          // Re-map onto the exact resolved hook/main output timeline for this render.
+          planned = planned.map((overlay) => {
+            const { effectivePlacement, outputWindows } = mapVisualMomentToOutputTimeline({
+              sourceStart: overlay.sourceStart,
+              sourceEnd: overlay.sourceEnd,
+              clipStart: start,
+              clipEnd: end,
+              placement: overlay.placement,
+              hookTiming: {
+                start: hookStart,
+                duration: safeHookDuration,
+              },
+              allowDuplicateHookReplay: overlay.placement === 'both',
+            });
+            return {
+              ...overlay,
+              placement: effectivePlacement,
+              outputWindows,
+            };
+          });
+        }
+
+        if (planned.length > 0) {
+          // Render path stays strictly offline: only use local files already prefetched/cached
+          // in data/visual-cache or SQLite image_bank; any unready photo moment falls back to a keyword pop.
+          const usedBankAssets = new Set<string>();
+          const resolvedVisuals = planned.map((item) => {
+            if (item.status === 'removed') return item;
+            if (item.kind === 'keyword-pop' || item.kind === 'zoom-beat') {
+              return { ...item, kind: 'keyword-pop' as const, status: 'resolved' as const };
+            }
+            if (item.localFilePath && fs.existsSync(item.localFilePath)) {
+              return { ...item, status: 'resolved' as const };
+            }
+            const allowedProviders = getProviderOrderForMoment({
+              moment: item,
+              renderSettings: visualSettings.render,
+              hasPexelsKey: Boolean(visualSettings.pexelsApiKey),
+            });
+            const bankHit = findMatchingImageBankEntry({
+              moment: item,
+              allowedProviders,
+              usedAssetIds: usedBankAssets,
+            });
+            if (bankHit && fs.existsSync(bankHit.localPath)) {
+              usedBankAssets.add(bankHit.id);
+              return {
+                ...item,
+                status: 'resolved' as const,
+                localFilePath: bankHit.localPath,
+                mediaUrl: `/api/media/visual-cache/${path.basename(bankHit.localPath)}`,
+                contentHash: bankHit.contentHash,
+                width: bankHit.width,
+                height: bankHit.height,
+                attribution: bankHit.attribution,
+              };
+            }
+            return {
+              ...item,
+              kind: 'keyword-pop' as const,
+              status: 'resolved' as const,
+              skipReason: item.skipReason ?? 'Fallback to keyword pop (no local image ready at render start).',
+            };
+          });
+          clip.visualOverlays = resolvedVisuals;
+          await updateClip(clip).catch(() => undefined);
+
+          const cardPlacement = planVisualCardPlacement({
+            plan,
+            captionBand: overlayLayout.placements.caption,
+            hookBand: overlayLayout.placements.hook,
+            ctaBand: overlayLayout.placements.cta,
+            cardAspect: visualSettings.render.visualCardAspect ?? 'portrait',
+          });
+
+          for (const item of resolvedVisuals) {
+            if (item.status === 'removed' || item.status === 'skipped') continue;
+            const hasLocalPhoto =
+              (item.kind ?? 'photo-card') === 'photo-card' &&
+              Boolean(item.localFilePath && fs.existsSync(item.localFilePath));
+
+            if (hasLocalPhoto && item.localFilePath) {
+              for (const win of item.outputWindows) {
+                if (win.end - win.start < 0.5) continue;
+                ffmpegVisualOverlays.push({
+                  id: `${item.id}_${win.segment}`,
+                  imagePath: item.localFilePath,
+                  x: cardPlacement.x,
+                  y: cardPlacement.y,
+                  width: cardPlacement.width,
+                  height: cardPlacement.height,
+                  start: win.start,
+                  end: win.end,
+                  animation: item.animation,
+                  border: visualSettings.render.visualCardBorder ?? true,
+                });
+              }
+            } else {
+              // Keyword-pop beat (or photo moment that fell back when no local image was ready)
+              const callout = extractKeywordPopCallout(item);
+              for (const win of item.outputWindows) {
+                if (win.end - win.start < 0.5) continue;
+                keywordPops.push({
+                  id: `${item.id}_${win.segment}`,
+                  text: callout.text,
+                  subtext: callout.subtext,
+                  start: win.start,
+                  end: win.end,
+                  x: cardPlacement.x,
+                  y: Math.round(cardPlacement.y + cardPlacement.height * 0.28),
+                  width: cardPlacement.width,
+                  animation: item.animation,
+                });
+              }
+            }
+          }
+
+          if (ffmpegVisualOverlays.length > 0) {
+            const manifest = buildClipCreditsManifest({
+              clipId: clip._id,
+              videoId: clip.videoId,
+              clipTitle: clip.aiAnalysis?.viral_packaging.video_title || clip.videoTitle,
+              visualOverlays: resolvedVisuals,
+            });
+            const creditsPath = `${finalVideoPath.replace(/\.mp4$/i, '')}.credits.txt`;
+            fs.writeFileSync(creditsPath, manifest.plainText, 'utf8');
+          }
+        }
+      }
+    } catch (visualError) {
+      log.warn(
+        `Contextual visuals skipped for ${clipId}: ${toErrorMessage(visualError)}`
+      );
+    }
+    visualsResolveMs = performance.now() - visualsStartMs;
+
     log.step(
-      `Step 2/3 · Render transparent overlays (Remotion)  ${color.gray(`(${clipWords.length} words, preset "${preset.name}")`)}`
+      `Step 2/3 · Render transparent overlays (Remotion)  ${color.gray(`(${clipWords.length} words, ${keywordPops.length} keyword pop(s), preset "${preset.name}")`)}`
     );
     const overlayProgressSink = (progress: number): void => {
       const scaled = 20 + Math.max(0, Math.min(100, progress)) * 0.1;
@@ -462,10 +643,7 @@ export async function processClipJob(
       void reportProgress(scaled);
     };
 
-    checkCancelled();
-    const prepMs = performance.now() - prepStartMs;
     const remotionStartMs = performance.now();
-    const totalDuration = segmentDuration + safeHookDuration;
     const preparedOverlays: PreparedCaptionOverlays = await prepareRemotionCaptionOverlays({
       fps: renderFps,
       totalDuration,
@@ -482,12 +660,11 @@ export async function processClipJob(
       hookStyle: hookStyleForRender,
       ctaStyle: ctaStyleForRender,
       captionLiftScale: overlayLayout.captionLiftScale,
+      keywordPops,
       onProgress: overlayProgressSink,
       isCancelled: () => cancelFlag,
     });
-    const remotionOverlayMs = performance.now() - remotionStartMs;
-    let visualsResolveMs = 0;
-    let ffmpegEncodeMs = 0;
+    remotionOverlayMs = performance.now() - remotionStartMs;
 
     let renderResult: {
       fps: number;
@@ -499,121 +676,23 @@ export async function processClipJob(
     try {
       checkCancelled();
 
-      // Resolve contextual visual overlays before the final video encode (never per frame).
-      // Any provider failure or missing image falls back gracefully and never aborts the render.
-      const visualsStartMs = performance.now();
-      const ffmpegVisualOverlays: StillVisualOverlayInput[] = [];
-      try {
-        const visualSettings = await resolveVisualProviderSettings();
-        const autoVisualsEnabled =
-          (jobData.autoVisuals ?? clip.autoVisuals ?? visualSettings.render.autoVisuals) !== false;
+      const sfxVisualWindows = [
+        ...ffmpegVisualOverlays.map((ov) => ({
+          id: ov.id,
+          kind: 'photo-card' as const,
+          start: ov.start,
+          end: ov.end,
+          animation: ov.animation,
+        })),
+        ...keywordPops.map((kp) => ({
+          id: kp.id,
+          kind: 'keyword-pop' as const,
+          start: kp.start,
+          end: kp.end,
+          animation: kp.animation,
+        })),
+      ];
 
-        if (autoVisualsEnabled) {
-          let planned = jobData.visualOverlays ?? clip.visualOverlays ?? [];
-          if (planned.length === 0 && clip.aiAnalysis?.visualMoments?.length) {
-            planned = planClipVisualMoments({
-              rawMoments: clip.aiAnalysis.visualMoments,
-              clipStart: start,
-              clipEnd: end,
-              transcript: video.transcript,
-              hookTiming: {
-                start: hookStart,
-                duration: safeHookDuration,
-              },
-              options: {
-                autoVisuals: true,
-                maxVisualMoments: visualSettings.render.maxVisualMoments,
-                confidenceThreshold: visualSettings.render.visualConfidenceThreshold,
-                minDuration: visualSettings.render.visualMinDuration,
-                defaultDuration: visualSettings.render.visualDefaultDuration,
-                defaultAnimation: visualSettings.render.visualAnimation,
-              },
-            });
-          } else if (planned.length > 0) {
-            // Re-map onto the exact resolved hook/main output timeline for this render.
-            planned = planned.map((overlay) => {
-              const { effectivePlacement, outputWindows } = mapVisualMomentToOutputTimeline({
-                sourceStart: overlay.sourceStart,
-                sourceEnd: overlay.sourceEnd,
-                clipStart: start,
-                clipEnd: end,
-                placement: overlay.placement,
-                hookTiming: {
-                  start: hookStart,
-                  duration: safeHookDuration,
-                },
-                allowDuplicateHookReplay: overlay.placement === 'both',
-              });
-              return {
-                ...overlay,
-                placement: effectivePlacement,
-                outputWindows,
-              };
-            });
-          }
-
-          if (planned.length > 0) {
-            const resolvedVisuals = await resolveVisualOverlaysForClip(planned, {
-              renderSettings: visualSettings.render,
-              pexelsApiKey: visualSettings.pexelsApiKey,
-              openverseClientId: visualSettings.openverseClientId,
-              openverseClientSecret: visualSettings.openverseClientSecret,
-              wikimediaUserAgent: visualSettings.wikimediaUserAgent,
-            });
-            clip.visualOverlays = resolvedVisuals;
-            await updateClip(clip).catch(() => undefined);
-
-            const cardPlacement = planVisualCardPlacement({
-              plan,
-              captionBand: overlayLayout.placements.caption,
-              hookBand: overlayLayout.placements.hook,
-              ctaBand: overlayLayout.placements.cta,
-            });
-
-            for (const item of resolvedVisuals) {
-              if (
-                item.status !== 'resolved' ||
-                !item.localFilePath ||
-                !fs.existsSync(item.localFilePath)
-              ) {
-                continue;
-              }
-              for (const win of item.outputWindows) {
-                if (win.end - win.start < 0.5) continue;
-                ffmpegVisualOverlays.push({
-                  id: `${item.id}_${win.segment}`,
-                  imagePath: item.localFilePath,
-                  x: cardPlacement.x,
-                  y: cardPlacement.y,
-                  width: cardPlacement.width,
-                  height: cardPlacement.height,
-                  start: win.start,
-                  end: win.end,
-                  animation: item.animation,
-                });
-              }
-            }
-
-            if (ffmpegVisualOverlays.length > 0) {
-              const manifest = buildClipCreditsManifest({
-                clipId: clip._id,
-                videoId: clip.videoId,
-                clipTitle: clip.aiAnalysis?.viral_packaging.video_title || clip.videoTitle,
-                visualOverlays: resolvedVisuals,
-              });
-              const creditsPath = `${finalVideoPath.replace(/\.mp4$/i, '')}.credits.txt`;
-              fs.writeFileSync(creditsPath, manifest.plainText, 'utf8');
-            }
-          }
-        }
-      } catch (visualError) {
-        log.warn(
-          `Contextual visuals skipped for ${clipId}: ${toErrorMessage(visualError)}`
-        );
-      }
-      visualsResolveMs = performance.now() - visualsStartMs;
-
-      const effectiveRenderSettings = (await resolveVisualProviderSettings()).render;
       const sfxCues = filterPlayableSfxCues(
         buildSfxCueSheet({
           segmentDuration,
@@ -629,7 +708,7 @@ export async function processClipJob(
           ctaText: resolvedCtaText,
           ctaAnimationStyle: ctaStyleForRender.animationStyle,
           ctaSfxChoice: ctaStyleForRender.sfxChoice,
-          visualOverlays: clip.visualOverlays ?? [],
+          visualWindows: sfxVisualWindows,
           sfxEnabled: effectiveRenderSettings.sfxEnabled ?? true,
           sfxVolumeDb: effectiveRenderSettings.sfxVolume ?? -14,
         })

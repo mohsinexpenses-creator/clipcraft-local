@@ -73,6 +73,7 @@ export function validClip(): ViralClip {
         suggested_duration: 3.5,
         animation: 'subtle-zoom',
         placement: 'main',
+        kind: 'photo-card',
       },
     ],
   };

@@ -936,7 +936,7 @@ test('settings and clip-edits sanitize visual fields and mask Pexels/Openverse s
   const resolved = resolveSettings({ ai: aiSanitized });
   assert.equal(resolved.effective.ai.wikimediaUserAgent, 'MyClipCraft/1.0 (https://example.org)');
   assert.equal(resolved.effective.render.autoVisuals, true);
-  assert.equal(resolved.effective.render.maxVisualMoments, 2);
+  assert.equal(resolved.effective.render.maxVisualMoments, 12);
 
   const edits = sanitizeClipEdits({
     start: 60,
@@ -993,7 +993,7 @@ test('planVisualCardPlacement and buildOverlayFilterStatements composite visual 
     'vvis'
   );
   assert.equal(visStatements.statements.length, 2);
-  assert.match(visStatements.statements[0], /^\[3:v\]scale=760:460/);
+  assert.match(visStatements.statements[0], /^\[3:v\]scale=w='trunc\(712\*\(1\+0\.08\*/);
   assert.match(visStatements.statements[1], /enable='between\(t,6\.500,10\.000\)'/);
 
   const combined = buildOverlayFilterStatements(
