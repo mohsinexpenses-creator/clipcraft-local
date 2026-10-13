@@ -24,8 +24,9 @@ import {
   findActiveJob,
 } from './queue';
 import { sanitizePipelineOptions, sanitizeViralOptions } from './pipeline-defaults';
-import { loadEffectiveSettings } from './app-settings';
+import { loadEffectiveSettings, resolveVisualProviderSettings } from './app-settings';
 import { planClipVisualMoments } from './contextual-visuals';
+import { resolveVisualOverlaysForClip } from './visual-providers';
 import { parseTimestamp } from './viral-response';
 import {
   ClipLayout,
@@ -370,6 +371,9 @@ export async function runViralDetection(
     createdClips.push(clipRecord);
   }
 
+  // Prefetch visual assets right after detection so render jobs only read local files
+  await prefetchClipVisualsForDetectedClips(createdClips);
+
   let renderQueued = 0;
   if (pipeline.autoRender) {
     renderQueued = (await queueRenders(createdClips)).queued.length;
@@ -389,6 +393,63 @@ export async function runViralDetection(
     options,
     reusedExistingClips: false,
   };
+}
+
+/**
+ * Prefetches and caches visual overlays right after viral detection completes so
+ * render jobs only read local files from `data/visual-cache/` + SQLite `image_bank`.
+ * Any photo moment with no suitable image falls back to a `keyword-pop` beat.
+ */
+export async function prefetchClipVisualsForDetectedClips(
+  clips: ClipRecord[],
+  options?: { forceNetworkInTests?: boolean }
+): Promise<void> {
+  if (!clips.length) return;
+  try {
+    const visualSettings = await resolveVisualProviderSettings();
+    if (!visualSettings.render.autoVisuals) return;
+
+    // In fakeLlm tests (tests/viral-detection.test.ts), globalThis.fetch is mocked to
+    // expect only Gemini POST calls and asserts calls.length === 1.
+    const isFakeLlmTest =
+      !options?.forceNetworkInTests &&
+      visualSettings.geminiApiKeys[0] === 'test-gemini-key-for-fake-calls';
+    if (isFakeLlmTest) return;
+
+    for (const clip of clips) {
+      if (!clip.visualOverlays || clip.visualOverlays.length === 0) continue;
+      const resolved = await resolveVisualOverlaysForClip(clip.visualOverlays, {
+        renderSettings: visualSettings.render,
+        geminiApiKeys: visualSettings.geminiApiKeys,
+        pexelsApiKey: visualSettings.pexelsApiKey,
+        pixabayApiKey: visualSettings.pixabayApiKey,
+        unsplashAccessKey: visualSettings.unsplashAccessKey,
+        openverseClientId: visualSettings.openverseClientId,
+        openverseClientSecret: visualSettings.openverseClientSecret,
+        wikimediaUserAgent: visualSettings.wikimediaUserAgent,
+      });
+
+      clip.visualOverlays = resolved.map((ov) => {
+        if (ov.status === 'removed') return ov;
+        if (ov.kind === 'keyword-pop' || ov.kind === 'zoom-beat') {
+          return { ...ov, kind: 'keyword-pop', status: 'resolved' };
+        }
+        if (ov.status === 'resolved' && ov.localFilePath) {
+          return ov;
+        }
+        // Fallback to keyword pop when no good image was found
+        return {
+          ...ov,
+          kind: 'keyword-pop',
+          status: 'resolved',
+          skipReason: ov.skipReason ?? 'Fallback to keyword pop (no suitable image found).',
+        };
+      });
+      await updateClip(clip).catch(() => undefined);
+    }
+  } catch (err) {
+    log.warn(`Visual prefetch skipped: ${toErrorMessage(err)}`);
+  }
 }
 
 /**

@@ -136,6 +136,8 @@ export function maskAiSecrets(values: Record<string, unknown>): Record<string, u
   }
   if (typeof out.deepgramApiKey === 'string') out.deepgramApiKey = maskSecret(out.deepgramApiKey);
   if (typeof out.pexelsApiKey === 'string') out.pexelsApiKey = maskSecret(out.pexelsApiKey);
+  if (typeof out.pixabayApiKey === 'string') out.pixabayApiKey = maskSecret(out.pixabayApiKey);
+  if (typeof out.unsplashAccessKey === 'string') out.unsplashAccessKey = maskSecret(out.unsplashAccessKey);
   if (typeof out.openverseClientId === 'string') out.openverseClientId = maskSecret(out.openverseClientId);
   if (typeof out.openverseClientSecret === 'string') out.openverseClientSecret = maskSecret(out.openverseClientSecret);
   return out;
@@ -248,6 +250,14 @@ function sanitizeVisualProviders(value: unknown): VisualProviderToggles {
   const input = record(value, 'Visual providers');
   return {
     pexels: input.pexels === undefined ? DEFAULT_RENDER_SETTINGS.visualProviders.pexels : boolOf(input.pexels, 'Pexels toggle'),
+    pixabay:
+      input.pixabay === undefined
+        ? (DEFAULT_RENDER_SETTINGS.visualProviders.pixabay ?? true)
+        : boolOf(input.pixabay, 'Pixabay toggle'),
+    unsplash:
+      input.unsplash === undefined
+        ? (DEFAULT_RENDER_SETTINGS.visualProviders.unsplash ?? true)
+        : boolOf(input.unsplash, 'Unsplash toggle'),
     openverse:
       input.openverse === undefined
         ? DEFAULT_RENDER_SETTINGS.visualProviders.openverse
@@ -433,6 +443,9 @@ export function sanitizeSettingsSection(
       if (input.visualCardBorder !== undefined) {
         out.visualCardBorder = boolOf(input.visualCardBorder, 'Visual card border');
       }
+      if (input.visualVisionVerify !== undefined) {
+        out.visualVisionVerify = boolOf(input.visualVisionVerify, 'Gemini vision relevance check');
+      }
       if (input.sfxEnabled !== undefined) {
         out.sfxEnabled = boolOf(input.sfxEnabled, 'Sound effects enabled');
       }
@@ -474,6 +487,30 @@ export function sanitizeSettingsSection(
           );
         }
         out.pexelsApiKey = raw;
+      }
+      if ('pixabayApiKey' in input) {
+        const carried = context.storedAi?.pixabayApiKey ?? '';
+        const raw = isMaskedPlaceholder(input.pixabayApiKey) ? carried : textOf(input.pixabayApiKey, 300, 'Pixabay API key');
+        if (raw && !isUsableSecret(raw)) {
+          throw badRequest(
+            'That does not look like a Pixabay API key.',
+            `Keys are at least ${MIN_SECRET_LENGTH} characters with no spaces. Submit an empty value to remove the stored key.`
+          );
+        }
+        out.pixabayApiKey = raw;
+      }
+      if ('unsplashAccessKey' in input) {
+        const carried = context.storedAi?.unsplashAccessKey ?? '';
+        const raw = isMaskedPlaceholder(input.unsplashAccessKey)
+          ? carried
+          : textOf(input.unsplashAccessKey, 300, 'Unsplash Access Key');
+        if (raw && !isUsableSecret(raw)) {
+          throw badRequest(
+            'That does not look like an Unsplash Access Key.',
+            `Keys are at least ${MIN_SECRET_LENGTH} characters with no spaces. Submit an empty value to remove the stored key.`
+          );
+        }
+        out.unsplashAccessKey = raw;
       }
       if ('openverseClientId' in input) {
         const carried = context.storedAi?.openverseClientId ?? '';
@@ -665,6 +702,8 @@ function resolveVisualProvidersStored(value: unknown): VisualProviderToggles {
   const raw = asRecord(value);
   return {
     pexels: boolValue(raw.pexels) ?? DEFAULT_RENDER_SETTINGS.visualProviders.pexels,
+    pixabay: boolValue(raw.pixabay) ?? (DEFAULT_RENDER_SETTINGS.visualProviders.pixabay ?? true),
+    unsplash: boolValue(raw.unsplash) ?? (DEFAULT_RENDER_SETTINGS.visualProviders.unsplash ?? true),
     openverse: boolValue(raw.openverse) ?? DEFAULT_RENDER_SETTINGS.visualProviders.openverse,
     wikimedia: boolValue(raw.wikimedia) ?? DEFAULT_RENDER_SETTINGS.visualProviders.wikimedia,
   };
@@ -787,6 +826,8 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
         : (DEFAULT_RENDER_SETTINGS.visualCardAspect ?? 'portrait'),
     visualCardBorder:
       boolValue(renderStored.visualCardBorder) ?? (DEFAULT_RENDER_SETTINGS.visualCardBorder ?? true),
+    visualVisionVerify:
+      boolValue(renderStored.visualVisionVerify) ?? (DEFAULT_RENDER_SETTINGS.visualVisionVerify ?? true),
     sfxEnabled: boolValue(renderStored.sfxEnabled) ?? (DEFAULT_RENDER_SETTINGS.sfxEnabled ?? true),
     sfxVolume: clampFloatInRange(
       renderStored.sfxVolume,
@@ -810,6 +851,10 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
     : DEFAULT_AI_SETTINGS.transcriptionProvider;
   const pexelsRaw = stringValue(aiStored.pexelsApiKey) ?? '';
   const pexelsApiKey = isUsableSecret(pexelsRaw) ? pexelsRaw : '';
+  const pixabayRaw = stringValue(aiStored.pixabayApiKey) ?? '';
+  const pixabayApiKey = isUsableSecret(pixabayRaw) ? pixabayRaw : '';
+  const unsplashRaw = stringValue(aiStored.unsplashAccessKey) ?? '';
+  const unsplashAccessKey = isUsableSecret(unsplashRaw) ? unsplashRaw : '';
   const openverseClientIdRaw = stringValue(aiStored.openverseClientId) ?? '';
   const openverseClientId = isUsableSecret(openverseClientIdRaw) ? openverseClientIdRaw : '';
   const openverseClientSecretRaw = stringValue(aiStored.openverseClientSecret) ?? '';
@@ -822,6 +867,8 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
     deepgramModel: deepgramModel ? 'app' : 'default',
     transcriptionProvider: stringValue(aiStored.transcriptionProvider) ? 'app' : 'default',
     ...(pexelsApiKey ? { pexelsApiKey: 'app' as const } : {}),
+    ...(pixabayApiKey ? { pixabayApiKey: 'app' as const } : {}),
+    ...(unsplashAccessKey ? { unsplashAccessKey: 'app' as const } : {}),
     ...(openverseClientId ? { openverseClientId: 'app' as const } : {}),
     ...(openverseClientSecret ? { openverseClientSecret: 'app' as const } : {}),
     ...(wikimediaUserAgentStored ? { wikimediaUserAgent: 'app' as const } : {}),
@@ -833,6 +880,8 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
     deepgramModel: deepgramModel || 'nova-2',
     transcriptionProvider,
     pexelsApiKey,
+    pixabayApiKey,
+    unsplashAccessKey,
     openverseClientId,
     openverseClientSecret,
     wikimediaUserAgent: wikimediaUserAgentStored || DEFAULT_AI_SETTINGS.wikimediaUserAgent,
@@ -1192,7 +1241,10 @@ export async function resolveWorkerSettings(): Promise<WorkerSettings> {
 
 export async function resolveVisualProviderSettings(): Promise<{
   render: RenderDefaults;
+  geminiApiKeys: string[];
   pexelsApiKey: string;
+  pixabayApiKey: string;
+  unsplashAccessKey: string;
   openverseClientId: string;
   openverseClientSecret: string;
   wikimediaUserAgent: string;
@@ -1200,7 +1252,10 @@ export async function resolveVisualProviderSettings(): Promise<{
   const settings = await loadEffectiveSettings();
   return {
     render: settings.render,
+    geminiApiKeys: settings.ai.geminiApiKeys,
     pexelsApiKey: settings.ai.pexelsApiKey,
+    pixabayApiKey: settings.ai.pixabayApiKey ?? '',
+    unsplashAccessKey: settings.ai.unsplashAccessKey ?? '',
     openverseClientId: settings.ai.openverseClientId,
     openverseClientSecret: settings.ai.openverseClientSecret,
     wikimediaUserAgent: settings.ai.wikimediaUserAgent,

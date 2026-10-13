@@ -32,8 +32,16 @@ export async function POST(
       customQuery?: string;
     };
 
-    const { render, pexelsApiKey, openverseClientId, openverseClientSecret, wikimediaUserAgent } =
-      await resolveVisualProviderSettings();
+    const {
+      render,
+      geminiApiKeys,
+      pexelsApiKey,
+      pixabayApiKey,
+      unsplashAccessKey,
+      openverseClientId,
+      openverseClientSecret,
+      wikimediaUserAgent,
+    } = await resolveVisualProviderSettings();
 
     let overlays = clip.visualOverlays ?? [];
     if (overlays.length === 0 && clip.aiAnalysis?.visualMoments?.length) {
@@ -60,7 +68,10 @@ export async function POST(
 
     const providerOptions = {
       renderSettings: { ...render, autoVisuals: true },
+      geminiApiKeys,
       pexelsApiKey,
+      pixabayApiKey,
+      unsplashAccessKey,
       openverseClientId,
       openverseClientSecret,
       wikimediaUserAgent,

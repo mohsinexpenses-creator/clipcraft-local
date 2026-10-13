@@ -41,6 +41,8 @@ export interface RawProviderCandidate {
   mature?: boolean;
   sourcePageUrl: string;
   imageUrl: string;
+  thumbnailUrl?: string;
+  downloadLocationUrl?: string;
   width: number;
   height: number;
   mimeType?: string;
@@ -90,6 +92,28 @@ const providerStates: Record<VisualProviderName, ProviderRateLimitState> = {
     rateLimitedCount: 0,
     lastStatus: null,
   },
+  pixabay: {
+    provider: 'pixabay',
+    limit: null,
+    remaining: null,
+    resetAtEpochSeconds: null,
+    backoffUntilMs: 0,
+    requestsCount: 0,
+    cacheHits: 0,
+    rateLimitedCount: 0,
+    lastStatus: null,
+  },
+  unsplash: {
+    provider: 'unsplash',
+    limit: null,
+    remaining: null,
+    resetAtEpochSeconds: null,
+    backoffUntilMs: 0,
+    requestsCount: 0,
+    cacheHits: 0,
+    rateLimitedCount: 0,
+    lastStatus: null,
+  },
   openverse: {
     provider: 'openverse',
     limit: null,
@@ -116,12 +140,16 @@ const providerStates: Record<VisualProviderName, ProviderRateLimitState> = {
 
 const activeRequestsPerProvider: Record<VisualProviderName, number> = {
   pexels: 0,
+  pixabay: 0,
+  unsplash: 0,
   openverse: 0,
   wikimedia: 0,
 };
 
 const MAX_CONCURRENCY_PER_PROVIDER: Record<VisualProviderName, number> = {
   pexels: 2,
+  pixabay: 2,
+  unsplash: 2,
   openverse: 2,
   wikimedia: 2, // Strictly <= 3 per Wikimedia API policy
 };
@@ -176,7 +204,7 @@ export function clearVisualMemoryCachesOnly(): void {
 }
 
 export function resetVisualProviderStateForTests(): void {
-  for (const name of ['pexels', 'openverse', 'wikimedia'] as const) {
+  for (const name of ['pexels', 'pixabay', 'unsplash', 'openverse', 'wikimedia'] as const) {
     providerStates[name] = {
       provider: name,
       limit: null,
@@ -539,6 +567,8 @@ export function pruneVisualCacheDirectory(
 export function getVisualProviderStates(): Record<VisualProviderName, ProviderRateLimitState> {
   return {
     pexels: { ...providerStates.pexels },
+    pixabay: { ...providerStates.pixabay },
+    unsplash: { ...providerStates.unsplash },
     openverse: { ...providerStates.openverse },
     wikimedia: { ...providerStates.wikimedia },
   };
@@ -693,6 +723,28 @@ export function evaluateVisualLicense(candidate: RawProviderCandidate): Evaluate
       allowed: true,
       licenseCode: 'pexels',
       displayLabel: 'Pexels License',
+      requiresAttribution: true,
+      shareAlike: false,
+      preferenceBonus: 0.1,
+    };
+  }
+
+  if (candidate.provider === 'pixabay' || raw === 'pixabay' || raw.includes('pixabay')) {
+    return {
+      allowed: true,
+      licenseCode: 'pixabay',
+      displayLabel: 'Pixabay Content License',
+      requiresAttribution: true,
+      shareAlike: false,
+      preferenceBonus: 0.1,
+    };
+  }
+
+  if (candidate.provider === 'unsplash' || raw === 'unsplash' || raw.includes('unsplash')) {
+    return {
+      allowed: true,
+      licenseCode: 'unsplash',
+      displayLabel: 'Unsplash License',
       requiresAttribution: true,
       shareAlike: false,
       preferenceBonus: 0.1,
@@ -926,7 +978,8 @@ export function scoreVisualCandidate(
     | 'searchQueries'
     | 'negativeCues'
     | 'quote'
-  >
+  >,
+  preferredAspect: 'portrait' | 'square' = 'portrait'
 ): ScoredCandidate {
   const license = evaluateVisualLicense(candidate);
   const defaultFraming: 'illustrative' | 'editorial' =
@@ -1056,9 +1109,13 @@ export function scoreVisualCandidate(
           reason: 'person_identity_mismatch',
         };
       }
-      // Stock photos on Pexels must not be used to represent a named public figure unless exact full phrase is in title/alt
+      // Stock photos on Pexels/Pixabay/Unsplash must not be used to represent a named public figure unless exact full phrase is in title/alt
+      const isStockProvider =
+        candidate.provider === 'pexels' ||
+        candidate.provider === 'pixabay' ||
+        candidate.provider === 'unsplash';
       if (
-        candidate.provider === 'pexels' &&
+        isStockProvider &&
         !`${candidate.title} ${candidate.alt}`.toLowerCase().includes(moment.entityName.trim().toLowerCase())
       ) {
         return {
@@ -1159,7 +1216,7 @@ export function scoreVisualCandidate(
     if (positiveHits > 0) polarityBonus = 0.08;
   }
 
-  // 5. Aspect ratio & resolution suitability for 9:16 overlay cards
+  // 5. Aspect ratio & resolution suitability for 9:16 overlay cards (portrait 4:5 or square 1:1)
   const aspect = candidate.width / Math.max(1, candidate.height);
   if (aspect > 3.2 || aspect < 0.28) {
     return {
@@ -1171,8 +1228,20 @@ export function scoreVisualCandidate(
       reason: 'extreme_aspect_ratio',
     };
   }
-  const aspectScore = aspect >= 0.55 && aspect <= 1.9 ? 0.08 : 0.03;
-  const resolutionScore = candidate.width >= 1000 && candidate.height >= 700 ? 0.07 : 0.03;
+  let aspectScore = 0.03;
+  if (preferredAspect === 'square') {
+    if (aspect >= 0.8 && aspect <= 1.25) aspectScore = 0.11;
+    else if (aspect >= 0.55 && aspect <= 1.9) aspectScore = 0.08;
+  } else {
+    // Portrait 4:5 (aspect ~0.8) preferred
+    if (aspect >= 0.55 && aspect <= 0.98) aspectScore = 0.11;
+    else if (aspect >= 0.55 && aspect <= 1.9) aspectScore = 0.08;
+  }
+  const resolutionScore =
+    Math.max(candidate.width, candidate.height) >= 1000 &&
+    Math.min(candidate.width, candidate.height) >= 700
+      ? 0.07
+      : 0.03;
   const entityBonus = isEntityCategory && entityTokens.length > 0 ? 0.25 : 0;
 
   const totalScore = Math.min(
@@ -1200,8 +1269,12 @@ export function scoreVisualCandidate(
     };
   }
 
+  const isStock =
+    candidate.provider === 'pexels' ||
+    candidate.provider === 'pixabay' ||
+    candidate.provider === 'unsplash';
   const finalFraming: 'illustrative' | 'editorial' =
-    candidate.provider === 'pexels' || !isEntityCategory ? 'illustrative' : 'editorial';
+    isStock || !isEntityCategory ? 'illustrative' : 'editorial';
 
   return {
     candidate,
@@ -1220,8 +1293,10 @@ export function getProviderOrderForMoment(params: {
   moment: Pick<ClipVisualOverlay, 'category' | 'entityName'>;
   renderSettings?: Partial<RenderDefaults>;
   hasPexelsKey: boolean;
+  hasPixabayKey?: boolean;
+  hasUnsplashKey?: boolean;
 }): VisualProviderName[] {
-  const { moment, renderSettings, hasPexelsKey } = params;
+  const { moment, renderSettings, hasPexelsKey, hasPixabayKey = false, hasUnsplashKey = false } = params;
   const toggles = renderSettings?.visualProviders ?? DEFAULT_RENDER_SETTINGS.visualProviders;
   const userPriority =
     renderSettings?.visualProviderPriority ?? DEFAULT_RENDER_SETTINGS.visualProviderPriority;
@@ -1235,26 +1310,28 @@ export function getProviderOrderForMoment(params: {
   let baseOrder: VisualProviderName[];
   if (isNamedEntity) {
     // Exact public figures, places and named historical/cultural events:
-    // try Openverse and Wikimedia Commons first; Pexels last (and only if exact match).
+    // try Openverse and Wikimedia Commons first; stock providers last (and only if exact match).
     const editorialFirst = userPriority.filter(
       (p): p is 'openverse' | 'wikimedia' => p === 'openverse' || p === 'wikimedia'
     );
     for (const p of ['openverse', 'wikimedia'] as const) {
       if (!editorialFirst.includes(p)) editorialFirst.push(p);
     }
-    baseOrder = [...editorialFirst, 'pexels'];
+    baseOrder = [...editorialFirst, 'pexels', 'pixabay', 'unsplash'];
   } else {
     // Generic stock situations, actions and emotional scenes:
-    // follow userPriority (default: Pexels first when key configured, then Openverse, then Wikimedia).
+    // follow userPriority (default: Pexels, Pixabay, Unsplash when keys configured, then Openverse, then Wikimedia).
     baseOrder = [...userPriority];
-    for (const p of ['pexels', 'openverse', 'wikimedia'] as const) {
+    for (const p of ['pexels', 'pixabay', 'unsplash', 'openverse', 'wikimedia'] as const) {
       if (!baseOrder.includes(p)) baseOrder.push(p);
     }
   }
 
   return baseOrder.filter((provider) => {
-    if (!toggles[provider]) return false;
+    if (toggles[provider] === false) return false;
     if (provider === 'pexels' && !hasPexelsKey) return false;
+    if (provider === 'pixabay' && !hasPixabayKey) return false;
+    if (provider === 'unsplash' && !hasUnsplashKey) return false;
     return true;
   });
 }
@@ -1278,7 +1355,8 @@ function stripHtmlTags(input: string): string {
 export async function searchPexelsCandidates(
   query: string,
   apiKey: string,
-  timeoutMs = 8_000
+  timeoutMs = 8_000,
+  orientation?: 'portrait' | 'square'
 ): Promise<RawProviderCandidate[]> {
   if (!isUsableSecret(apiKey)) return [];
   if (isProviderCoolingDown('pexels')) return [];
@@ -1287,6 +1365,9 @@ export async function searchPexelsCandidates(
     const url = new URL('https://api.pexels.com/v1/search');
     url.searchParams.set('query', query);
     url.searchParams.set('per_page', '15');
+    if (orientation === 'portrait' || orientation === 'square') {
+      url.searchParams.set('orientation', orientation);
+    }
 
     providerStates.pexels.requestsCount += 1;
     const response = await fetch(url.toString(), {
@@ -1317,6 +1398,8 @@ export async function searchPexelsCandidates(
           large2x?: string;
           large?: string;
           medium?: string;
+          small?: string;
+          tiny?: string;
           original?: string;
         };
       }>;
@@ -1328,6 +1411,7 @@ export async function searchPexelsCandidates(
     for (const photo of photos) {
       const imageUrl =
         photo.src?.large2x || photo.src?.large || photo.src?.medium || photo.src?.original || '';
+      const thumbnailUrl = photo.src?.small || photo.src?.tiny || photo.src?.medium || imageUrl;
       const sourcePageUrl = photo.url || 'https://www.pexels.com';
       if (!imageUrl || !photo.id) continue;
 
@@ -1346,6 +1430,7 @@ export async function searchPexelsCandidates(
         attributionRaw: `Photo by ${(photo.photographer || 'Photographer').trim()} on Pexels`,
         sourcePageUrl,
         imageUrl,
+        thumbnailUrl,
         width: Number(photo.width) || 1200,
         height: Number(photo.height) || 1200,
         mimeType: 'image/jpeg',
@@ -1354,6 +1439,229 @@ export async function searchPexelsCandidates(
 
     return results;
   });
+}
+
+export async function searchPixabayCandidates(
+  query: string,
+  apiKey: string,
+  options: {
+    orientation?: 'portrait' | 'square';
+    timeoutMs?: number;
+  } = {}
+): Promise<RawProviderCandidate[]> {
+  if (!isUsableSecret(apiKey)) return [];
+  if (isProviderCoolingDown('pixabay')) return [];
+
+  return withProviderSlot('pixabay', async () => {
+    const timeoutMs = options.timeoutMs ?? 8_000;
+    const url = new URL('https://pixabay.com/api/');
+    url.searchParams.set('key', apiKey);
+    url.searchParams.set('q', query.slice(0, 100));
+    url.searchParams.set('image_type', 'photo');
+    url.searchParams.set('safesearch', 'true');
+    url.searchParams.set('per_page', '15');
+    if (options.orientation === 'portrait') {
+      url.searchParams.set('orientation', 'vertical');
+    }
+
+    providerStates.pixabay.requestsCount += 1;
+    const response = await fetch(url.toString(), {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+      },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+
+    updateProviderRateLimitFromResponse('pixabay', response);
+    if (!response.ok) {
+      providerStates.pixabay.lastError = `HTTP ${response.status}`;
+      return [];
+    }
+
+    const data = (await response.json()) as {
+      hits?: Array<{
+        id?: number | string;
+        pageURL?: string;
+        tags?: string;
+        previewURL?: string;
+        webformatURL?: string;
+        largeImageURL?: string;
+        imageWidth?: number;
+        imageHeight?: number;
+        user?: string;
+        user_id?: number | string;
+      }>;
+    };
+
+    const hits = Array.isArray(data?.hits) ? data.hits : [];
+    const results: RawProviderCandidate[] = [];
+
+    for (const hit of hits) {
+      const imageUrl = hit.largeImageURL || hit.webformatURL || '';
+      const thumbnailUrl = hit.previewURL || hit.webformatURL || imageUrl;
+      const sourcePageUrl = hit.pageURL || 'https://pixabay.com';
+      if (!imageUrl || !hit.id) continue;
+
+      const rawTags = (hit.tags || '').trim();
+      const tagList = rawTags
+        .split(',')
+        .map((t) => t.trim().toLowerCase())
+        .filter(Boolean);
+      const creator = (hit.user || 'Pixabay Contributor').trim();
+      const creatorUrl = hit.user_id
+        ? `https://pixabay.com/users/${encodeURIComponent(creator)}-${hit.user_id}/`
+        : undefined;
+
+      results.push({
+        provider: 'pixabay',
+        assetId: String(hit.id),
+        title: rawTags || `Pixabay Photo ${hit.id}`,
+        description: rawTags,
+        alt: rawTags,
+        tags: tagList.length > 0 ? tagList : tokenizeContentWords(rawTags),
+        creator,
+        creatorUrl,
+        licenseRaw: 'Pixabay Content License',
+        licenseUrl: 'https://pixabay.com/service/license-summary/',
+        attributionRaw: `Photo by ${creator} on Pixabay`,
+        sourcePageUrl,
+        imageUrl,
+        thumbnailUrl,
+        width: Number(hit.imageWidth) || 1200,
+        height: Number(hit.imageHeight) || 1200,
+        mimeType: 'image/jpeg',
+      });
+    }
+
+    return results;
+  });
+}
+
+export async function searchUnsplashCandidates(
+  query: string,
+  accessKey: string,
+  options: {
+    orientation?: 'portrait' | 'square';
+    timeoutMs?: number;
+  } = {}
+): Promise<RawProviderCandidate[]> {
+  if (!isUsableSecret(accessKey)) return [];
+  if (isProviderCoolingDown('unsplash')) return [];
+
+  return withProviderSlot('unsplash', async () => {
+    const timeoutMs = options.timeoutMs ?? 8_000;
+    const url = new URL('https://api.unsplash.com/search/photos');
+    url.searchParams.set('query', query);
+    url.searchParams.set('per_page', '15');
+    url.searchParams.set('content_filter', 'high');
+    if (options.orientation === 'square') {
+      url.searchParams.set('orientation', 'squarish');
+    } else if (options.orientation === 'portrait') {
+      url.searchParams.set('orientation', 'portrait');
+    }
+
+    providerStates.unsplash.requestsCount += 1;
+    const response = await fetch(url.toString(), {
+      method: 'GET',
+      headers: {
+        Authorization: `Client-ID ${accessKey}`,
+        'Accept-Version': 'v1',
+        Accept: 'application/json',
+      },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+
+    updateProviderRateLimitFromResponse('unsplash', response);
+    if (!response.ok) {
+      providerStates.unsplash.lastError = `HTTP ${response.status}`;
+      return [];
+    }
+
+    const data = (await response.json()) as {
+      results?: Array<{
+        id?: string;
+        width?: number;
+        height?: number;
+        description?: string | null;
+        alt_description?: string | null;
+        urls?: {
+          regular?: string;
+          small?: string;
+          thumb?: string;
+        };
+        links?: {
+          html?: string;
+          download_location?: string;
+        };
+        user?: {
+          name?: string;
+          username?: string;
+          links?: { html?: string };
+        };
+      }>;
+    };
+
+    const items = Array.isArray(data?.results) ? data.results : [];
+    const results: RawProviderCandidate[] = [];
+
+    for (const item of items) {
+      const imageUrl = item.urls?.regular || item.urls?.small || '';
+      const thumbnailUrl = item.urls?.thumb || item.urls?.small || imageUrl;
+      if (!imageUrl || !item.id) continue;
+
+      const desc = (item.alt_description || item.description || '').trim();
+      const creator = (item.user?.name || item.user?.username || 'Unsplash Photographer').trim();
+      const creatorBase = item.user?.links?.html || `https://unsplash.com/@${item.user?.username || ''}`;
+      const creatorUrl = `${creatorBase}${creatorBase.includes('?') ? '&' : '?'}utm_source=clipcraft_local&utm_medium=referral`;
+      const sourceBase = item.links?.html || 'https://unsplash.com';
+      const sourcePageUrl = `${sourceBase}${sourceBase.includes('?') ? '&' : '?'}utm_source=clipcraft_local&utm_medium=referral`;
+
+      results.push({
+        provider: 'unsplash',
+        assetId: String(item.id),
+        title: desc || `Unsplash Photo ${item.id}`,
+        description: desc,
+        alt: desc,
+        tags: tokenizeContentWords(desc),
+        creator,
+        creatorUrl,
+        licenseRaw: 'Unsplash License',
+        licenseUrl: 'https://unsplash.com/license',
+        attributionRaw: `Photo by ${creator} on Unsplash`,
+        sourcePageUrl,
+        imageUrl,
+        thumbnailUrl,
+        downloadLocationUrl: item.links?.download_location,
+        width: Number(item.width) || 1200,
+        height: Number(item.height) || 1500,
+        mimeType: 'image/jpeg',
+      });
+    }
+
+    return results;
+  });
+}
+
+async function triggerUnsplashDownloadTracking(
+  downloadLocationUrl?: string,
+  accessKey?: string
+): Promise<void> {
+  if (!downloadLocationUrl || !accessKey || !isUsableSecret(accessKey)) return;
+  try {
+    const parsed = new URL(downloadLocationUrl);
+    if (parsed.hostname !== 'api.unsplash.com') return;
+    await fetch(parsed.toString(), {
+      method: 'GET',
+      headers: {
+        Authorization: `Client-ID ${accessKey}`,
+        'Accept-Version': 'v1',
+      },
+      signal: AbortSignal.timeout(4_000),
+    });
+  } catch {
+    // Best-effort download tracking per Unsplash API guidelines
+  }
 }
 
 async function resolveOpenverseBearerToken(
@@ -1411,6 +1719,7 @@ export async function searchOpenverseCandidates(
   options: {
     clientId?: string;
     clientSecret?: string;
+    orientation?: 'portrait' | 'square';
     timeoutMs?: number;
   } = {}
 ): Promise<RawProviderCandidate[]> {
@@ -1430,6 +1739,11 @@ export async function searchOpenverseCandidates(
     url.searchParams.set('license_type', 'modification');
     url.searchParams.set('mature', 'false');
     url.searchParams.set('filter_dead', 'true');
+    if (options.orientation === 'square') {
+      url.searchParams.set('aspect_ratio', 'square');
+    } else if (options.orientation === 'portrait') {
+      url.searchParams.set('aspect_ratio', 'tall');
+    }
 
     const headers: Record<string, string> = {
       Accept: 'application/json',
@@ -1685,6 +1999,8 @@ function isPrivateOrReservedIpv6(ip: string): boolean {
 
 const ALLOWED_IMAGE_HOST_SUFFIXES = [
   'pexels.com',
+  'pixabay.com',
+  'unsplash.com',
   'wikimedia.org',
   'wikipedia.org',
   'openverse.org',
@@ -2082,6 +2398,46 @@ export function buildCandidateAttribution(
     };
   }
 
+  if (candidate.provider === 'pixabay') {
+    return {
+      provider: 'pixabay',
+      assetId: candidate.assetId,
+      title,
+      creator,
+      ...(candidate.creatorUrl ? { creatorUrl: candidate.creatorUrl } : {}),
+      license: 'Pixabay Content License',
+      licenseCode: 'pixabay',
+      ...(candidate.licenseUrl ? { licenseUrl: candidate.licenseUrl } : {}),
+      sourcePageUrl: candidate.sourcePageUrl,
+      imageUrl: candidate.imageUrl,
+      attributionText: `Photo by ${creator} on Pixabay`,
+      requiresAttribution: true,
+      shareAlike: false,
+      providerAttributionText: 'Images provided by Pixabay',
+      providerAttributionUrl: 'https://pixabay.com',
+    };
+  }
+
+  if (candidate.provider === 'unsplash') {
+    return {
+      provider: 'unsplash',
+      assetId: candidate.assetId,
+      title,
+      creator,
+      ...(candidate.creatorUrl ? { creatorUrl: candidate.creatorUrl } : {}),
+      license: 'Unsplash License',
+      licenseCode: 'unsplash',
+      ...(candidate.licenseUrl ? { licenseUrl: candidate.licenseUrl } : {}),
+      sourcePageUrl: candidate.sourcePageUrl,
+      imageUrl: candidate.imageUrl,
+      attributionText: `Photo by ${creator} on Unsplash`,
+      requiresAttribution: true,
+      shareAlike: false,
+      providerAttributionText: 'Photos provided by Unsplash',
+      providerAttributionUrl: 'https://unsplash.com/?utm_source=clipcraft_local&utm_medium=referral',
+    };
+  }
+
   const providerLabel =
     candidate.provider === 'wikimedia' ? 'Wikimedia Commons' : 'Openverse';
   const defaultAttribution = `${title} by ${creator} (${license.displayLabel}) via ${providerLabel}`;
@@ -2110,15 +2466,23 @@ export function buildCandidateAttribution(
 
 export interface ResolveVisualOverlaysOptions {
   renderSettings?: Partial<RenderDefaults>;
+  geminiApiKeys?: string[];
   pexelsApiKey?: string;
+  pixabayApiKey?: string;
+  unsplashAccessKey?: string;
   openverseClientId?: string;
   openverseClientSecret?: string;
   wikimediaUserAgent?: string;
   timeoutMs?: number;
 }
 
-function normalizeQueryCacheKey(provider: VisualProviderName, query: string): string {
-  return `${provider}:${ tokenizeWords(query).join(' ') }`;
+function normalizeQueryCacheKey(
+  provider: VisualProviderName,
+  query: string,
+  orientation?: 'portrait' | 'square'
+): string {
+  const orientSuffix = orientation ? `:${orientation}` : '';
+  return `${provider}:${tokenizeWords(query).join(' ')}${orientSuffix}`;
 }
 
 async function searchProviderWithCache(
@@ -2127,7 +2491,8 @@ async function searchProviderWithCache(
   options: ResolveVisualOverlaysOptions,
   category = 'general'
 ): Promise<RawProviderCandidate[]> {
-  const key = normalizeQueryCacheKey(provider, query);
+  const orientation = options.renderSettings?.visualCardAspect;
+  const key = normalizeQueryCacheKey(provider, query, orientation);
   const ttlMs = getVisualSearchCacheTtlMs();
   const cached = searchMemoryCache.get(key);
   if (cached && Date.now() - cached.createdAtMs < ttlMs) {
@@ -2153,12 +2518,24 @@ async function searchProviderWithCache(
     candidates = await searchPexelsCandidates(
       query,
       options.pexelsApiKey ?? '',
-      options.timeoutMs
+      options.timeoutMs,
+      orientation
     );
+  } else if (provider === 'pixabay') {
+    candidates = await searchPixabayCandidates(query, options.pixabayApiKey ?? '', {
+      orientation,
+      timeoutMs: options.timeoutMs,
+    });
+  } else if (provider === 'unsplash') {
+    candidates = await searchUnsplashCandidates(query, options.unsplashAccessKey ?? '', {
+      orientation,
+      timeoutMs: options.timeoutMs,
+    });
   } else if (provider === 'openverse') {
     candidates = await searchOpenverseCandidates(query, {
       clientId: options.openverseClientId,
       clientSecret: options.openverseClientSecret,
+      orientation,
       timeoutMs: options.timeoutMs,
     });
   } else if (provider === 'wikimedia') {
@@ -2189,6 +2566,129 @@ async function searchProviderWithCache(
   return candidates;
 }
 
+export interface VisionMomentBatchItem {
+  momentId: string;
+  quote: string;
+  visualIntent: string;
+  entityName: string;
+  candidates: ScoredCandidate[];
+}
+
+/**
+ * Runs a single Gemini vision relevance verification call for a clip's photo moments:
+ * sends small thumbnails (<= 256 px) of the top 3 candidates per photo moment and
+ * returns a map `momentId -> pickIndex` (`0..2` for best candidate, or `-1` to skip moment).
+ * Any timeout or error falls back to empty map (preserving text-score ranking).
+ */
+export async function verifyClipVisualCandidatesWithGeminiVision(params: {
+  moments: VisionMomentBatchItem[];
+  geminiApiKeys: string[];
+  timeoutMs?: number;
+}): Promise<Map<string, number>> {
+  const decisions = new Map<string, number>();
+  const apiKey = (params.geminiApiKeys ?? []).find((k) => isUsableSecret(k));
+  if (!apiKey || params.moments.length === 0) return decisions;
+
+  const timeoutMs = params.timeoutMs ?? 8_000;
+  const parts: Array<Record<string, unknown>> = [
+    {
+      text:
+        'You are verifying contextual image overlays for a vertical short-form video clip. ' +
+        'For each moment below, inspect its spoken quote, visual intent, and up to 3 candidate thumbnails (0, 1, 2). ' +
+        'Pick the index (0, 1, or 2) of the candidate that best illustrates the moment without contradicting the tone or identity, ' +
+        'or return -1 if NONE of the candidates are genuinely relevant (so the clip can fall back to a text pop). ' +
+        'Respond ONLY with JSON: {"decisions":[{"momentId":"...","pickIndex":0}]}',
+    },
+  ];
+
+  for (const item of params.moments) {
+    const topThree = item.candidates.slice(0, 3);
+    if (topThree.length === 0) continue;
+
+    parts.push({
+      text:
+        `\nMoment "${item.momentId}": quote="${item.quote}", intent="${item.visualIntent}"` +
+        (item.entityName ? `, entity="${item.entityName}"` : ''),
+    });
+
+    for (let idx = 0; idx < topThree.length; idx += 1) {
+      const cand = topThree[idx].candidate;
+      parts.push({
+        text: `Candidate ${idx} (${cand.provider}): title="${cand.title}", alt="${cand.alt}"`,
+      });
+      const thumbUrl = cand.thumbnailUrl || cand.imageUrl;
+      try {
+        const safeUrl = validateSafeProviderDownloadUrl(thumbUrl);
+        const res = await fetch(safeUrl.toString(), {
+          method: 'GET',
+          signal: AbortSignal.timeout(Math.min(2_500, timeoutMs)),
+        });
+        if (res.ok) {
+          const buf = Buffer.from(await res.arrayBuffer());
+          if (buf.length > 0 && buf.length <= 350 * 1024) {
+            const mime =
+              (res.headers.get('content-type') || cand.mimeType || 'image/jpeg')
+                .split(';')[0]
+                .trim();
+            parts.push({
+              inlineData: {
+                mimeType: ALLOWED_IMAGE_MIMES.has(mime) ? mime : 'image/jpeg',
+                data: buf.toString('base64'),
+              },
+            });
+          }
+        }
+      } catch {
+        // Proceed with candidate metadata if thumbnail fetch fails
+      }
+    }
+  }
+
+  try {
+    const endpoint =
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`;
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts }],
+        generationConfig: {
+          temperature: 0.1,
+          maxOutputTokens: 512,
+          responseMimeType: 'application/json',
+        },
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+
+    if (!response.ok) return decisions;
+    const payload = (await response.json()) as {
+      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    };
+    const rawText = payload?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+    if (!rawText) return decisions;
+
+    const parsed = JSON.parse(rawText) as {
+      decisions?: Array<{ momentId?: string; pickIndex?: number }>;
+    };
+    for (const d of parsed.decisions ?? []) {
+      if (
+        typeof d?.momentId === 'string' &&
+        typeof d?.pickIndex === 'number' &&
+        Number.isInteger(d.pickIndex) &&
+        d.pickIndex >= -1 &&
+        d.pickIndex <= 2
+      ) {
+        decisions.set(d.momentId, d.pickIndex);
+      }
+    }
+  } catch {
+    // Non-fatal: fall back to text score
+  }
+
+  return decisions;
+}
+
 /**
  * Resolves a single `ClipVisualOverlay` by routing across allowed providers,
  * ranking candidates locally, and downloading the winning image to the local cache.
@@ -2197,7 +2697,8 @@ async function searchProviderWithCache(
 export async function resolveSingleVisualOverlay(
   overlay: ClipVisualOverlay,
   options: ResolveVisualOverlaysOptions = {},
-  usedAssetIds: Set<string> = new Set()
+  usedAssetIds: Set<string> = new Set(),
+  visionPickIndex?: number
 ): Promise<ClipVisualOverlay> {
   if (overlay.status === 'removed') return overlay;
 
@@ -2208,6 +2709,15 @@ export async function resolveSingleVisualOverlay(
       kind: 'keyword-pop',
       status: 'resolved',
       skipReason: undefined,
+    };
+  }
+
+  if (visionPickIndex === -1) {
+    return {
+      ...overlay,
+      kind: 'keyword-pop',
+      status: 'skipped',
+      skipReason: 'Gemini vision verification rejected all candidate thumbnails; falling back to keyword pop.',
     };
   }
 
@@ -2223,12 +2733,21 @@ export async function resolveSingleVisualOverlay(
 
   const pexelsKey =
     options.pexelsApiKey?.trim() || (process.env.PEXELS_API_KEY?.trim() ?? '');
+  const pixabayKey =
+    options.pixabayApiKey?.trim() || (process.env.PIXABAY_API_KEY?.trim() ?? '');
+  const unsplashKey =
+    options.unsplashAccessKey?.trim() || (process.env.UNSPLASH_ACCESS_KEY?.trim() ?? '');
   const hasPexelsKey = isUsableSecret(pexelsKey);
+  const hasPixabayKey = isUsableSecret(pixabayKey);
+  const hasUnsplashKey = isUsableSecret(unsplashKey);
+  const preferredAspect = options.renderSettings?.visualCardAspect ?? 'portrait';
 
   const providerOrder = getProviderOrderForMoment({
     moment: overlay,
     renderSettings: options.renderSettings,
     hasPexelsKey,
+    hasPixabayKey,
+    hasUnsplashKey,
   });
 
   if (providerOrder.length === 0) {
@@ -2266,11 +2785,15 @@ export async function resolveSingleVisualOverlay(
       overlay.category === 'place' ||
       overlay.category === 'named_event' ||
       Boolean(overlay.entityName && overlay.entityName.trim());
+    const isStock =
+      bankMatch.provider === 'pexels' ||
+      bankMatch.provider === 'pixabay' ||
+      bankMatch.provider === 'unsplash';
     return {
       ...overlay,
       status: 'resolved',
       skipReason: undefined,
-      framing: bankMatch.provider === 'pexels' || !isEntityCategory ? 'illustrative' : 'editorial',
+      framing: isStock || !isEntityCategory ? 'illustrative' : 'editorial',
       localFilePath: bankMatch.localPath,
       mediaUrl: `/api/media/visual-cache/${path.basename(bankMatch.localPath)}`,
       contentHash: bankMatch.contentHash,
@@ -2290,6 +2813,8 @@ export async function resolveSingleVisualOverlay(
         {
           ...options,
           pexelsApiKey: pexelsKey,
+          pixabayApiKey: pixabayKey,
+          unsplashAccessKey: unsplashKey,
         },
         overlay.category
       );
@@ -2298,9 +2823,18 @@ export async function resolveSingleVisualOverlay(
 
       const scored = rawCandidates
         .filter((cand) => !usedAssetIds.has(`${cand.provider}:${cand.assetId}`))
-        .map((cand) => scoreVisualCandidate(cand, overlay))
+        .map((cand) => scoreVisualCandidate(cand, overlay, preferredAspect))
         .filter((entry) => entry.accepted)
         .sort((a, b) => b.score - a.score);
+
+      if (
+        typeof visionPickIndex === 'number' &&
+        visionPickIndex >= 0 &&
+        visionPickIndex < Math.min(3, scored.length)
+      ) {
+        const [picked] = scored.splice(visionPickIndex, 1);
+        scored.unshift(picked);
+      }
 
       for (const winner of scored.slice(0, 2)) {
         const assetKey = `${winner.candidate.provider}:${winner.candidate.assetId}`;
@@ -2329,6 +2863,9 @@ export async function resolveSingleVisualOverlay(
             userAgent: options.wikimediaUserAgent,
             timeoutMs: options.timeoutMs,
           });
+          if (winner.candidate.provider === 'unsplash' && winner.candidate.downloadLocationUrl) {
+            void triggerUnsplashDownloadTracking(winner.candidate.downloadLocationUrl, unsplashKey);
+          }
           const attribution = buildCandidateAttribution(winner.candidate, winner.license);
           const assetEntry: CachedDownloadedAsset = {
             key: assetKey,
@@ -2399,6 +2936,8 @@ export async function resolveSingleVisualOverlay(
 /**
  * Resolves all planned visual overlays for a clip before the final video encode.
  * De-duplicates assets within the clip so the same image is never shown twice.
+ * When `visualVisionVerify` is enabled (default true) and `geminiApiKeys` are provided,
+ * runs a single Gemini vision verification pass across the clip's photo moments.
  */
 export async function resolveVisualOverlaysForClip(
   overlays: ClipVisualOverlay[],
@@ -2409,11 +2948,96 @@ export async function resolveVisualOverlaysForClip(
     options.renderSettings?.autoVisuals ?? DEFAULT_RENDER_SETTINGS.autoVisuals;
   if (!autoVisuals) return overlays;
 
+  const visionVerifyEnabled =
+    (options.renderSettings?.visualVisionVerify ??
+      DEFAULT_RENDER_SETTINGS.visualVisionVerify ??
+      true) &&
+    Array.isArray(options.geminiApiKeys) &&
+    options.geminiApiKeys.some((k) => isUsableSecret(k));
+
+  let visionDecisions = new Map<string, number>();
+  if (visionVerifyEnabled && options.geminiApiKeys) {
+    try {
+      const pexelsKey =
+        options.pexelsApiKey?.trim() || (process.env.PEXELS_API_KEY?.trim() ?? '');
+      const pixabayKey =
+        options.pixabayApiKey?.trim() || (process.env.PIXABAY_API_KEY?.trim() ?? '');
+      const unsplashKey =
+        options.unsplashAccessKey?.trim() || (process.env.UNSPLASH_ACCESS_KEY?.trim() ?? '');
+      const hasPexelsKey = isUsableSecret(pexelsKey);
+      const hasPixabayKey = isUsableSecret(pixabayKey);
+      const hasUnsplashKey = isUsableSecret(unsplashKey);
+      const preferredAspect = options.renderSettings?.visualCardAspect ?? 'portrait';
+
+      const batchItems: VisionMomentBatchItem[] = [];
+      for (const overlay of overlays) {
+        if (
+          overlay.status === 'removed' ||
+          overlay.kind === 'keyword-pop' ||
+          overlay.kind === 'zoom-beat' ||
+          (overlay.status === 'resolved' && overlay.localFilePath && fs.existsSync(overlay.localFilePath))
+        ) {
+          continue;
+        }
+        const providerOrder = getProviderOrderForMoment({
+          moment: overlay,
+          renderSettings: options.renderSettings,
+          hasPexelsKey,
+          hasPixabayKey,
+          hasUnsplashKey,
+        });
+        const primaryQuery =
+          overlay.searchQueries[0]?.trim() ||
+          [overlay.entityName, overlay.visualIntent].filter(Boolean).join(' ').trim();
+        if (!primaryQuery || providerOrder.length === 0) continue;
+
+        for (const provider of providerOrder) {
+          const rawCandidates = await searchProviderWithCache(
+            provider,
+            primaryQuery,
+            {
+              ...options,
+              pexelsApiKey: pexelsKey,
+              pixabayApiKey: pixabayKey,
+              unsplashAccessKey: unsplashKey,
+            },
+            overlay.category
+          );
+          const scored = rawCandidates
+            .map((cand) => scoreVisualCandidate(cand, overlay, preferredAspect))
+            .filter((entry) => entry.accepted)
+            .sort((a, b) => b.score - a.score);
+          if (scored.length > 0) {
+            batchItems.push({
+              momentId: overlay.id,
+              quote: overlay.quote,
+              visualIntent: overlay.visualIntent,
+              entityName: overlay.entityName,
+              candidates: scored.slice(0, 3),
+            });
+            break;
+          }
+        }
+      }
+
+      if (batchItems.length > 0) {
+        visionDecisions = await verifyClipVisualCandidatesWithGeminiVision({
+          moments: batchItems,
+          geminiApiKeys: options.geminiApiKeys,
+          timeoutMs: options.timeoutMs,
+        });
+      }
+    } catch {
+      // Non-fatal: fall back to text score
+    }
+  }
+
   const usedAssetIds = new Set<string>();
   const resolved: ClipVisualOverlay[] = [];
 
   for (const overlay of overlays) {
-    const updated = await resolveSingleVisualOverlay(overlay, options, usedAssetIds);
+    const decision = visionDecisions.get(overlay.id);
+    const updated = await resolveSingleVisualOverlay(overlay, options, usedAssetIds, decision);
     resolved.push(updated);
   }
 

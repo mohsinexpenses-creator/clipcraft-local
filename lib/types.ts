@@ -168,7 +168,7 @@ export type AppSettingsSection = (typeof APP_SETTINGS_SECTIONS)[number];
  */
 export type SettingsSource = 'app' | 'default';
 
-export const VISUAL_PROVIDERS = ['pexels', 'openverse', 'wikimedia'] as const;
+export const VISUAL_PROVIDERS = ['pexels', 'pixabay', 'unsplash', 'openverse', 'wikimedia'] as const;
 export type VisualProviderName = (typeof VISUAL_PROVIDERS)[number];
 
 export const VISUAL_OVERLAY_ANIMATIONS = ['subtle-zoom', 'fade', 'slide-up', 'pop'] as const;
@@ -200,10 +200,19 @@ export type VisualEmotionalPolarity = (typeof VISUAL_EMOTIONAL_POLARITIES)[numbe
 export const VISUAL_MOMENT_PLACEMENTS = ['main', 'hook', 'both'] as const;
 export type VisualMomentPlacement = (typeof VISUAL_MOMENT_PLACEMENTS)[number];
 
-export type VisualLicenseCode = 'pexels' | 'cc0' | 'pdm' | 'cc-by' | 'cc-by-sa';
+export type VisualLicenseCode =
+  | 'pexels'
+  | 'pixabay'
+  | 'unsplash'
+  | 'cc0'
+  | 'pdm'
+  | 'cc-by'
+  | 'cc-by-sa';
 
 export interface VisualProviderToggles {
   pexels: boolean;
+  pixabay?: boolean;
+  unsplash?: boolean;
   openverse: boolean;
   wikimedia: boolean;
 }
@@ -245,6 +254,8 @@ export interface RenderDefaults {
   visualCardAspect?: VisualCardAspect;
   /** Render a crisp thin border around visual cards (default true). */
   visualCardBorder?: boolean;
+  /** Verify candidate photo relevance with a single Gemini vision call per clip (default true). */
+  visualVisionVerify?: boolean;
   /** Master toggle for sound effects on hooks, transitions, visual cards, and CTAs. */
   sfxEnabled?: boolean;
   /** Master SFX volume in dB (default -14 dB). */
@@ -265,11 +276,18 @@ export const DEFAULT_RENDER_SETTINGS: RenderDefaults = {
   visualMinDuration: 2.0,
   visualDefaultDuration: 2.8,
   visualAnimation: 'subtle-zoom',
-  visualProviders: { pexels: true, openverse: true, wikimedia: true },
-  visualProviderPriority: ['pexels', 'openverse', 'wikimedia'],
+  visualProviders: {
+    pexels: true,
+    pixabay: true,
+    unsplash: true,
+    openverse: true,
+    wikimedia: true,
+  },
+  visualProviderPriority: ['pexels', 'pixabay', 'unsplash', 'openverse', 'wikimedia'],
   visualShowOnVideoCredit: true,
   visualCardAspect: 'portrait',
   visualCardBorder: true,
+  visualVisionVerify: true,
   sfxEnabled: true,
   sfxVolume: -14,
 };
@@ -299,6 +317,10 @@ export interface AiProviderSettings {
   transcriptionProvider: TranscriptionProviderChoice;
   /** Optional existing Pexels API key (masked in UI, never logged). */
   pexelsApiKey: string;
+  /** Optional Pixabay API key (masked in UI, never logged). */
+  pixabayApiKey?: string;
+  /** Optional Unsplash Access Key (masked in UI, never logged). */
+  unsplashAccessKey?: string;
   /** Optional Openverse registered-app OAuth2 client_id for higher rate limits. */
   openverseClientId: string;
   /** Optional Openverse registered-app OAuth2 client_secret (masked in UI). */
@@ -313,6 +335,8 @@ export const DEFAULT_AI_SETTINGS: AiProviderSettings = {
   deepgramModel: '',
   transcriptionProvider: 'auto',
   pexelsApiKey: '',
+  pixabayApiKey: '',
+  unsplashAccessKey: '',
   openverseClientId: '',
   openverseClientSecret: '',
   wikimediaUserAgent: DEFAULT_WIKIMEDIA_USER_AGENT,

@@ -412,6 +412,8 @@ export function RenderSettingsPanel({
                       visualProviders: {
                         ...(value.visualProviders ?? {
                           pexels: true,
+                          pixabay: true,
+                          unsplash: true,
                           openverse: true,
                           wikimedia: true,
                         }),
@@ -422,7 +424,53 @@ export function RenderSettingsPanel({
                   disabled={disabled}
                   className="rounded border-border"
                 />
-                <span>Pexels (stock situations)</span>
+                <span>Pexels</span>
+              </label>
+              <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={value.visualProviders?.pixabay ?? true}
+                  onChange={(e) =>
+                    patch({
+                      visualProviders: {
+                        ...(value.visualProviders ?? {
+                          pexels: true,
+                          pixabay: true,
+                          unsplash: true,
+                          openverse: true,
+                          wikimedia: true,
+                        }),
+                        pixabay: e.target.checked,
+                      },
+                    })
+                  }
+                  disabled={disabled}
+                  className="rounded border-border"
+                />
+                <span>Pixabay</span>
+              </label>
+              <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={value.visualProviders?.unsplash ?? true}
+                  onChange={(e) =>
+                    patch({
+                      visualProviders: {
+                        ...(value.visualProviders ?? {
+                          pexels: true,
+                          pixabay: true,
+                          unsplash: true,
+                          openverse: true,
+                          wikimedia: true,
+                        }),
+                        unsplash: e.target.checked,
+                      },
+                    })
+                  }
+                  disabled={disabled}
+                  className="rounded border-border"
+                />
+                <span>Unsplash</span>
               </label>
               <label className="inline-flex items-center gap-1.5 cursor-pointer">
                 <input
@@ -433,6 +481,8 @@ export function RenderSettingsPanel({
                       visualProviders: {
                         ...(value.visualProviders ?? {
                           pexels: true,
+                          pixabay: true,
+                          unsplash: true,
                           openverse: true,
                           wikimedia: true,
                         }),
@@ -454,6 +504,8 @@ export function RenderSettingsPanel({
                       visualProviders: {
                         ...(value.visualProviders ?? {
                           pexels: true,
+                          pixabay: true,
+                          unsplash: true,
                           openverse: true,
                           wikimedia: true,
                         }),
@@ -465,6 +517,18 @@ export function RenderSettingsPanel({
                   className="rounded border-border"
                 />
                 <span>Wikimedia Commons (entities &amp; places)</span>
+              </label>
+              <label className="inline-flex items-center gap-1.5 cursor-pointer ml-auto">
+                <input
+                  type="checkbox"
+                  checked={value.visualVisionVerify ?? true}
+                  onChange={(e) =>
+                    patch({ visualVisionVerify: e.target.checked })
+                  }
+                  disabled={disabled}
+                  className="rounded border-border"
+                />
+                <span>Gemini vision relevance check</span>
               </label>
             </div>
             <p className="text-[10.5px] text-muted-foreground">

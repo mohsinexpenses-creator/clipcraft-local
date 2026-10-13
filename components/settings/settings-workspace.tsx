@@ -963,6 +963,8 @@ function VisualProvidersSection({
   effective: NonNullable<SettingsController["effective"]>;
 }) {
   const [pexelsKey, setPexelsKey] = React.useState("");
+  const [pixabayKey, setPixabayKey] = React.useState("");
+  const [unsplashKey, setUnsplashKey] = React.useState("");
   const [openverseClientId, setOpenverseClientId] = React.useState("");
   const [openverseClientSecret, setOpenverseClientSecret] = React.useState("");
   const [wikimediaUa, setWikimediaUa] = React.useState(
@@ -974,6 +976,22 @@ function VisualProvidersSection({
     if (!key) return;
     if (await settings.save("ai", { pexelsApiKey: key })) {
       setPexelsKey("");
+    }
+  };
+
+  const savePixabay = async () => {
+    const key = pixabayKey.trim();
+    if (!key) return;
+    if (await settings.save("ai", { pixabayApiKey: key })) {
+      setPixabayKey("");
+    }
+  };
+
+  const saveUnsplash = async () => {
+    const key = unsplashKey.trim();
+    if (!key) return;
+    if (await settings.save("ai", { unsplashAccessKey: key })) {
+      setUnsplashKey("");
     }
   };
 
@@ -1087,6 +1105,96 @@ function VisualProvidersSection({
               Optional. Tracks live <code className="font-mono">X-Ratelimit-*</code> headers and falls back to Openverse when unconfigured or rate-limited.
             </p>
           )}
+        </div>
+
+        {/* Pixabay & Unsplash */}
+        <div className="rounded-xl border bg-muted/20 p-3 space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[12px] font-semibold">
+              Pixabay &amp; Unsplash API keys
+            </span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <Input
+              value={pixabayKey}
+              onChange={(e) => setPixabayKey(e.target.value)}
+              placeholder={
+                effective.ai.pixabayApiKey || "Pixabay API key (optional)"
+              }
+              type="password"
+              spellCheck={false}
+              autoComplete="off"
+              className="font-mono text-[11.5px]"
+              aria-label="Pixabay API key"
+            />
+            <Button
+              size="xs"
+              variant="soft"
+              disabled={!pixabayKey.trim() || settings.busy !== null}
+              onClick={() => void savePixabay()}
+            >
+              Save
+            </Button>
+          </div>
+          {effective.ai.pixabayApiKey ? (
+            <div className="flex items-center justify-between gap-2 text-[10.5px] text-muted-foreground">
+              <span>
+                Pixabay:{" "}
+                <code className="font-mono text-foreground">
+                  {effective.ai.pixabayApiKey}
+                </code>
+              </span>
+              <Button
+                size="xs"
+                variant="ghost"
+                disabled={settings.busy === "save:ai"}
+                onClick={() => void settings.save("ai", { pixabayApiKey: "" })}
+              >
+                Remove
+              </Button>
+            </div>
+          ) : null}
+
+          <div className="flex items-center gap-1.5">
+            <Input
+              value={unsplashKey}
+              onChange={(e) => setUnsplashKey(e.target.value)}
+              placeholder={
+                effective.ai.unsplashAccessKey || "Unsplash Access Key (optional)"
+              }
+              type="password"
+              spellCheck={false}
+              autoComplete="off"
+              className="font-mono text-[11.5px]"
+              aria-label="Unsplash Access Key"
+            />
+            <Button
+              size="xs"
+              variant="soft"
+              disabled={!unsplashKey.trim() || settings.busy !== null}
+              onClick={() => void saveUnsplash()}
+            >
+              Save
+            </Button>
+          </div>
+          {effective.ai.unsplashAccessKey ? (
+            <div className="flex items-center justify-between gap-2 text-[10.5px] text-muted-foreground">
+              <span>
+                Unsplash:{" "}
+                <code className="font-mono text-foreground">
+                  {effective.ai.unsplashAccessKey}
+                </code>
+              </span>
+              <Button
+                size="xs"
+                variant="ghost"
+                disabled={settings.busy === "save:ai"}
+                onClick={() => void settings.save("ai", { unsplashAccessKey: "" })}
+              >
+                Remove
+              </Button>
+            </div>
+          ) : null}
         </div>
 
         {/* Openverse */}
