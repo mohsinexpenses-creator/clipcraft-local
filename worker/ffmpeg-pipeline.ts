@@ -1,3 +1,4 @@
+import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
 import { AppError, toErrorMessage } from "../lib/errors";
@@ -7,7 +8,7 @@ import {
   buildProfanityWindows,
   getProfanityAudioMode,
 } from "../lib/profanity";
-import { getVideoMetadata, runFfmpeg } from "../lib/ffmpeg";
+import { getFfmpegPath, getVideoMetadata, runFfmpeg } from "../lib/ffmpeg";
 import { log } from "../lib/logger";
 import {
   LayoutPlan,
@@ -154,6 +155,12 @@ const VIDEO_PRESETS = new Set([
   "placebo",
 ]);
 
+export type VideoEncoderChoice = "x264" | "nvenc" | "qsv";
+
+const VIDEO_ENCODERS = new Set<VideoEncoderChoice>(["x264", "nvenc", "qsv"]);
+
+let sessionEncoderOverride: VideoEncoderChoice | null = null;
+
 /** Final-output H.264 settings. Invalid env values fall back to quality-first defaults. */
 export function getVideoEncodeSettings(
   env: Record<string, string | undefined> = process.env,
@@ -164,8 +171,254 @@ export function getVideoEncodeSettings(
       ? Math.round(rawCrf)
       : 17;
   const rawPreset = env.VIDEO_PRESET?.trim().toLowerCase();
-  const preset = rawPreset && VIDEO_PRESETS.has(rawPreset) ? rawPreset : "slow";
+  const preset = rawPreset && VIDEO_PRESETS.has(rawPreset) ? rawPreset : "medium";
   return { crf, preset };
+}
+
+export function getConfiguredVideoEncoder(
+  env: Record<string, string | undefined> = process.env,
+): VideoEncoderChoice {
+  const raw = env.VIDEO_ENCODER?.trim().toLowerCase() as VideoEncoderChoice | undefined;
+  return raw && VIDEO_ENCODERS.has(raw) ? raw : "x264";
+}
+
+export function getActiveVideoEncoder(
+  env: Record<string, string | undefined> = process.env,
+): VideoEncoderChoice {
+  return sessionEncoderOverride ?? getConfiguredVideoEncoder(env);
+}
+
+export function setSessionVideoEncoderOverride(
+  encoder: VideoEncoderChoice | null,
+): void {
+  sessionEncoderOverride = encoder;
+}
+
+export function buildVideoCodecArgs(
+  encoder: VideoEncoderChoice,
+  env: Record<string, string | undefined> = process.env,
+): { encoder: VideoEncoderChoice; presetLabel: string; args: string[] } {
+  if (encoder === "nvenc") {
+    return {
+      encoder: "nvenc",
+      presetLabel: "p6",
+      args: [
+        "-c:v",
+        "h264_nvenc",
+        "-preset",
+        "p6",
+        "-tune",
+        "hq",
+        "-rc",
+        "vbr",
+        "-cq",
+        "19",
+        "-b:v",
+        "0",
+        "-spatial-aq",
+        "1",
+        "-temporal-aq",
+        "1",
+        "-profile:v",
+        "high",
+        "-pix_fmt",
+        "yuv420p",
+      ],
+    };
+  }
+
+  if (encoder === "qsv") {
+    return {
+      encoder: "qsv",
+      presetLabel: "slower",
+      args: [
+        "-c:v",
+        "h264_qsv",
+        "-preset",
+        "slower",
+        "-global_quality",
+        "20",
+        "-profile:v",
+        "high",
+        "-pix_fmt",
+        "yuv420p",
+      ],
+    };
+  }
+
+  const encodeSettings = getVideoEncodeSettings(env);
+  return {
+    encoder: "x264",
+    presetLabel: encodeSettings.preset,
+    args: [
+      "-c:v",
+      "libx264",
+      "-preset",
+      encodeSettings.preset,
+      "-crf",
+      String(encodeSettings.crf),
+      "-pix_fmt",
+      "yuv420p",
+      "-profile:v",
+      "high",
+    ],
+  };
+}
+
+export interface VideoEncoderProbeResult {
+  requested: VideoEncoderChoice;
+  active: VideoEncoderChoice;
+  presetLabel: string;
+  availableEncoders: string[];
+  fallbackReason?: string;
+}
+
+function runFfmpegQuickProbe(
+  ffmpegBin: string,
+  args: string[],
+  timeoutMs = 10_000,
+): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(ffmpegBin, args, { windowsHide: true });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill("SIGKILL");
+      resolve({ ok: false, stdout, stderr: stderr || "Timed out" });
+    }, timeoutMs);
+
+    child.stdout?.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ ok: false, stdout, stderr: err.message });
+    });
+    child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ ok: code === 0, stdout, stderr });
+    });
+  });
+}
+
+/**
+ * Probe the configured FFmpeg binary (including any `Settings -> ffmpegPath` override)
+ * with `-encoders` and a 1-second `lavfi` test encode. If a hardware encoder (`nvenc` or
+ * `qsv`) was requested and fails the probe, logs a warning and falls back to `x264` for
+ * the session.
+ */
+export async function probeVideoEncoder(options?: {
+  ffmpegPath?: string;
+  env?: Record<string, string | undefined>;
+  activateForSession?: boolean;
+}): Promise<VideoEncoderProbeResult> {
+  const env = options?.env ?? process.env;
+  const requested = getConfiguredVideoEncoder(env);
+  const ffmpegBin = options?.ffmpegPath || getFfmpegPath();
+
+  const encodersRes = await runFfmpegQuickProbe(ffmpegBin, [
+    "-hide_banner",
+    "-encoders",
+  ]);
+  const encodersText = `${encodersRes.stdout}\n${encodersRes.stderr}`;
+  const availableEncoders = ["libx264", "h264_nvenc", "h264_qsv"].filter((name) =>
+    new RegExp(`\\b${name}\\b`).test(encodersText),
+  );
+
+  if (requested === "x264") {
+    if (options?.activateForSession !== false) {
+      sessionEncoderOverride = "x264";
+    }
+    const { presetLabel } = buildVideoCodecArgs("x264", env);
+    return {
+      requested,
+      active: "x264",
+      presetLabel,
+      availableEncoders,
+    };
+  }
+
+  const ffmpegCodecName = requested === "nvenc" ? "h264_nvenc" : "h264_qsv";
+  if (!availableEncoders.includes(ffmpegCodecName)) {
+    const fallbackReason = `${ffmpegCodecName} is not compiled into ${ffmpegBin}`;
+    if (options?.activateForSession !== false) {
+      sessionEncoderOverride = "x264";
+      log.warn(
+        `VIDEO_ENCODER=${requested} unavailable (${fallbackReason}) — falling back to libx264.`,
+      );
+    }
+    const { presetLabel } = buildVideoCodecArgs("x264", env);
+    return {
+      requested,
+      active: "x264",
+      presetLabel,
+      availableEncoders,
+      fallbackReason,
+    };
+  }
+
+  const codecSpec = buildVideoCodecArgs(requested, env);
+  const testRes = await runFfmpegQuickProbe(ffmpegBin, [
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-f",
+    "lavfi",
+    "-i",
+    "nullsrc=s=128x128:d=1:r=30",
+    "-vf",
+    "format=yuv420p",
+    ...codecSpec.args,
+    "-f",
+    "null",
+    "-",
+  ]);
+
+  if (!testRes.ok) {
+    const detail = (testRes.stderr || testRes.stdout || "lavfi test encode failed")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .slice(-2)
+      .join(" | ");
+    const fallbackReason = `1s lavfi test encode with ${ffmpegCodecName} failed (${detail})`;
+    if (options?.activateForSession !== false) {
+      sessionEncoderOverride = "x264";
+      log.warn(
+        `VIDEO_ENCODER=${requested} failed hardware test (${fallbackReason}) — falling back to libx264.`,
+      );
+    }
+    const { presetLabel } = buildVideoCodecArgs("x264", env);
+    return {
+      requested,
+      active: "x264",
+      presetLabel,
+      availableEncoders,
+      fallbackReason,
+    };
+  }
+
+  if (options?.activateForSession !== false) {
+    sessionEncoderOverride = requested;
+    log.ok(`Hardware encoder active: ${ffmpegCodecName} (${codecSpec.presetLabel})`);
+  }
+  return {
+    requested,
+    active: requested,
+    presetLabel: codecSpec.presetLabel,
+    availableEncoders,
+  };
 }
 
 /** Pure overlay filter builder shared by the pipeline and unit tests. */
@@ -493,20 +746,11 @@ export async function processVideoSegment(
 
   // Captions, hook and CTA are transparent PNG overlays composited below; the
   // deliverable therefore sees exactly ONE H.264 generation, straight from the
-  // source frames. Defaults target high quality without forcing placebo-speed
-  // encoding; VIDEO_CRF (16-18) and VIDEO_PRESET can be tuned in .env.local.
-  const encodeSettings = getVideoEncodeSettings();
+  // source frames. Supports x264 (default medium, CRF 16-18), nvenc, or qsv.
+  const activeEncoder = getActiveVideoEncoder();
+  const codecSpec = buildVideoCodecArgs(activeEncoder);
   const videoArgs = [
-    "-c:v",
-    "libx264",
-    "-preset",
-    encodeSettings.preset,
-    "-crf",
-    String(encodeSettings.crf),
-    "-pix_fmt",
-    "yuv420p",
-    "-profile:v",
-    "high",
+    ...codecSpec.args,
     "-r",
     ffmpegFpsArg(fps),
     // FFmpeg 7 removed the old -vsync alias; -fps_mode is supported since 5.1.

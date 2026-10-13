@@ -486,6 +486,39 @@ const SCHEMA_MIGRATIONS: Record<number, (db: SqliteDatabase) => void> = {
   5: migrateSchemaV5,
 };
 
+function ensureVisualCacheTables(db: SqliteDatabase): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS visual_search_cache (
+      cache_key TEXT PRIMARY KEY,
+      provider TEXT NOT NULL,
+      query TEXT NOT NULL,
+      category TEXT NOT NULL,
+      orientation TEXT NOT NULL DEFAULT 'any',
+      results_json TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS visual_search_cache_expires_idx ON visual_search_cache(expires_at);
+
+    CREATE TABLE IF NOT EXISTS image_bank (
+      id TEXT PRIMARY KEY,
+      provider TEXT NOT NULL,
+      asset_id TEXT NOT NULL,
+      local_path TEXT NOT NULL,
+      tags TEXT NOT NULL,
+      width INTEGER NOT NULL,
+      height INTEGER NOT NULL,
+      file_size INTEGER NOT NULL DEFAULT 0,
+      content_hash TEXT,
+      attribution_json TEXT NOT NULL,
+      last_used TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS image_bank_provider_asset_idx ON image_bank(provider, asset_id);
+    CREATE INDEX IF NOT EXISTS image_bank_last_used_idx ON image_bank(last_used DESC);
+  `);
+}
+
 export function initializeSchema(db: SqliteDatabase): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_version (
@@ -539,6 +572,8 @@ export function initializeSchema(db: SqliteDatabase): void {
       })
       .immediate();
   }
+
+  ensureVisualCacheTables(db);
 }
 
 function serializeJson(value: unknown): string {

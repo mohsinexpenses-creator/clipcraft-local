@@ -13,8 +13,11 @@ import {
 } from './types';
 import { isUsableSecret } from './app-settings';
 import { tokenizeContentWords, tokenizeWords } from './contextual-visuals';
+import { getDatabase } from './db';
 
 export const MAX_IMAGE_DOWNLOAD_BYTES = 12 * 1024 * 1024; // 12 MB
+export const DEFAULT_VISUAL_CACHE_MAX_BYTES = 5 * 1024 * 1024 * 1024; // 5 GB
+export const DEFAULT_VISUAL_SEARCH_TTL_DAYS = 21; // 14-30 day window
 export const MIN_IMAGE_DIMENSION = 200;
 export const MAX_IMAGE_DIMENSION = 8192;
 export const MAX_IMAGE_PIXELS = 25_000_000;
@@ -165,6 +168,11 @@ export function getVisualCacheDir(): string {
   return path.resolve(process.cwd(), 'data', 'visual-cache');
 }
 
+export function clearVisualMemoryCachesOnly(): void {
+  searchMemoryCache.clear();
+  assetMemoryCache.clear();
+}
+
 export function resetVisualProviderStateForTests(): void {
   for (const name of ['pexels', 'openverse', 'wikimedia'] as const) {
     providerStates[name] = {
@@ -183,6 +191,347 @@ export function resetVisualProviderStateForTests(): void {
   openverseTokenCache = null;
   searchMemoryCache.clear();
   assetMemoryCache.clear();
+  try {
+    const db = getDatabase();
+    db.exec('DELETE FROM visual_search_cache; DELETE FROM image_bank;');
+  } catch {
+    // Ignore if DB is not initialized in a pure test
+  }
+}
+
+export function getVisualSearchCacheTtlMs(): number {
+  const rawDays = Number(process.env.VISUAL_SEARCH_CACHE_TTL_DAYS?.trim());
+  const days = Number.isFinite(rawDays)
+    ? Math.max(14, Math.min(30, Math.round(rawDays)))
+    : DEFAULT_VISUAL_SEARCH_TTL_DAYS;
+  return days * 24 * 3600 * 1000;
+}
+
+function readSqliteSearchCache(cacheKey: string): RawProviderCandidate[] | null {
+  try {
+    const db = getDatabase();
+    const now = Date.now();
+    const row = db
+      .prepare(
+        `SELECT results_json FROM visual_search_cache
+         WHERE cache_key = ? AND expires_at > ?`
+      )
+      .get(cacheKey, now) as { results_json: string } | undefined;
+    if (!row?.results_json) return null;
+    const parsed = JSON.parse(row.results_json);
+    return Array.isArray(parsed) ? (parsed as RawProviderCandidate[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeSqliteSearchCache(params: {
+  cacheKey: string;
+  provider: VisualProviderName;
+  query: string;
+  category?: string;
+  orientation?: string;
+  candidates: RawProviderCandidate[];
+  ttlMs?: number;
+}): void {
+  try {
+    const db = getDatabase();
+    const now = Date.now();
+    const ttlMs = params.ttlMs ?? getVisualSearchCacheTtlMs();
+    db.prepare(
+      `INSERT INTO visual_search_cache (
+         cache_key, provider, query, category, orientation, results_json, created_at, expires_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(cache_key) DO UPDATE SET
+         results_json = excluded.results_json,
+         created_at = excluded.created_at,
+         expires_at = excluded.expires_at`
+    ).run(
+      params.cacheKey,
+      params.provider,
+      params.query,
+      params.category ?? 'general',
+      params.orientation ?? 'any',
+      JSON.stringify(params.candidates),
+      now,
+      now + ttlMs
+    );
+  } catch {
+    // Non-fatal if DB is read-only or unavailable
+  }
+}
+
+export interface ImageBankRecord {
+  id: string;
+  provider: VisualProviderName;
+  assetId: string;
+  localPath: string;
+  tags: string[];
+  width: number;
+  height: number;
+  fileSize: number;
+  contentHash?: string;
+  attribution: VisualAssetAttribution;
+  lastUsed: string;
+  createdAt: string;
+}
+
+export function upsertImageBankEntry(entry: {
+  provider: VisualProviderName;
+  assetId: string;
+  localPath: string;
+  tags: string[];
+  width: number;
+  height: number;
+  fileSize: number;
+  contentHash?: string;
+  attribution: VisualAssetAttribution;
+}): void {
+  try {
+    const db = getDatabase();
+    const now = new Date().toISOString();
+    const normalizedTags = [...new Set(entry.tags.map((t) => t.toLowerCase().trim()).filter(Boolean))];
+    const id = `${entry.provider}:${entry.assetId}`;
+    db.prepare(
+      `INSERT INTO image_bank (
+         id, provider, asset_id, local_path, tags, width, height, file_size,
+         content_hash, attribution_json, last_used, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(provider, asset_id) DO UPDATE SET
+         local_path = excluded.local_path,
+         tags = excluded.tags,
+         width = excluded.width,
+         height = excluded.height,
+         file_size = excluded.file_size,
+         content_hash = excluded.content_hash,
+         attribution_json = excluded.attribution_json,
+         last_used = excluded.last_used`
+    ).run(
+      id,
+      entry.provider,
+      entry.assetId,
+      entry.localPath,
+      JSON.stringify(normalizedTags),
+      entry.width,
+      entry.height,
+      entry.fileSize,
+      entry.contentHash ?? null,
+      JSON.stringify(entry.attribution),
+      now,
+      now
+    );
+  } catch {
+    // Best-effort persistence
+  }
+}
+
+export function findMatchingImageBankEntry(params: {
+  moment: Pick<
+    ClipVisualOverlay,
+    'category' | 'entityName' | 'visualIntent' | 'searchQueries' | 'negativeCues'
+  >;
+  allowedProviders: VisualProviderName[];
+  usedAssetIds: Set<string>;
+}): ImageBankRecord | null {
+  try {
+    if (params.allowedProviders.length === 0) return null;
+    const db = getDatabase();
+    const placeholders = params.allowedProviders.map(() => '?').join(', ');
+    const rows = db
+      .prepare(
+        `SELECT * FROM image_bank
+         WHERE provider IN (${placeholders})
+         ORDER BY last_used DESC
+         LIMIT 200`
+      )
+      .all(...params.allowedProviders) as Array<{
+      id: string;
+      provider: VisualProviderName;
+      asset_id: string;
+      local_path: string;
+      tags: string;
+      width: number;
+      height: number;
+      file_size: number;
+      content_hash: string | null;
+      attribution_json: string;
+      last_used: string;
+      created_at: string;
+    }>;
+
+    if (rows.length === 0) return null;
+
+    const entityTokens = tokenizeContentWords(params.moment.entityName || '');
+    const queryTokens = new Set<string>([
+      ...entityTokens,
+      ...params.moment.searchQueries.flatMap((q) => tokenizeContentWords(q)),
+      ...tokenizeContentWords(params.moment.visualIntent || ''),
+    ]);
+    if (queryTokens.size === 0) return null;
+
+    const negativeTokens = new Set<string>(
+      params.moment.negativeCues.flatMap((n) => tokenizeWords(n))
+    );
+
+    let bestMatch: { record: ImageBankRecord; overlap: number } | null = null;
+
+    for (const row of rows) {
+      const assetKey = `${row.provider}:${row.asset_id}`;
+      if (params.usedAssetIds.has(assetKey)) continue;
+      if (!row.local_path || !fs.existsSync(row.local_path)) continue;
+
+      let parsedTags: string[] = [];
+      try {
+        const raw = JSON.parse(row.tags);
+        if (Array.isArray(raw)) parsedTags = raw.map((t) => String(t).toLowerCase());
+      } catch {
+        parsedTags = tokenizeWords(row.tags);
+      }
+
+      const tagSet = new Set(parsedTags);
+      if ([...negativeTokens].some((neg) => tagSet.has(neg))) continue;
+
+      // Named entities must match all entity tokens
+      if (entityTokens.length > 0 && !entityTokens.every((t) => tagSet.has(t))) {
+        continue;
+      }
+
+      let overlap = 0;
+      for (const qt of queryTokens) {
+        if (tagSet.has(qt)) overlap += 1;
+      }
+
+      const minOverlap = entityTokens.length > 0 ? entityTokens.length : Math.min(2, queryTokens.size);
+      if (overlap < minOverlap) continue;
+
+      let attribution: VisualAssetAttribution;
+      try {
+        attribution = JSON.parse(row.attribution_json) as VisualAssetAttribution;
+      } catch {
+        continue;
+      }
+
+      const record: ImageBankRecord = {
+        id: row.id,
+        provider: row.provider,
+        assetId: row.asset_id,
+        localPath: row.local_path,
+        tags: parsedTags,
+        width: row.width,
+        height: row.height,
+        fileSize: row.file_size,
+        ...(row.content_hash ? { contentHash: row.content_hash } : {}),
+        attribution,
+        lastUsed: row.last_used,
+        createdAt: row.created_at,
+      };
+
+      if (!bestMatch || overlap > bestMatch.overlap) {
+        bestMatch = { record, overlap };
+      }
+    }
+
+    if (!bestMatch) return null;
+
+    const now = new Date().toISOString();
+    db.prepare(`UPDATE image_bank SET last_used = ? WHERE id = ?`).run(now, bestMatch.record.id);
+    bestMatch.record.lastUsed = now;
+    return bestMatch.record;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Prunes `data/visual-cache` by total size using LRU order (`image_bank.last_used`, falling
+ * back to file `mtimeMs`). Default limit is 5 GB.
+ */
+export function pruneVisualCacheDirectory(
+  maxBytes?: number,
+  customDir?: string
+): { totalBytesBefore: number; totalBytesAfter: number; removedFiles: number } {
+  const dir = customDir ? path.resolve(customDir) : getVisualCacheDir();
+  if (!fs.existsSync(dir)) {
+    return { totalBytesBefore: 0, totalBytesAfter: 0, removedFiles: 0 };
+  }
+
+  const configuredGb = Number(process.env.VISUAL_CACHE_MAX_GB?.trim());
+  const limitBytes =
+    typeof maxBytes === 'number' && Number.isFinite(maxBytes) && maxBytes >= 0
+      ? maxBytes
+      : Number.isFinite(configuredGb) && configuredGb > 0
+        ? Math.round(configuredGb * 1024 * 1024 * 1024)
+        : DEFAULT_VISUAL_CACHE_MAX_BYTES;
+
+  let lastUsedByPath = new Map<string, number>();
+  try {
+    const db = getDatabase();
+    const rows = db
+      .prepare(`SELECT local_path, last_used FROM image_bank`)
+      .all() as Array<{ local_path: string; last_used: string }>;
+    for (const row of rows) {
+      const ts = Date.parse(row.last_used);
+      if (Number.isFinite(ts)) {
+        lastUsedByPath.set(path.resolve(row.local_path), ts);
+      }
+    }
+  } catch {
+    lastUsedByPath = new Map();
+  }
+
+  const entries: Array<{ fullPath: string; size: number; lastUsedMs: number }> = [];
+  let totalBytesBefore = 0;
+
+  for (const name of fs.readdirSync(dir)) {
+    if (name.endsWith('.tmp')) continue;
+    const fullPath = path.resolve(dir, name);
+    try {
+      const stat = fs.statSync(fullPath);
+      if (!stat.isFile()) continue;
+      totalBytesBefore += stat.size;
+      const lastUsedMs = lastUsedByPath.get(fullPath) ?? stat.mtimeMs;
+      entries.push({ fullPath, size: stat.size, lastUsedMs });
+    } catch {
+      continue;
+    }
+  }
+
+  if (totalBytesBefore <= limitBytes) {
+    return {
+      totalBytesBefore,
+      totalBytesAfter: totalBytesBefore,
+      removedFiles: 0,
+    };
+  }
+
+  // Sort oldest first (smallest lastUsedMs evicted first)
+  entries.sort((a, b) => a.lastUsedMs - b.lastUsedMs);
+
+  let totalBytesAfter = totalBytesBefore;
+  let removedFiles = 0;
+
+  for (const entry of entries) {
+    if (totalBytesAfter <= limitBytes) break;
+    try {
+      fs.unlinkSync(entry.fullPath);
+      totalBytesAfter -= entry.size;
+      removedFiles += 1;
+      try {
+        const db = getDatabase();
+        db.prepare(`DELETE FROM image_bank WHERE local_path = ?`).run(entry.fullPath);
+      } catch {
+        // ignore
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return {
+    totalBytesBefore,
+    totalBytesAfter: Math.max(0, totalBytesAfter),
+    removedFiles,
+  };
 }
 
 export function getVisualProviderStates(): Record<VisualProviderName, ProviderRateLimitState> {
@@ -1711,13 +2060,28 @@ function normalizeQueryCacheKey(provider: VisualProviderName, query: string): st
 async function searchProviderWithCache(
   provider: VisualProviderName,
   query: string,
-  options: ResolveVisualOverlaysOptions
+  options: ResolveVisualOverlaysOptions,
+  category = 'general'
 ): Promise<RawProviderCandidate[]> {
   const key = normalizeQueryCacheKey(provider, query);
+  const ttlMs = getVisualSearchCacheTtlMs();
   const cached = searchMemoryCache.get(key);
-  if (cached && Date.now() - cached.createdAtMs < 6 * 3600_000) {
+  if (cached && Date.now() - cached.createdAtMs < ttlMs) {
     providerStates[provider].cacheHits += 1;
     return cached.candidates;
+  }
+
+  const sqliteCached = readSqliteSearchCache(key);
+  if (sqliteCached && sqliteCached.length > 0) {
+    providerStates[provider].cacheHits += 1;
+    searchMemoryCache.set(key, {
+      key,
+      provider,
+      query,
+      createdAtMs: Date.now(),
+      candidates: sqliteCached,
+    });
+    return sqliteCached;
   }
 
   let candidates: RawProviderCandidate[] = [];
@@ -1747,6 +2111,14 @@ async function searchProviderWithCache(
       query,
       createdAtMs: Date.now(),
       candidates,
+    });
+    writeSqliteSearchCache({
+      cacheKey: key,
+      provider,
+      query,
+      category,
+      candidates,
+      ttlMs,
     });
   }
 
@@ -1805,13 +2177,48 @@ export async function resolveSingleVisualOverlay(
     };
   }
 
+  // Check the persistent SQLite image_bank first so repeat concepts/tags reuse
+  // already-accepted local images before making any API call.
+  const bankMatch = findMatchingImageBankEntry({
+    moment: overlay,
+    allowedProviders: providerOrder,
+    usedAssetIds,
+  });
+  if (bankMatch) {
+    providerStates[bankMatch.provider].cacheHits += 1;
+    usedAssetIds.add(bankMatch.id);
+    const isEntityCategory =
+      overlay.category === 'person' ||
+      overlay.category === 'place' ||
+      overlay.category === 'named_event' ||
+      Boolean(overlay.entityName && overlay.entityName.trim());
+    return {
+      ...overlay,
+      status: 'resolved',
+      skipReason: undefined,
+      framing: bankMatch.provider === 'pexels' || !isEntityCategory ? 'illustrative' : 'editorial',
+      localFilePath: bankMatch.localPath,
+      mediaUrl: `/api/media/visual-cache/${path.basename(bankMatch.localPath)}`,
+      contentHash: bankMatch.contentHash,
+      width: bankMatch.width,
+      height: bankMatch.height,
+      relevanceScore: 0.9,
+      attribution: bankMatch.attribution,
+    };
+  }
+
   for (const provider of providerOrder) {
     try {
       // Single search request per provider per visual moment
-      const rawCandidates = await searchProviderWithCache(provider, primaryQuery, {
-        ...options,
-        pexelsApiKey: pexelsKey,
-      });
+      const rawCandidates = await searchProviderWithCache(
+        provider,
+        primaryQuery,
+        {
+          ...options,
+          pexelsApiKey: pexelsKey,
+        },
+        overlay.category
+      );
 
       if (rawCandidates.length === 0) continue;
 
@@ -1864,6 +2271,25 @@ export async function resolveSingleVisualOverlay(
           };
           assetMemoryCache.set(assetKey, assetEntry);
           usedAssetIds.add(assetKey);
+
+          const combinedTags = [
+            ...winner.candidate.tags,
+            ...tokenizeContentWords(winner.candidate.title),
+            ...tokenizeContentWords(overlay.entityName || ''),
+            ...overlay.searchQueries.flatMap((q) => tokenizeContentWords(q)),
+          ];
+          upsertImageBankEntry({
+            provider: winner.candidate.provider,
+            assetId: winner.candidate.assetId,
+            localPath: downloaded.localFilePath,
+            tags: combinedTags,
+            width: downloaded.inspected.width,
+            height: downloaded.inspected.height,
+            fileSize: downloaded.buffer.length,
+            contentHash: downloaded.contentHash,
+            attribution,
+          });
+          pruneVisualCacheDirectory();
 
           return {
             ...overlay,

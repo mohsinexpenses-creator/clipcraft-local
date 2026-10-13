@@ -23,6 +23,8 @@ import { color, log } from '../lib/logger';
 import {
   HOOK_TRANSITION_SECONDS,
   StillVisualOverlayInput,
+  buildVideoCodecArgs,
+  getActiveVideoEncoder,
   normalizeFps,
   processVideoSegment,
 } from './ffmpeg-pipeline';
@@ -38,6 +40,7 @@ import {
   planClipVisualMoments,
 } from '../lib/contextual-visuals';
 import { resolveVisualOverlaysForClip } from '../lib/visual-providers';
+import { appendClipTimingRecord, formatClipTimingSummary } from '../lib/timings';
 
 /** How far either side of the window we still accept transcript words. */
 const WORD_SLACK_SECONDS = 0.5;
@@ -176,6 +179,9 @@ export async function processClipJob(
     const checkCancelled = (): void => {
       if (cancelFlag) throw new RenderCancelledError();
     };
+
+    const clipRenderStartMs = performance.now();
+    const prepStartMs = performance.now();
 
     if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
 
@@ -456,6 +462,8 @@ export async function processClipJob(
     };
 
     checkCancelled();
+    const prepMs = performance.now() - prepStartMs;
+    const remotionStartMs = performance.now();
     const totalDuration = segmentDuration + safeHookDuration;
     const preparedOverlays: PreparedCaptionOverlays = await prepareRemotionCaptionOverlays({
       fps: renderFps,
@@ -476,6 +484,9 @@ export async function processClipJob(
       onProgress: overlayProgressSink,
       isCancelled: () => cancelFlag,
     });
+    const remotionOverlayMs = performance.now() - remotionStartMs;
+    let visualsResolveMs = 0;
+    let ffmpegEncodeMs = 0;
 
     let renderResult: {
       fps: number;
@@ -489,6 +500,7 @@ export async function processClipJob(
 
       // Resolve contextual visual overlays before the final video encode (never per frame).
       // Any provider failure or missing image falls back gracefully and never aborts the render.
+      const visualsStartMs = performance.now();
       const ffmpegVisualOverlays: StillVisualOverlayInput[] = [];
       try {
         const visualSettings = await resolveVisualProviderSettings();
@@ -598,6 +610,7 @@ export async function processClipJob(
           `Contextual visuals skipped for ${clipId}: ${toErrorMessage(visualError)}`
         );
       }
+      visualsResolveMs = performance.now() - visualsStartMs;
 
       log.step(
         `Step 3/3 · FFmpeg crop + hook + overlays + one final encode ` +
@@ -612,6 +625,7 @@ export async function processClipJob(
         void reportProgress(scaled);
       };
 
+      const ffmpegStartMs = performance.now();
       await processVideoSegment({
         sourceVideoPath: video.filePath,
         outputPath: finalVideoPath,
@@ -639,6 +653,7 @@ export async function processClipJob(
       });
 
       const outputMeta = await getVideoMetadata(finalVideoPath);
+      ffmpegEncodeMs = performance.now() - ffmpegStartMs;
       renderResult = {
         fps: outputMeta.fps,
         width: outputMeta.width,
@@ -649,6 +664,29 @@ export async function processClipJob(
     } finally {
       try { fs.rmSync(preparedOverlays.workDir, { recursive: true, force: true }); } catch { /* best-effort */ }
     }
+
+    const totalMs = performance.now() - clipRenderStartMs;
+    const activeEncoder = getActiveVideoEncoder();
+    const codecSpec = buildVideoCodecArgs(activeEncoder);
+    const timingRecord = {
+      timestamp: new Date().toISOString(),
+      clipId,
+      videoId,
+      durationSeconds: renderResult.durationSeconds,
+      encoder: activeEncoder,
+      preset: codecSpec.presetLabel,
+      prepMs,
+      visualsResolveMs,
+      remotionOverlayMs,
+      ffmpegEncodeMs,
+      totalMs,
+    };
+    try {
+      appendClipTimingRecord(timingRecord);
+    } catch (timingError) {
+      log.warn(`Could not write timings.jsonl: ${toErrorMessage(timingError)}`);
+    }
+    log.info(formatClipTimingSummary(timingRecord));
 
     clip.status = 'done';
     clip.progress = 100;

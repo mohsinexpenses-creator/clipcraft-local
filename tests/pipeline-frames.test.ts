@@ -145,14 +145,14 @@ test('speaker focus hook branch: keyframes outside the hook window are pruned, p
 });
 
 test('final H.264 settings default to quality-first and accept safe env overrides', () => {
-  assert.deepEqual(getVideoEncodeSettings({}), { crf: 17, preset: 'slow' });
-  assert.deepEqual(getVideoEncodeSettings({ VIDEO_CRF: '16', VIDEO_PRESET: 'medium' }), {
+  assert.deepEqual(getVideoEncodeSettings({}), { crf: 17, preset: 'medium' });
+  assert.deepEqual(getVideoEncodeSettings({ VIDEO_CRF: '16', VIDEO_PRESET: 'slow' }), {
     crf: 16,
-    preset: 'medium',
+    preset: 'slow',
   });
   assert.deepEqual(getVideoEncodeSettings({ VIDEO_CRF: '30', VIDEO_PRESET: 'unknown' }), {
     crf: 17,
-    preset: 'slow',
+    preset: 'medium',
   });
 });
 

@@ -84,15 +84,16 @@ Both `npm run dev` and `npm run worker` load `.env.local` (via `@next/env`'s
 | `WHISPER_THREADS` | half your cores (2–8) | CPU threads for whisper. |
 | `FFMPEG_PATH` | `ffmpeg-static` | Point at your own FFmpeg binary if the npm download failed. Must be FFmpeg ≥ 5.1 (`-fps_mode` is used). |
 | `FFPROBE_PATH` | sibling / PATH | Full path to a local ffprobe if it is not beside FFmpeg or on PATH. Needed for VFR detection and clip verification. |
+| `VIDEO_ENCODER` | `x264` | Final H.264 encoder: `x264` (CPU libx264), `nvenc` (NVIDIA `h264_nvenc -preset p6 -tune hq -rc vbr -cq 19`), or `qsv` (Intel QuickSync `h264_qsv -preset slower -global_quality 20`). Probed on worker start with a 1s `lavfi` test encode; falls back to `x264` with a warning if unavailable. |
 | `VIDEO_CRF` | `17` | Final libx264 quality; accepted range is 16–18 (lower means larger, higher-quality files). |
-| `VIDEO_PRESET` | `slow` | libx264 speed/efficiency preset. Use `medium` to trade compression efficiency for faster renders. |
+| `VIDEO_PRESET` | `medium` | libx264 speed/efficiency preset (default `medium`). Use `slow` for maximum compression efficiency or `medium` for ~2.5x faster CPU encodes at CRF 17. |
 | `CAPTION_OFFSET_MS` | `0` | Caption-only timing adjustment. Positive delays captions; negative advances them. Audio/profanity timing is unchanged. |
 | `SAVE_PRECAPTION_DEBUG` | `0` | Set `1` to keep `<clipId>_precaption.mp4` (video/audio before caption/card overlays) beside the final output. It adds a diagnostic encode only when enabled. |
 | `SPLIT_FACE_TARGET_FRAC` | `0.38` | Split-grid face-box centre as a fraction of pane height; clamped to `0.25–0.55`. Applies consistently to 2/3/4-cell layouts. |
 | `SPLIT_ZOOM` | `1.5` | Maximum split crop magnification; clamped to `1–2`. Set `1.0` to avoid enlargement. Low-resolution inputs may still need enlargement to fill output. |
 | `PORT` | `3000` | Next.js port. |
 | `ALLOWED_DEV_ORIGINS` | `*.e2b.app` (built in) | Extra hostnames allowed for dev assets (tunnels, LAN). Comma-separated, no scheme/port. |
-| **worker limits** | on `/settings` | Clip concurrency, viral-detection concurrency and Chrome tabs per render are set on **Settings → Worker & limits**. Keep clips at 1 on a normal PC: each job runs FFmpeg plus transparent overlay-frame generation. |
+| **worker limits** | on `/settings` | Clip concurrency, viral-detection concurrency and Chrome tabs per render are set on **Settings → Worker & limits**. Built-in default is `clipConcurrency: 1`; **for 16 GB RAM machines (e.g. 6c/12t + NVENC/QSV), we recommend `clipConcurrency: 2` and `REMOTION_CONCURRENCY: 3` (Chrome tabs per render = 3)** so 6 total Chrome tabs stay well within 16 GB RAM. |
 | `REMOTION_LOG_LEVEL` | `info` | `verbose` when debugging a render. |
 | `REMOTION_TIMEOUT_MINUTES` | `60` | Per-render ceiling. |
 | **profanity audio mode** | on `/settings` | Chosen on **Settings → Profanity & masking**: `mute` (silence the word), `beep` (1 kHz tone), `off` (leave the audio alone). Captions and overlay text are masked **regardless**; the stored transcript keeps the original words, so changing this only needs a re-render. |

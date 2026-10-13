@@ -26,6 +26,8 @@ import { JobData, TranscriptionJobData, ViralDetectionJobData } from '../lib/typ
 import { transcribeVideo } from '../lib/whisper';
 import { continueAfterTranscription, recoverAutoPipelines, runViralDetection } from '../lib/pipeline';
 import { processClipJob } from './processor';
+import { probeVideoEncoder } from './ffmpeg-pipeline';
+import { getRemotionBundle } from './remotion-renderer';
 import { color, log } from '../lib/logger';
 
 // NOTE: .env.local is loaded by lib/errors.ts (loadEnvConfig), which this file imports
@@ -235,6 +237,24 @@ async function startWorker(): Promise<void> {
   log.detail(`Transcription concurrency: ${transcriptionConcurrency}`);
   log.detail(`Viral detection concurrency: ${detectionConcurrency}`);
   if (recovered > 0) log.warn(`Recovered ${recovered} job(s) left running by a previous worker process.`);
+
+  // Probe the configured FFmpeg binary + hardware encoder (VIDEO_ENCODER=x264|nvenc|qsv)
+  // and warm the Remotion bundle at worker start instead of paying for it on the first clip.
+  try {
+    const encoderProbe = await probeVideoEncoder({ activateForSession: true });
+    log.detail(
+      `Video encoder: active=${encoderProbe.active} (${encoderProbe.presetLabel})` +
+        (encoderProbe.requested !== encoderProbe.active
+          ? ` [requested=${encoderProbe.requested}]`
+          : '')
+    );
+  } catch (error) {
+    log.warn(`Could not probe FFmpeg video encoder at startup: ${toErrorMessage(error)}`);
+  }
+
+  void getRemotionBundle().catch((error) => {
+    log.warn(`Remotion bundle warm-up deferred until first render: ${toErrorMessage(error)}`);
+  });
 
   // A worker that died between two pipeline steps would otherwise leave a video
   // stuck mid-chain (transcribed but never analyzed, analyzed but never

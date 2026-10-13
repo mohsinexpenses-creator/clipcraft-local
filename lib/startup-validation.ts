@@ -1,6 +1,7 @@
 import { spawn } from 'child_process';
 import { createRequire } from 'module';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { getDatabase, getDatabasePath, listPromptTemplates } from './db';
 import { toErrorMessage } from './errors';
@@ -14,6 +15,7 @@ import {
   getWhisperModelPath,
   getWhisperThreads,
 } from './whisper';
+import { probeVideoEncoder } from '../worker/ffmpeg-pipeline';
 
 export type StartupCheckStatus = 'ok' | 'warning' | 'error';
 
@@ -130,18 +132,43 @@ async function validateFfmpeg(): Promise<StartupCheck> {
     ffmpegBin = getFfmpegPath();
     const versionOutput = await spawnForOutput(ffmpegBin, ['-version']);
     const firstLine = versionOutput.split('\n')[0] || 'ffmpeg';
+    const encoderProbe = await probeVideoEncoder({
+      ffmpegPath: ffmpegBin,
+      activateForSession: false,
+    });
+
+    const encoderDetail =
+      `encoder=${encoderProbe.active} (${encoderProbe.presetLabel})` +
+      (encoderProbe.requested !== encoderProbe.active
+        ? ` [requested=${encoderProbe.requested}]`
+        : '') +
+      (encoderProbe.availableEncoders.length
+        ? ` • available=[${encoderProbe.availableEncoders.join(', ')}]`
+        : '');
+
+    if (encoderProbe.fallbackReason) {
+      return createCheck({
+        id: 'ffmpeg',
+        label: 'FFmpeg & video encoder',
+        status: 'warning',
+        summary: `FFmpeg is available, but VIDEO_ENCODER=${encoderProbe.requested} fell back to x264.`,
+        details: `${firstLine} • ${ffmpegBin} • ${encoderDetail} • ${encoderProbe.fallbackReason}`,
+        resolution:
+          'Install an FFmpeg build with hardware encoder support and up-to-date GPU drivers, or set VIDEO_ENCODER=x264.',
+      });
+    }
 
     return createCheck({
       id: 'ffmpeg',
-      label: 'FFmpeg',
+      label: 'FFmpeg & video encoder',
       status: 'ok',
-      summary: 'FFmpeg is available.',
-      details: `${firstLine} • ${ffmpegBin}`,
+      summary: `FFmpeg is available (active encoder: ${encoderProbe.active}/${encoderProbe.presetLabel}).`,
+      details: `${firstLine} • ${ffmpegBin} • ${encoderDetail}`,
     });
   } catch (error) {
     return createCheck({
       id: 'ffmpeg',
-      label: 'FFmpeg',
+      label: 'FFmpeg & video encoder',
       status: 'error',
       summary: 'FFmpeg is not available.',
       details: `${ffmpegBin ? `${ffmpegBin} • ` : ''}${toErrorMessage(error)}`,
@@ -149,6 +176,63 @@ async function validateFfmpeg(): Promise<StartupCheck> {
         'Re-run `npm install` so ffmpeg-static can download its binary, or set FFMPEG_PATH in .env.local to a valid ffmpeg executable.',
     });
   }
+}
+
+export interface MemoryConcurrencyEvaluation {
+  warning: boolean;
+  clipConcurrency: number;
+  effectiveRemotionTabs: number;
+  totalTabs: number;
+  estimatedRenderGb: number;
+  headroomGb: number;
+  installedRamGb: number;
+  summary?: string;
+  resolution?: string;
+}
+
+/**
+ * Pure check for whether `clipConcurrency * remotionConcurrency` is likely to exceed
+ * installed system RAM (~0.5 GB per headless Chrome tab + ~0.5 GB per FFmpeg/worker slot
+ * + 4 GB OS/Next.js/SQLite headroom).
+ */
+export function evaluateMemoryAwareConcurrency(input: {
+  clipConcurrency: number;
+  remotionConcurrency: number | null;
+  totalMemoryBytes?: number;
+  cpuCount?: number;
+}): MemoryConcurrencyEvaluation {
+  const cpuCount = Math.max(1, input.cpuCount ?? (os.cpus()?.length || 4));
+  const effectiveRemotionTabs =
+    input.remotionConcurrency !== null && input.remotionConcurrency > 0
+      ? input.remotionConcurrency
+      : Math.max(1, Math.floor(cpuCount / 2));
+  const clipConcurrency = Math.max(1, input.clipConcurrency);
+  const totalTabs = clipConcurrency * effectiveRemotionTabs;
+  const installedRamGb =
+    Math.round(((input.totalMemoryBytes ?? os.totalmem()) / 1024 ** 3) * 10) / 10;
+  const headroomGb = 4.0;
+  const estimatedRenderGb =
+    Math.round((totalTabs * 0.5 + clipConcurrency * 0.5 + headroomGb) * 10) / 10;
+
+  const warning = estimatedRenderGb > installedRamGb;
+  return {
+    warning,
+    clipConcurrency,
+    effectiveRemotionTabs,
+    totalTabs,
+    estimatedRenderGb,
+    headroomGb,
+    installedRamGb,
+    ...(warning
+      ? {
+          summary:
+            `Concurrency (${clipConcurrency} clip(s) × ${effectiveRemotionTabs} Chrome tab(s) = ${totalTabs} tabs, ` +
+            `~${estimatedRenderGb} GB with headroom) may exceed installed RAM (${installedRamGb} GB).`,
+          resolution:
+            'On a 16 GB machine, set Clip renders at once = 2 and Chrome tabs per render = 3 on Settings -> Worker & limits.',
+        }
+      : {}),
+  };
 }
 
 /**
@@ -401,6 +485,27 @@ async function validateRemotion(): Promise<StartupCheck> {
     });
   }
 
+  const effectiveWorker = (await loadEffectiveSettings()).worker;
+  const memEval = evaluateMemoryAwareConcurrency({
+    clipConcurrency: effectiveWorker.clipConcurrency,
+    remotionConcurrency: effectiveWorker.remotionConcurrency,
+  });
+
+  if (memEval.warning) {
+    return createCheck({
+      id: 'remotion',
+      label: 'Remotion renderer & RAM budget',
+      status: 'warning',
+      summary: memEval.summary!,
+      details: [
+        `Entry: ${path.relative(process.cwd(), entryPoint)}`,
+        `Output: ${path.relative(process.cwd(), outputDir)}`,
+        `Tabs: ${memEval.clipConcurrency} clip(s) × ${memEval.effectiveRemotionTabs} tab(s) = ${memEval.totalTabs} total (~${memEval.estimatedRenderGb} GB est. vs ${memEval.installedRamGb} GB RAM)`,
+      ].join(' • '),
+      resolution: memEval.resolution,
+    });
+  }
+
   return createCheck({
     id: 'remotion',
     label: 'Remotion renderer',
@@ -410,8 +515,8 @@ async function validateRemotion(): Promise<StartupCheck> {
       `Entry: ${path.relative(process.cwd(), entryPoint)}`,
       `Output: ${path.relative(process.cwd(), outputDir)}`,
       `Concurrency: ${
-        (await loadEffectiveSettings()).worker.remotionConcurrency ?? 'auto (half the CPU threads)'
-      } (Settings -> Worker & limits)`,
+        effectiveWorker.remotionConcurrency ?? 'auto (half the CPU threads)'
+      } (${memEval.totalTabs} Chrome tab(s) total, ~${memEval.estimatedRenderGb} GB est. / ${memEval.installedRamGb} GB RAM)`,
     ].join(' • '),
   });
 }
