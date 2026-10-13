@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "sampleRate": 48000,
+  "channels": 2,
+  "defaultLevelDb": -14,
+  "assets": [
+    {
+      "id": "whoosh",
+      "file": "whoosh.wav",
+      "durationSeconds": 0.3,
+      "defaultGain": 0.95,
+      "description": "Smooth transition whoosh for hook entrances, transitions, and visual card sweeps"
+    },
+    {
+      "id": "pop",
+      "file": "pop.wav",
+      "durationSeconds": 0.11,
+      "defaultGain": 1,
+      "description": "Soft punchy pop for visual cards, keyword pops, and CTA badges"
+    },
+    {
+      "id": "click",
+      "file": "click.wav",
+      "durationSeconds": 0.055,
+      "defaultGain": 0.9,
+      "description": "Crisp tactile click for CTA buttons and UI accents"
+    },
+    {
+      "id": "typewriter-tick",
+      "file": "typewriter-tick.wav",
+      "durationSeconds": 0.04,
+      "defaultGain": 0.65,
+      "description": "Subtle mechanical tick for hook typewriter text reveal"
+    },
+    {
+      "id": "ding",
+      "file": "ding.wav",
+      "durationSeconds": 0.42,
+      "defaultGain": 0.85,
+      "description": "Warm harmonic chime for highlight moments and callouts"
+    }
+  ]
+}

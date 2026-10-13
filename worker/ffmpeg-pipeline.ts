@@ -40,6 +40,13 @@ export interface StillVisualOverlayInput {
   animation: VisualOverlayAnimation;
 }
 
+export interface SfxCueInput {
+  t: number;
+  sfx: string;
+  gain: number;
+  filePath: string;
+}
+
 export interface ProcessSegmentOptions {
   sourceVideoPath: string;
   /** Final deliverable path: crop, captions, overlays and audio are encoded in this one pass. */
@@ -74,6 +81,8 @@ export interface ProcessSegmentOptions {
   overlays?: OverlayFrameSequence[];
   /** Contextual still-image visual overlays composited in the same FFmpeg pass. */
   visualOverlays?: StillVisualOverlayInput[];
+  /** Sound effect cues mixed on the output timeline in the same FFmpeg pass. */
+  sfxCues?: SfxCueInput[];
   /** Original segment-relative words, used only for render-time profanity audio handling. */
   words?: Array<{ word: string; start: number; end: number }>;
   /** Keep a pre-caption/pre-overlay debug encode when SAVE_PRECAPTION_DEBUG=1. */
@@ -442,6 +451,89 @@ export function buildAudioTimestampReset(audioStartOffsetSeconds = 0): string {
   return `asetpts=PTS-STARTPTS${shift},aresample=async=1000:first_pts=0`;
 }
 
+export interface SfxAudioFilterPlan {
+  extraArgs: string[];
+  filters: string[];
+  audioLabel: string;
+}
+
+/**
+ * Builds the single-pass FFmpeg audio mix for SFX cues on the output timeline:
+ * - Adds each unique SFX file once as an input (`-i <filePath>`).
+ * - Applies `aformat`, `volume`, and `adelay=<ms>:all=1` per cue.
+ * - Mixes all SFX streams with the base speech stream via `amix=inputs=N:duration=first:dropout_transition=0:normalize=0`
+ *   followed by a 0.96 headroom trim so speech + SFX never clip.
+ */
+export function buildSfxAudioFilterStatements(
+  cues: SfxCueInput[],
+  firstSfxInputIndex: number,
+  baseAudioLabel = "[a]",
+  totalDurationSeconds = Number.POSITIVE_INFINITY,
+  outputAudioLabel = "[asfx]",
+): SfxAudioFilterPlan {
+  const normalizedBase = baseAudioLabel.startsWith("[")
+    ? baseAudioLabel
+    : `[${baseAudioLabel}]`;
+
+  const eligible = (cues ?? []).filter(
+    (cue) =>
+      cue &&
+      typeof cue.filePath === "string" &&
+      cue.filePath.trim().length > 0 &&
+      Number.isFinite(cue.t) &&
+      cue.t >= 0 &&
+      cue.t < totalDurationSeconds - 0.02 &&
+      Number.isFinite(cue.gain) &&
+      cue.gain > 0,
+  );
+
+  if (eligible.length === 0) {
+    return {
+      extraArgs: [],
+      filters: [],
+      audioLabel: normalizedBase,
+    };
+  }
+
+  const inputIndexByFile = new Map<string, number>();
+  const extraArgs: string[] = [];
+  let nextIdx = firstSfxInputIndex;
+
+  for (const cue of eligible) {
+    if (!inputIndexByFile.has(cue.filePath)) {
+      inputIndexByFile.set(cue.filePath, nextIdx++);
+      extraArgs.push("-i", cue.filePath);
+    }
+  }
+
+  const filters: string[] = [];
+  const cueLabels: string[] = [];
+
+  eligible.forEach((cue, cueIndex) => {
+    const inputIdx = inputIndexByFile.get(cue.filePath)!;
+    const delayMs = Math.max(1, Math.round(cue.t * 1000));
+    const gain = Math.max(0.01, Math.min(0.65, cue.gain)).toFixed(4);
+    const label = `[sfx_${cueIndex}]`;
+    cueLabels.push(label);
+    filters.push(
+      `[${inputIdx}:a]aformat=sample_rates=48000:channel_layouts=stereo,volume=${gain},adelay=${delayMs}:all=1${label}`,
+    );
+  });
+
+  const normalizedOut = outputAudioLabel.startsWith("[")
+    ? outputAudioLabel
+    : `[${outputAudioLabel}]`;
+  filters.push(
+    `${normalizedBase}${cueLabels.join("")}amix=inputs=${cueLabels.length + 1}:duration=first:dropout_transition=0:normalize=0,volume=0.96${normalizedOut}`,
+  );
+
+  return {
+    extraArgs,
+    filters,
+    audioLabel: normalizedOut,
+  };
+}
+
 export function buildVisualOverlayFilterStatements(
   visualOverlays: StillVisualOverlayInput[],
   visualInputIndices: number[],
@@ -674,6 +766,7 @@ export async function processVideoSegment(
     sourceHasAudio,
     overlays = [],
     visualOverlays = [],
+    sfxCues = [],
     words = [],
     debugOutputPath,
     onProgress,
@@ -976,7 +1069,24 @@ export async function processVideoSegment(
       audioBranch(mainInput, "a", segmentDuration, "");
     }
 
-    if (audioPlan) statements.push(...audioPlan.filters);
+    if (audioPlan) {
+      statements.push(...audioPlan.filters);
+      if (audioPlan.extraArgs.length > 0) {
+        nextInput += 1;
+      }
+    }
+
+    const postProfanityAudioLabel = audioPlan?.audioLabel ?? "[a]";
+    const sfxPlan = buildSfxAudioFilterStatements(
+      sfxCues,
+      nextInput,
+      postProfanityAudioLabel,
+      totalDuration,
+      "[asfx]",
+    );
+    if (sfxPlan.filters.length > 0) {
+      statements.push(...sfxPlan.filters);
+    }
 
     // A diagnostic output and the final video both need the pre-overlay base.
     // Split pads explicitly rather than consuming one labeled pad twice (which
@@ -995,7 +1105,7 @@ export async function processVideoSegment(
       ),
     );
 
-    const sourceAudioLabel = audioPlan?.audioLabel ?? "[a]";
+    const sourceAudioLabel = sfxPlan.audioLabel;
     const debugAudioLabel = debugOutputPath ? "[adebug]" : "";
     const finalAudioLabel = debugOutputPath ? "[afinal]" : sourceAudioLabel;
     if (debugOutputPath)
@@ -1009,6 +1119,7 @@ export async function processVideoSegment(
       "-stats",
       ...inputArgs,
       ...(audioPlan?.extraArgs ?? []),
+      ...sfxPlan.extraArgs,
       "-filter_complex",
       statements.join(";"),
     ];

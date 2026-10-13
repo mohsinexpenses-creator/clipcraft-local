@@ -476,6 +476,51 @@ export function RenderSettingsPanel({
           </>
         )}
       </div>
+
+      {/* Sound effects (SFX) */}
+      <div className="rounded-xl border bg-muted/20 p-3.5 space-y-3">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-[12.5px] font-semibold">
+              Sound effects (Hook, transitions, visual beats &amp; CTA)
+            </p>
+            <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
+              Mixes subtle studio SFX (whoosh, pop, click, typewriter ticks) on the output timeline without clipping speech.
+            </p>
+          </div>
+          <div className="w-36 shrink-0">
+            <Segmented<"on" | "off">
+              ariaLabel="Sound effects"
+              value={(value.sfxEnabled ?? true) ? "on" : "off"}
+              onChange={(next) => patch({ sfxEnabled: next === "on" })}
+              options={[
+                { value: "on", label: "Enabled" },
+                { value: "off", label: "Off" },
+              ]}
+              disabled={disabled}
+            />
+          </div>
+        </div>
+
+        {(value.sfxEnabled ?? true) && (
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field
+              label="SFX level (dB)"
+              hint="Default -14 dB keeps SFX punchy while sitting cleanly underneath speech."
+            >
+              <NumberField
+                id="default-sfx-volume"
+                value={value.sfxVolume ?? -14}
+                min={-36}
+                max={0}
+                step={1}
+                onCommit={(sfxVolume) => patch({ sfxVolume })}
+                disabled={disabled}
+              />
+            </Field>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

@@ -41,6 +41,7 @@ import {
 } from '../lib/contextual-visuals';
 import { resolveVisualOverlaysForClip } from '../lib/visual-providers';
 import { appendClipTimingRecord, formatClipTimingSummary } from '../lib/timings';
+import { buildSfxCueSheet, filterPlayableSfxCues } from '../lib/sfx-cues';
 
 /** How far either side of the window we still accept transcript words. */
 const WORD_SLACK_SECONDS = 0.5;
@@ -612,10 +613,32 @@ export async function processClipJob(
       }
       visualsResolveMs = performance.now() - visualsStartMs;
 
+      const effectiveRenderSettings = (await resolveVisualProviderSettings()).render;
+      const sfxCues = filterPlayableSfxCues(
+        buildSfxCueSheet({
+          segmentDuration,
+          hookDuration: safeHookDuration,
+          hookTransitionDuration:
+            safeHookDuration > 0
+              ? Math.min(HOOK_TRANSITION_SECONDS, safeHookDuration / 2)
+              : 0,
+          hookText: resolvedHookText,
+          hookAnimationStyle: hookStyleForRender.animationStyle,
+          hookSfxChoice: hookStyleForRender.sfxChoice,
+          ctaDuration: resolvedCtaDuration,
+          ctaText: resolvedCtaText,
+          ctaAnimationStyle: ctaStyleForRender.animationStyle,
+          ctaSfxChoice: ctaStyleForRender.sfxChoice,
+          visualOverlays: clip.visualOverlays ?? [],
+          sfxEnabled: effectiveRenderSettings.sfxEnabled ?? true,
+          sfxVolumeDb: effectiveRenderSettings.sfxVolume ?? -14,
+        })
+      );
+
       log.step(
         `Step 3/3 · FFmpeg crop + hook + overlays + one final encode ` +
         color.gray(
-          `(${preparedOverlays.sequences.length} transparent layer(s), ${ffmpegVisualOverlays.length} visual card(s))`
+          `(${preparedOverlays.sequences.length} transparent layer(s), ${ffmpegVisualOverlays.length} visual card(s), ${sfxCues.length} SFX cue(s))`
         )
       );
       const progressSink = (progress: number): void => {
@@ -641,6 +664,7 @@ export async function processClipJob(
         sourceHasAudio: sourceMeta.hasAudio,
         overlays: preparedOverlays.sequences,
         visualOverlays: ffmpegVisualOverlays,
+        sfxCues,
         words: clipWords,
         debugOutputPath: process.env.SAVE_PRECAPTION_DEBUG?.trim() === '1'
           ? intermediateVideoPath

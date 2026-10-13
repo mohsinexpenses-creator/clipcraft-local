@@ -27,6 +27,8 @@ function animationTransform(
   switch (animationStyle) {
     case 'slide-up':
       return `translateY(${((1 - pop) * 60 + drift / 2).toFixed(2)}px) scale(${(0.92 + pop * 0.08).toFixed(4)})`;
+    case 'typewriter':
+      return `translateY(${(drift * 0.35).toFixed(2)}px) scale(${(0.96 + pop * 0.04).toFixed(4)})`;
     case 'fade':
       return 'none';
     case 'none':
@@ -88,6 +90,19 @@ export const HookOverlay: React.FC<HookOverlayProps> = ({
   const fontSize = style?.fontSize ?? 38;
   const fontWeight =
     style?.fontWeight === 'normal' ? 400 : style?.fontWeight === 'bold' ? 700 : style?.fontWeight === 'extra-bold' ? 800 : 900;
+
+  const isTypewriter = style?.animationStyle === 'typewriter';
+  const charsPerSecond = 20;
+  const revealedChars = isTypewriter
+    ? Math.min(
+        text.length,
+        Math.max(1, Math.floor(Math.max(0, currentTime - 0.06) * charsPerSecond) + 1)
+      )
+    : text.length;
+  const visibleText = isTypewriter ? text.slice(0, revealedChars) : text;
+  const stillTyping = isTypewriter && revealedChars < text.length;
+  const caretBlinkOn =
+    stillTyping || Math.floor(frame / Math.max(2, Math.round(fps * 0.25))) % 2 === 0;
 
   return (
     <div
@@ -151,7 +166,19 @@ export const HookOverlay: React.FC<HookOverlayProps> = ({
             display: 'block',
           }}
         >
-          {text}
+          {visibleText}
+          {isTypewriter && (
+            <span
+              style={{
+                display: 'inline-block',
+                marginLeft: 3,
+                opacity: caretBlinkOn ? 0.95 : 0,
+                fontWeight: 700,
+              }}
+            >
+              |
+            </span>
+          )}
         </span>
       </div>
     </div>

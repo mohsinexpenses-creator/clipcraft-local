@@ -241,6 +241,10 @@ export interface RenderDefaults {
   visualProviderPriority: VisualProviderName[];
   /** Burn a subtle credit badge onto visual cards that require attribution. */
   visualShowOnVideoCredit: boolean;
+  /** Master toggle for sound effects on hooks, transitions, visual cards, and CTAs. */
+  sfxEnabled?: boolean;
+  /** Master SFX volume in dB (default -14 dB). */
+  sfxVolume?: number;
 }
 
 export const DEFAULT_RENDER_SETTINGS: RenderDefaults = {
@@ -260,6 +264,8 @@ export const DEFAULT_RENDER_SETTINGS: RenderDefaults = {
   visualProviders: { pexels: true, openverse: true, wikimedia: true },
   visualProviderPriority: ['pexels', 'openverse', 'wikimedia'],
   visualShowOnVideoCredit: true,
+  sfxEnabled: true,
+  sfxVolume: -14,
 };
 
 export type TranscriptionProviderChoice = 'auto' | 'deepgram' | 'whisper';
@@ -460,6 +466,9 @@ export type PsychologicalTrigger = (typeof PSYCHOLOGICAL_TRIGGERS)[number];
 export const RISKY_WORD_ACTIONS = ['censor', 'replace', 'mute', 'remove'] as const;
 export type RiskyWordAction = (typeof RISKY_WORD_ACTIONS)[number];
 
+export const VISUAL_BEAT_KINDS = ['photo-card', 'keyword-pop', 'zoom-beat'] as const;
+export type VisualBeatKind = (typeof VISUAL_BEAT_KINDS)[number];
+
 export interface VisualMomentPlan {
   /** Exact transcript anchor quote, phrase or sentence reference for the semantic beat. */
   quote: string;
@@ -485,6 +494,8 @@ export interface VisualMomentPlan {
   animation: VisualOverlayAnimation;
   /** Where the visual belongs: 'main' (default), 'hook', or 'both'. */
   placement: VisualMomentPlacement;
+  /** Optional beat kind: 'photo-card' (default), 'keyword-pop', or 'zoom-beat'. */
+  kind?: VisualBeatKind;
 }
 
 export interface VisualAssetAttribution {
@@ -531,6 +542,7 @@ export interface ClipVisualOverlay {
   animation: VisualOverlayAnimation;
   placement: VisualMomentPlacement;
   framing: 'illustrative' | 'editorial';
+  kind?: VisualBeatKind;
   status: 'planned' | 'resolved' | 'skipped' | 'removed';
   skipReason?: string;
   localFilePath?: string;
@@ -639,7 +651,9 @@ export interface OverlayStylePreset {
   textTransform: 'uppercase' | 'none';
   /** Vertical position of the card, % from the TOP of the frame. */
   positionY: number;
-  animationStyle: 'pop' | 'fade' | 'slide-up' | 'none';
+  animationStyle: 'pop' | 'fade' | 'slide-up' | 'typewriter' | 'none';
+  /** Per-element sound effect override ('default' | 'none' | specific SFX id). */
+  sfxChoice?: 'default' | 'none' | 'whoosh' | 'pop' | 'click' | 'typewriter-tick' | 'ding';
   /** Hook only: small chip shown above the text ("Hook Intro"). */
   showBadge?: boolean;
   badgeText?: string;

@@ -28,6 +28,10 @@ function coercePreset(body: Record<string, unknown>, fallbackKind: 'hook' | 'cta
     textTransform: body.textTransform === 'none' ? 'none' : 'uppercase',
     positionY: Number(body.positionY ?? (kind === 'hook' ? 12 : 64)),
     animationStyle: (body.animationStyle as OverlayStylePreset['animationStyle']) || 'pop',
+    ...(typeof body.sfxChoice === 'string' &&
+    ['default', 'none', 'whoosh', 'pop', 'click', 'typewriter-tick', 'ding'].includes(body.sfxChoice)
+      ? { sfxChoice: body.sfxChoice as OverlayStylePreset['sfxChoice'] }
+      : {}),
     showBadge: body.showBadge != null ? body.showBadge === true : kind === 'hook',
     badgeText: body.badgeText ? String(body.badgeText) : 'Hook Intro',
     ...(typeof body.badgeBackgroundColor === 'string' && body.badgeBackgroundColor.trim()

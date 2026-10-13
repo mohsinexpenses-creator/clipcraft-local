@@ -41,6 +41,6 @@ test('the shipped default styles retain their hook and CTA presentation', () => 
 
 test('all animation styles are ones the overlays actually render', () => {
   for (const preset of DEFAULT_OVERLAY_STYLE_PRESETS) {
-    assert.ok(['pop', 'fade', 'slide-up', 'none'].includes(preset.animationStyle), preset.animationStyle);
+    assert.ok(['pop', 'fade', 'slide-up', 'typewriter', 'none'].includes(preset.animationStyle), preset.animationStyle);
   }
 });

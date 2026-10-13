@@ -423,6 +423,16 @@ export function sanitizeSettingsSection(
       if (input.visualShowOnVideoCredit !== undefined) {
         out.visualShowOnVideoCredit = boolOf(input.visualShowOnVideoCredit, 'On-video visual credit');
       }
+      if (input.sfxEnabled !== undefined) {
+        out.sfxEnabled = boolOf(input.sfxEnabled, 'Sound effects enabled');
+      }
+      if (input.sfxVolume !== undefined) {
+        out.sfxVolume = numberIn(input.sfxVolume, {
+          ...OPTION_LIMITS.sfxVolume,
+          precision: 1,
+          label: 'SFX volume (dB)',
+        });
+      }
       return out;
     }
 
@@ -761,6 +771,14 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
     visualProviderPriority: resolveVisualProviderPriorityStored(renderStored.visualProviderPriority),
     visualShowOnVideoCredit:
       boolValue(renderStored.visualShowOnVideoCredit) ?? DEFAULT_RENDER_SETTINGS.visualShowOnVideoCredit,
+    sfxEnabled: boolValue(renderStored.sfxEnabled) ?? (DEFAULT_RENDER_SETTINGS.sfxEnabled ?? true),
+    sfxVolume: clampFloatInRange(
+      renderStored.sfxVolume,
+      OPTION_LIMITS.sfxVolume.min,
+      OPTION_LIMITS.sfxVolume.max,
+      DEFAULT_RENDER_SETTINGS.sfxVolume ?? -14,
+      1
+    ),
   };
 
   /* ai - keys exist only if they were put here, never inherited from the env file */

@@ -622,7 +622,33 @@ export const OverlayStyleEditor: React.FC<OverlayStyleEditorProps> = ({ kind, va
                   <SelectItem value="pop">Pop</SelectItem>
                   <SelectItem value="fade">Fade</SelectItem>
                   <SelectItem value="slide-up">Slide up</SelectItem>
+                  {kind === 'hook' && <SelectItem value="typewriter">Typewriter</SelectItem>}
                   <SelectItem value="none">None</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label id={`style-sfx-label-${kind}`}>Sound effect (SFX)</Label>
+              <Select
+                value={draft.sfxChoice ?? 'default'}
+                onValueChange={(v) =>
+                  patch({
+                    sfxChoice: (v as OverlayStylePreset['sfxChoice']) || 'default',
+                  })
+                }
+              >
+                <SelectTrigger aria-labelledby={`style-sfx-label-${kind}`}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="default">Default (match animation)</SelectItem>
+                  <SelectItem value="none">None (silent)</SelectItem>
+                  <SelectItem value="whoosh">Whoosh</SelectItem>
+                  <SelectItem value="pop">Pop</SelectItem>
+                  <SelectItem value="click">Click</SelectItem>
+                  <SelectItem value="typewriter-tick">Typewriter tick</SelectItem>
+                  <SelectItem value="ding">Ding</SelectItem>
                 </SelectContent>
               </Select>
             </div>

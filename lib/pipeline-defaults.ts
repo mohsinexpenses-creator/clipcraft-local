@@ -27,6 +27,7 @@ export const OPTION_LIMITS = {
   maxVisualMoments: { min: 0, max: 3 },
   visualConfidence: { min: 0.1, max: 1 },
   visualDuration: { min: 1.5, max: 8 },
+  sfxVolume: { min: -36, max: 0 },
 } as const;
 
 function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
