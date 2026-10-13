@@ -4,22 +4,20 @@ import React, { useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Upload,
-  Tv,
   Loader2,
   CheckCircle2,
   AlertCircle,
   FileVideo,
   X,
+  RotateCcw,
   Sparkles,
   Captions,
   Clapperboard,
+  ArrowRight,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Progress } from '@/components/ui/progress';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { cn } from 'cn';
 import type { PipelineOptions } from '@/lib/types';
 import {
@@ -29,21 +27,9 @@ import {
   formatSpeed,
   UploadAbortedError,
   UploadFileProgress,
-  UploadPhase,
   uploadVideoFile,
 } from '@/lib/upload-client';
 
-/**
- * The upload step of the pipeline - and the only interaction a new video needs.
- *
- * Once the last byte lands, the server queues transcription, transcription
- * queues viral detection, and detection queues the renders (see
- * lib/pipeline.ts). The uploader's job is therefore to stream the file
- * resumably, remember the automation the user chose, and get out of the way by
- * navigating straight to the dashboard that watches it happen.
- */
-
-/** The three steps the video walks through on its own after this page. */
 const PIPELINE_STEPS = [
   {
     icon: Captions,
@@ -62,147 +48,272 @@ const PIPELINE_STEPS = [
   },
 ] as const;
 
+export type FileItemStatus = 'queued' | 'uploading' | 'finalizing' | 'done' | 'failed';
+
+export interface UploadQueueItem {
+  id: string;
+  file: File;
+  status: FileItemStatus;
+  progress: UploadFileProgress | null;
+  sessionId: string | null;
+  videoId?: string;
+  error?: string;
+  pipelineSnapshot?: PipelineOptions;
+}
+
 export interface VideoUploaderProps {
-  /** Automation to store on this video; defaults to the saved upload defaults. */
+  /** Automation to store on each uploaded video; defaults to the saved upload defaults. */
   pipeline: PipelineOptions;
+}
+
+function clonePipeline(pipeline: PipelineOptions): PipelineOptions {
+  return {
+    ...pipeline,
+    viral: { ...pipeline.viral },
+  };
 }
 
 export const VideoUploader: React.FC<VideoUploaderProps> = ({ pipeline }) => {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const itemsRef = useRef<UploadQueueItem[]>([]);
 
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [items, setItems] = useState<UploadQueueItem[]>([]);
   const [isDragActive, setIsDragActive] = useState(false);
-  const [youtubeUrl, setYoutubeUrl] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
-  const [phase, setPhase] = useState<UploadPhase | 'idle'>('idle');
-  const [progress, setProgress] = useState<UploadFileProgress | null>(null);
-  const [sessionId, setSessionId] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const selectFile = (file: File) => {
-    setSelectedFile(file);
+  const syncItems = (updater: (prev: UploadQueueItem[]) => UploadQueueItem[]) => {
+    setItems((prev) => {
+      const next = updater(prev);
+      itemsRef.current = next;
+      return next;
+    });
+  };
+
+  const addFiles = (fileList: FileList | File[]) => {
+    const incoming = Array.from(fileList).filter((f) => f && f.size >= 0);
+    if (incoming.length === 0) return;
+
+    syncItems((prev) => {
+      const existingKeys = new Set(
+        prev.map((item) => `${item.file.name}:${item.file.size}:${item.file.lastModified}`)
+      );
+      const additions: UploadQueueItem[] = [];
+      for (const file of incoming) {
+        const key = `${file.name}:${file.size}:${file.lastModified}`;
+        if (existingKeys.has(key)) continue;
+        existingKeys.add(key);
+        additions.push({
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${additions.length}`,
+          file,
+          status: 'queued',
+          progress: null,
+          sessionId: null,
+        });
+      }
+      return [...prev, ...additions];
+    });
     setErrorMessage(null);
-    setStatusMessage(null);
-    setProgress(null);
-    setSessionId(null);
-    setPhase('idle');
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      selectFile(e.target.files[0]);
+    if (e.target.files && e.target.files.length > 0) {
+      addFiles(e.target.files);
+      e.target.value = '';
     }
   };
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragActive(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file) {
-      selectFile(file);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      addFiles(e.dataTransfer.files);
     }
   };
 
-  /**
-   * Uploads through the resumable chunked endpoint, so a multi-hour recording is never
-   * buffered in memory and can be resumed if the connection drops. The chosen
-   * automation travels with the finalize request and is stored on the video record.
-   */
-  const handleUploadFile = async (resumeSessionId?: string | null) => {
-    if (!selectedFile) return;
+  const removeItem = (id: string) => {
+    const target = itemsRef.current.find((item) => item.id === id);
+    if (!target || target.status === 'uploading' || target.status === 'finalizing') return;
+    if (target.sessionId) {
+      void deleteUploadSession(target.sessionId);
+    }
+    syncItems((prev) => prev.filter((item) => item.id !== id));
+  };
 
+  const uploadSingleItem = async (itemId: string): Promise<{ ok: boolean; videoId?: string; aborted?: boolean }> => {
+    const current = itemsRef.current.find((entry) => entry.id === itemId);
+    if (!current) return { ok: false };
+
+    const snapshot = current.pipelineSnapshot ?? clonePipeline(pipeline);
     const controller = new AbortController();
     abortRef.current = controller;
 
-    setIsProcessing(true);
-    setPhase('uploading');
-    setProgress(null);
-    setErrorMessage(null);
-    setStatusMessage(
-      resumeSessionId ? 'Resuming upload from the last confirmed byte…' : 'Uploading video file…'
+    syncItems((prev) =>
+      prev.map((entry) =>
+        entry.id === itemId
+          ? {
+              ...entry,
+              status: 'uploading',
+              error: undefined,
+              pipelineSnapshot: snapshot,
+            }
+          : entry
+      )
     );
 
     try {
-      const data = await uploadVideoFile(selectedFile, {
-        sessionId: resumeSessionId ?? undefined,
+      const data = await uploadVideoFile(current.file, {
+        sessionId: current.sessionId ?? undefined,
         signal: controller.signal,
-        onSessionCreated: setSessionId,
-        onProgress: setProgress,
-        onPhase: setPhase,
-        pipeline,
+        onSessionCreated: (sid) => {
+          syncItems((prev) =>
+            prev.map((entry) => (entry.id === itemId ? { ...entry, sessionId: sid } : entry))
+          );
+        },
+        onProgress: (prog) => {
+          syncItems((prev) =>
+            prev.map((entry) => (entry.id === itemId ? { ...entry, progress: prog } : entry))
+          );
+        },
+        onPhase: (phase) => {
+          syncItems((prev) =>
+            prev.map((entry) =>
+              entry.id === itemId
+                ? { ...entry, status: phase === 'finalizing' ? 'finalizing' : 'uploading' }
+                : entry
+            )
+          );
+        },
+        pipeline: snapshot,
       });
 
-      setSessionId(null);
-      setPhase('idle');
-      setIsProcessing(false);
-      // Go straight to the dashboard: it polls the pipeline, so the user lands on
-      // a live progress bar instead of a "thank you" screen.
-      router.push(`/?videoId=${data.video._id}`);
+      syncItems((prev) =>
+        prev.map((entry) =>
+          entry.id === itemId
+            ? {
+                ...entry,
+                status: 'done',
+                sessionId: null,
+                videoId: data.video._id,
+                error: undefined,
+              }
+            : entry
+        )
+      );
+      return { ok: true, videoId: data.video._id };
     } catch (err) {
       if (err instanceof UploadAbortedError) {
-        setStatusMessage('Upload cancelled.');
-        setErrorMessage(null);
-        setProgress(null);
-        setSessionId(null);
-        setPhase('idle');
-        setIsProcessing(false);
-        return;
+        syncItems((prev) =>
+          prev.map((entry) =>
+            entry.id === itemId
+              ? {
+                  ...entry,
+                  status: 'queued',
+                  progress: null,
+                  sessionId: null,
+                  error: undefined,
+                }
+              : entry
+          )
+        );
+        return { ok: false, aborted: true };
       }
 
-      console.error('Upload error:', err);
-      setStatusMessage(null);
-      setPhase('idle');
-      setErrorMessage(err instanceof Error ? err.message : 'Failed to upload video');
-      setIsProcessing(false);
+      const msg = err instanceof Error ? err.message : 'Failed to upload video';
+      syncItems((prev) =>
+        prev.map((entry) =>
+          entry.id === itemId
+            ? {
+                ...entry,
+                status: 'failed',
+                error: msg,
+              }
+            : entry
+        )
+      );
+      return { ok: false };
     } finally {
       abortRef.current = null;
     }
   };
 
-  const handleCancelUpload = () => {
-    const id = sessionId;
-    abortRef.current?.abort();
-    // The partial file can be several GB - drop it unless the user resumes instead.
-    if (id) void deleteUploadSession(id);
-  };
-
-  const handleProcessYoutube = async () => {
-    if (!youtubeUrl.trim()) return;
-
+  const runUploadQueue = async (onlyItemId?: string) => {
+    if (isProcessing) return;
     setIsProcessing(true);
-    setStatusMessage('Fetching video from YouTube…');
     setErrorMessage(null);
 
-    try {
-      const res = await fetch('/api/upload', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ youtubeUrl: youtubeUrl.trim(), pipeline }),
-      });
+    const targets = onlyItemId
+      ? itemsRef.current.filter((item) => item.id === onlyItemId)
+      : itemsRef.current.filter((item) => item.status === 'queued' || item.status === 'failed');
 
-      if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.error || 'YouTube download failed');
+    let completedCount = 0;
+    let failedCount = 0;
+    let firstVideoId: string | undefined = itemsRef.current.find((i) => i.videoId)?.videoId;
+
+    for (let idx = 0; idx < targets.length; idx += 1) {
+      const target = targets[idx]!;
+      // Ensure item was not removed while waiting in queue
+      if (!itemsRef.current.some((entry) => entry.id === target.id)) continue;
+
+      setStatusMessage(
+        `Uploading ${idx + 1} of ${targets.length}: ${target.file.name}…`
+      );
+
+      const outcome = await uploadSingleItem(target.id);
+      if (outcome.aborted) {
+        setStatusMessage('Upload cancelled.');
+        setIsProcessing(false);
+        return;
       }
+      if (outcome.ok) {
+        completedCount += 1;
+        if (!firstVideoId && outcome.videoId) {
+          firstVideoId = outcome.videoId;
+        }
+      } else {
+        failedCount += 1;
+      }
+    }
 
-      const data = await res.json();
-      setIsProcessing(false);
-      router.push(`/?videoId=${data.video._id}`);
-    } catch (err) {
-      console.error('YouTube error:', err);
-      setErrorMessage(err instanceof Error ? err.message : 'Failed to fetch YouTube video');
-      setIsProcessing(false);
+    setIsProcessing(false);
+
+    const allDone = itemsRef.current.length > 0 && itemsRef.current.every((i) => i.status === 'done');
+    if (allDone && firstVideoId) {
+      setStatusMessage(
+        `Uploaded ${itemsRef.current.length} video${itemsRef.current.length === 1 ? '' : 's'}. Opening dashboard…`
+      );
+      router.push(`/?videoId=${firstVideoId}`);
+    } else if (failedCount > 0) {
+      setStatusMessage(
+        completedCount > 0
+          ? `${completedCount} uploaded, ${failedCount} failed. Retry failed files or continue to the dashboard.`
+          : null
+      );
+      setErrorMessage(
+        `${failedCount} file${failedCount === 1 ? '' : 's'} failed to upload. You can retry each failed file without re-uploading completed ones.`
+      );
     }
   };
 
-  const uploadedBytes = progress?.uploadedBytes ?? 0;
-  const totalBytes = progress?.totalBytes ?? selectedFile?.size ?? 0;
-  const percent = totalBytes > 0 ? Math.min(100, Math.round((uploadedBytes / totalBytes) * 100)) : 0;
-  const canResume =
-    !isProcessing && Boolean(sessionId) && uploadedBytes > 0 && Boolean(errorMessage);
+  const handleCancelActiveUpload = () => {
+    const active = itemsRef.current.find(
+      (item) => item.status === 'uploading' || item.status === 'finalizing'
+    );
+    abortRef.current?.abort();
+    if (active?.sessionId) {
+      void deleteUploadSession(active.sessionId);
+    }
+  };
+
+  const pendingOrFailedCount = items.filter(
+    (item) => item.status === 'queued' || item.status === 'failed'
+  ).length;
+  const doneItems = items.filter((item) => item.status === 'done');
+  const firstSucceededVideoId = doneItems[0]?.videoId;
+
   const nextStep =
     pipeline.autoDetect && pipeline.autoRender
       ? 'transcript → viral detection → render'
@@ -211,193 +322,196 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({ pipeline }) => {
         : 'transcript only';
 
   return (
-    <div className="mx-auto w-full">
-      <Tabs defaultValue="file" onValueChange={() => setErrorMessage(null)}>
-        <TabsList className="w-full">
-          <TabsTrigger value="file" className="flex-1">
-            <FileVideo />
-            Video file
-          </TabsTrigger>
-          <TabsTrigger value="youtube" className="flex-1">
-            <Tv />
-            YouTube link
-          </TabsTrigger>
-        </TabsList>
+    <div className="mx-auto w-full space-y-4">
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={() => {
+          if (!isProcessing) fileInputRef.current?.click();
+        }}
+        onKeyDown={(e) => {
+          if ((e.key === 'Enter' || e.key === ' ') && !isProcessing) {
+            e.preventDefault();
+            fileInputRef.current?.click();
+          }
+        }}
+        onDragOver={(e) => {
+          e.preventDefault();
+          if (!isProcessing) setIsDragActive(true);
+        }}
+        onDragLeave={() => setIsDragActive(false)}
+        onDrop={handleDrop}
+        className={cn(
+          'flex cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border border-dashed px-6 py-10 text-center outline-none transition-[border-color,background-color,box-shadow] duration-200',
+          'focus-visible:ring-2 focus-visible:ring-ring/40',
+          isProcessing && 'cursor-default opacity-90',
+          isDragActive
+            ? 'border-primary bg-accent shadow-[var(--shadow-lift)]'
+            : items.length > 0
+              ? 'border-primary/50 bg-accent/40'
+              : 'border-input bg-muted/25 hover:border-ring hover:bg-muted/45'
+        )}
+      >
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept="video/*"
+          onChange={handleFileChange}
+          className="hidden"
+        />
 
-        {/* File upload */}
-        <TabsContent value="file" className="mt-4 space-y-4">
-          <div
-            role="button"
-            tabIndex={0}
-            onClick={() => {
-              if (!isProcessing) fileInputRef.current?.click();
-            }}
-            onKeyDown={(e) => {
-              if ((e.key === 'Enter' || e.key === ' ') && !isProcessing) {
-                e.preventDefault();
-                fileInputRef.current?.click();
-              }
-            }}
-            onDragOver={(e) => {
-              e.preventDefault();
-              if (!isProcessing) setIsDragActive(true);
-            }}
-            onDragLeave={() => setIsDragActive(false)}
-            onDrop={handleDrop}
-            className={cn(
-              'flex cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border border-dashed px-6 py-12 text-center outline-none transition-[border-color,background-color,box-shadow] duration-200',
-              'focus-visible:ring-2 focus-visible:ring-ring/40',
-              isProcessing && 'cursor-default opacity-90',
-              isDragActive
-                ? 'border-primary bg-accent shadow-[var(--shadow-lift)]'
-                : selectedFile
-                  ? 'border-primary/50 bg-accent/40'
-                  : 'border-input bg-muted/25 hover:border-ring hover:bg-muted/45'
-            )}
-          >
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="video/*"
-              onChange={handleFileChange}
-              className="hidden"
-            />
-
-            <span
-              className={cn(
-                'flex size-12 items-center justify-center rounded-2xl transition-colors',
-                selectedFile ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'
-              )}
-            >
-              {isProcessing ? <Loader2 className="size-5 animate-spin" /> : <Upload className="size-5" />}
-            </span>
-
-            {selectedFile ? (
-              <div>
-                <p className="max-w-[46ch] truncate text-sm font-medium">{selectedFile.name}</p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {formatFileSize(selectedFile.size)} · Click to change
-                </p>
-              </div>
-            ) : (
-              <div>
-                <p className="text-sm font-medium">Drop a video here, or click to choose one</p>
-                <p className="mt-1 text-xs text-muted-foreground">MP4, MOV, MKV, WEBM · no size limit</p>
-              </div>
-            )}
-
-            {!isProcessing && (
-              <p className="text-[11px] text-muted-foreground">
-                After the upload this video runs <span className="font-medium text-foreground/70">{nextStep}</span> on
-                its own.
-              </p>
-            )}
-          </div>
-
-          {isProcessing && (
-            <div className="space-y-2">
-              <Progress value={percent} />
-              <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-                <span className="tabular">
-                  {formatFileSize(uploadedBytes)} / {formatFileSize(totalBytes)} · {percent}%
-                </span>
-                <span>
-                  {phase === 'finalizing'
-                    ? 'Finishing upload (probing the video)…'
-                    : `${formatSpeed(progress?.bytesPerSecond ?? 0)} · ${
-                        progress?.etaSeconds === null || progress?.etaSeconds === undefined
-                          ? 'estimating…'
-                          : `${formatDuration(progress.etaSeconds)} left`
-                      }`}
-                </span>
-              </div>
-            </div>
+        <span
+          className={cn(
+            'flex size-12 items-center justify-center rounded-2xl transition-colors',
+            items.length > 0 ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'
           )}
+        >
+          {isProcessing ? <Loader2 className="size-5 animate-spin" /> : <Upload className="size-5" />}
+        </span>
 
-          {selectedFile && isProcessing && (
-            <Button variant="outline" size="lg" className="w-full" onClick={handleCancelUpload}>
-              <X />
-              Cancel upload
-            </Button>
-          )}
+        <div>
+          <p className="text-sm font-medium">
+            {items.length > 0
+              ? `${items.length} video${items.length === 1 ? '' : 's'} selected · Drop or click to add more`
+              : 'Drop one or more videos here, or click to choose files'}
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            MP4, MOV, MKV, WEBM · multi-file batch upload · no size limit
+          </p>
+        </div>
 
-          {selectedFile && !isProcessing && !canResume && (
-            <Button size="lg" className="w-full" onClick={() => handleUploadFile()}>
-              <Upload />
-              Upload &amp; start the pipeline
-            </Button>
-          )}
+        <p className="text-[11px] text-muted-foreground">
+          Videos upload sequentially in chunks and run{' '}
+          <span className="font-medium text-foreground/70">{nextStep}</span> in FIFO order.
+        </p>
+      </div>
 
-          {canResume && (
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <Button size="lg" className="flex-1" onClick={() => handleUploadFile(sessionId)}>
-                <Upload />
-                Resume upload from {formatFileSize(uploadedBytes)}
-              </Button>
-              <Button
-                variant="outline"
-                size="lg"
-                onClick={() => {
-                  if (sessionId) void deleteUploadSession(sessionId);
-                  setSessionId(null);
-                  setProgress(null);
-                  setErrorMessage(null);
-                }}
+      {/* Per-file queue rows */}
+      {items.length > 0 && (
+        <ul className="space-y-2">
+          {items.map((item, idx) => {
+            const uploadedBytes = item.progress?.uploadedBytes ?? 0;
+            const totalBytes = item.progress?.totalBytes ?? item.file.size ?? 0;
+            const percent =
+              item.status === 'done'
+                ? 100
+                : totalBytes > 0
+                  ? Math.min(100, Math.round((uploadedBytes / totalBytes) * 100))
+                  : 0;
+            const isItemActive = item.status === 'uploading' || item.status === 'finalizing';
+
+            return (
+              <li
+                key={item.id}
+                className="rounded-xl border bg-card px-3.5 py-2.5 shadow-2xs space-y-2"
               >
-                <X />
-                Discard
-              </Button>
-            </div>
-          )}
+                <div className="flex items-center justify-between gap-2.5">
+                  <div className="flex min-w-0 items-center gap-2.5">
+                    <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-muted text-[11px] font-semibold tabular">
+                      {idx + 1}
+                    </span>
+                    <FileVideo className="size-4 shrink-0 text-muted-foreground" />
+                    <div className="min-w-0">
+                      <p className="truncate text-xs font-medium">{item.file.name}</p>
+                      <p className="text-[11px] text-muted-foreground tabular">
+                        {formatFileSize(item.file.size)}
+                        {item.status === 'queued' && ' · Queued'}
+                        {item.status === 'uploading' &&
+                          ` · Uploading ${percent}% (${formatSpeed(item.progress?.bytesPerSecond ?? 0)}${
+                            item.progress?.etaSeconds !== null &&
+                            item.progress?.etaSeconds !== undefined
+                              ? `, ${formatDuration(item.progress.etaSeconds)} left`
+                              : ''
+                          })`}
+                        {item.status === 'finalizing' && ' · Finalizing & probing…'}
+                        {item.status === 'done' && ' · Uploaded'}
+                        {item.status === 'failed' && ` · Failed${item.error ? `: ${item.error}` : ''}`}
+                      </p>
+                    </div>
+                  </div>
 
-          {selectedFile && !isProcessing && (
-            <p className="text-[11px] text-muted-foreground">
-              Long recordings upload in chunks ({formatFileSize(selectedFile.size)} won&apos;t be buffered in
-              memory) and resume automatically if the connection drops.
-            </p>
-          )}
-        </TabsContent>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    {item.status === 'done' && (
+                      <CheckCircle2 className="size-4 text-emerald-500" />
+                    )}
+                    {item.status === 'failed' && !isProcessing && (
+                      <Button
+                        type="button"
+                        size="xs"
+                        variant="outline"
+                        onClick={() => void runUploadQueue(item.id)}
+                      >
+                        <RotateCcw className="size-3.5" />
+                        Retry
+                      </Button>
+                    )}
+                    {!isItemActive && (
+                      <Button
+                        type="button"
+                        size="icon-xs"
+                        variant="ghost"
+                        onClick={() => removeItem(item.id)}
+                        disabled={isProcessing && item.status === 'done'}
+                        aria-label={`Remove ${item.file.name}`}
+                      >
+                        <X className="size-3.5" />
+                      </Button>
+                    )}
+                  </div>
+                </div>
 
-        {/* YouTube */}
-        <TabsContent value="youtube" className="mt-4 space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="youtube-url">YouTube video URL</Label>
-            <Input
-              id="youtube-url"
-              type="url"
-              placeholder="https://www.youtube.com/watch?v=…"
-              value={youtubeUrl}
-              onChange={(e) => {
-                setYoutubeUrl(e.target.value);
-                setErrorMessage(null);
-              }}
-              disabled={isProcessing}
-            />
-            <p className="text-[11px] text-muted-foreground">
-              Disabled by default: set <code className="rounded bg-muted px-1">ENABLE_YT_IMPORT=1</code> in
-              .env.local. Direct uploads are faster and never break with YouTube.
-            </p>
-          </div>
+                {(isItemActive || item.status === 'done' || (item.status === 'failed' && uploadedBytes > 0)) && (
+                  <Progress value={percent} />
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
 
-          {youtubeUrl.trim() && !isProcessing && (
-            <Button size="lg" className="w-full" onClick={handleProcessYoutube}>
-              <Tv />
-              Fetch YouTube video
+      {/* Action buttons */}
+      {isProcessing ? (
+        <Button variant="outline" size="lg" className="w-full" onClick={handleCancelActiveUpload}>
+          <X />
+          Cancel active upload
+        </Button>
+      ) : (
+        <div className="flex flex-col gap-2 sm:flex-row">
+          {pendingOrFailedCount > 0 && (
+            <Button
+              size="lg"
+              className="flex-1"
+              onClick={() => void runUploadQueue()}
+            >
+              <Upload />
+              Upload {pendingOrFailedCount} video{pendingOrFailedCount === 1 ? '' : 's'} &amp; start pipeline
             </Button>
           )}
-        </TabsContent>
-      </Tabs>
+          {firstSucceededVideoId && (
+            <Button
+              variant={pendingOrFailedCount > 0 ? 'outline' : 'default'}
+              size="lg"
+              className="flex-1"
+              onClick={() => router.push(`/?videoId=${firstSucceededVideoId}`)}
+            >
+              Open dashboard ({doneItems.length} uploaded)
+              <ArrowRight />
+            </Button>
+          )}
+        </div>
+      )}
 
       {/* Feedback */}
       {errorMessage && (
-        <Alert variant="destructive" className="mt-4 animate-fade-in">
+        <Alert variant="destructive" className="animate-fade-in">
           <AlertCircle className="mt-0.5" />
           <AlertDescription>{errorMessage}</AlertDescription>
         </Alert>
       )}
 
       {statusMessage && (
-        <Alert className="mt-4 animate-fade-in">
+        <Alert className="animate-fade-in">
           {isProcessing ? (
             <Loader2 className="mt-0.5 animate-spin text-primary" />
           ) : (

@@ -315,6 +315,8 @@ export interface WorkerSettings {
   viralConcurrency: number;
   /** Chrome tabs per render; null = half the CPU cores. */
   remotionConcurrency: number | null;
+  /** Process videos strictly one at a time in upload order (FIFO). Default: true. */
+  strictVideoOrder?: boolean;
 }
 
 /**
@@ -326,6 +328,7 @@ export const DEFAULT_WORKER_SETTINGS: WorkerSettings = {
   clipConcurrency: 1,
   viralConcurrency: 1,
   remotionConcurrency: null,
+  strictVideoOrder: true,
 };
 
 export interface ProfanitySettings {

@@ -1,7 +1,12 @@
 import { NextResponse } from 'next/server';
 import { listVideoSummaries, listVideos } from '@/lib/db';
 import { toErrorMessage, toErrorStatus } from '@/lib/errors';
-import { listJobsByTypes, TRANSCRIPTION_QUEUE_NAME, VIRAL_DETECTION_QUEUE_NAME } from '@/lib/queue';
+import {
+  getVideoQueuePositions,
+  listJobsByTypes,
+  TRANSCRIPTION_QUEUE_NAME,
+  VIRAL_DETECTION_QUEUE_NAME,
+} from '@/lib/queue';
 import { pipelineStatusForSummary, type PipelineJobLike } from '@/lib/pipeline-status';
 
 export const runtime = 'nodejs';
@@ -25,6 +30,7 @@ export async function GET(request: Request) {
     }
 
     const summaries = await listVideoSummaries();
+    const queuePositions = getVideoQueuePositions();
 
     // Latest job per video and type, collected in one query for the whole list.
     const jobsByVideo = new Map<string, PipelineJobLike[]>();
@@ -41,11 +47,15 @@ export async function GET(request: Request) {
       jobsByVideo.set(job.videoId, list);
     }
 
-    const videos = summaries.map((entry) => ({
-      ...entry.video,
-      counts: entry.counts,
-      pipelineStatus: pipelineStatusForSummary(entry.video, entry.counts, jobsByVideo.get(entry.video._id) ?? []),
-    }));
+    const videos = summaries.map((entry) => {
+      const queuePosition = queuePositions.get(entry.video._id);
+      return {
+        ...entry.video,
+        counts: entry.counts,
+        ...(queuePosition !== undefined ? { queuePosition } : {}),
+        pipelineStatus: pipelineStatusForSummary(entry.video, entry.counts, jobsByVideo.get(entry.video._id) ?? []),
+      };
+    });
 
     return NextResponse.json({ videos });
   } catch (error) {

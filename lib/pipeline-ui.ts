@@ -11,6 +11,7 @@ import type { PipelineStatus } from './pipeline-status';
 export interface VideoListItem extends VideoSummary {
   counts: ClipCounts;
   pipelineStatus: PipelineStatus;
+  queuePosition?: number;
 }
 
 export function formatTime(seconds: number): string {

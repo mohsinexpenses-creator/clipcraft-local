@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { NextRequest, NextResponse } from 'next/server';
 import { listVideos } from '../../../lib/db';
-import { AppError, toErrorMessage } from '../../../lib/errors';
+import { AppError } from '../../../lib/errors';
 import { sanitizePipelineOptions } from '../../../lib/pipeline-defaults';
 import {
   buildStoredFileName,
@@ -20,8 +20,8 @@ export const runtime = 'nodejs';
 /**
  * POST /api/upload
  *
- * Compatibility endpoint for small, single-shot uploads (scripts, Postman, the YouTube
- * importer). `request.formData()` has to buffer the whole multipart body in memory -
+ * Compatibility endpoint for small, single-shot uploads (scripts, Postman).
+ * `request.formData()` has to buffer the whole multipart body in memory -
  * undici has no streaming multipart parser - so this route refuses bodies above
  * MAX_MULTIPART_MB (256 MB by default) and tells the caller to use the resumable,
  * chunked endpoint instead:
@@ -92,76 +92,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       });
     }
 
-    /**
-     * Legacy YouTube import. Kept but DISABLED by default: ytdl-core breaks whenever
-     * YouTube changes its player response, and it needs a full download before
-     * transcription. Set ENABLE_YT_IMPORT=1 to turn it back on.
-     */
-    if (process.env.ENABLE_YT_IMPORT === '1') {
-      const body = (await request.json().catch(() => ({}))) as {
-        youtubeUrl?: unknown;
-        url?: unknown;
-        pipeline?: unknown;
-      };
-      // components/video-uploader.tsx posts { youtubeUrl }; accept `url` as well.
-      const url =
-        (typeof body.youtubeUrl === 'string' && body.youtubeUrl.trim()) ||
-        (typeof body.url === 'string' && body.url.trim()) ||
-        '';
-
-      if (!url) {
-        return jsonError(
-          new AppError('YouTube URL is required.', {
-            status: 400,
-            resolution: 'Send { "youtubeUrl": "https://www.youtube.com/watch?v=..." } as JSON.',
-          })
-        );
-      }
-
-      try {
-        // lib/youtube.ts already validates the URL, merges adaptive streams with FFmpeg
-        // and wraps errors. (The previous version imported the `ytdl-core` package, which
-        // is not even in package.json - only @distube/ytdl-core is.)
-        const { downloadYoutubeVideo } = await import('../../../lib/youtube');
-
-        const uploadDir = resolveUploadDir();
-        const fileName = `${Date.now()}-youtube.mp4`;
-        const filePath = path.join(uploadDir, fileName);
-
-        const info = await downloadYoutubeVideo(url, filePath);
-
-        const { video, queued } = await registerUploadedVideo(
-          `${info.title}.mp4`,
-          fileName,
-          filePath,
-          sanitizePipelineOptions(body.pipeline ?? body)
-        );
-
-        return NextResponse.json({
-          success: true,
-          video,
-          transcriptionQueued: queued,
-          message: queued
-            ? 'YouTube video downloaded. Transcription is queued.'
-            : 'YouTube video downloaded, but the transcription job could not be queued.',
-        });
-      } catch (error) {
-        return jsonError(
-          new AppError('Failed to download the YouTube video.', {
-            status: 400,
-            details: toErrorMessage(error),
-            resolution:
-              'YouTube frequently blocks these libraries. Prefer uploading the MP4 file directly.',
-          })
-        );
-      }
-    }
-
     return jsonError(
       new AppError('Unsupported request.', {
         status: 400,
-        resolution:
-          'Upload a video file as multipart/form-data. YouTube import is disabled unless ENABLE_YT_IMPORT=1.',
+        resolution: 'Upload a video file as multipart/form-data or use /api/upload/session.',
       })
     );
   } catch (error) {

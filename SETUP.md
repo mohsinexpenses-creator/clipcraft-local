@@ -95,9 +95,6 @@ Both `npm run dev` and `npm run worker` load `.env.local` (via `@next/env`'s
 | **worker limits** | on `/settings` | Clip concurrency, viral-detection concurrency and Chrome tabs per render are set on **Settings → Worker & limits**. Keep clips at 1 on a normal PC: each job runs FFmpeg plus transparent overlay-frame generation. |
 | `REMOTION_LOG_LEVEL` | `info` | `verbose` when debugging a render. |
 | `REMOTION_TIMEOUT_MINUTES` | `60` | Per-render ceiling. |
-
-
-| `ENABLE_YT_IMPORT` | off | Set `1` to re-enable the (fragile) YouTube download path on the upload page. |
 | **profanity audio mode** | on `/settings` | Chosen on **Settings → Profanity & masking**: `mute` (silence the word), `beep` (1 kHz tone), `off` (leave the audio alone). Captions and overlay text are masked **regardless**; the stored transcript keeps the original words, so changing this only needs a re-render. |
 | `UPLOAD_DIR` | `uploads` | Where source videos + in-progress upload sessions are stored. |
 | `MAX_UPLOAD_MB` | `0` (unlimited) | Optional guard rail for a single upload. Long podcasts need no limit — leave at 0. |
@@ -408,7 +405,7 @@ npm run build            # production build
 ```
 app/api/videos/            upload, list, probe; [id]/transcript + [id]/detect-viral
 app/api/clips/             list, create/render, [id] (status/file), [id]/cancel
-app/api/upload/            single-shot multipart (capped) + optional YouTube import
+app/api/upload/            single-shot multipart (capped)
 app/api/upload/session/    resumable chunked upload (no limit) + finalize/abort
 app/api/media/[...path]/   Range-enabled HTTP file server for uploads/ + generated-clips/
 app/api/{caption,overlay,text}-presets/ + prompt-templates/ + startup-validation/

@@ -469,7 +469,9 @@ export async function continueAfterTranscription(videoId: string): Promise<boole
  */
 export async function recoverAutoPipelines(): Promise<{ resumed: string[] }> {
   const { listVideos } = await import('./db');
-  const videos = await listVideos();
+  const videos = [...(await listVideos())].sort((a, b) =>
+    (a.createdAt ?? '').localeCompare(b.createdAt ?? '')
+  );
   const resumed: string[] = [];
 
   for (const video of videos) {

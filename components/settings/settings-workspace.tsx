@@ -1407,6 +1407,7 @@ function WorkerCard({
       clipConcurrency: number;
       viralConcurrency: number;
       remotionConcurrency: number | null;
+      strictVideoOrder: boolean;
     }>
   >({});
   const value = { ...effective.worker, ...draft };
@@ -1529,6 +1530,21 @@ function WorkerCard({
             : `Manual: every render opens ${value.remotionConcurrency ?? 2} Chrome tab${(value.remotionConcurrency ?? 2) === 1 ? "" : "s"}.`}
         </p>
       </div>
+
+      <Row
+        label="Process videos strictly one at a time"
+        hint="FIFO batch order: video 2 waits until video 1's transcription, viral detection, and all clip renders finish."
+        source={settings.sources.worker?.strictVideoOrder}
+      >
+        <Switch
+          id="strict-video-order"
+          checked={value.strictVideoOrder ?? true}
+          onCheckedChange={(strictVideoOrder) =>
+            setDraft((current) => ({ ...current, strictVideoOrder }))
+          }
+          disabled={settings.busy === "save:worker"}
+        />
+      </Row>
 
       <LeftoverEnvList
         env={settings.env}

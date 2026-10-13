@@ -13,7 +13,7 @@ import { getPlannedTranscriptionEngine } from './whisper';
 /**
  * Helpers shared by every upload endpoint:
  *
- *   POST /api/upload                    - small single-shot multipart upload (+ YouTube import)
+ *   POST /api/upload                    - small single-shot multipart upload
  *   POST /api/upload/session            - start a resumable chunked upload (no size limit)
  *   PUT  /api/upload/session/[id]       - append one chunk
  *   POST /api/upload/session/[id]       - finalise (probe + save + enqueue transcription)

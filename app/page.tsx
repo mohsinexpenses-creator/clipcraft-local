@@ -156,7 +156,9 @@ function VideoRow({
           )}
         >
           <span className={cn("size-1 rounded-full", meta.bar, active && "animate-pulse")} />
-          {meta.label}
+          {video.queuePosition && video.queuePosition > 1
+            ? `Queued #${video.queuePosition}`
+            : meta.label}
         </span>
         <span className="h-1 flex-1 overflow-hidden rounded-full bg-muted">
           <span
@@ -439,6 +441,17 @@ function DashboardContent() {
                       <span>{formatTranscriptionEngine(video)}</span>
                       <span className="text-muted-foreground/40">·</span>
                       <span>uploaded {new Date(video.createdAt).toLocaleDateString()}</span>
+                      {(() => {
+                        const summary = videos.find((v) => v._id === video._id);
+                        return summary?.queuePosition && summary.queuePosition > 1 ? (
+                          <>
+                            <span className="text-muted-foreground/40">·</span>
+                            <span className="rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[10.5px] font-medium text-amber-700 dark:text-amber-300 tabular">
+                              Queued #{summary.queuePosition}
+                            </span>
+                          </>
+                        ) : null;
+                      })()}
                     </p>
                   </div>
 

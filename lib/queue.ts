@@ -209,29 +209,116 @@ export function enqueue<T>(
   return id;
 }
 
+export function isStrictVideoOrderEnabled(
+  db: SqliteDatabase = getDatabase(),
+  explicit?: boolean
+): boolean {
+  if (typeof explicit === 'boolean') return explicit;
+  try {
+    const row = db
+      .prepare(`SELECT value_json FROM app_settings WHERE key = 'worker'`)
+      .get() as { value_json?: string } | undefined;
+    if (!row?.value_json) return true;
+    const parsed = JSON.parse(row.value_json) as { strictVideoOrder?: unknown };
+    if (parsed.strictVideoOrder === false || parsed.strictVideoOrder === 'false') {
+      return false;
+    }
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Returns 1-based FIFO queue positions (`1` = currently active video, `2` = queued #2, etc.)
+ * for all videos that currently have at least one `queued` or `running` job.
+ */
+export function getVideoQueuePositions(
+  db: SqliteDatabase = getDatabase()
+): Map<string, number> {
+  const rows = db
+    .prepare(
+      `SELECT j.video_id
+       FROM jobs j
+       LEFT JOIN videos v ON v.id = j.video_id
+       WHERE j.status IN ('queued', 'running')
+         AND j.video_id IS NOT NULL
+       GROUP BY j.video_id
+       ORDER BY
+         COALESCE(MAX(v.created_at), (SELECT MIN(j2.created_at) FROM jobs j2 WHERE j2.video_id = j.video_id)) ASC,
+         (SELECT MIN(j2.created_at) FROM jobs j2 WHERE j2.video_id = j.video_id) ASC,
+         j.video_id ASC`
+    )
+    .all() as Array<{ video_id: string }>;
+
+  const positions = new Map<string, number>();
+  rows.forEach((row, index) => {
+    positions.set(row.video_id, index + 1);
+  });
+  return positions;
+}
+
 /**
  * Claim one eligible job with a single atomic UPDATE ... RETURNING statement.
  * SQLite serializes concurrent writers, so independent worker connections cannot
  * claim the same row.
+ *
+ * When `strictVideoOrder` is enabled (default), only jobs belonging to the earliest
+ * active video (by upload order) can be claimed, so video 2's transcription/detection/renders
+ * never start before video 1 finishes.
  */
 export function claimNextJob(
   types: string[],
-  db: SqliteDatabase = getDatabase()
+  db: SqliteDatabase = getDatabase(),
+  options?: { strictVideoOrder?: boolean }
 ): QueueJob | null {
   if (types.length === 0) return null;
   const now = new Date().toISOString();
   const placeholders = types.map(() => '?').join(', ');
-  const row = db.prepare(`
-    UPDATE jobs
-    SET status = 'running', attempts = attempts + 1, started_at = ?, error = NULL
-    WHERE id = (
-      SELECT id FROM jobs
-      WHERE status = 'queued' AND available_at <= ? AND type IN (${placeholders})
-      ORDER BY created_at ASC, id ASC
-      LIMIT 1
-    ) AND status = 'queued'
-    RETURNING *
-  `).get(now, now, ...types) as JobRow | undefined;
+  const strictOrder = isStrictVideoOrderEnabled(db, options?.strictVideoOrder);
+
+  const row = strictOrder
+    ? (db.prepare(`
+        UPDATE jobs
+        SET status = 'running', attempts = attempts + 1, started_at = ?, error = NULL
+        WHERE id = (
+          SELECT id FROM jobs
+          WHERE status = 'queued'
+            AND available_at <= ?
+            AND type IN (${placeholders})
+            AND (
+              video_id IS NULL
+              OR video_id = (
+                SELECT j.video_id
+                FROM jobs j
+                LEFT JOIN videos v ON v.id = j.video_id
+                WHERE j.status IN ('queued', 'running')
+                  AND j.video_id IS NOT NULL
+                GROUP BY j.video_id
+                ORDER BY
+                  COALESCE(MAX(v.created_at), (SELECT MIN(j2.created_at) FROM jobs j2 WHERE j2.video_id = j.video_id)) ASC,
+                  (SELECT MIN(j2.created_at) FROM jobs j2 WHERE j2.video_id = j.video_id) ASC,
+                  j.video_id ASC
+                LIMIT 1
+              )
+            )
+          ORDER BY created_at ASC, id ASC
+          LIMIT 1
+        ) AND status = 'queued'
+        RETURNING *
+      `).get(now, now, ...types) as JobRow | undefined)
+    : (db.prepare(`
+        UPDATE jobs
+        SET status = 'running', attempts = attempts + 1, started_at = ?, error = NULL
+        WHERE id = (
+          SELECT id FROM jobs
+          WHERE status = 'queued' AND available_at <= ? AND type IN (${placeholders})
+          ORDER BY created_at ASC, id ASC
+          LIMIT 1
+        ) AND status = 'queued'
+        RETURNING *
+      `).get(now, now, ...types) as JobRow | undefined);
+
   return row ? mapJob(row) : null;
 }
 

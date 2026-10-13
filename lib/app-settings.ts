@@ -506,6 +506,9 @@ export function sanitizeSettingsSection(
             ? null
             : numberIn(input.remotionConcurrency, { ...CONCURRENCY_LIMITS.remotion, label: 'Remotion concurrency' });
       }
+      if (input.strictVideoOrder !== undefined) {
+        out.strictVideoOrder = boolOf(input.strictVideoOrder, 'Strict video order');
+      }
       return out;
     }
 
@@ -808,6 +811,7 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
     viralConcurrency: numberValue(workerStored.viralConcurrency) !== undefined ? 'app' : 'default',
     // An explicit `null` is a choice ("let the renderer decide"), so it counts as stored.
     remotionConcurrency: workerStored.remotionConcurrency !== undefined ? 'app' : 'default',
+    ...(boolValue(workerStored.strictVideoOrder) !== undefined ? { strictVideoOrder: 'app' as const } : {}),
   };
 
   const worker: WorkerSettings = {
@@ -824,6 +828,7 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
       1
     ),
     remotionConcurrency: resolveRemotion(workerStored.remotionConcurrency),
+    strictVideoOrder: boolValue(workerStored.strictVideoOrder) ?? DEFAULT_WORKER_SETTINGS.strictVideoOrder ?? true,
   };
 
   /* profanity */

@@ -170,7 +170,7 @@ renderer, and tells you exactly what to fix.
 ```
 app/                    Next.js pages + API routes
   page.tsx              the studio: library sidebar, live pipeline, clip grid
-  upload/               upload page (resumable chunks, optional YouTube import)
+  upload/               upload page (resumable multi-file chunked uploads)
   caption-presets/      caption style preset manager (live preview)
   prompt-templates/     edit the LLM prompt templates
   startup-validation/   pre-flight checks UI
