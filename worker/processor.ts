@@ -18,7 +18,13 @@ import { getCaptionOffsetMs, shiftCaptionWords } from './caption-timing';
 import { ClipLayout, ClipRecord, JobData, OverlayStylePreset } from '../lib/types';
 import { detectSpeakerTimeline } from './asd';
 import { buildLayoutPlan, getSplitFramingSettings } from './layout';
-import { adaptOverlaysToLayout, describePlacements, planVisualCardPlacement } from './overlay-layout';
+import {
+  VisualDisplayMode,
+  adaptOverlaysToLayout,
+  chooseVisualDisplayMode,
+  describePlacements,
+  planVisualCardPlacement,
+} from './overlay-layout';
 import { color, log } from '../lib/logger';
 import {
   HOOK_TRANSITION_SECONDS,
@@ -36,15 +42,17 @@ import {
 import { resolveVisualProviderSettings } from '../lib/app-settings';
 import {
   buildClipCreditsManifest,
-  mapVisualMomentToOutputTimeline,
+  ensureDensePhotoMomentsForClip,
   planClipVisualMoments,
 } from '../lib/contextual-visuals';
 import type { KeywordPopOverlayItem } from '../lib/types';
 import {
-  findFallbackCachedVisualFile,
   findMatchingImageBankEntry,
   getProviderOrderForMoment,
+  getVisualAssetDedupKeys,
+  hasAnyVisualAssetDedupKey,
   preScaleCachedVisualImage,
+  registerVisualAssetDedupKeys,
   resolveVisualOverlaysForClip,
 } from '../lib/visual-providers';
 import { appendClipTimingRecord, formatClipTimingSummary } from '../lib/timings';
@@ -517,36 +525,31 @@ export async function processClipJob(
               minDuration: visualSettings.render.visualMinDuration,
               defaultDuration: visualSettings.render.visualDefaultDuration,
               defaultAnimation: visualSettings.render.visualAnimation,
-              fillDensityGaps: false,
+              fillDensityGaps: true,
             },
-          });
-        } else if (planned.length > 0) {
-          // Re-map onto the exact resolved hook/main output timeline for this render.
-          planned = planned.map((overlay) => {
-            const { effectivePlacement, outputWindows } = mapVisualMomentToOutputTimeline({
-              sourceStart: overlay.sourceStart,
-              sourceEnd: overlay.sourceEnd,
-              clipStart: start,
-              clipEnd: end,
-              placement: overlay.placement,
-              hookTiming: {
-                start: hookStart,
-                duration: safeHookDuration,
-              },
-              allowDuplicateHookReplay: overlay.placement === 'both',
-            });
-            return {
-              ...overlay,
-              placement: effectivePlacement,
-              outputWindows,
-            };
           });
         }
 
+        // Ensure dense, relevant photo moments every ~5-6s across the clip without duplicate queries
+        planned = ensureDensePhotoMomentsForClip({
+          overlays: planned,
+          clipStart: start,
+          clipEnd: end,
+          transcript: video.transcript,
+          hookTiming: {
+            start: hookStart,
+            duration: safeHookDuration,
+          },
+          maxVisualMoments: visualSettings.render.maxVisualMoments,
+          minDuration: visualSettings.render.visualMinDuration,
+          defaultDuration: visualSettings.render.visualDefaultDuration,
+          defaultAnimation: visualSettings.render.visualAnimation,
+        });
+
         if (planned.length > 0) {
-          // 1. Check local files and SQLite image_bank first.
-          const usedBankAssets = new Set<string>();
-          const usedFilePaths = new Set<string>();
+          // 1. Check existing local files and SQLite image_bank first, strictly deduplicating
+          // so the same image is never assigned to two moments in the same clip.
+          const usedAssetKeys = new Set<string>();
           let resolvedVisuals = planned.map((item) => {
             if (item.status === 'removed') return item;
             if (item.localFilePath && fs.existsSync(item.localFilePath)) {
@@ -555,15 +558,23 @@ export async function processClipJob(
                 item.width ?? 1200,
                 item.height ?? 1200
               );
-              usedFilePaths.add(path.resolve(item.localFilePath));
-              usedFilePaths.add(path.resolve(converted));
-              return {
-                ...item,
-                kind: 'photo-card' as const,
-                status: 'resolved' as const,
+              const itemKeys = getVisualAssetDedupKeys({
+                provider: item.attribution?.provider,
+                assetId: item.attribution?.assetId,
                 localFilePath: converted,
-                mediaUrl: `/api/media/visual-cache/${path.basename(converted)}`,
-              };
+                contentHash: item.contentHash,
+                imageUrl: item.attribution?.imageUrl,
+              });
+              if (!hasAnyVisualAssetDedupKey(usedAssetKeys, itemKeys)) {
+                registerVisualAssetDedupKeys(usedAssetKeys, itemKeys);
+                return {
+                  ...item,
+                  kind: 'photo-card' as const,
+                  status: 'resolved' as const,
+                  localFilePath: converted,
+                  mediaUrl: `/api/media/visual-cache/${path.basename(converted)}`,
+                };
+              }
             }
             const allowedProviders = getProviderOrderForMoment({
               moment: item,
@@ -575,11 +586,9 @@ export async function processClipJob(
             const bankHit = findMatchingImageBankEntry({
               moment: item,
               allowedProviders,
-              usedAssetIds: usedBankAssets,
+              usedAssetIds: usedAssetKeys,
             });
             if (bankHit && fs.existsSync(bankHit.localPath)) {
-              usedBankAssets.add(bankHit.id);
-              usedFilePaths.add(path.resolve(bankHit.localPath));
               return {
                 ...item,
                 kind: 'photo-card' as const,
@@ -594,13 +603,14 @@ export async function processClipJob(
             }
             return {
               ...item,
+              localFilePath: undefined,
+              mediaUrl: undefined,
               kind: 'photo-card' as const,
               status: 'planned' as const,
             };
           });
 
-          // 2. If any moment still lacks a local image (e.g. clip was queued before prefetch or re-rendered),
-          // resolve from cached search results / providers, then fall back to any downloaded image in data/visual-cache.
+          // 2. If any moment still lacks a local image, resolve from cached search results / providers.
           const needsProviderResolve = resolvedVisuals.some(
             (item) =>
               item.status !== 'removed' &&
@@ -619,6 +629,7 @@ export async function processClipJob(
             });
           }
 
+          const finalDedupKeys = new Set<string>();
           resolvedVisuals = resolvedVisuals.map((item) => {
             if (item.status === 'removed') return item;
             if (item.localFilePath && fs.existsSync(item.localFilePath)) {
@@ -627,41 +638,38 @@ export async function processClipJob(
                 item.width ?? 1200,
                 item.height ?? 1200
               );
-              usedFilePaths.add(path.resolve(item.localFilePath));
-              usedFilePaths.add(path.resolve(converted));
-              return {
-                ...item,
-                kind: 'photo-card' as const,
-                status: 'resolved' as const,
+              const keys = getVisualAssetDedupKeys({
+                provider: item.attribution?.provider,
+                assetId: item.attribution?.assetId,
                 localFilePath: converted,
-                mediaUrl: `/api/media/visual-cache/${path.basename(converted)}`,
-              };
-            }
-            const fallbackCached = findFallbackCachedVisualFile(usedFilePaths);
-            if (fallbackCached) {
-              return {
-                ...item,
-                kind: 'photo-card' as const,
-                status: 'resolved' as const,
-                localFilePath: fallbackCached.localFilePath,
-                mediaUrl: fallbackCached.mediaUrl,
-                width: fallbackCached.width,
-                height: fallbackCached.height,
-                ...(fallbackCached.attribution ? { attribution: fallbackCached.attribution } : {}),
-              };
+                contentHash: item.contentHash,
+                imageUrl: item.attribution?.imageUrl,
+              });
+              if (!hasAnyVisualAssetDedupKey(finalDedupKeys, keys)) {
+                registerVisualAssetDedupKeys(finalDedupKeys, keys);
+                return {
+                  ...item,
+                  kind: 'photo-card' as const,
+                  status: 'resolved' as const,
+                  localFilePath: converted,
+                  mediaUrl: `/api/media/visual-cache/${path.basename(converted)}`,
+                };
+              }
             }
             return {
               ...item,
+              localFilePath: undefined,
+              mediaUrl: undefined,
               status: 'skipped' as const,
-              skipReason: item.skipReason ?? 'No local image available.',
+              skipReason: item.skipReason ?? 'No unique relevant local image available.',
             };
           });
 
           clip.visualOverlays = resolvedVisuals;
           await updateClip(clip).catch(() => undefined);
 
-          // Place contextual images behind the captions without covering speaker faces.
-          const cardPlacement = planVisualCardPlacement({
+          // Mix full-screen (1080x1920 behind captions) and face-safe behind-captions card placements.
+          const behindCaptionsPlacement = planVisualCardPlacement({
             plan,
             captionBand: overlayLayout.placements.caption,
             hookBand: overlayLayout.placements.hook,
@@ -669,27 +677,56 @@ export async function processClipJob(
             cardAspect: visualSettings.render.visualCardAspect ?? 'portrait',
             placeBehindCaptions: true,
           });
+          const fullScreenPlacement = planVisualCardPlacement({
+            plan,
+            fullScreen: true,
+          });
+
+          const chosenModes: VisualDisplayMode[] = [];
+          const renderedImageKeys = new Set<string>();
 
           for (const item of resolvedVisuals) {
             if (item.status === 'removed' || item.status === 'skipped') continue;
             const hasLocalPhoto = Boolean(item.localFilePath && fs.existsSync(item.localFilePath));
 
             if (hasLocalPhoto && item.localFilePath) {
-              for (const win of item.outputWindows) {
-                if (win.end - win.start < 0.5) continue;
-                ffmpegVisualOverlays.push({
-                  id: `${item.id}_${win.segment}`,
-                  imagePath: item.localFilePath,
-                  x: cardPlacement.x,
-                  y: cardPlacement.y,
-                  width: cardPlacement.width,
-                  height: cardPlacement.height,
-                  start: win.start,
-                  end: win.end,
-                  animation: item.animation,
-                  border: visualSettings.render.visualCardBorder ?? true,
-                });
+              const itemKeys = getVisualAssetDedupKeys({
+                provider: item.attribution?.provider,
+                assetId: item.attribution?.assetId,
+                localFilePath: item.localFilePath,
+                contentHash: item.contentHash,
+              });
+              if (hasAnyVisualAssetDedupKey(renderedImageKeys, itemKeys)) {
+                continue;
               }
+              const win = item.outputWindows.find((w) => w.end - w.start >= 0.5);
+              if (!win) continue;
+
+              registerVisualAssetDedupKeys(renderedImageKeys, itemKeys);
+              const mode = chooseVisualDisplayMode(
+                chosenModes.length,
+                `${clip._id}:${item.id}`,
+                chosenModes
+              );
+              chosenModes.push(mode);
+              const placement =
+                mode === 'fullscreen' ? fullScreenPlacement : behindCaptionsPlacement;
+
+              ffmpegVisualOverlays.push({
+                id: `${item.id}_${win.segment}`,
+                imagePath: item.localFilePath,
+                x: placement.x,
+                y: placement.y,
+                width: placement.width,
+                height: placement.height,
+                start: win.start,
+                end: win.end,
+                animation: item.animation,
+                border:
+                  mode === 'fullscreen'
+                    ? false
+                    : (visualSettings.render.visualCardBorder ?? true),
+              });
             }
           }
 

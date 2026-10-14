@@ -2,11 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  ensureDensePhotoMomentsForClip,
   extractKeywordPopCallout,
   planClipVisualMoments,
 } from '../lib/contextual-visuals';
 import { buildSfxCueSheet } from '../lib/sfx-cues';
-import { planVisualCardPlacement } from '../worker/overlay-layout';
+import {
+  VisualDisplayMode,
+  chooseVisualDisplayMode,
+  planVisualCardPlacement,
+} from '../worker/overlay-layout';
 import { buildVisualOverlayFilterStatements } from '../worker/ffmpeg-pipeline';
 import type { TranscriptData, VisualMomentPlan } from '../lib/types';
 
@@ -201,3 +206,89 @@ test('Phase 3 SFX cues wire into every dense card and keyword pop beat', () => {
   assert.equal(cues.filter((c) => c.source === 'visual-out').length, 2);
   assert.equal(cues.filter((c) => c.source === 'keyword-pop').length, 2);
 });
+
+test('Dense 5-6s photo cadence, alternating fullscreen/behind-captions modes, and ball-toss physics work end-to-end', () => {
+  const topics = [
+    'solar panels rooftop clean electricity grid',
+    'battery storage warehouse lithium cells',
+    'electric vehicle charging highway station',
+    'wind turbine offshore ocean breeze',
+    'smart thermostat home energy monitor',
+    'hydroelectric dam mountain reservoir turbine',
+    'geothermal plant steam turbine facility',
+    'nuclear reactor cooling tower facility',
+    'hydrogen fuel cell bus transit depot',
+    'microgrid controller circuit breaker panel',
+    'carbon capture scrubber industrial plant',
+    'high voltage transmission lines sunset',
+  ];
+  const segments = topics.map((topic, idx) => ({
+    id: idx + 1,
+    text: `Segment ${idx + 1} discusses ${topic} in detail`,
+    start: idx * 5,
+    end: idx * 5 + 4.8,
+  }));
+  const transcript: TranscriptData = {
+    text: segments.map((s) => s.text).join('. '),
+    segments,
+    words: [],
+  };
+
+  // Start with only 2 AI moments over 60s -> ensureDensePhotoMomentsForClip fills every ~5-6s with relevant photo-cards
+  const dense = ensureDensePhotoMomentsForClip({
+    overlays: [],
+    clipStart: 0,
+    clipEnd: 60,
+    transcript,
+    maxVisualMoments: 12,
+  });
+
+  assert.ok(
+    dense.length >= 10 && dense.length <= 12,
+    `expected 10-12 photo-card moments across 60s (1 every ~5-6s), got ${dense.length}`
+  );
+  assert.ok(dense.every((m) => m.kind === 'photo-card'));
+  assert.ok(dense.every((m) => m.outputWindows.length === 1));
+  const primaryQueries = new Set(dense.map((m) => m.searchQueries[0]));
+  assert.equal(primaryQueries.size, dense.length, 'each 5-6s moment has a distinct primary search query');
+
+  // Display mode mixes fullscreen (1080x1920) and behind-captions face-safe placement
+  const modes: VisualDisplayMode[] = [];
+  for (let i = 0; i < 8; i++) {
+    modes.push(chooseVisualDisplayMode(i, `clip_1:${i}`, modes));
+  }
+  assert.ok(modes.includes('fullscreen'));
+  assert.ok(modes.includes('behind-captions'));
+
+  const fullScreenPlacement = planVisualCardPlacement({
+    plan: { mode: 'single', cropW: 608, cropH: 1080, points: [], faceAnchorY: 0.35 },
+    fullScreen: true,
+  });
+  assert.equal(fullScreenPlacement.width, 1080);
+  assert.equal(fullScreenPlacement.height, 1920);
+
+  // Full-screen visual uses ball-toss cubic deceleration (`pow(1-... ,3)`) and gravity drop (`pow(... ,2)`) with no white border
+  const fsFilter = buildVisualOverlayFilterStatements(
+    [
+      {
+        id: 'fs-1',
+        imagePath: '/tmp/fs.jpg',
+        x: fullScreenPlacement.x,
+        y: fullScreenPlacement.y,
+        width: fullScreenPlacement.width,
+        height: fullScreenPlacement.height,
+        start: 5.0,
+        end: 8.0,
+        animation: 'slide-up',
+        border: false,
+      },
+    ],
+    [4],
+    'vbase',
+    'vvis'
+  );
+  assert.doesNotMatch(fsFilter.statements[0], /pad=/);
+  assert.match(fsFilter.statements[1], /pow\(1-\(t-5\.000\)\/0\.38,3\)/);
+  assert.match(fsFilter.statements[1], /pow\(\(\(t-5\.000\)-2\.72\)\/0\.28,2\)/);
+});
+

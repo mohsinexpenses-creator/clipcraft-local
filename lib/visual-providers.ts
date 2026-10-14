@@ -355,6 +355,61 @@ export function upsertImageBankEntry(entry: {
   }
 }
 
+export function canonicalVisualFileStem(filePath?: string | null): string {
+  if (!filePath) return '';
+  return path
+    .basename(filePath)
+    .toLowerCase()
+    .replace(/\.2x\.(jpg|jpeg|png)$/i, '')
+    .replace(/\.(jpg|jpeg|png|webp)$/i, '');
+}
+
+export function getVisualAssetDedupKeys(params: {
+  provider?: string;
+  assetId?: string;
+  localFilePath?: string | null;
+  contentHash?: string | null;
+  imageUrl?: string | null;
+}): string[] {
+  const keys: string[] = [];
+  if (params.provider && params.assetId) {
+    keys.push(`${params.provider}:${params.assetId}`);
+  }
+  if (params.imageUrl) {
+    keys.push(`url:${params.imageUrl.trim().toLowerCase()}`);
+  }
+  if (keys.length === 0) {
+    if (params.contentHash) {
+      keys.push(`hash:${params.contentHash.toLowerCase()}`);
+    }
+    if (params.localFilePath) {
+      keys.push(`path:${path.resolve(params.localFilePath)}`);
+      const stem = canonicalVisualFileStem(params.localFilePath);
+      if (stem) keys.push(`stem:${stem}`);
+    }
+  }
+  return keys;
+}
+
+export function hasAnyVisualAssetDedupKey(
+  usedSet: Set<string>,
+  keys: readonly string[]
+): boolean {
+  for (const key of keys) {
+    if (key && usedSet.has(key)) return true;
+  }
+  return false;
+}
+
+export function registerVisualAssetDedupKeys(
+  usedSet: Set<string>,
+  keys: readonly string[]
+): void {
+  for (const key of keys) {
+    if (key) usedSet.add(key);
+  }
+}
+
 export function findMatchingImageBankEntry(params: {
   moment: Pick<
     ClipVisualOverlay,
@@ -406,8 +461,13 @@ export function findMatchingImageBankEntry(params: {
     let bestMatch: { record: ImageBankRecord; overlap: number } | null = null;
 
     for (const row of rows) {
-      const assetKey = `${row.provider}:${row.asset_id}`;
-      if (params.usedAssetIds.has(assetKey)) continue;
+      const rowDedupKeys = getVisualAssetDedupKeys({
+        provider: row.provider,
+        assetId: row.asset_id,
+        localFilePath: row.local_path,
+        contentHash: row.content_hash,
+      });
+      if (hasAnyVisualAssetDedupKey(params.usedAssetIds, rowDedupKeys)) continue;
       if (!row.local_path || !fs.existsSync(row.local_path)) continue;
 
       let parsedTags: string[] = [];
@@ -431,7 +491,8 @@ export function findMatchingImageBankEntry(params: {
         if (tagSet.has(qt)) overlap += 1;
       }
 
-      const minOverlap = entityTokens.length > 0 ? entityTokens.length : 1;
+      const minOverlap =
+        entityTokens.length > 0 ? entityTokens.length : queryTokens.size >= 3 ? 2 : 1;
       if (overlap < minOverlap) continue;
 
       let attribution: VisualAssetAttribution;
@@ -446,6 +507,14 @@ export function findMatchingImageBankEntry(params: {
         row.width || 1200,
         row.height || 1200
       );
+      if (
+        hasAnyVisualAssetDedupKey(
+          params.usedAssetIds,
+          getVisualAssetDedupKeys({ localFilePath: resolvedLocalPath })
+        )
+      ) {
+        continue;
+      }
 
       const record: ImageBankRecord = {
         id: row.id,
@@ -469,6 +538,15 @@ export function findMatchingImageBankEntry(params: {
 
     if (!bestMatch) return null;
 
+    registerVisualAssetDedupKeys(
+      params.usedAssetIds,
+      getVisualAssetDedupKeys({
+        provider: bestMatch.record.provider,
+        assetId: bestMatch.record.assetId,
+        localFilePath: bestMatch.record.localPath,
+        contentHash: bestMatch.record.contentHash,
+      })
+    );
     const now = new Date().toISOString();
     db.prepare(`UPDATE image_bank SET last_used = ? WHERE id = ?`).run(now, bestMatch.record.id);
     bestMatch.record.lastUsed = now;
@@ -1245,7 +1323,7 @@ export function scoreVisualCandidate(
 
   // 3. Query & intent keyword relevance
   const queryTokens = tokenizeContentWords(
-    `${moment.searchQueries.join(' ')} ${moment.visualIntent}`
+    `${moment.searchQueries.join(' ')} ${moment.visualIntent} ${(moment as { quote?: string }).quote ?? ''}`
   );
   const uniqueQueryTokens = [...new Set(queryTokens)];
   let matchedQueryCount = 0;
@@ -1264,7 +1342,9 @@ export function scoreVisualCandidate(
   }
 
   const keywordRatio =
-    uniqueQueryTokens.length > 0 ? Math.min(1, matchedQueryCount / Math.min(uniqueQueryTokens.length, 5)) : 0;
+    uniqueQueryTokens.length > 0
+      ? Math.min(1, matchedQueryCount / Math.min(uniqueQueryTokens.length, 3))
+      : 0;
 
   if (keywordRatio === 0 && (!isEntityCategory || entityTokens.length === 0)) {
     return {
@@ -1516,13 +1596,19 @@ export async function searchPexelsCandidates(
       if (!imageUrl || !photo.id) continue;
 
       const altText = (photo.alt || '').trim();
+      const urlSlug = (photo.url || '')
+        .replace(/^https?:\/\/[^/]+\/photo\//i, '')
+        .replace(/-\d+\/?$/, '')
+        .replace(/[-_/]+/g, ' ')
+        .trim();
+      const combinedDesc = [altText, urlSlug].filter(Boolean).join(' ').trim();
       results.push({
         provider: 'pexels',
         assetId: String(photo.id),
-        title: altText || `Pexels Photo ${photo.id}`,
-        description: altText,
+        title: altText || urlSlug || `Pexels Photo ${photo.id}`,
+        description: combinedDesc || altText,
         alt: altText,
-        tags: tokenizeContentWords(altText),
+        tags: [...new Set(tokenizeContentWords(combinedDesc))],
         creator: (photo.photographer || 'Pexels Photographer').trim(),
         creatorUrl: photo.photographer_url || undefined,
         licenseRaw: 'Pexels License',
@@ -2790,6 +2876,37 @@ export async function verifyClipVisualCandidatesWithGeminiVision(params: {
   return decisions;
 }
 
+function buildCandidateQueriesForMoment(overlay: ClipVisualOverlay): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const addQuery = (q?: string | null): void => {
+    const cleaned = (q ?? '').replace(/\s+/g, ' ').trim();
+    if (!cleaned || cleaned.length < 2) return;
+    const key = cleaned.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(cleaned);
+  };
+
+  for (const q of overlay.searchQueries) {
+    addQuery(q);
+  }
+  const combinedFallback = [overlay.entityName, overlay.visualIntent]
+    .filter(Boolean)
+    .join(' ')
+    .trim();
+  addQuery(combinedFallback);
+
+  if (out.length > 0) {
+    const firstTokens = tokenizeContentWords(out[0]);
+    if (firstTokens.length >= 3) {
+      addQuery(firstTokens.slice(0, 2).join(' '));
+      addQuery(firstTokens.slice(-2).join(' '));
+    }
+  }
+  return out.slice(0, 3);
+}
+
 /**
  * Resolves a single `ClipVisualOverlay` by routing across allowed providers,
  * ranking candidates locally, and downloading the winning image to the local cache.
@@ -2822,14 +2939,25 @@ export async function resolveSingleVisualOverlay(
     };
   }
 
-  // If already resolved and its cached file exists on disk, reuse without any network request!
+  // If already resolved and its cached file exists on disk, reuse without any network request
+  // ONLY if this exact image has not already been used earlier in the same clip.
   if (
     overlay.status === 'resolved' &&
     overlay.localFilePath &&
     fs.existsSync(overlay.localFilePath) &&
     overlay.attribution
   ) {
-    return overlay;
+    const existingKeys = getVisualAssetDedupKeys({
+      provider: overlay.attribution.provider,
+      assetId: overlay.attribution.assetId,
+      localFilePath: overlay.localFilePath,
+      contentHash: overlay.contentHash,
+      imageUrl: overlay.attribution.imageUrl,
+    });
+    if (!hasAnyVisualAssetDedupKey(usedAssetIds, existingKeys)) {
+      registerVisualAssetDedupKeys(usedAssetIds, existingKeys);
+      return overlay;
+    }
   }
 
   const pexelsKey =
@@ -2859,9 +2987,8 @@ export async function resolveSingleVisualOverlay(
     };
   }
 
-  const primaryQuery =
-    overlay.searchQueries[0]?.trim() ||
-    [overlay.entityName, overlay.visualIntent].filter(Boolean).join(' ').trim();
+  const candidateQueries = buildCandidateQueriesForMoment(overlay);
+  const primaryQuery = candidateQueries[0] ?? '';
 
   if (!primaryQuery) {
     return {
@@ -2880,7 +3007,16 @@ export async function resolveSingleVisualOverlay(
   });
   if (bankMatch) {
     providerStates[bankMatch.provider].cacheHits += 1;
-    usedAssetIds.add(bankMatch.id);
+    registerVisualAssetDedupKeys(
+      usedAssetIds,
+      getVisualAssetDedupKeys({
+        provider: bankMatch.provider,
+        assetId: bankMatch.assetId,
+        localFilePath: bankMatch.localPath,
+        contentHash: bankMatch.contentHash,
+        imageUrl: bankMatch.attribution.imageUrl,
+      })
+    );
     const isEntityCategory =
       overlay.category === 'person' ||
       overlay.category === 'place' ||
@@ -2906,124 +3042,157 @@ export async function resolveSingleVisualOverlay(
   }
 
   for (const provider of providerOrder) {
-    try {
-      // Single search request per provider per visual moment
-      const rawCandidates = await searchProviderWithCache(
-        provider,
-        primaryQuery,
-        {
-          ...options,
-          pexelsApiKey: pexelsKey,
-          pixabayApiKey: pixabayKey,
-          unsplashAccessKey: unsplashKey,
-        },
-        overlay.category
-      );
+    for (const queryToTry of candidateQueries) {
+      try {
+        const rawCandidates = await searchProviderWithCache(
+          provider,
+          queryToTry,
+          {
+            ...options,
+            pexelsApiKey: pexelsKey,
+            pixabayApiKey: pixabayKey,
+            unsplashAccessKey: unsplashKey,
+          },
+          overlay.category
+        );
 
-      if (rawCandidates.length === 0) continue;
+        if (rawCandidates.length === 0) continue;
 
-      const scored = rawCandidates
-        .filter((cand) => !usedAssetIds.has(`${cand.provider}:${cand.assetId}`))
-        .map((cand) => scoreVisualCandidate(cand, overlay, preferredAspect))
-        .filter((entry) => entry.accepted)
-        .sort((a, b) => b.score - a.score);
+        const scored = rawCandidates
+          .filter(
+            (cand) =>
+              !hasAnyVisualAssetDedupKey(
+                usedAssetIds,
+                getVisualAssetDedupKeys({
+                  provider: cand.provider,
+                  assetId: cand.assetId,
+                  imageUrl: cand.imageUrl,
+                })
+              )
+          )
+          .map((cand) => scoreVisualCandidate(cand, overlay, preferredAspect))
+          .filter((entry) => entry.accepted)
+          .sort((a, b) => b.score - a.score);
 
-      if (
-        typeof visionPickIndex === 'number' &&
-        visionPickIndex >= 0 &&
-        visionPickIndex < Math.min(3, scored.length)
-      ) {
-        const [picked] = scored.splice(visionPickIndex, 1);
-        scored.unshift(picked);
-      }
+        if (scored.length === 0) continue;
 
-      for (const winner of scored.slice(0, 2)) {
-        const assetKey = `${winner.candidate.provider}:${winner.candidate.assetId}`;
-        const cachedAsset = assetMemoryCache.get(assetKey);
-        if (cachedAsset && fs.existsSync(cachedAsset.localFilePath)) {
-          providerStates[provider].cacheHits += 1;
-          usedAssetIds.add(assetKey);
-          return {
-            ...overlay,
-            status: 'resolved',
-            skipReason: undefined,
-            framing: winner.framing,
-            localFilePath: cachedAsset.localFilePath,
-            mediaUrl: cachedAsset.mediaUrl,
-            contentHash: cachedAsset.contentHash,
-            width: cachedAsset.width,
-            height: cachedAsset.height,
-            relevanceScore: winner.score,
-            attribution: cachedAsset.attribution,
-          };
+        if (
+          typeof visionPickIndex === 'number' &&
+          visionPickIndex >= 0 &&
+          visionPickIndex < Math.min(3, scored.length)
+        ) {
+          const [picked] = scored.splice(visionPickIndex, 1);
+          scored.unshift(picked);
         }
 
-        try {
-          const downloaded = await downloadVisualAssetSafely({
-            imageUrl: winner.candidate.imageUrl,
-            userAgent: options.wikimediaUserAgent,
-            timeoutMs: options.timeoutMs,
-          });
-          if (winner.candidate.provider === 'unsplash' && winner.candidate.downloadLocationUrl) {
-            void triggerUnsplashDownloadTracking(winner.candidate.downloadLocationUrl, unsplashKey);
+        for (const winner of scored.slice(0, 5)) {
+          const assetKey = `${winner.candidate.provider}:${winner.candidate.assetId}`;
+          const cachedAsset = assetMemoryCache.get(assetKey);
+          if (cachedAsset && fs.existsSync(cachedAsset.localFilePath)) {
+            const cachedKeys = getVisualAssetDedupKeys({
+              provider: cachedAsset.provider,
+              assetId: cachedAsset.assetId,
+              localFilePath: cachedAsset.localFilePath,
+              contentHash: cachedAsset.contentHash,
+              imageUrl: winner.candidate.imageUrl,
+            });
+            if (hasAnyVisualAssetDedupKey(usedAssetIds, cachedKeys)) {
+              continue;
+            }
+            providerStates[provider].cacheHits += 1;
+            registerVisualAssetDedupKeys(usedAssetIds, cachedKeys);
+            return {
+              ...overlay,
+              status: 'resolved',
+              skipReason: undefined,
+              framing: winner.framing,
+              localFilePath: cachedAsset.localFilePath,
+              mediaUrl: cachedAsset.mediaUrl,
+              contentHash: cachedAsset.contentHash,
+              width: cachedAsset.width,
+              height: cachedAsset.height,
+              relevanceScore: winner.score,
+              attribution: cachedAsset.attribution,
+            };
           }
-          const attribution = buildCandidateAttribution(winner.candidate, winner.license);
-          const assetEntry: CachedDownloadedAsset = {
-            key: assetKey,
-            provider: winner.candidate.provider,
-            assetId: winner.candidate.assetId,
-            contentHash: downloaded.contentHash,
-            localFilePath: downloaded.localFilePath,
-            mediaUrl: downloaded.mediaUrl,
-            width: downloaded.inspected.width,
-            height: downloaded.inspected.height,
-            mimeType: downloaded.inspected.mimeType,
-            attribution,
-            createdAtMs: Date.now(),
-          };
-          assetMemoryCache.set(assetKey, assetEntry);
-          usedAssetIds.add(assetKey);
 
-          const combinedTags = [
-            ...winner.candidate.tags,
-            ...tokenizeContentWords(winner.candidate.title),
-            ...tokenizeContentWords(overlay.entityName || ''),
-            ...overlay.searchQueries.flatMap((q) => tokenizeContentWords(q)),
-          ];
-          upsertImageBankEntry({
-            provider: winner.candidate.provider,
-            assetId: winner.candidate.assetId,
-            localPath: downloaded.localFilePath,
-            tags: combinedTags,
-            width: downloaded.inspected.width,
-            height: downloaded.inspected.height,
-            fileSize: downloaded.buffer.length,
-            contentHash: downloaded.contentHash,
-            attribution,
-          });
-          pruneVisualCacheDirectory();
+          try {
+            const downloaded = await downloadVisualAssetSafely({
+              imageUrl: winner.candidate.imageUrl,
+              userAgent: options.wikimediaUserAgent,
+              timeoutMs: options.timeoutMs,
+            });
+            const downloadedKeys = getVisualAssetDedupKeys({
+              provider: winner.candidate.provider,
+              assetId: winner.candidate.assetId,
+              localFilePath: downloaded.localFilePath,
+              contentHash: downloaded.contentHash,
+              imageUrl: winner.candidate.imageUrl,
+            });
+            if (hasAnyVisualAssetDedupKey(usedAssetIds, downloadedKeys)) {
+              continue;
+            }
+            if (winner.candidate.provider === 'unsplash' && winner.candidate.downloadLocationUrl) {
+              void triggerUnsplashDownloadTracking(winner.candidate.downloadLocationUrl, unsplashKey);
+            }
+            const attribution = buildCandidateAttribution(winner.candidate, winner.license);
+            const assetEntry: CachedDownloadedAsset = {
+              key: assetKey,
+              provider: winner.candidate.provider,
+              assetId: winner.candidate.assetId,
+              contentHash: downloaded.contentHash,
+              localFilePath: downloaded.localFilePath,
+              mediaUrl: downloaded.mediaUrl,
+              width: downloaded.inspected.width,
+              height: downloaded.inspected.height,
+              mimeType: downloaded.inspected.mimeType,
+              attribution,
+              createdAtMs: Date.now(),
+            };
+            assetMemoryCache.set(assetKey, assetEntry);
+            registerVisualAssetDedupKeys(usedAssetIds, downloadedKeys);
 
-          return {
-            ...overlay,
-            status: 'resolved',
-            skipReason: undefined,
-            framing: winner.framing,
-            localFilePath: downloaded.localFilePath,
-            mediaUrl: downloaded.mediaUrl,
-            contentHash: downloaded.contentHash,
-            width: downloaded.inspected.width,
-            height: downloaded.inspected.height,
-            relevanceScore: winner.score,
-            attribution,
-          };
-        } catch {
-          // Try next candidate or next provider if download/magic-byte check failed
-          continue;
+            const combinedTags = [
+              ...winner.candidate.tags,
+              ...tokenizeContentWords(winner.candidate.title),
+              ...tokenizeContentWords(overlay.entityName || ''),
+              ...overlay.searchQueries.flatMap((q) => tokenizeContentWords(q)),
+            ];
+            upsertImageBankEntry({
+              provider: winner.candidate.provider,
+              assetId: winner.candidate.assetId,
+              localPath: downloaded.localFilePath,
+              tags: combinedTags,
+              width: downloaded.inspected.width,
+              height: downloaded.inspected.height,
+              fileSize: downloaded.buffer.length,
+              contentHash: downloaded.contentHash,
+              attribution,
+            });
+            pruneVisualCacheDirectory();
+
+            return {
+              ...overlay,
+              status: 'resolved',
+              skipReason: undefined,
+              framing: winner.framing,
+              localFilePath: downloaded.localFilePath,
+              mediaUrl: downloaded.mediaUrl,
+              contentHash: downloaded.contentHash,
+              width: downloaded.inspected.width,
+              height: downloaded.inspected.height,
+              relevanceScore: winner.score,
+              attribution,
+            };
+          } catch {
+            // Try next candidate or next provider if download/magic-byte check failed
+            continue;
+          }
         }
+      } catch {
+        // Provider failed or timed out -> bounded fallback to next query or provider
+        continue;
       }
-    } catch {
-      // Provider failed or timed out -> bounded fallback to next allowed provider
-      continue;
     }
   }
 

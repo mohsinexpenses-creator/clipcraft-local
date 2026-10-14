@@ -25,7 +25,7 @@ import {
 } from './queue';
 import { sanitizePipelineOptions, sanitizeViralOptions } from './pipeline-defaults';
 import { loadEffectiveSettings, resolveVisualProviderSettings } from './app-settings';
-import { planClipVisualMoments } from './contextual-visuals';
+import { ensureDensePhotoMomentsForClip, planClipVisualMoments } from './contextual-visuals';
 import { resolveVisualOverlaysForClip } from './visual-providers';
 import { parseTimestamp } from './viral-response';
 import {
@@ -316,7 +316,7 @@ export async function runViralDetection(
         : 0;
 
     const autoVisualsEnabled = Boolean(options.includeVisuals && render.autoVisuals);
-    const plannedVisualOverlays = planClipVisualMoments({
+    const initialVisualOverlays = planClipVisualMoments({
       rawMoments: segment.clip.visualMoments,
       clipStart: segment.start,
       clipEnd: segment.end,
@@ -332,8 +332,26 @@ export async function runViralDetection(
         minDuration: render.visualMinDuration,
         defaultDuration: render.visualDefaultDuration,
         defaultAnimation: render.visualAnimation,
+        fillDensityGaps: true,
       },
     });
+    const plannedVisualOverlays =
+      autoVisualsEnabled && initialVisualOverlays.length > 0
+        ? ensureDensePhotoMomentsForClip({
+            overlays: initialVisualOverlays,
+            clipStart: segment.start,
+            clipEnd: segment.end,
+            transcript: video.transcript,
+            hookTiming: {
+              start: hookStartOffset,
+              duration: hookIntervalDuration,
+            },
+            maxVisualMoments: options.maxVisualMoments ?? render.maxVisualMoments,
+            minDuration: render.visualMinDuration,
+            defaultDuration: render.visualDefaultDuration,
+            defaultAnimation: render.visualAnimation,
+          })
+        : initialVisualOverlays;
 
     const clipRecord: ClipRecord = {
       _id: clipId,
@@ -398,7 +416,6 @@ export async function runViralDetection(
 /**
  * Prefetches and caches visual overlays right after viral detection completes so
  * render jobs only read local files from `data/visual-cache/` + SQLite `image_bank`.
- * Any photo moment with no suitable image falls back to a `keyword-pop` beat.
  */
 export async function prefetchClipVisualsForDetectedClips(
   clips: ClipRecord[],
@@ -431,18 +448,13 @@ export async function prefetchClipVisualsForDetectedClips(
 
       clip.visualOverlays = resolved.map((ov) => {
         if (ov.status === 'removed') return ov;
-        if (ov.kind === 'keyword-pop' || ov.kind === 'zoom-beat') {
-          return { ...ov, kind: 'keyword-pop', status: 'resolved' };
-        }
         if (ov.status === 'resolved' && ov.localFilePath) {
-          return ov;
+          return { ...ov, kind: 'photo-card', status: 'resolved' };
         }
-        // Fallback to keyword pop when no good image was found
         return {
           ...ov,
-          kind: 'keyword-pop',
-          status: 'resolved',
-          skipReason: ov.skipReason ?? 'Fallback to keyword pop (no suitable image found).',
+          kind: 'photo-card',
+          status: 'planned',
         };
       });
       await updateClip(clip).catch(() => undefined);

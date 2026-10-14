@@ -561,7 +561,8 @@ export function buildVisualOverlayFilterStatements(
       index === visualOverlays.length - 1 ? outputFinalLabel : `vvis${index}`;
     const w = evenSize(visual.width, 64);
     const h = evenSize(visual.height, 64);
-    const showBorder = visual.border !== false;
+    const isFullScreen = w >= MAX_OUTPUT_WIDTH && h >= MAX_OUTPUT_HEIGHT;
+    const showBorder = !isFullScreen && visual.border !== false;
     const borderPx = showBorder ? 4 : 0;
     const innerW = Math.max(64, w - borderPx * 2);
     const innerH = Math.max(64, h - borderPx * 2);
@@ -593,16 +594,27 @@ export function buildVisualOverlayFilterStatements(
         `fade=t=out:st=${fadeOutSt.toFixed(3)}:d=${fadeOutDur.toFixed(3)}:alpha=1[${visLabel}]`,
     );
 
-    // Pop / slide-up entrance with slight spring overshoot settling onto y
+    // Ball-toss projectile physics entrance & exit:
+    // Launches from the bottom edge of the 1920px canvas at fast upward speed,
+    // smoothly decelerates via cubic ease-out `pow(1 - dt/riseDur, 3)` to an apex
+    // slightly above `y` (`y - 6`), settles onto `y`, and drops back down under
+    // gravity `pow((dt - dropStart)/dropDur, 2)` on exit.
     const dt = `(t-${st.toFixed(3)})`;
+    const launchDist = Math.max(420, MAX_OUTPUT_HEIGHT + 6 - y);
+    const riseDur = Number(Math.min(0.38, Math.max(0.22, dur * 0.18)).toFixed(2));
+    const settleEnd = Number((riseDur + 0.08).toFixed(2));
+    const dropDur = Number(Math.min(0.28, Math.max(0.18, dur * 0.14)).toFixed(2));
+    const dropStart = Number(Math.max(settleEnd + 0.05, dur - dropDur).toFixed(2));
     let yExpr = String(y);
-    if (visual.animation === "slide-up") {
-      yExpr = `if(lt(${dt},0.18),${y}+44-52*${dt}/0.18,if(lt(${dt},0.26),${y}-8+8*(${dt}-0.18)/0.08,${y}))`;
-    } else if (
+    if (
+      visual.animation === "slide-up" ||
       visual.animation === "pop" ||
       visual.animation === "subtle-zoom"
     ) {
-      yExpr = `if(lt(${dt},0.14),${y}+24-30*${dt}/0.14,if(lt(${dt},0.22),${y}-6+6*(${dt}-0.14)/0.08,${y}))`;
+      yExpr =
+        `if(lt(${dt},${riseDur}),${y}-6+${launchDist}*pow(1-${dt}/${riseDur},3),` +
+        `if(lt(${dt},${settleEnd}),${y}-6+6*(${dt}-${riseDur})/0.08,` +
+        `if(gt(${dt},${dropStart}),${y}+${launchDist}*pow((${dt}-${dropStart})/${dropDur},2),${y})))`;
     }
 
     statements.push(

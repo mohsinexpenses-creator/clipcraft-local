@@ -1158,16 +1158,17 @@ For every clip, provide:
 
 7. Contextual Visual Moments Plan (Dense, Multi-Beat Pacing)
 
-For each clip, plan roughly 10 to 14 engaging visual beats per 60 seconds (~1 beat every 4 to 5 seconds) so the viewer gets continuous contextual image overlays across the clip:
+For each clip, plan a relevant contextual image every 5 to 6 seconds across the entire clip (roughly 10 to 15 distinct "photo-card" visual moments for a 60 to 90 second clip) so the viewer sees a fresh, relevant visual image every 5 to 6 seconds:
 
-- Default "kind" to "photo-card" so each moment displays a contextual portrait/square photo behind the captions without covering the speaker's face.
-- Base each visual moment on the full sentence, idea, action, consequence, comparison, statistic, or emotional beat — NEVER trigger a photo card merely because a single noun was spoken.
+- Set "kind" to "photo-card" for every visual moment so each beat displays a real contextual photo (alternating between full-screen behind captions and face-safe behind-captions card).
+- Never repeat the same visual subject, entity, or search query twice in the same clip — every visual moment in a clip must represent a distinct spoken sentence or idea.
+- Base each visual moment on the full sentence, idea, action, consequence, comparison, statistic, or emotional beat spoken during that 5 to 6 second window — NEVER trigger an unrelated image.
 - In "visual_intent", describe the concrete visual subject (e.g. "crowded trading floor during market crash"), NEVER write instructions like "show something like this" or "show an image of".
 - Understand surrounding context and emotional polarity: a celebratory scene and a scene going badly must produce different visual intents, search queries, and negative/avoid cues.
 - Identify when a named person, place, or historical/cultural event is central ("category": "person", "place", or "named_event", with exact "entity_name").
-- Never invent or return raw image URLs. Return short, provider-friendly English "search_queries" and "negative_cues" that exclude contradictory imagery.
-- Set "suggested_duration" to cover the semantic beat (typically 2.0 to 3.5 seconds, NEVER a 1-second single-word flash).
-- Default "placement" to "main" unless a visual is specifically meant for "hook" or "both".
+- Never invent or return raw image URLs. For each moment, return 2 to 3 progressively broader, concrete 2-4 word English photographic "search_queries" (from specific scene to core visual subject) and "negative_cues" that exclude contradictory imagery.
+- Set "suggested_duration" to cover the semantic beat (typically 2.4 to 3.4 seconds, NEVER a 1-second single-word flash).
+- Default "placement" to "main" unless a visual is specifically meant for "hook".
 - If no visual would add clear value, return "visualMoments": [].
 
 (Lock)

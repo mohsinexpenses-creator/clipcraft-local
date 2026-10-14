@@ -261,14 +261,46 @@ export interface VisualCardPlacement {
   bottom: number;
 }
 
+export type VisualDisplayMode = 'fullscreen' | 'behind-captions';
+
+/**
+ * Deterministically mixes full-screen (`1080x1920`, behind captions) and
+ * behind-captions face-safe card placements across a clip so the viewer sees
+ * a lively, organic alternation of full-screen B-roll and face-safe cards.
+ */
+export function chooseVisualDisplayMode(
+  index: number,
+  seedKey = 'clip',
+  previousModes: readonly VisualDisplayMode[] = []
+): VisualDisplayMode {
+  // Never allow more than 2 consecutive images in the exact same display mode
+  const len = previousModes.length;
+  if (len >= 2 && previousModes[len - 1] === previousModes[len - 2]) {
+    return previousModes[len - 1] === 'fullscreen' ? 'behind-captions' : 'fullscreen';
+  }
+  // Ensure by the 2nd image we have shown both modes at least once
+  if (len === 1) {
+    return previousModes[0] === 'fullscreen' ? 'behind-captions' : 'fullscreen';
+  }
+
+  let hash = 2166136261;
+  const input = `${seedKey}:${index}`;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  const bucket = (hash >>> 0) % 100;
+  return bucket < 45 ? 'fullscreen' : 'behind-captions';
+}
+
 function bandOverlap(a: Band, b: { top: number; bottom: number }): number {
   return Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
 }
 
 /**
  * Computes a safe on-canvas 9:16 card placement for contextual visual overlays
- * (portrait ~720x900 4:5 by default, or square 720x720 1:1) in the upper/center
- * safe area without colliding with captions, hook/CTA cards, or detected faces.
+ * (portrait ~720x900 4:5 by default, square 720x720 1:1, behind-captions face-safe
+ * 920x920, or full-screen 1080x1920 behind captions).
  */
 export function planVisualCardPlacement(params: {
   plan: LayoutPlan;
@@ -284,8 +316,22 @@ export function planVisualCardPlacement(params: {
    * strictly avoiding speaker face zones so faces are never covered.
    */
   placeBehindCaptions?: boolean;
+  /**
+   * When true, fills the entire 1080x1920 9:16 canvas behind the captions.
+   */
+  fullScreen?: boolean;
 }): VisualCardPlacement {
-  const { plan, hookBand, ctaBand, placeBehindCaptions = false } = params;
+  const { plan, hookBand, ctaBand, placeBehindCaptions = false, fullScreen = false } = params;
+  if (fullScreen) {
+    return {
+      x: 0,
+      y: 0,
+      width: CANVAS_WIDTH,
+      height: CANVAS_HEIGHT,
+      top: 0,
+      bottom: CANVAS_HEIGHT,
+    };
+  }
   const captionBand: Band = params.captionBand ?? { top: 1320, bottom: 1620 };
   const aspect = params.cardAspect ?? 'portrait';
   const defaultWidth = placeBehindCaptions ? 920 : 720;
