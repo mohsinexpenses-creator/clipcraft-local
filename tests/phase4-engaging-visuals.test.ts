@@ -13,6 +13,8 @@ import {
   planVisualCardPlacement,
 } from '../worker/overlay-layout';
 import { buildVisualOverlayFilterStatements } from '../worker/ffmpeg-pipeline';
+import { parseViralResponse } from '../lib/viral-response';
+import { validClip } from './viral-fixtures';
 import type { TranscriptData, VisualMomentPlan } from '../lib/types';
 
 test('planClipVisualMoments plans ~10-14 dense visual beats across a 60s clip mixing photo-card and keyword-pop beats', () => {
@@ -290,5 +292,23 @@ test('Dense 5-6s photo cadence, alternating fullscreen/behind-captions modes, an
   assert.doesNotMatch(fsFilter.statements[0], /pad=/);
   assert.match(fsFilter.statements[1], /pow\(1-\(t-5\.000\)\/0\.38,3\)/);
   assert.match(fsFilter.statements[1], /pow\(\(\(t-5\.000\)-2\.72\)\/0\.28,2\)/);
+
+  // Repair unescaped inner quotes, raw newlines inside strings, and truncated trailing clips
+  const rawValid = JSON.stringify({ clips: [validClip()] }, null, 2);
+  const withUnescapedInnerQuotes = rawValid.replace(
+    '"why_this_will_go_viral": "' + validClip().why_this_will_go_viral + '"',
+    '"why_this_will_go_viral": "This clip relies on highly relatable, humorous "aha" moments\nand raw emotion"'
+  );
+  const recoveredInnerQuotes = parseViralResponse(withUnescapedInnerQuotes, 600);
+  assert.equal(recoveredInnerQuotes.length, 1);
+  assert.match(recoveredInnerQuotes[0].clip.why_this_will_go_viral, /"aha"/);
+
+  // Truncated second clip after a complete first clip is cleanly salvaged
+  const truncatedSecondClip =
+    rawValid.replace(/\s*\]\s*\}\s*$/, '') +
+    ',\n    {\n      "rank": 2,\n      "timestamp": { "start": "180.0s", "end": "240.0s" },\n      "why_this_will_go_viral": "Cut off mid-sen';
+  const salvaged = parseViralResponse(truncatedSecondClip, 600);
+  assert.equal(salvaged.length, 1);
+  assert.equal(salvaged[0].clip.rank, 1);
 });
 

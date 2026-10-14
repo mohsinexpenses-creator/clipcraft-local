@@ -43,7 +43,7 @@ import { parseViralResponse } from './viral-response';
  * completed by the top-up passes.
  */
 export function detectionMaxTokens(clipBudget: number): number {
-  return Math.min(40_000, 3_000 + Math.max(1, clipBudget) * 2_000);
+  return Math.min(40_000, 6_000 + Math.max(1, clipBudget) * 3_200);
 }
 
 /**

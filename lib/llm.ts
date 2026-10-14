@@ -34,6 +34,7 @@
 
 import { AppError, toErrorMessage } from "./errors";
 import { loadEffectiveSettings } from "./app-settings";
+import { repairMalformedViralJson } from "./viral-response";
 
 export type LlmProviderKind = "openai-compatible" | "gemini-native";
 
@@ -366,6 +367,18 @@ async function callGeminiNative(
         ? `blocked by safety filter (${blockReason})`
         : "returned an empty completion",
     );
+  }
+  if (request.json && text.startsWith("{") && text.length > 350) {
+    try {
+      JSON.parse(text);
+    } catch {
+      const repaired = repairMalformedViralJson(text);
+      if (repaired) return repaired;
+      throw new LlmCallFailure(
+        entry,
+        "returned truncated or malformed JSON before completing a clip",
+      );
+    }
   }
   return text;
 }

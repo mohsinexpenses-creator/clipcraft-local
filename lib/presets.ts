@@ -1158,11 +1158,11 @@ For every clip, provide:
 
 7. Contextual Visual Moments Plan (Dense, Multi-Beat Pacing)
 
-For each clip, plan a relevant contextual image every 5 to 6 seconds across the entire clip (roughly 10 to 15 distinct "photo-card" visual moments for a 60 to 90 second clip) so the viewer sees a fresh, relevant visual image every 5 to 6 seconds:
+For each clip, plan 3 to 5 high-impact "photo-card" anchor visual moments spread across the clip (our timeline engine will automatically fill the remaining 5-to-6-second intervals from the transcript so a relevant image appears every 5 to 6 seconds):
 
 - Set "kind" to "photo-card" for every visual moment so each beat displays a real contextual photo (alternating between full-screen behind captions and face-safe behind-captions card).
 - Never repeat the same visual subject, entity, or search query twice in the same clip — every visual moment in a clip must represent a distinct spoken sentence or idea.
-- Base each visual moment on the full sentence, idea, action, consequence, comparison, statistic, or emotional beat spoken during that 5 to 6 second window — NEVER trigger an unrelated image.
+- Base each visual moment on the full sentence, idea, action, consequence, comparison, statistic, or emotional beat — NEVER trigger an unrelated image.
 - In "visual_intent", describe the concrete visual subject (e.g. "crowded trading floor during market crash"), NEVER write instructions like "show something like this" or "show an image of".
 - Understand surrounding context and emotional polarity: a celebratory scene and a scene going badly must produce different visual intents, search queries, and negative/avoid cues.
 - Identify when a named person, place, or historical/cultural event is central ("category": "person", "place", or "named_event", with exact "entity_name").
@@ -1197,7 +1197,7 @@ Return ONLY a single valid JSON object. No markdown, no code fences, no explanat
 
 - All the sections, rules, and analysis above still apply in full. Only the output format changes: the "Clip #" text layout is replaced by the JSON schema below.
 - Emojis are allowed ONLY inside string values.
-- Use double quotes, escape internal quotes and newlines properly, and use no trailing commas.
+- Use double quotes for JSON keys/strings, NEVER put unescaped double quotes inside string values (use single quotes '...' when quoting dialogue or phrases), and use no trailing commas.
 - The "clips" array MUST be sorted by viral ranking (rank 1 = most viral), not by transcript order.
 - Timestamps must be strings in the same format as the transcript (for example "125.5s"). Durations must be calculated from them.
 - "rank", every "duration" value, the four "scores", and visual moment "confidence" / "suggested_duration" are plain numbers (scores from 0 to 10, no "/10"; confidence from 0 to 1). Every other value is a string, a boolean (true or false) or an array, exactly as in the schema.

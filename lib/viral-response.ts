@@ -174,8 +174,16 @@ function schemaProblem(clip: unknown, where: string): string | null {
   }
   const visualMoments = (clip as Record<string, unknown>).visualMoments;
   if (visualMoments !== undefined) {
-    if (!Array.isArray(visualMoments) || !visualMoments.every(isVisualMomentPlan)) {
+    if (!Array.isArray(visualMoments)) {
       return `${where}.visualMoments must be an array of visual moment objects (got ${show(visualMoments)})`;
+    }
+    if (!visualMoments.every(isVisualMomentPlan)) {
+      const validOnes = visualMoments.filter(isVisualMomentPlan);
+      if (visualMoments.length > 1 && validOnes.length > 0) {
+        (clip as Record<string, unknown>).visualMoments = validOnes;
+      } else {
+        return `${where}.visualMoments must be an array of visual moment objects (got ${show(visualMoments)})`;
+      }
     }
   }
   return null;
@@ -190,6 +198,208 @@ const invalid = (summary: string, details?: string) =>
   });
 
 /**
+ * Checks whether a `"` at `quoteIdx` inside a JSON string is the actual closing
+ * quote of the key/value rather than an unescaped inner quote (e.g. quoting dialogue).
+ */
+function isLikelyClosingJsonQuote(
+  src: string,
+  quoteIdx: number,
+  expectingKey: boolean
+): boolean {
+  let i = quoteIdx + 1;
+  while (i < src.length && (src[i] === ' ' || src[i] === '\t' || src[i] === '\r' || src[i] === '\n')) {
+    i++;
+  }
+  if (i >= src.length) return true;
+  const next = src[i];
+
+  if (expectingKey) {
+    return next === ':';
+  }
+  if (next === '}' || next === ']') return true;
+  if (next === ',') {
+    let j = i + 1;
+    while (j < src.length && (src[j] === ' ' || src[j] === '\t' || src[j] === '\r' || src[j] === '\n')) {
+      j++;
+    }
+    if (j >= src.length) return true;
+    const afterComma = src[j];
+    return (
+      afterComma === '"' ||
+      afterComma === '{' ||
+      afterComma === '[' ||
+      afterComma === '}' ||
+      afterComma === ']'
+    );
+  }
+  return false;
+}
+
+/**
+ * Repairs common LLM JSON syntax errors in `{ "clips": [...] }` responses:
+ * - unescaped double-quotes inside string values (e.g. `"humorous "aha" moments"`),
+ * - raw literal newlines / control characters inside strings,
+ * - trailing commas before `}` or `]`,
+ * - truncated tail after 1 or more complete clips (or inside trailing `visualMoments`).
+ */
+export function repairMalformedViralJson(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith('{') || trimmed.length <= 350) return null;
+
+  // Step 1: Escape unescaped inner quotes & raw control characters inside strings
+  const out: string[] = [];
+  let inString = false;
+  let expectingKey = false;
+  const containerStack: Array<'{' | '['> = [];
+
+  for (let i = 0; i < trimmed.length; i++) {
+    const ch = trimmed[i];
+    if (!inString) {
+      if (ch === '{') {
+        containerStack.push('{');
+        expectingKey = true;
+        out.push(ch);
+      } else if (ch === '[') {
+        containerStack.push('[');
+        expectingKey = false;
+        out.push(ch);
+      } else if (ch === '}' || ch === ']') {
+        containerStack.pop();
+        expectingKey = false;
+        out.push(ch);
+      } else if (ch === ':') {
+        expectingKey = false;
+        out.push(ch);
+      } else if (ch === ',') {
+        const top = containerStack[containerStack.length - 1];
+        expectingKey = top === '{';
+        out.push(ch);
+      } else if (ch === '"') {
+        inString = true;
+        out.push(ch);
+      } else {
+        out.push(ch);
+      }
+      continue;
+    }
+
+    // Inside a JSON string
+    if (ch === '\\') {
+      const next = trimmed[i + 1];
+      if (next !== undefined && '"\\/bfnrtu'.includes(next)) {
+        out.push('\\', next);
+        i++;
+      } else {
+        out.push('\\\\');
+      }
+      continue;
+    }
+
+    if (ch === '\n') {
+      out.push('\\n');
+      continue;
+    }
+    if (ch === '\r') {
+      out.push('\\r');
+      continue;
+    }
+    if (ch === '\t') {
+      out.push('\\t');
+      continue;
+    }
+    const code = ch.charCodeAt(0);
+    if (code < 0x20) {
+      out.push(' ');
+      continue;
+    }
+
+    if (ch === '"') {
+      if (isLikelyClosingJsonQuote(trimmed, i, expectingKey)) {
+        inString = false;
+        out.push('"');
+      } else {
+        out.push('\\"');
+      }
+      continue;
+    }
+
+    out.push(ch);
+  }
+
+  const sanitized = out.join('').replace(/,\s*([}\]])/g, '$1');
+  try {
+    JSON.parse(sanitized);
+    return sanitized;
+  } catch {
+    // Proceed to Step 2: salvage completed clips if truncated at the tail
+  }
+
+  // Step 2: Salvage complete clip objects when the response was truncated after >= 1 clip
+  if (!sanitized.includes('"scores"')) return null;
+  const clipsMatch = /"clips"\s*:\s*\[/.exec(sanitized);
+  if (!clipsMatch) return null;
+
+  const arrayStart = clipsMatch.index + clipsMatch[0].length;
+  const salvagedClips: unknown[] = [];
+  let idx = arrayStart;
+  let objStart = -1;
+  let depth = 0;
+  let str = false;
+
+  for (; idx < sanitized.length; idx++) {
+    const c = sanitized[idx];
+    if (str) {
+      if (c === '\\') {
+        idx++;
+      } else if (c === '"') {
+        str = false;
+      }
+      continue;
+    }
+    if (c === '"') {
+      str = true;
+    } else if (c === '{') {
+      if (depth === 0) objStart = idx;
+      depth++;
+    } else if (c === '}') {
+      depth--;
+      if (depth === 0 && objStart >= 0) {
+        const clipSlice = sanitized.slice(objStart, idx + 1);
+        try {
+          salvagedClips.push(JSON.parse(clipSlice));
+        } catch {
+          // Ignore unparseable clip slice
+        }
+        objStart = -1;
+      }
+    } else if (c === ']' && depth === 0) {
+      break;
+    }
+  }
+
+  // If the last clip was truncated inside `visualMoments` after completing `scores`, salvage that clip too
+  if (depth > 0 && objStart >= 0) {
+    const partialClip = sanitized.slice(objStart);
+    if (partialClip.includes('"scores"') && partialClip.includes('"shareability_score"')) {
+      const vmIdx = partialClip.lastIndexOf('"visualMoments"');
+      if (vmIdx > 0) {
+        const beforeVm = partialClip.slice(0, vmIdx).replace(/,\s*$/, '') + '}';
+        try {
+          salvagedClips.push(JSON.parse(beforeVm));
+        } catch {
+          // Ignore if `scores` itself was not yet closed
+        }
+      }
+    }
+  }
+
+  if (salvagedClips.length > 0) {
+    return JSON.stringify({ clips: salvagedClips });
+  }
+  return null;
+}
+
+/**
  * The model's text -> validated clips with their numeric render windows.
  * Throws a clear AppError if the text is not `{ "clips": [...] }` or any clip
  * does not match the schema; an end a little past the video is clamped to it.
@@ -199,7 +409,16 @@ export function parseViralResponse(text: string, videoDuration: number): ViralSe
   try {
     data = JSON.parse(text);
   } catch {
-    throw invalid('The AI response is not valid JSON.', text.slice(0, 300));
+    const repaired = repairMalformedViralJson(text);
+    if (repaired) {
+      try {
+        data = JSON.parse(repaired);
+      } catch {
+        throw invalid('The AI response is not valid JSON.', text.slice(0, 300));
+      }
+    } else {
+      throw invalid('The AI response is not valid JSON.', text.slice(0, 300));
+    }
   }
 
   const clips = (data as { clips?: unknown } | null)?.clips;

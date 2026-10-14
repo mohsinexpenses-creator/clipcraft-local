@@ -797,7 +797,23 @@ function seedDefaults(db: SqliteDatabase): void {
 
     for (const template of DEFAULT_PROMPT_TEMPLATES) {
       const { _id, type, name, updatedAt, ...config } = template;
-      insertPrompt.run(_id, type, name, updatedAt, serializeJson(config));
+      const serialized = serializeJson(config);
+      const inserted = insertPrompt.run(_id, type, name, updatedAt, serialized);
+      if (inserted.changes === 0 && _id === "prompt-viral-detection") {
+        const existing = db
+          .prepare("SELECT config_json FROM prompt_templates WHERE id = ?")
+          .get(_id) as { config_json: string } | undefined;
+        if (
+          existing &&
+          (!existing.config_json.includes("visualMoments") ||
+            existing.config_json.includes("10 to 15 distinct") ||
+            !existing.config_json.includes("NEVER put unescaped double quotes"))
+        ) {
+          db.prepare(
+            "UPDATE prompt_templates SET config_json = ?, updated_at = ? WHERE id = ?",
+          ).run(serialized, updatedAt, _id);
+        }
+      }
     }
   }).immediate();
 }
