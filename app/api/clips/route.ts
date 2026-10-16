@@ -10,7 +10,7 @@ import {
 import { AppError, toErrorMessage, toErrorStatus } from '@/lib/errors';
 import { enqueueClipJob } from '@/lib/queue';
 import { jobDataFromClip } from '@/lib/pipeline';
-import { sanitizeClipEdits } from '@/lib/clip-edits';
+import { sanitizeClipEdits, preserveVerifiedVisualMetadata } from '@/lib/clip-edits';
 
 export const runtime = 'nodejs';
 
@@ -61,7 +61,9 @@ export async function POST(request: Request) {
 
     const video = await getVideo(existingClip.videoId);
     const edits = sanitizeClipEdits(body, { duration: video?.duration });
+    if (edits.visualOverlays) edits.visualOverlays = preserveVerifiedVisualMetadata(existingClip.visualOverlays ?? [], edits.visualOverlays);
     Object.assign(existingClip, edits);
+    if (edits.visualOverlays) existingClip.visualsUseEditedMoments = true;
 
     // Preset ids fall back to the configured database defaults, so a re-render
     // of an old clip (created before presets existed) still finds a style. The

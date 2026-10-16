@@ -83,6 +83,8 @@ export function stageMeta(stage: PipelineStatus["stage"]): StageMeta {
         bar: "bg-violet-500",
         pulse: true,
       };
+    case "prefetching":
+      return { label: "Finding relevant images", hint: "Per-clip planning and vision verification", chip: "text-violet-700 bg-violet-500/10 ring-violet-500/25 dark:text-violet-300", bar: "bg-violet-500", pulse: true };
     case "rendering":
       return {
         label: "Rendering",

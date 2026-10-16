@@ -15,13 +15,14 @@ import {
   CLIP_QUEUE_NAME,
   TRANSCRIPTION_QUEUE_NAME,
   VIRAL_DETECTION_QUEUE_NAME,
+  VISUAL_PREFETCH_QUEUE_NAME,
   claimNextJob,
   completeJob,
   enqueue,
   getVideoQueuePositions,
   recoverRunningJobs,
 } from '../lib/queue';
-import { recoverAutoPipelines } from '../lib/pipeline';
+import { recoverAutoPipelines, processVisualPrefetchJob } from '../lib/pipeline';
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clipcraft-fifo-'));
 const dbFile = path.join(tmpDir, 'fifo.sqlite');
@@ -329,6 +330,10 @@ test('recoverRunningJobs and recoverAutoPipelines preserve FIFO order across res
 
   // Because v-older was uploaded first, transcription worker cannot claim v-newer until v-older's render finishes
   assert.equal(claimNextJob([TRANSCRIPTION_QUEUE_NAME]), null);
+  const prefetch = claimNextJob([VISUAL_PREFETCH_QUEUE_NAME]);
+  assert.ok(prefetch, 'the older video resumes its per-clip visual step first');
+  await processVisualPrefetchJob(prefetch.payload as import('../lib/types').VisualPrefetchJobData);
+  completeJob(prefetch.id, { ok: true });
   const olderClipJob = claimNextJob([CLIP_QUEUE_NAME]);
   assert.ok(olderClipJob);
   assert.equal(olderClipJob.videoId, 'v-older');

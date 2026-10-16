@@ -20,14 +20,14 @@ function pngChunk(type: string, data: Buffer): Buffer {
   return Buffer.concat([len, typeBuf, data, crc]);
 }
 
-export function makeSamplePngBuffer(width = 1080, height = 1920): Buffer {
+export function makeSamplePngBuffer(width = 1080, height = 1920, seed = 100): Buffer {
   const sig = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(width, 0);
   ihdr.writeUInt32BE(height, 4);
   ihdr[8] = 8;
   ihdr[9] = 6;
-  const rawData = Buffer.alloc((width * 4 + 1) * height, 100);
+  const rawData = Buffer.alloc((width * 4 + 1) * height, seed);
   for (let y = 0; y < height; y += 1) {
     rawData[y * (width * 4 + 1)] = 0;
   }

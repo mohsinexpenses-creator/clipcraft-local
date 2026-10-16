@@ -172,3 +172,15 @@ ignored when constructing candidates. Verified sentence captions live in
 the video) get a soft ranking penalty; assets/content hashes never repeat inside
 a clip. `data/visual-debug/<clipId>.json` records sentence, queries tried, top-three
 text/vision scores and the final decision.
+
+
+### Queue/cache boundary
+
+Detection queues one persisted `visual-prefetch` job per clip (concurrency two),
+not a whole-video prefetch await. A ready clip may render immediately; video FIFO
+still gates later videos. The editor queues the same job and polls its status.
+Render only reads locally verified `.fullscreen-v1.jpg` frames, checks their bytes
+and source-transcript/meaning/settings fingerprints, then remaps hook windows.
+Edited/unresolved/manual frames without server verification are skipped with a
+visible reason; render never searches, calls Gemini, or prepares frames. Independent
+prefetch timing rows and call counts are written to `data/timings.jsonl`.

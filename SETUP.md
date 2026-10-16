@@ -77,7 +77,7 @@ Both `npm run dev` and `npm run worker` load `.env.local` (via `@next/env`'s
 | Variable | Default | Notes |
 |---|---|---|
 | `DATABASE_PATH` | `./data/clipcraft.db` | Path to the SQLite database, relative to the repository root unless absolute. Parent folders are created automatically. Web and worker processes must use the same path; restart both after changing it. The file is ignored by Git. |
-| **moved to /settings** | — | `GEMINI_API_KEY`, `DEEPGRAM_API_KEY`, `DEEPGRAM_MODEL`, `WORKER_CONCURRENCY`, `VIRAL_CONCURRENCY`, `REMOTION_CONCURRENCY` and `PROFANITY_AUDIO_MODE` are no longer read from this file. Their values live in the `app_settings` table and are edited on **Settings** — the page even points out any of those names still sitting unused in your `.env.local`. The Gemini chain itself is unchanged: 5 slots, newest-first (`gemini-3.8-flash` → `3.6-flash` → `3.5-flash-lite` → `3.1-flash-lite` → `2.5-flash-lite`), each model with its own free daily pool, and every key you save is tried on each model before the next model — so a second key is real 503-redundancy. Model order lives in `LLM_PROVIDER_CHAIN` in `lib/llm.ts`; the other free providers were removed after live testing (Groq 413 + 429s, Cerebras 402 paid, Mistral ~1 RPM, NVIDIA NIM 404/410 + timeouts). |
+| **moved to /settings** | — | `GEMINI_API_KEY`, `DEEPGRAM_API_KEY`, `DEEPGRAM_MODEL`, `WORKER_CONCURRENCY`, `VIRAL_CONCURRENCY`, `REMOTION_CONCURRENCY` and `PROFANITY_AUDIO_MODE` are no longer read from this file. Their values live in the `app_settings` table and are edited on **Settings** — the page even points out any of those names still sitting unused in your `.env.local`. Detection uses the fallback chain configured in `lib/llm.ts`; availability and quotas depend on your project/model/tier, not the number of keys. Additional keys provide redundancy, **not extra quota within the same project**. The visual planner/vision use the separate bounded Gemini 2.5 Flash transport described below. |
 | `WHISPER_CLI_PATH` | auto-detect | Overrides binary discovery (searches `.whisper/…`, `bin/whisper-win-x64/whisper-cli.exe`, `bin/whisper-cli`). |
 | `WHISPER_MODEL_PATH` | auto-detect | Overrides model discovery (`models/ggml-*.bin`). |
 | `WHISPER_LANGUAGE` | `auto` | e.g. `ur`, `hi`, `en`. `auto` detects the spoken language (needed for Urdu/Hindi/Punjabi). |
@@ -478,7 +478,61 @@ Checked against the current [generateContent thinking guide](https://ai.google.d
 and [API reference](https://ai.google.dev/api/generate-content): Gemini **2.5 Flash**
 supports `generationConfig.thinkingConfig.thinkingBudget: 0` (not the Gemini 3
 `thinkingLevel` parameter). Vision sends `responseMimeType: application/json`,
-`responseJsonSchema`, and `maxOutputTokens: 4096`, validates actual IDs/scores and
+`responseJsonSchema`, and `maxOutputTokens: 6000`, validates actual IDs/scores and
 rejects incomplete output. Keys are sent in `x-goog-api-key`, never URLs or logs.
 The old `visualVisionVerify` boolean is retained for stored JSON compatibility but
 cannot disable the gate; use Relevance strictness to opt into lenient behavior.
+
+
+### Per-clip image prefetch, quotas and pricing (checked 2026-10-16)
+
+`visual-prefetch` is a persisted SQLite job, separate from render. One worker runs
+up to **two** prefetch jobs concurrently; the database claim enforces this cap.
+Each resolved clip can hand off immediately to render while its sibling is still
+searching. Strict video FIFO still blocks later-video Phase 1 jobs. Restart recovery
+requeues interrupted prefetch; cancellation/deletion cannot enqueue a new render.
+Restart the worker after upgrading.
+
+The visual transport rotates saved Gemini keys round-robin. **AI → Gemini visual
+RPM/key** defaults to 10, with a rolling minute window, bounded waiting, 429/5xx
+backoff+jitter and Retry-After cooldowns. Invalid keys are cooled down; messages
+identify quota, invalid-key, network and deadline failures without exposing keys.
+This limiter covers **planner + vision**, not legacy detection/hook/CTA completions.
+
+Each uncached clip has one logical planner call and at most three parallel vision
+batches; retries share a **four physical HTTP-attempt cap**. The network budget is
+25 seconds including waits/searches/downloads. Local JPEG processing and disk/DB
+writes can add time; this is a target, not a proven wall-clock SLA. Slow/quota-limited
+results skip rather than bypass relevance. Captions and keyword pops survive.
+
+Whole results are keyed by timed-transcript/settings fingerprints (credential
+identities are hashed, never written in plaintext). Hook/caption style edits and
+rerenders reuse results. Raw sentence plans and vision verdicts are cached too;
+verdict hits avoid even thumbnail fetches. Missing cached frames skip with no API
+call. Manual render never fetches; use the editor's visual-prefetch action first
+for new queries. Client edits cannot manufacture verification metadata. Prepared
+frame hashes and meaning/settings fingerprints are checked locally before encode.
+Caches live under ignored `data/visual-prefetch/`, `data/visual-plans/` and the visual
+cache's `verdicts/`; after a temporary cached failure, remove that failed prefetch
+entry to explicitly retry. Existing queued render jobs do not fetch to repair it.
+
+Official [rate-limit documentation](https://ai.google.dev/gemini-api/docs/rate-limits)
+says limits are **per project, not per API key**, and RPM/TPM/RPD are independent;
+RPD resets at midnight Pacific. The current model/project/tier limits must be
+read in [AI Studio](https://aistudio.google.com/rate-limit?timeRange=last-28-days).
+Do not assume an old public free-RPD number applies to your account.
+
+The current [Gemini 2.5 Flash pricing table](https://ai.google.dev/gemini-api/docs/pricing#gemini-2.5-flash)
+lists free-tier input/output as free of charge, subject to quota; standard paid
+text/image/video input is **$0.30 / million tokens**, output (including thinking)
+**$2.50 / million tokens**. This pipeline disables thinking with budget 0. It does
+not use Search grounding, batch discounts, audio input or image generation.
+
+At 300 uncached clips/day, budget **up to 1,200 visual HTTP attempts/day**, plus
+separate detection/hook/CTA calls and provider searches/downloads. One planner plus
+one vision batch is commonly only 600 logical calls/day, but this is not a promised
+quota or cost. Example only: 8k total input + 2k output tokens/clip costs about
+$0.0074/clip, **$2.22/day** at 300 clips (actual image tokens/output vary; retries
+can increase billed tokens). Check RPM/TPM/RPD and provider quotas, then enable
+billing if the project's free quota cannot cover the measured workload. Multiple
+keys from one project do not make 300 clips/day possible by themselves.

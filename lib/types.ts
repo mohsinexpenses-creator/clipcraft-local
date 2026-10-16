@@ -311,6 +311,7 @@ export interface AiProviderSettings {
    * so instead of quietly using an env value you cannot see.
    */
   geminiApiKeys: string[];
+  geminiRequestsPerMinute?: number;
   /** Empty means "no cloud transcription"; local whisper.cpp is used. */
   deepgramApiKey: string;
   /** Empty means `nova-2`. */
@@ -337,6 +338,7 @@ export interface AiProviderSettings {
 
 export const DEFAULT_AI_SETTINGS: AiProviderSettings = {
   geminiApiKeys: [],
+  geminiRequestsPerMinute: 10,
   deepgramApiKey: '',
   deepgramModel: '',
   transcriptionProvider: 'auto',
@@ -578,6 +580,7 @@ export interface ClipVisualOverlay {
   segmentIds?: number[];
   visionScore?: number;
   visualVerificationHash?: string;
+  preparedContentHash?: string;
   chosenQuery?: string;
   sentenceMeaningEn?: string;
   visualSubjectEn?: string;
@@ -823,7 +826,20 @@ export interface TextPreset {
   updatedAt: string;
 }
 
+export interface VisualPrefetchStats {
+  plannerCalls: number; visionCalls: number; attempts: number; geminiMs: number;
+  prefetchMs: number; cacheHits: number;
+}
+export interface VisualPrefetchJobData {
+  clipId: string; videoId: string; renderAfter: boolean;
+}
 export interface ClipRecord {
+  visualPrefetchSettings?: Partial<RenderDefaults>;
+  visualsUseEditedMoments?: boolean;
+  visualsPrefetchedAt?: string;
+  visualsTranscriptHash?: string;
+  visualsPrefetchFingerprint?: string;
+  visualsPrefetchStats?: VisualPrefetchStats;
   visualsSkippedReason?: string;
   _id: string;
   videoId: string;

@@ -31,6 +31,7 @@ export async function POST(
 
     const wasProcessing = clip.status === 'processing';
     const jobOutcome = cancelJob(`clip:${clip._id}`);
+    cancelJob(`visual:${clip._id}`);
 
     clip.status = 'failed';
     clip.error = 'Cancelled by user.';

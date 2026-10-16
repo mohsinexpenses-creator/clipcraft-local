@@ -472,6 +472,9 @@ export function sanitizeSettingsSection(
     case 'ai': {
       const input = record(value, 'AI provider settings');
       const out: Record<string, unknown> = {};
+      if (input.geminiRequestsPerMinute !== undefined) {
+        out.geminiRequestsPerMinute = numberIn(input.geminiRequestsPerMinute, { min: 1, max: 1000, precision: 0, label: 'Gemini requests per minute per key' });
+      }
       if ('geminiApiKeys' in input) {
         out.geminiApiKeys = mergeKeyPool(input.geminiApiKeys, context.storedAi?.geminiApiKeys ?? []);
       }
@@ -889,6 +892,7 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
 
   const ai: AiProviderSettings = {
     geminiApiKeys,
+    geminiRequestsPerMinute: intInRange(aiStored.geminiRequestsPerMinute, 1, 1000, 10),
     deepgramApiKey,
     deepgramModel: deepgramModel || 'nova-2',
     transcriptionProvider,
@@ -1255,6 +1259,7 @@ export async function resolveWorkerSettings(): Promise<WorkerSettings> {
 export async function resolveVisualProviderSettings(): Promise<{
   render: RenderDefaults;
   geminiApiKeys: string[];
+  geminiRequestsPerMinute?: number;
   pexelsApiKey: string;
   pixabayApiKey: string;
   unsplashAccessKey: string;
@@ -1266,6 +1271,7 @@ export async function resolveVisualProviderSettings(): Promise<{
   return {
     render: settings.render,
     geminiApiKeys: settings.ai.geminiApiKeys,
+    geminiRequestsPerMinute: settings.ai.geminiRequestsPerMinute ?? 10,
     pexelsApiKey: settings.ai.pexelsApiKey,
     pixabayApiKey: settings.ai.pixabayApiKey ?? '',
     unsplashAccessKey: settings.ai.unsplashAccessKey ?? '',

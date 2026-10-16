@@ -1463,11 +1463,13 @@ export async function updateClip(clip: ClipRecord): Promise<boolean> {
   return updateClipRecordSync(getDatabase(), clip);
 }
 
-export async function getClip(id: string): Promise<ClipRecord | null> {
-  const row = getDatabase()
-    .prepare(`SELECT ${CLIP_COLUMNS} FROM clips WHERE id = ?`)
-    .get(id) as ClipRow | undefined;
+export function getClipRecordSync(db: SqliteDatabase, id: string): ClipRecord | null {
+  const row = db.prepare(`SELECT ${CLIP_COLUMNS} FROM clips WHERE id = ?`).get(id) as ClipRow | undefined;
   return row ? mapClip(row) : null;
+}
+
+export async function getClip(id: string): Promise<ClipRecord | null> {
+  return getClipRecordSync(getDatabase(), id);
 }
 
 export async function listClips(videoId?: string): Promise<ClipRecord[]> {

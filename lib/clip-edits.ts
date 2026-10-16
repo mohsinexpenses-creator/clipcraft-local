@@ -162,7 +162,7 @@ export function sanitizeClipEdits(
 
   if (Array.isArray(body.visualOverlays)) {
     const sanitizedOverlays: ClipVisualOverlay[] = [];
-    for (let i = 0; i < Math.min(body.visualOverlays.length, 3); i++) {
+    for (let i = 0; i < Math.min(body.visualOverlays.length, 16); i++) {
       const item = body.visualOverlays[i];
       if (typeof item !== 'object' || item === null || Array.isArray(item)) continue;
       const raw = item as Partial<ClipVisualOverlay> & Record<string, unknown>;
@@ -228,6 +228,15 @@ export function sanitizeClipEdits(
         placement: effectivePlacement,
         framing: raw.framing === 'editorial' ? 'editorial' : 'illustrative',
         status,
+        ...(raw.kind === 'photo-card' || raw.kind === 'keyword-pop' || raw.kind === 'zoom-beat' ? { kind: raw.kind } : {}),
+        ...(Array.isArray(raw.segmentIds) ? { segmentIds: raw.segmentIds.filter((id): id is number => Number.isInteger(id)) } : {}),
+        ...(typeof raw.sentenceMeaningEn === 'string' ? { sentenceMeaningEn: raw.sentenceMeaningEn } : {}),
+        ...(typeof raw.visualSubjectEn === 'string' ? { visualSubjectEn: raw.visualSubjectEn } : {}),
+        ...(raw.visualKind === 'literal' || raw.visualKind === 'metaphor' ? { visualKind: raw.visualKind } : {}),
+        ...(typeof raw.visualizableScore === 'number' ? { visualizableScore: raw.visualizableScore } : {}),
+        ...(typeof raw.visionScore === 'number' ? { visionScore: raw.visionScore } : {}),
+        ...(typeof raw.visualVerificationHash === 'string' ? { visualVerificationHash: raw.visualVerificationHash } : {}),
+        ...(typeof raw.chosenQuery === 'string' ? { chosenQuery: raw.chosenQuery } : {}),
         ...(typeof raw.skipReason === 'string' ? { skipReason: raw.skipReason } : {}),
         ...(typeof raw.localFilePath === 'string' ? { localFilePath: raw.localFilePath } : {}),
         ...(typeof raw.mediaUrl === 'string' ? { mediaUrl: raw.mediaUrl } : {}),
@@ -244,4 +253,21 @@ export function sanitizeClipEdits(
   }
 
   return edits;
+}
+
+/** Clients edit meaning/timing, not proof of relevance or trusted local media paths. */
+export function preserveVerifiedVisualMetadata(existing: ClipVisualOverlay[], edits: ClipVisualOverlay[]): ClipVisualOverlay[] {
+  const identity = (ov: ClipVisualOverlay) => JSON.stringify([ov.quote, ov.visualIntent, ov.category, ov.entityName,
+    ov.emotionalPolarity, ov.searchQueries, ov.negativeCues, ov.sourceStart, ov.sourceEnd]);
+  return edits.map((edit) => {
+    const previous = existing.find((ov) => ov.id === edit.id);
+    if (previous && identity(previous) === identity(edit)) {
+      return { ...previous, animation: edit.animation, placement: edit.placement, outputWindows: edit.outputWindows,
+        status: edit.status === 'removed' ? 'removed' : previous.status };
+    }
+    return { ...edit, status: edit.status === 'removed' ? 'removed' : 'planned', localFilePath: undefined, mediaUrl: undefined,
+      attribution: undefined, contentHash: undefined, preparedContentHash: undefined, visualVerificationHash: undefined,
+      visionScore: undefined, sentenceMeaningEn: undefined, segmentIds: undefined,
+      skipReason: 'Visual meaning/timing edited; queue visual prefetch before rendering' };
+  });
 }

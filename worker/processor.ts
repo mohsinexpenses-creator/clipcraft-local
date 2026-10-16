@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { hashVisualTranscript } from '../lib/visual-transcript';
 import fs from 'fs';
 import path from 'path';
 import {
@@ -476,6 +478,7 @@ export async function processClipJob(
     let effectiveRenderSettings = (await resolveVisualProviderSettings()).render;
     try {
       const visualSettings = await resolveVisualProviderSettings();
+      visualSettings.render = { ...visualSettings.render, ...clip.visualPrefetchSettings };
       effectiveRenderSettings = visualSettings.render;
       const autoVisualsEnabled =
         (jobData.autoVisuals ?? clip.autoVisuals ?? visualSettings.render.autoVisuals) !== false;
@@ -511,7 +514,7 @@ export async function processClipJob(
               for (const win of item.outputWindows) keywordPops.push({ id: `${item.id}-${win.segment}`, ...callout, start: win.start, end: win.end, x: 140, y: 1100, width: 800, animation: item.animation });
               return item;
             }
-            if (item.sourceStart >= start && item.sourceEnd <= end && item.status === 'resolved' && item.visualVerificationHash === visualVerificationHash(item, visualSettings.render) && item.localFilePath?.endsWith('.fullscreen-v1.jpg') && fs.existsSync(item.localFilePath)) {
+            if ((!clip.visualsTranscriptHash || (video.transcript && clip.visualsTranscriptHash === hashVisualTranscript(video.transcript, start, end))) && item.sourceStart >= start && item.sourceEnd <= end && item.status === 'resolved' && item.visualVerificationHash === visualVerificationHash(item, visualSettings.render) && item.localFilePath?.endsWith('.fullscreen-v1.jpg') && fs.existsSync(item.localFilePath) && item.preparedContentHash === createHash('sha256').update(fs.readFileSync(item.localFilePath)).digest('hex')) {
               const keys = getVisualAssetDedupKeys({ provider: item.attribution?.provider, assetId: item.attribution?.assetId, localFilePath: item.localFilePath, contentHash: item.contentHash });
               if (!hasAnyVisualAssetDedupKey(finalDedupKeys, keys)) { registerVisualAssetDedupKeys(finalDedupKeys, keys); return { ...item, outputWindows: mapVisualMomentToOutputTimeline({ sourceStart: item.sourceStart, sourceEnd: item.sourceEnd, clipStart: start, clipEnd: end, placement: 'main', hookTiming: { start: hookStart, duration: safeHookDuration }, allowDuplicateHookReplay: false }).outputWindows }; }
             }

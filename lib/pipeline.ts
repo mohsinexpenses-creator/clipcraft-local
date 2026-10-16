@@ -18,17 +18,18 @@ import {
   CLIP_QUEUE_NAME,
   TRANSCRIPTION_QUEUE_NAME,
   VIRAL_DETECTION_QUEUE_NAME,
+  VISUAL_PREFETCH_QUEUE_NAME,
+  enqueueVisualPrefetchJob,
+  getJob,
   enqueueClipJob,
   enqueueTranscriptionJob,
   enqueueViralDetectionJob,
   findActiveJob,
 } from './queue';
 import { sanitizePipelineOptions, sanitizeViralOptions } from './pipeline-defaults';
-import { loadEffectiveSettings, resolveVisualProviderSettings } from './app-settings';
+import { loadEffectiveSettings } from './app-settings';
 import { planClipVisualMoments } from './contextual-visuals';
-import { planSentenceVisuals } from './visual-planner';
-import { resolveHookTiming } from '../worker/hook-timing';
-import { resolveVisualOverlaysForClip } from './visual-providers';
+import { runVisualPrefetch } from './visual-prefetch';
 import { parseTimestamp } from './viral-response';
 import {
   ClipLayout,
@@ -38,6 +39,7 @@ import {
   PipelineOptions,
   VideoRecord,
   ViralDetectionOptions,
+  VisualPrefetchJobData,
 } from './types';
 
 /**
@@ -363,6 +365,7 @@ export async function runViralDetection(
       // the analysis panel and the worker read it from here.
       aiAnalysis: segment.clip,
       autoVisuals: autoVisualsEnabled,
+      visualPrefetchSettings: { ...render, maxVisualMoments: options.maxVisualMoments ?? render.maxVisualMoments },
       ...(plannedVisualOverlays.length > 0 ? { visualOverlays: plannedVisualOverlays } : {}),
       status: 'pending',
       progress: 0,
@@ -375,8 +378,8 @@ export async function runViralDetection(
     createdClips.push(clipRecord);
   }
 
-  // Prefetch visual assets right after detection so render jobs only read local files
-  await prefetchClipVisualsForDetectedClips(createdClips);
+  // Each clip owns a persistent prefetch job; renders chain independently as soon as ready.
+  if (!pipeline.autoRender) await prefetchClipVisualsForDetectedClips(createdClips);
 
   let renderQueued = 0;
   if (pipeline.autoRender) {
@@ -399,69 +402,25 @@ export async function runViralDetection(
   };
 }
 
-/**
- * Prefetches and caches visual overlays right after viral detection completes so
- * render jobs only read local files from `data/visual-cache/` + SQLite `image_bank`.
- */
-export async function prefetchClipVisualsForDetectedClips(
-  clips: ClipRecord[],
-  options?: { forceNetworkInTests?: boolean }
-): Promise<void> {
-  if (!clips.length) return;
-  try {
-    const visualSettings = await resolveVisualProviderSettings();
-    if (!visualSettings.render.autoVisuals) return;
-
-    // In fakeLlm tests (tests/viral-detection.test.ts), globalThis.fetch is mocked to
-    // expect only Gemini POST calls and asserts calls.length === 1.
-    const isFakeLlmTest =
-      !options?.forceNetworkInTests &&
-      visualSettings.geminiApiKeys[0] === 'test-gemini-key-for-fake-calls';
-    if (isFakeLlmTest) return;
-
-    for (const clip of clips) {
-      if (clip.autoVisuals === false) continue;
-      const video = await getVideo(clip.videoId);
-      if (!video?.transcript) continue;
-      const existing = clip.visualOverlays ?? [];
-      const photos = await planSentenceVisuals({
-        transcript: video.transcript, clipStart: clip.start, clipEnd: clip.end,
-        maxVisualMoments: visualSettings.render.maxVisualMoments,
-        threshold: visualSettings.render.visualizableScoreThreshold ?? 6,
-        animation: visualSettings.render.visualAnimation,
-        hookTiming: resolveHookTiming({ enabled: clip.hookDuration > 0, clipStart: clip.start, clipEnd: clip.end, fallbackDuration: clip.hookDuration, hookTimestampStart: clip.aiAnalysis?.hook_line_analysis.hook_timestamp.start, hookTimestampEnd: clip.aiAnalysis?.hook_line_analysis.hook_timestamp.end }),
-      });
-      clip.visualOverlays = [
-        ...existing.filter((ov) => ov.kind === 'keyword-pop'),
-        ...photos.map((photo) => {
-          const entity = existing.find((ov) => ['person', 'place', 'named_event'].includes(ov.category) && ov.sourceStart < photo.sourceEnd && ov.sourceEnd > photo.sourceStart);
-          return entity ? { ...photo, category: entity.category, entityName: entity.entityName, framing: entity.framing } : photo;
-        }),
-      ];
-      const resolved = await resolveVisualOverlaysForClip(clip.visualOverlays, {
-        clipId: clip._id, videoId: clip.videoId,
-        renderSettings: visualSettings.render,
-        geminiApiKeys: visualSettings.geminiApiKeys,
-        pexelsApiKey: visualSettings.pexelsApiKey,
-        pixabayApiKey: visualSettings.pixabayApiKey,
-        unsplashAccessKey: visualSettings.unsplashAccessKey,
-        openverseClientId: visualSettings.openverseClientId,
-        openverseClientSecret: visualSettings.openverseClientSecret,
-        wikimediaUserAgent: visualSettings.wikimediaUserAgent,
-      });
-
-      clip.visualOverlays = resolved;
-      const reasons = resolved.filter((ov) => ov.status === 'skipped' || ov.skipReason).map((ov) => ov.skipReason).filter(Boolean);
-      clip.visualsSkippedReason = reasons.length ? [...new Set(reasons)].join('; ') : undefined;
-      await updateClip(clip).catch(() => undefined);
-    }
-  } catch (err) {
-    log.warn(`Visual prefetch skipped: ${toErrorMessage(err)}`);
-    for (const clip of clips) {
-      clip.visualsSkippedReason = `Visual prefetch unavailable: ${toErrorMessage(err)}`;
-      await updateClip(clip);
-    }
+/** Enqueue only. Provider/LLM work belongs to the worker's per-clip prefetch loop. */
+export async function prefetchClipVisualsForDetectedClips(clips: ClipRecord[]): Promise<void> {
+  for (const clip of clips) if (clip.autoVisuals !== false) {
+    await enqueueVisualPrefetchJob({ clipId: clip._id, videoId: clip.videoId, renderAfter: false });
   }
+}
+
+/** Handoff happens before the prefetch row completes, so a crash cannot lose its render. */
+export async function processVisualPrefetchJob(data: VisualPrefetchJobData): Promise<unknown> {
+  const result = await runVisualPrefetch(data.clipId);
+  const current = await getClip(data.clipId);
+  if (result.cancelled || !current || current.cancelling || current.error === 'Cancelled by user.') return { ...result, status: 'cancelled' };
+  const job = getJob(`visual:${data.clipId}`);
+  if (job?.status === 'failed') return { ...result, status: 'cancelled' };
+  const renderAfter = (job?.payload as VisualPrefetchJobData | undefined)?.renderAfter ?? data.renderAfter;
+  if (renderAfter && !findActiveJob(CLIP_QUEUE_NAME, { clipId: data.clipId })) {
+    await enqueueClipJob(await jobDataFromClip(current));
+  }
+  return { ...result, status: 'done', renderQueued: renderAfter };
 }
 
 /**
@@ -477,7 +436,9 @@ export async function queueRenders(
 
   for (const clip of clips) {
     try {
-      await enqueueClipJob(await jobDataFromClip(clip));
+      if (clip.autoVisuals !== false && (clip.visualPrefetchSettings?.autoVisuals ?? (await resolveRenderDefaults()).autoVisuals)) {
+        await enqueueVisualPrefetchJob({ clipId: clip._id, videoId: clip.videoId, renderAfter: true });
+      } else await enqueueClipJob(await jobDataFromClip(clip));
       const withJob = await getClip(clip._id);
       queued.push(withJob ?? clip);
     } catch (error) {
@@ -571,10 +532,16 @@ export async function recoverAutoPipelines(): Promise<{ resumed: string[] }> {
       continue;
     }
 
+    if (!video.pipeline.autoRender) {
+      for (const clip of clips) if (clip.autoVisuals !== false && !clip.visualsPrefetchedAt && clip.error !== 'Cancelled by user.' && !findActiveJob(VISUAL_PREFETCH_QUEUE_NAME, { clipId: clip._id }) && !findActiveJob(CLIP_QUEUE_NAME, { clipId: clip._id })) {
+        await enqueueVisualPrefetchJob({ clipId: clip._id, videoId: video._id, renderAfter: false });
+        resumed.push(`${clip._id}:visual-prefetch`);
+      }
+    }
     // Clips exist and renders were automatic: re-queue the ones left pending.
     if (video.pipeline.autoRender) {
       const stranded = clips.filter(
-        (clip) => clip.status === 'pending' && !findActiveJob(CLIP_QUEUE_NAME, { clipId: clip._id })
+        (clip) => clip.status === 'pending' && !findActiveJob(CLIP_QUEUE_NAME, { clipId: clip._id }) && !findActiveJob(VISUAL_PREFETCH_QUEUE_NAME, { clipId: clip._id })
       );
       if (stranded.length) {
         await queueRenders(stranded);
