@@ -257,6 +257,8 @@ export interface RenderDefaults {
   /** Verify candidate photo relevance with a single Gemini vision call per clip (default true). */
   visualVisionVerify?: boolean;
   visualizableScoreThreshold?: number;
+  visualVisionScoreThreshold?: number;
+  visualRelevanceStrictness?: "strict" | "lenient";
   /** Master toggle for sound effects on hooks, transitions, visual cards, and CTAs. */
   sfxEnabled?: boolean;
   /** Master SFX volume in dB (default -14 dB). */
@@ -290,6 +292,8 @@ export const DEFAULT_RENDER_SETTINGS: RenderDefaults = {
   visualCardBorder: true,
   visualVisionVerify: true,
   visualizableScoreThreshold: 6,
+  visualVisionScoreThreshold: 7,
+  visualRelevanceStrictness: "strict",
   sfxEnabled: true,
   sfxVolume: -14,
 };
@@ -572,6 +576,9 @@ export interface VisualTimelineWindow {
 
 export interface ClipVisualOverlay {
   segmentIds?: number[];
+  visionScore?: number;
+  visualVerificationHash?: string;
+  chosenQuery?: string;
   sentenceMeaningEn?: string;
   visualSubjectEn?: string;
   visualKind?: "literal" | "metaphor";
@@ -817,6 +824,7 @@ export interface TextPreset {
 }
 
 export interface ClipRecord {
+  visualsSkippedReason?: string;
   _id: string;
   videoId: string;
   videoTitle?: string;

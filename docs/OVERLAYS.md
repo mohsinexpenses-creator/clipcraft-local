@@ -147,3 +147,28 @@ The selector uses 5.4s buckets with ±1.5s flexibility, default score cutoff 6,
 avoids repeated subjects/queries/segments, and stays outside the hook dip.
 The legacy clock-based transcript-token filler is removed. Keyword pops remain
 separate. Planner responses are validated and cached under `data/visual-plans/`.
+
+### Strict relevance gate
+
+Provider text matching is only a cheap prefilter: at least two matched content
+words or a content-token ratio of 0.6. The exact same top-three pool (including
+bank entries) is sent to vision and used for selection, keyed by stable candidate
+IDs, never positional indices. Vision scores plausibility against the full
+sentence, subject, tone, identity and negative cues. Default acceptance is 7/10.
+Thumbnails are decoded/resized to at most 256px, with a shared concurrency cap of
+four. Up to three vision batches run in parallel per clip.
+
+Strict mode skips photos without a verdict, including timeouts, missing keys and
+API errors. Lenient mode is an explicit Render setting allowing text-prefilter
+winners only when vision is unavailable; a low vision score never falls back.
+`visualsSkippedReason` appears on clip tiles. Rejected photos do not create
+arbitrary keyword pops. Render reads only prepared, already-verified local frames
+and remaps their time windows to the current hook timeline; no provider lookup,
+bank search, vision request or frame preparation runs in render.
+
+Bank tags contain only provider tags/title. Legacy query-tainted bank tags are
+ignored when constructing candidates. Verified sentence captions live in
+`image_bank_captions`, separate from tags. Recently used images (last 20 clips of
+the video) get a soft ranking penalty; assets/content hashes never repeat inside
+a clip. `data/visual-debug/<clipId>.json` records sentence, queries tried, top-three
+text/vision scores and the final decision.

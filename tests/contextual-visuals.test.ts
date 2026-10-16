@@ -810,7 +810,7 @@ test('provider adapters normalize Pexels, Openverse (anonymous + OAuth2), and Wi
     });
 
     const resolved = await resolveVisualOverlaysForClip(planned, {
-      renderSettings: DEFAULT_RENDER_SETTINGS,
+      renderSettings: { ...DEFAULT_RENDER_SETTINGS, visualRelevanceStrictness: "lenient" },
       pexelsApiKey: 'pexels-test-key-123456',
       openverseClientId: 'openverse-client-id-123',
       openverseClientSecret: 'openverse-client-secret-123',

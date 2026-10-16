@@ -471,3 +471,14 @@ Provider documentation checked 2026-10-16:
 
 Linux lavfi tests cannot certify i5-10500 Windows/GPU performance. Run the layering
 script above and compare `data/timings.jsonl` using real clips on the target PC.
+
+### Gemini vision request format
+
+Checked against the current [generateContent thinking guide](https://ai.google.dev/gemini-api/docs/generate-content/thinking)
+and [API reference](https://ai.google.dev/api/generate-content): Gemini **2.5 Flash**
+supports `generationConfig.thinkingConfig.thinkingBudget: 0` (not the Gemini 3
+`thinkingLevel` parameter). Vision sends `responseMimeType: application/json`,
+`responseJsonSchema`, and `maxOutputTokens: 4096`, validates actual IDs/scores and
+rejects incomplete output. Keys are sent in `x-goog-api-key`, never URLs or logs.
+The old `visualVisionVerify` boolean is retained for stored JSON compatibility but
+cannot disable the gate; use Relevance strictness to opt into lenient behavior.

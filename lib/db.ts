@@ -514,6 +514,11 @@ function ensureVisualCacheTables(db: SqliteDatabase): void {
       last_used TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS image_bank_captions (
+      asset_key TEXT PRIMARY KEY,
+      caption TEXT NOT NULL,
+      verified_at TEXT NOT NULL
+    );
     CREATE UNIQUE INDEX IF NOT EXISTS image_bank_provider_asset_idx ON image_bank(provider, asset_id);
     CREATE INDEX IF NOT EXISTS image_bank_last_used_idx ON image_bank(last_used DESC);
   `);

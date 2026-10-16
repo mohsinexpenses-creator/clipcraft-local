@@ -291,6 +291,11 @@ export function ClipTile({ clip, captionPresets, busy, onEdit, onRender, onCance
           ) : null}
         </div>
 
+        {clip.visualsSkippedReason && (
+          <p className="rounded-md bg-amber-500/10 px-2 py-1 text-[10.5px] leading-snug text-amber-700 dark:text-amber-300">
+            Visuals: {clip.visualsSkippedReason}
+          </p>
+        )}
         {clip.layoutNote && (
           <p className="rounded-md bg-amber-500/10 px-2 py-1 text-[10.5px] leading-snug text-amber-700 dark:text-amber-300">
             {clip.layoutNote}

@@ -443,6 +443,13 @@ export function sanitizeSettingsSection(
       if (input.visualCardBorder !== undefined) {
         out.visualCardBorder = boolOf(input.visualCardBorder, 'Visual card border');
       }
+      if (input.visualVisionScoreThreshold !== undefined) {
+        out.visualVisionScoreThreshold = numberIn(input.visualVisionScoreThreshold, { min: 0, max: 10, precision: 0, label: "Vision relevance threshold" });
+      }
+      if (input.visualRelevanceStrictness !== undefined) {
+        if (input.visualRelevanceStrictness !== 'strict' && input.visualRelevanceStrictness !== 'lenient') throw new Error('Invalid relevance strictness');
+        out.visualRelevanceStrictness = input.visualRelevanceStrictness;
+      }
       if (input.visualizableScoreThreshold !== undefined) {
         out.visualizableScoreThreshold = numberIn(input.visualizableScoreThreshold, { min: 0, max: 10, precision: 0, label: "Visualizable score threshold" });
       }
@@ -829,6 +836,8 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
         : (DEFAULT_RENDER_SETTINGS.visualCardAspect ?? 'portrait'),
     visualCardBorder:
       boolValue(renderStored.visualCardBorder) ?? (DEFAULT_RENDER_SETTINGS.visualCardBorder ?? true),
+    visualVisionScoreThreshold: intInRange(renderStored.visualVisionScoreThreshold, 0, 10, 7),
+    visualRelevanceStrictness: renderStored.visualRelevanceStrictness === "lenient" ? "lenient" : "strict",
     visualizableScoreThreshold: intInRange(renderStored.visualizableScoreThreshold, 0, 10, 6),
     visualVisionVerify:
       boolValue(renderStored.visualVisionVerify) ?? (DEFAULT_RENDER_SETTINGS.visualVisionVerify ?? true),

@@ -439,6 +439,7 @@ export async function prefetchClipVisualsForDetectedClips(
         }),
       ];
       const resolved = await resolveVisualOverlaysForClip(clip.visualOverlays, {
+        clipId: clip._id, videoId: clip.videoId,
         renderSettings: visualSettings.render,
         geminiApiKeys: visualSettings.geminiApiKeys,
         pexelsApiKey: visualSettings.pexelsApiKey,
@@ -449,21 +450,17 @@ export async function prefetchClipVisualsForDetectedClips(
         wikimediaUserAgent: visualSettings.wikimediaUserAgent,
       });
 
-      clip.visualOverlays = resolved.map((ov) => {
-        if (ov.status === 'removed') return ov;
-        if (ov.status === 'resolved' && ov.localFilePath) {
-          return { ...ov, kind: 'photo-card', status: 'resolved' };
-        }
-        return {
-          ...ov,
-          kind: 'photo-card',
-          status: 'planned',
-        };
-      });
+      clip.visualOverlays = resolved;
+      const reasons = resolved.filter((ov) => ov.status === 'skipped' || ov.skipReason).map((ov) => ov.skipReason).filter(Boolean);
+      clip.visualsSkippedReason = reasons.length ? [...new Set(reasons)].join('; ') : undefined;
       await updateClip(clip).catch(() => undefined);
     }
   } catch (err) {
     log.warn(`Visual prefetch skipped: ${toErrorMessage(err)}`);
+    for (const clip of clips) {
+      clip.visualsSkippedReason = `Visual prefetch unavailable: ${toErrorMessage(err)}`;
+      await updateClip(clip);
+    }
   }
 }
 

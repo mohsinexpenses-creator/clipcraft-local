@@ -181,7 +181,7 @@ test('orientation filter is sent to Pexels, Pixabay, Unsplash, and Openverse, an
   }
 });
 
-test('Gemini vision relevance check sends one batch call per clip and can promote candidate #1 or skip a moment to keyword-pop', async (t) => {
+test('Gemini vision relevance check sends one batch call per clip uses stable candidate IDs and scores, promotes candidate #1 or skips a beat', async (t) => {
   createTemporaryDatabase(t);
   const tempCache = fs.mkdtempSync(path.join(os.tmpdir(), 'clipcraft-vision-'));
   setVisualCacheDirForTests(tempCache);
@@ -191,7 +191,7 @@ test('Gemini vision relevance check sends one batch call per clip and can promot
   let geminiCallCount = 0;
   const origFetch = globalThis.fetch;
 
-  globalThis.fetch = async (input) => {
+  globalThis.fetch = async (input, init) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
     if (url.includes('pixabay.com/api/')) {
       return new Response(
@@ -230,6 +230,17 @@ test('Gemini vision relevance check sends one batch call per clip and can promot
     }
     if (url.includes('generativelanguage.googleapis.com')) {
       geminiCallCount += 1;
+      const body = JSON.parse(String(init?.body));
+      assert.equal(body.generationConfig.thinkingConfig.thinkingBudget, 0);
+      assert.ok(body.generationConfig.responseJsonSchema);
+      let momentId = ''; let index = 0;
+      const verdicts: Array<{ momentId: string; candidateId: string; relevance: number }> = [];
+      for (const part of body.contents[0].parts) {
+        if (!part.text?.startsWith('{')) continue;
+        const data = JSON.parse(part.text);
+        if (data.momentId) { momentId = data.momentId; index = 0; }
+        if (data.candidateId) verdicts.push({ momentId, candidateId: data.candidateId, relevance: momentId === 'm-keep' ? (index++ === 1 ? 9 : 3) : 1 });
+      }
       return new Response(
         JSON.stringify({
           candidates: [
@@ -237,12 +248,7 @@ test('Gemini vision relevance check sends one batch call per clip and can promot
               content: {
                 parts: [
                   {
-                    text: JSON.stringify({
-                      decisions: [
-                        { momentId: 'm-keep', pickIndex: 1 },
-                        { momentId: 'm-skip', pickIndex: -1 },
-                      ],
-                    }),
+                    text: JSON.stringify({ verdicts }),
                   },
                 ],
               },
@@ -330,7 +336,7 @@ test('Gemini vision relevance check sends one batch call per clip and can promot
     assert.ok(resolved[0].localFilePath && fs.existsSync(resolved[0].localFilePath));
 
     // m-skip was rejected by Gemini vision (pickIndex: -1) and converted to keyword-pop
-    assert.equal(resolved[1].kind, 'keyword-pop');
+    assert.equal(resolved[1].kind, 'photo-card', 'rejected photos must not become forced keyword pops');
     assert.equal(resolved[1].status, 'skipped');
   } finally {
     globalThis.fetch = origFetch;
