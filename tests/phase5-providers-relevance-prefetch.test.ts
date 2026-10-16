@@ -1,9 +1,9 @@
+import { makeSamplePngBuffer } from './visual-fixtures';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import zlib from 'node:zlib';
 
 import {
   findFallbackCachedVisualFile,
@@ -25,33 +25,6 @@ import { POST as cancelPipelinePost } from '../app/api/videos/[id]/cancel-pipeli
 import { createTemporaryDatabase } from './sqlite-test-helpers';
 import type { ClipVisualOverlay } from '../lib/types';
 
-function makeSamplePngBuffer(width = 800, height = 1000): Buffer {
-  const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
-  const ihdrData = Buffer.alloc(13);
-  ihdrData.writeUInt32BE(width, 0);
-  ihdrData.writeUInt32BE(height, 4);
-  ihdrData[8] = 8;
-  ihdrData[9] = 2;
-
-  function chunk(type: string, data: Buffer): Buffer {
-    const len = Buffer.alloc(4);
-    len.writeUInt32BE(data.length, 0);
-    const typeBuf = Buffer.from(type, 'ascii');
-    const crcBuf = Buffer.alloc(4);
-    crcBuf.writeUInt32BE(zlib.crc32(Buffer.concat([typeBuf, data])) >>> 0, 0);
-    return Buffer.concat([len, typeBuf, data, crcBuf]);
-  }
-
-  const rawScanline = Buffer.alloc(1 + 4 * 3, 128);
-  rawScanline[0] = 0;
-  const idatData = zlib.deflateSync(rawScanline);
-  return Buffer.concat([
-    signature,
-    chunk('IHDR', ihdrData),
-    chunk('IDAT', idatData),
-    chunk('IEND', Buffer.alloc(0)),
-  ]);
-}
 
 test('settings sanitize and mask Pixabay and Unsplash keys and resolve visualVisionVerify', () => {
   const sanitized = sanitizeSettingsSection(
@@ -214,7 +187,7 @@ test('Gemini vision relevance check sends one batch call per clip and can promot
   setVisualCacheDirForTests(tempCache);
   resetVisualProviderStateForTests();
 
-  const pngBytes = makeSamplePngBuffer(800, 1000);
+  const pngBytes = makeSamplePngBuffer(1080, 1920);
   let geminiCallCount = 0;
   const origFetch = globalThis.fetch;
 
@@ -374,11 +347,11 @@ test('Clip cancel, pipeline cancel, and visual cache disk fallback work reliably
   try {
     // 1. Visual cache disk fallback finds downloaded images in data/visual-cache/
     const sampleImgPath = path.join(tempCache, 'cached_photo.png');
-    fs.writeFileSync(sampleImgPath, makeSamplePngBuffer(800, 1000));
+    fs.writeFileSync(sampleImgPath, makeSamplePngBuffer(1080, 1920));
     const usedPaths = new Set<string>();
     const found = findFallbackCachedVisualFile(usedPaths);
     assert.ok(found);
-    assert.ok(found.localFilePath.endsWith('cached_photo.png'));
+    assert.ok(found.localFilePath.endsWith('cached_photo.fullscreen-v1.jpg'));
     assert.equal(findFallbackCachedVisualFile(usedPaths), null);
 
     // 2. Cancel clip and cancel pipeline transition clips/video out of pending/processing

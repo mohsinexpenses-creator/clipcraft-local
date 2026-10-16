@@ -351,30 +351,6 @@ export function RenderSettingsPanel({
               </Field>
 
               <Field
-                label="Card shape"
-                hint="Portrait 4:5 (720x900) or Square 1:1 (720x720)."
-              >
-                <Select
-                  value={value.visualCardAspect ?? "portrait"}
-                  onValueChange={(next) =>
-                    patch({
-                      visualCardAspect: (next ??
-                        "portrait") as RenderDefaults["visualCardAspect"],
-                    })
-                  }
-                  disabled={disabled}
-                >
-                  <SelectTrigger className="h-8 text-[12px]">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="dark">
-                    <SelectItem value="portrait">Portrait 4:5 (720×900)</SelectItem>
-                    <SelectItem value="square">Square 1:1 (720×720)</SelectItem>
-                  </SelectContent>
-                </Select>
-              </Field>
-
-              <Field
                 label="Card animation"
                 hint="Entrance style for contextual visual cards."
               >

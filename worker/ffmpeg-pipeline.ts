@@ -572,7 +572,7 @@ export function buildVisualOverlayFilterStatements(
     const en = Math.max(st + 0.3, visual.end);
     const dur = Math.max(0.3, en - st);
     const fadeInDur = Math.min(0.18, dur / 4);
-    const fadeOutDur = Math.min(0.28, dur / 3);
+    const fadeOutDur = Math.min(isFullScreen ? 0.18 : 0.28, dur / 3);
     const fadeOutSt = Math.max(st, en - fadeOutDur);
 
     // Static 1.08x overscan scale + time-expression crop drift (constant output dimensions
@@ -587,12 +587,23 @@ export function buildVisualOverlayFilterStatements(
       ? `,pad=${w}:${h}:${borderPx}:${borderPx}:color=white@0.88`
       : "";
 
+    if (isFullScreen) {
+      // Input is a prepared full-screen frame. A 2% zoom settles over 0.36s;
+      // fixed dimensions and a centered crop avoid the old projectile motion.
+      const settle = visual.animation === "fade" ? "1" : `1+0.02*max(0,1-(on/30-${st.toFixed(3)})/0.36)`;
+      statements.push(
+        `[${input}:v]zoompan=z='${settle}':x='iw/2-iw/zoom/2':y='ih/2-ih/zoom/2':d=1:s=1080x1920:fps=30,format=rgba,` +
+        `fade=t=in:st=${st.toFixed(3)}:d=${fadeInDur.toFixed(3)}:alpha=1,` +
+        `fade=t=out:st=${fadeOutSt.toFixed(3)}:d=${fadeOutDur.toFixed(3)}:alpha=1[${visLabel}]`,
+      );
+    } else {
     statements.push(
       `[${input}:v]scale=${overscanW}:${overscanH}:force_original_aspect_ratio=increase,` +
         `crop=w=${innerW}:h=${innerH}:x='${cropXExpr}':y='${cropYExpr}'${borderFilter},format=rgba,` +
         `fade=t=in:st=${st.toFixed(3)}:d=${fadeInDur.toFixed(3)}:alpha=1,` +
         `fade=t=out:st=${fadeOutSt.toFixed(3)}:d=${fadeOutDur.toFixed(3)}:alpha=1[${visLabel}]`,
     );
+    }
 
     // Ball-toss projectile physics entrance & exit:
     // Launches from the bottom edge of the 1920px canvas at fast upward speed,
@@ -607,9 +618,9 @@ export function buildVisualOverlayFilterStatements(
     const dropStart = Number(Math.max(settleEnd + 0.05, dur - dropDur).toFixed(2));
     let yExpr = String(y);
     if (
-      visual.animation === "slide-up" ||
+      !isFullScreen && (visual.animation === "slide-up" ||
       visual.animation === "pop" ||
-      visual.animation === "subtle-zoom"
+      visual.animation === "subtle-zoom")
     ) {
       yExpr =
         `if(lt(${dt},${riseDur}),${y}-6+${launchDist}*pow(1-${dt}/${riseDur},3),` +

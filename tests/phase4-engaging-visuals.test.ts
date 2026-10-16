@@ -8,8 +8,6 @@ import {
 } from '../lib/contextual-visuals';
 import { buildSfxCueSheet } from '../lib/sfx-cues';
 import {
-  VisualDisplayMode,
-  chooseVisualDisplayMode,
   planVisualCardPlacement,
 } from '../worker/overlay-layout';
 import { buildVisualOverlayFilterStatements } from '../worker/ffmpeg-pipeline';
@@ -95,7 +93,7 @@ test('planClipVisualMoments plans ~10-14 dense visual beats across a 60s clip mi
   assert.ok(callout.text.length > 0 && callout.text.length <= 36);
 });
 
-test('planVisualCardPlacement supports portrait 4:5 (720x900) and square 1:1 (720x720) cards without colliding with captions or hook', () => {
+test('planVisualCardPlacement ignores legacy shape options and always fills the canvas', () => {
   const portrait = planVisualCardPlacement({
     plan: {
       mode: 'single',
@@ -108,9 +106,9 @@ test('planVisualCardPlacement supports portrait 4:5 (720x900) and square 1:1 (72
     hookBand: { top: 1180, bottom: 1320 },
     cardAspect: 'portrait',
   });
-  assert.equal(portrait.width, 720);
-  assert.equal(portrait.height, 900);
-  assert.ok(portrait.bottom <= 1180);
+  assert.equal(portrait.width, 1080);
+  assert.equal(portrait.height, 1920);
+  assert.equal(portrait.top, 0);
 
   const square = planVisualCardPlacement({
     plan: {
@@ -123,9 +121,9 @@ test('planVisualCardPlacement supports portrait 4:5 (720x900) and square 1:1 (72
     captionBand: { top: 1380, bottom: 1640 },
     cardAspect: 'square',
   });
-  assert.equal(square.width, 720);
-  assert.equal(square.height, 720);
-  assert.ok(square.bottom <= 1380);
+  assert.equal(square.width, 1080);
+  assert.equal(square.height, 1920);
+  assert.equal(square.top, 0);
 });
 
 test('buildVisualOverlayFilterStatements includes Ken-Burns zoom, thin border, rounded-corner alpha mask, overshoot entrance, and soft fade-out', () => {
@@ -172,8 +170,8 @@ test('buildVisualOverlayFilterStatements includes Ken-Burns zoom, thin border, r
     cardAspect: 'portrait',
     placeBehindCaptions: true,
   });
-  assert.ok(behind.top >= 912, `expected card top (${behind.top}) below speaker face bottom (912)`);
-  assert.ok(behind.bottom >= 1500, 'card covers the caption background zone');
+  assert.equal(behind.top, 0);
+  assert.equal(behind.bottom, 1920);
 
   const stripped = extractKeywordPopCallout({
     entityName: 'Show something like a crashing market',
@@ -254,14 +252,6 @@ test('Dense 5-6s photo cadence, alternating fullscreen/behind-captions modes, an
   const primaryQueries = new Set(dense.map((m) => m.searchQueries[0]));
   assert.equal(primaryQueries.size, dense.length, 'each 5-6s moment has a distinct primary search query');
 
-  // Display mode mixes fullscreen (1080x1920) and behind-captions face-safe placement
-  const modes: VisualDisplayMode[] = [];
-  for (let i = 0; i < 8; i++) {
-    modes.push(chooseVisualDisplayMode(i, `clip_1:${i}`, modes));
-  }
-  assert.ok(modes.includes('fullscreen'));
-  assert.ok(modes.includes('behind-captions'));
-
   const fullScreenPlacement = planVisualCardPlacement({
     plan: { mode: 'single', cropW: 608, cropH: 1080, points: [], faceAnchorY: 0.35 },
     fullScreen: true,
@@ -269,7 +259,7 @@ test('Dense 5-6s photo cadence, alternating fullscreen/behind-captions modes, an
   assert.equal(fullScreenPlacement.width, 1080);
   assert.equal(fullScreenPlacement.height, 1920);
 
-  // Full-screen visual uses ball-toss cubic deceleration (`pow(1-... ,3)`) and gravity drop (`pow(... ,2)`) with no white border
+  // Full-screen visual stays at origin, fades, and settles its zoom without a border
   const fsFilter = buildVisualOverlayFilterStatements(
     [
       {
@@ -290,8 +280,9 @@ test('Dense 5-6s photo cadence, alternating fullscreen/behind-captions modes, an
     'vvis'
   );
   assert.doesNotMatch(fsFilter.statements[0], /pad=/);
-  assert.match(fsFilter.statements[1], /pow\(1-\(t-5\.000\)\/0\.38,3\)/);
-  assert.match(fsFilter.statements[1], /pow\(\(\(t-5\.000\)-2\.72\)\/0\.28,2\)/);
+  assert.match(fsFilter.statements[0], /zoompan=/);
+  assert.match(fsFilter.statements[1], /overlay=x=0:y='0'/);
+  assert.doesNotMatch(fsFilter.statements[1], /pow/);
 
   // Repair unescaped inner quotes, raw newlines inside strings, and truncated trailing clips
   const rawValid = JSON.stringify({ clips: [validClip()] }, null, 2);

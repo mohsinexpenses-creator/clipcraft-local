@@ -445,3 +445,29 @@ scripts/verify-clip.ts     ffprobe report for resolution, rates, stream timing a
 models/yunet/              committed YuNet face-detection model (232 KB)
 bin/whisper-win-x64/       committed Windows x64 whisper.cpp build (whisper-cli + DLLs)
 ```
+
+### Full-screen photo quality and provider renditions
+
+FFmpeg is required during visual prefetch as well as final encoding. Prepared
+1080×1920 frames are cached next to downloaded originals; keep the visual cache
+when re-rendering. Legacy low-resolution images may now be skipped rather than
+upscaled beyond 1.5×. Settings for old card shapes/borders no longer affect output.
+
+Provider documentation checked 2026-10-16:
+- [Pexels](https://www.pexels.com/api/documentation/): search uses portrait;
+  prefer `src.original`, then `large2x`. Default quota is 200/hour and
+  20,000/month; retain photographer/Pexels attribution and links.
+- [Pixabay](https://pixabay.com/api/docs/): use vertical; prefer returned
+  `imageURL`/`fullHDURL` when the account has high-resolution access, otherwise
+  `largeImageURL` (maximum dimension 1280). Do not fabricate restricted URLs.
+  Some standard-access portraits cannot meet the upscale limit and are skipped.
+  Cache searches for at least 24 hours; no systematic mass downloading.
+- [Unsplash](https://unsplash.com/documentation): portrait search, prefer the
+  returned `urls.full` over `regular` (1080-wide). Preserve returned URLs,
+  download tracking and attribution. Demo quota is 50/hour. Unsplash requires
+  CDN hotlinking for application display; local video export is not evidence of
+  blanket permission for a persistent image-bank service. Confirm the intended
+  export/cache use with Unsplash before enabling it in production.
+
+Linux lavfi tests cannot certify i5-10500 Windows/GPU performance. Run the layering
+script above and compare `data/timings.jsonl` using real clips on the target PC.

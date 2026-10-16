@@ -1,3 +1,4 @@
+import { planVisualFrame } from './visual-frame';
 import crypto from 'crypto';
 import { spawnSync } from 'child_process';
 import fs from 'fs';
@@ -1590,7 +1591,7 @@ export async function searchPexelsCandidates(
 
     for (const photo of photos) {
       const imageUrl =
-        photo.src?.large2x || photo.src?.large || photo.src?.medium || photo.src?.original || '';
+        photo.src?.original || photo.src?.large2x || photo.src?.large || photo.src?.medium || '';
       const thumbnailUrl = photo.src?.small || photo.src?.tiny || photo.src?.medium || imageUrl;
       const sourcePageUrl = photo.url || 'https://www.pexels.com';
       if (!imageUrl || !photo.id) continue;
@@ -1673,6 +1674,8 @@ export async function searchPixabayCandidates(
         previewURL?: string;
         webformatURL?: string;
         largeImageURL?: string;
+        fullHDURL?: string;
+        imageURL?: string;
         imageWidth?: number;
         imageHeight?: number;
         user?: string;
@@ -1684,7 +1687,7 @@ export async function searchPixabayCandidates(
     const results: RawProviderCandidate[] = [];
 
     for (const hit of hits) {
-      const imageUrl = hit.largeImageURL || hit.webformatURL || '';
+      const imageUrl = hit.imageURL || hit.fullHDURL || hit.largeImageURL || '';
       const thumbnailUrl = hit.previewURL || hit.webformatURL || imageUrl;
       const sourcePageUrl = hit.pageURL || 'https://pixabay.com';
       if (!imageUrl || !hit.id) continue;
@@ -1772,6 +1775,7 @@ export async function searchUnsplashCandidates(
         description?: string | null;
         alt_description?: string | null;
         urls?: {
+          full?: string;
           regular?: string;
           small?: string;
           thumb?: string;
@@ -1792,7 +1796,7 @@ export async function searchUnsplashCandidates(
     const results: RawProviderCandidate[] = [];
 
     for (const item of items) {
-      const imageUrl = item.urls?.regular || item.urls?.small || '';
+      const imageUrl = item.urls?.full || item.urls?.regular || '';
       const thumbnailUrl = item.urls?.thumb || item.urls?.small || imageUrl;
       if (!imageUrl || !item.id) continue;
 
@@ -2496,61 +2500,35 @@ export async function downloadVisualAssetSafely(params: {
   };
 }
 
-/**
- * Pre-scales a cached visual image once to ~2x card crop size (<= 1440x1800) so the
- * per-frame FFmpeg Ken-Burns filter never has to resample a 12-24 MP raw stock photo.
- * Falls back silently to `localFilePath` if the image is already <= 1440x1800 or if
- * FFmpeg is unavailable in a unit-test environment.
- */
+/** Prepare an immutable 1080x1920 frame once. Legacy size arguments are ignored. */
 export function preScaleCachedVisualImage(
   localFilePath: string,
-  width: number,
-  height: number,
-  maxWidth = 1440,
-  maxHeight = 1800
+  _width: number,
+  _height: number,
+  _maxWidth = 1080,
+  _maxHeight = 1920
 ): string {
+  void _width; void _height; void _maxWidth; void _maxHeight;
   if (!localFilePath || !fs.existsSync(localFilePath)) return localFilePath;
-  const isWebp = /\.webp$/i.test(localFilePath);
-  if (!isWebp && width <= maxWidth && height <= maxHeight) return localFilePath;
-
+  if (/\.fullscreen-v1\.jpg$/i.test(localFilePath)) return localFilePath;
   const parsed = path.parse(localFilePath);
-  const prescaledPath = path.join(parsed.dir, `${parsed.name}.2x.jpg`);
-  if (fs.existsSync(prescaledPath)) {
-    try {
-      if (fs.statSync(prescaledPath).size > 256) return prescaledPath;
-    } catch {
-      // fall through
-    }
+  const preparedPath = path.join(parsed.dir, `${parsed.name}.fullscreen-v1.jpg`);
+  if (fs.existsSync(preparedPath) && fs.statSync(preparedPath).size > 256) return preparedPath;
+  // Inspect the downloaded rendition, not the provider's original-image metadata.
+  const dimensions = inspectImageBuffer(fs.readFileSync(localFilePath));
+  const frame = planVisualFrame(dimensions.width, dimensions.height);
+  const temporaryPath = `${preparedPath}.${process.pid}.tmp.jpg`;
+  const result = spawnSync(getFfmpegPath(), [
+    '-y', '-hide_banner', '-loglevel', 'error', '-i', localFilePath,
+    '-filter_complex', frame.filter, '-map', '[frame]', '-frames:v', '1',
+    '-q:v', '2', temporaryPath,
+  ], { windowsHide: true, timeout: 8_000 });
+  if (result.status !== 0 || !fs.existsSync(temporaryPath)) {
+    fs.rmSync(temporaryPath, { force: true });
+    throw new Error(`Full-screen frame preparation failed: ${result.stderr?.toString().slice(0, 300) || result.error?.message || result.status}`);
   }
-
-  try {
-    const ffmpegBin = getFfmpegPath();
-    const res = spawnSync(
-      ffmpegBin,
-      [
-        '-y',
-        '-hide_banner',
-        '-loglevel',
-        'error',
-        '-i',
-        localFilePath,
-        '-vf',
-        `scale='min(${maxWidth},iw)':'min(${maxHeight},ih)':force_original_aspect_ratio=decrease`,
-        '-frames:v',
-        '1',
-        '-q:v',
-        '2',
-        prescaledPath,
-      ],
-      { windowsHide: true, timeout: 8_000 }
-    );
-    if (res.status === 0 && fs.existsSync(prescaledPath) && fs.statSync(prescaledPath).size > 256) {
-      return prescaledPath;
-    }
-  } catch {
-    // Non-fatal: keep original localFilePath
-  }
-  return localFilePath;
+  fs.renameSync(temporaryPath, preparedPath);
+  return preparedPath;
 }
 
 /* ------------------------------------------------------------------ *
@@ -2678,7 +2656,7 @@ async function searchProviderWithCache(
   options: ResolveVisualOverlaysOptions,
   category = 'general'
 ): Promise<RawProviderCandidate[]> {
-  const orientation = options.renderSettings?.visualCardAspect;
+  const orientation = 'portrait' as const;
   const key = normalizeQueryCacheKey(provider, query, orientation);
   const ttlMs = getVisualSearchCacheTtlMs();
   const cached = searchMemoryCache.get(key);

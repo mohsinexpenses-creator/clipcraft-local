@@ -19,9 +19,7 @@ import { ClipLayout, ClipRecord, JobData, OverlayStylePreset } from '../lib/type
 import { detectSpeakerTimeline } from './asd';
 import { buildLayoutPlan, getSplitFramingSettings } from './layout';
 import {
-  VisualDisplayMode,
   adaptOverlaysToLayout,
-  chooseVisualDisplayMode,
   describePlacements,
   planVisualCardPlacement,
 } from './overlay-layout';
@@ -668,21 +666,8 @@ export async function processClipJob(
           clip.visualOverlays = resolvedVisuals;
           await updateClip(clip).catch(() => undefined);
 
-          // Mix full-screen (1080x1920 behind captions) and face-safe behind-captions card placements.
-          const behindCaptionsPlacement = planVisualCardPlacement({
-            plan,
-            captionBand: overlayLayout.placements.caption,
-            hookBand: overlayLayout.placements.hook,
-            ctaBand: overlayLayout.placements.cta,
-            cardAspect: visualSettings.render.visualCardAspect ?? 'portrait',
-            placeBehindCaptions: true,
-          });
-          const fullScreenPlacement = planVisualCardPlacement({
-            plan,
-            fullScreen: true,
-          });
-
-          const chosenModes: VisualDisplayMode[] = [];
+          // Contextual photos always fill the canvas; Remotion captions composite above them.
+          const fullScreenPlacement = planVisualCardPlacement({ plan, fullScreen: true });
           const renderedImageKeys = new Set<string>();
 
           for (const item of resolvedVisuals) {
@@ -703,14 +688,7 @@ export async function processClipJob(
               if (!win) continue;
 
               registerVisualAssetDedupKeys(renderedImageKeys, itemKeys);
-              const mode = chooseVisualDisplayMode(
-                chosenModes.length,
-                `${clip._id}:${item.id}`,
-                chosenModes
-              );
-              chosenModes.push(mode);
-              const placement =
-                mode === 'fullscreen' ? fullScreenPlacement : behindCaptionsPlacement;
+              const placement = fullScreenPlacement;
 
               ffmpegVisualOverlays.push({
                 id: `${item.id}_${win.segment}`,
@@ -722,10 +700,7 @@ export async function processClipJob(
                 start: win.start,
                 end: win.end,
                 animation: item.animation,
-                border:
-                  mode === 'fullscreen'
-                    ? false
-                    : (visualSettings.render.visualCardBorder ?? true),
+                border: false,
               });
             }
           }

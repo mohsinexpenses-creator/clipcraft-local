@@ -200,7 +200,7 @@ test('3. SQLite visual_search_cache (14-30 day TTL) and image_bank persist acros
   const ttlDays = ttlMs / (24 * 3600 * 1000);
   assert.ok(ttlDays >= 14 && ttlDays <= 30, `TTL ${ttlDays} days must be in 14-30 day window`);
 
-  const pngBytes = createValidPngBuffer(480, 600);
+  const pngBytes = createValidPngBuffer(1080, 1920);
   let searchHttpCalls = 0;
   let imageHttpCalls = 0;
   const originalFetch = globalThis.fetch;

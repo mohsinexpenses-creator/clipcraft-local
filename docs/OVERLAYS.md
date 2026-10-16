@@ -116,3 +116,22 @@ seconds before `clipEnd`.
 
 Related: [LAYOUTS.md](./LAYOUTS.md) (how the video behind the overlays is framed),
 [SETUP.md](../SETUP.md) (running the worker).
+
+## Full-screen contextual photos
+
+Photos now occupy the complete 1080×1920 canvas. Legacy card aspect, border and
+behind-captions placement values are ignored. Layer order is **speaker → photo →
+transparent Remotion sequence** (captions, hook, CTA and keyword pops). The debug
+encode branches before photos and text; it does not consume their final output.
+
+Downloaded photos are prepared once as `.fullscreen-v1.jpg`: sources with aspect
+ratio ≤0.85 use cover-crop; wider sources use a sharp width-fitted photograph over
+a darkened, blurred cover copy. Preparation checks the downloaded file's actual
+size, not API metadata, and rejects >1.5× required upscale. Blur never runs in the
+per-frame filter graph. Full-screen entrances/exits use 0.18s alpha fades and a
+2% centered zoom settle (fade-only keeps zoom at 1); projectile motion remains
+available for legacy non-full-screen filter callers only.
+
+Run `npx tsx scripts/verify-visual-layering.ts` for four real FFmpeg encodes
+(hook on/off × debug on/off) and pixel assertions that white caption text survives
+above a bright image. Outputs go under ignored `data/visual-layering-test/`.
