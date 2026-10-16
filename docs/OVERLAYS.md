@@ -135,3 +135,15 @@ available for legacy non-full-screen filter callers only.
 Run `npx tsx scripts/verify-visual-layering.ts` for four real FFmpeg encodes
 (hook on/off × debug on/off) and pixel assertions that white caption text survives
 above a bright image. Outputs go under ignored `data/visual-layering-test/`.
+
+### Sentence-level planning
+
+Photo cadence is a target, not a mandate. Prefetch sends numbered, timestamped
+segments to one text completion per uncached clip. The planner translates whole
+sentence meanings into concrete English subjects and literal/metaphor/theme
+searches; it never reconstructs timing by matching translated quote strings.
+The selector uses 5.4s buckets with ±1.5s flexibility, default score cutoff 6,
+3s displays and at least 2s of speaker between images. It respects Max visuals,
+avoids repeated subjects/queries/segments, and stays outside the hook dip.
+The legacy clock-based transcript-token filler is removed. Keyword pops remain
+separate. Planner responses are validated and cached under `data/visual-plans/`.

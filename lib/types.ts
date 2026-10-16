@@ -256,6 +256,7 @@ export interface RenderDefaults {
   visualCardBorder?: boolean;
   /** Verify candidate photo relevance with a single Gemini vision call per clip (default true). */
   visualVisionVerify?: boolean;
+  visualizableScoreThreshold?: number;
   /** Master toggle for sound effects on hooks, transitions, visual cards, and CTAs. */
   sfxEnabled?: boolean;
   /** Master SFX volume in dB (default -14 dB). */
@@ -288,6 +289,7 @@ export const DEFAULT_RENDER_SETTINGS: RenderDefaults = {
   visualCardAspect: 'portrait',
   visualCardBorder: true,
   visualVisionVerify: true,
+  visualizableScoreThreshold: 6,
   sfxEnabled: true,
   sfxVolume: -14,
 };
@@ -569,6 +571,11 @@ export interface VisualTimelineWindow {
 }
 
 export interface ClipVisualOverlay {
+  segmentIds?: number[];
+  sentenceMeaningEn?: string;
+  visualSubjectEn?: string;
+  visualKind?: "literal" | "metaphor";
+  visualizableScore?: number;
   id: string;
   quote: string;
   sourceStart: number;

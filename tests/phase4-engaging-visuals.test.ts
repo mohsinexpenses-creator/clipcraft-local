@@ -15,7 +15,7 @@ import { parseViralResponse } from '../lib/viral-response';
 import { validClip } from './viral-fixtures';
 import type { TranscriptData, VisualMomentPlan } from '../lib/types';
 
-test('planClipVisualMoments plans ~10-14 dense visual beats across a 60s clip mixing photo-card and keyword-pop beats', () => {
+test('planClipVisualMoments preserves explicit photo and keyword beats without transcript filler', () => {
   const segments = Array.from({ length: 15 }, (_, idx) => {
     const start = idx * 4;
     const end = start + 3.8;
@@ -81,11 +81,7 @@ test('planClipVisualMoments plans ~10-14 dense visual beats across a 60s clip mi
     },
   });
 
-  // Target ~10-14 visual beats per 60s clip
-  assert.ok(
-    planned.length >= 10 && planned.length <= 14,
-    `Expected 10-14 visual beats for a 60s clip, got ${planned.length}`
-  );
+  assert.equal(planned.length, 2, 'clock density never invents extra photos');
   assert.ok(planned.some((b) => b.kind === 'photo-card'));
   assert.ok(planned.some((b) => b.kind === 'keyword-pop'));
 
@@ -207,7 +203,7 @@ test('Phase 3 SFX cues wire into every dense card and keyword pop beat', () => {
   assert.equal(cues.filter((c) => c.source === 'keyword-pop').length, 2);
 });
 
-test('Dense 5-6s photo cadence, alternating fullscreen/behind-captions modes, and ball-toss physics work end-to-end', () => {
+test('Legacy density helper never fills empty transcript buckets and full-screen filters remain stable', () => {
   const topics = [
     'solar panels rooftop clean electricity grid',
     'battery storage warehouse lithium cells',
@@ -243,10 +239,7 @@ test('Dense 5-6s photo cadence, alternating fullscreen/behind-captions modes, an
     maxVisualMoments: 12,
   });
 
-  assert.ok(
-    dense.length >= 10 && dense.length <= 12,
-    `expected 10-12 photo-card moments across 60s (1 every ~5-6s), got ${dense.length}`
-  );
+  assert.equal(dense.length, 0, 'legacy density helper must not invent photos');
   assert.ok(dense.every((m) => m.kind === 'photo-card'));
   assert.ok(dense.every((m) => m.outputWindows.length === 1));
   const primaryQueries = new Set(dense.map((m) => m.searchQueries[0]));

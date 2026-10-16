@@ -320,7 +320,7 @@ export function RenderSettingsPanel({
             <div className="grid gap-3 sm:grid-cols-4">
               <Field
                 label="Max visuals / clip"
-                hint="Default 12 beats per 60s clip (~1 every 4-5s, up to 16)."
+                hint="Maximum photos per clip; sentence relevance may leave buckets empty."
               >
                 <NumberField
                   id="default-max-visual-moments"
@@ -350,6 +350,10 @@ export function RenderSettingsPanel({
                 />
               </Field>
 
+              <Field label="Visualizable score threshold" hint="Skip abstract or ambiguous sentences below this score (0–10).">
+                <NumberField id="visualizable-score-threshold" value={value.visualizableScoreThreshold ?? 6} min={0} max={10} step={1}
+                  onCommit={(visualizableScoreThreshold) => patch({ visualizableScoreThreshold })} disabled={disabled} />
+              </Field>
               <Field
                 label="Card animation"
                 hint="Entrance style for contextual visual cards."

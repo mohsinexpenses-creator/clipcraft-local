@@ -1158,9 +1158,9 @@ For every clip, provide:
 
 7. Contextual Visual Moments Plan (Dense, Multi-Beat Pacing)
 
-For each clip, plan 3 to 5 high-impact "photo-card" anchor visual moments spread across the clip (our timeline engine will automatically fill the remaining 5-to-6-second intervals from the transcript so a relevant image appears every 5 to 6 seconds):
+For each clip, suggest only high-confidence visual anchors. A separate sentence-level planner chooses photographable ideas near 5-to-6-second intervals; abstract or ambiguous speech may have no image. Never force filler photos: relevance matters more than density.
 
-- Set "kind" to "photo-card" for every visual moment so each beat displays a real contextual photo (alternating between full-screen behind captions and face-safe behind-captions card).
+- Set "kind" to "photo-card" for every visual moment so each beat displays a real contextual photo (always full-screen, with captions and text above the image).
 - Never repeat the same visual subject, entity, or search query twice in the same clip — every visual moment in a clip must represent a distinct spoken sentence or idea.
 - Base each visual moment on the full sentence, idea, action, consequence, comparison, statistic, or emotional beat — NEVER trigger an unrelated image.
 - In "visual_intent", describe the concrete visual subject (e.g. "crowded trading floor during market crash"), NEVER write instructions like "show something like this" or "show an image of".

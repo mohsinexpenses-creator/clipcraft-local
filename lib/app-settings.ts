@@ -443,6 +443,9 @@ export function sanitizeSettingsSection(
       if (input.visualCardBorder !== undefined) {
         out.visualCardBorder = boolOf(input.visualCardBorder, 'Visual card border');
       }
+      if (input.visualizableScoreThreshold !== undefined) {
+        out.visualizableScoreThreshold = numberIn(input.visualizableScoreThreshold, { min: 0, max: 10, precision: 0, label: "Visualizable score threshold" });
+      }
       if (input.visualVisionVerify !== undefined) {
         out.visualVisionVerify = boolOf(input.visualVisionVerify, 'Gemini vision relevance check');
       }
@@ -826,6 +829,7 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
         : (DEFAULT_RENDER_SETTINGS.visualCardAspect ?? 'portrait'),
     visualCardBorder:
       boolValue(renderStored.visualCardBorder) ?? (DEFAULT_RENDER_SETTINGS.visualCardBorder ?? true),
+    visualizableScoreThreshold: intInRange(renderStored.visualizableScoreThreshold, 0, 10, 6),
     visualVisionVerify:
       boolValue(renderStored.visualVisionVerify) ?? (DEFAULT_RENDER_SETTINGS.visualVisionVerify ?? true),
     sfxEnabled: boolValue(renderStored.sfxEnabled) ?? (DEFAULT_RENDER_SETTINGS.sfxEnabled ?? true),

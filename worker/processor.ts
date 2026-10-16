@@ -40,7 +40,6 @@ import {
 import { resolveVisualProviderSettings } from '../lib/app-settings';
 import {
   buildClipCreditsManifest,
-  ensureDensePhotoMomentsForClip,
   planClipVisualMoments,
 } from '../lib/contextual-visuals';
 import type { KeywordPopOverlayItem } from '../lib/types';
@@ -523,26 +522,11 @@ export async function processClipJob(
               minDuration: visualSettings.render.visualMinDuration,
               defaultDuration: visualSettings.render.visualDefaultDuration,
               defaultAnimation: visualSettings.render.visualAnimation,
-              fillDensityGaps: true,
+              fillDensityGaps: false,
             },
           });
         }
 
-        // Ensure dense, relevant photo moments every ~5-6s across the clip without duplicate queries
-        planned = ensureDensePhotoMomentsForClip({
-          overlays: planned,
-          clipStart: start,
-          clipEnd: end,
-          transcript: video.transcript,
-          hookTiming: {
-            start: hookStart,
-            duration: safeHookDuration,
-          },
-          maxVisualMoments: visualSettings.render.maxVisualMoments,
-          minDuration: visualSettings.render.visualMinDuration,
-          defaultDuration: visualSettings.render.visualDefaultDuration,
-          defaultAnimation: visualSettings.render.visualAnimation,
-        });
 
         if (planned.length > 0) {
           // 1. Check existing local files and SQLite image_bank first, strictly deduplicating

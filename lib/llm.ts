@@ -134,6 +134,7 @@ export interface LlmCompletionRequest {
   temperature?: number;
   /** Ask the provider for a raw JSON answer (no markdown fences, no prose around it). */
   json?: boolean;
+  responseJsonSchema?: Record<string, unknown>;
 }
 
 export interface LlmCompletionResult {
@@ -310,6 +311,7 @@ async function callGeminiNative(
             temperature: request.temperature ?? 0.5,
             maxOutputTokens: maxTokens,
             ...(request.json ? { responseMimeType: "application/json" } : {}),
+            ...(request.responseJsonSchema ? { responseJsonSchema: request.responseJsonSchema } : {}),
           },
         }),
         signal: AbortSignal.timeout(LLM_CALL_TIMEOUT_MS),

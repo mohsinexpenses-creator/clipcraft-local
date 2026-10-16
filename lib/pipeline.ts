@@ -25,7 +25,9 @@ import {
 } from './queue';
 import { sanitizePipelineOptions, sanitizeViralOptions } from './pipeline-defaults';
 import { loadEffectiveSettings, resolveVisualProviderSettings } from './app-settings';
-import { ensureDensePhotoMomentsForClip, planClipVisualMoments } from './contextual-visuals';
+import { planClipVisualMoments } from './contextual-visuals';
+import { planSentenceVisuals } from './visual-planner';
+import { resolveHookTiming } from '../worker/hook-timing';
 import { resolveVisualOverlaysForClip } from './visual-providers';
 import { parseTimestamp } from './viral-response';
 import {
@@ -332,26 +334,10 @@ export async function runViralDetection(
         minDuration: render.visualMinDuration,
         defaultDuration: render.visualDefaultDuration,
         defaultAnimation: render.visualAnimation,
-        fillDensityGaps: true,
+        fillDensityGaps: false,
       },
     });
-    const plannedVisualOverlays =
-      autoVisualsEnabled && initialVisualOverlays.length > 0
-        ? ensureDensePhotoMomentsForClip({
-            overlays: initialVisualOverlays,
-            clipStart: segment.start,
-            clipEnd: segment.end,
-            transcript: video.transcript,
-            hookTiming: {
-              start: hookStartOffset,
-              duration: hookIntervalDuration,
-            },
-            maxVisualMoments: options.maxVisualMoments ?? render.maxVisualMoments,
-            minDuration: render.visualMinDuration,
-            defaultDuration: render.visualDefaultDuration,
-            defaultAnimation: render.visualAnimation,
-          })
-        : initialVisualOverlays;
+    const plannedVisualOverlays = initialVisualOverlays;
 
     const clipRecord: ClipRecord = {
       _id: clipId,
@@ -434,7 +420,24 @@ export async function prefetchClipVisualsForDetectedClips(
     if (isFakeLlmTest) return;
 
     for (const clip of clips) {
-      if (!clip.visualOverlays || clip.visualOverlays.length === 0) continue;
+      if (clip.autoVisuals === false) continue;
+      const video = await getVideo(clip.videoId);
+      if (!video?.transcript) continue;
+      const existing = clip.visualOverlays ?? [];
+      const photos = await planSentenceVisuals({
+        transcript: video.transcript, clipStart: clip.start, clipEnd: clip.end,
+        maxVisualMoments: visualSettings.render.maxVisualMoments,
+        threshold: visualSettings.render.visualizableScoreThreshold ?? 6,
+        animation: visualSettings.render.visualAnimation,
+        hookTiming: resolveHookTiming({ enabled: clip.hookDuration > 0, clipStart: clip.start, clipEnd: clip.end, fallbackDuration: clip.hookDuration, hookTimestampStart: clip.aiAnalysis?.hook_line_analysis.hook_timestamp.start, hookTimestampEnd: clip.aiAnalysis?.hook_line_analysis.hook_timestamp.end }),
+      });
+      clip.visualOverlays = [
+        ...existing.filter((ov) => ov.kind === 'keyword-pop'),
+        ...photos.map((photo) => {
+          const entity = existing.find((ov) => ['person', 'place', 'named_event'].includes(ov.category) && ov.sourceStart < photo.sourceEnd && ov.sourceEnd > photo.sourceStart);
+          return entity ? { ...photo, category: entity.category, entityName: entity.entityName, framing: entity.framing } : photo;
+        }),
+      ];
       const resolved = await resolveVisualOverlaysForClip(clip.visualOverlays, {
         renderSettings: visualSettings.render,
         geminiApiKeys: visualSettings.geminiApiKeys,
