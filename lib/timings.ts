@@ -1,3 +1,4 @@
+import type { VisualGeminiCallTiming } from './types';
 import fs from 'fs';
 import path from 'path';
 
@@ -56,6 +57,7 @@ export function appendClipTimingRecord(
 export interface VisualPrefetchTimingRecord {
   timestamp: string;
   phase: 'visual-prefetch';
+  geminiCalls?: VisualGeminiCallTiming[];
   clipId: string;
   videoId: string;
   plannerCalls: number;

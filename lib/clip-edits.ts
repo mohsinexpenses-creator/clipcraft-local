@@ -257,11 +257,9 @@ export function sanitizeClipEdits(
 
 /** Clients edit meaning/timing, not proof of relevance or trusted local media paths. */
 export function preserveVerifiedVisualMetadata(existing: ClipVisualOverlay[], edits: ClipVisualOverlay[]): ClipVisualOverlay[] {
-  const identity = (ov: ClipVisualOverlay) => JSON.stringify([ov.quote, ov.visualIntent, ov.category, ov.entityName,
-    ov.emotionalPolarity, ov.searchQueries, ov.negativeCues, ov.sourceStart, ov.sourceEnd]);
   return edits.map((edit) => {
     const previous = existing.find((ov) => ov.id === edit.id);
-    if (previous && identity(previous) === identity(edit)) {
+    if (previous && visualMeaningKey(previous) === visualMeaningKey(edit)) {
       return { ...previous, animation: edit.animation, placement: edit.placement, outputWindows: edit.outputWindows,
         status: edit.status === 'removed' ? 'removed' : previous.status };
     }
@@ -271,3 +269,9 @@ export function preserveVerifiedVisualMetadata(existing: ClipVisualOverlay[], ed
       skipReason: 'Visual meaning/timing edited; queue visual prefetch before rendering' };
   });
 }
+
+const visualMeaningKey = (ov: ClipVisualOverlay) => JSON.stringify([ov.quote, ov.visualIntent, ov.category, ov.entityName,
+  ov.emotionalPolarity, ov.searchQueries, ov.negativeCues, ov.sourceStart, ov.sourceEnd]);
+export const hasVisualMeaningChanges = (existing: ClipVisualOverlay[], edits: ClipVisualOverlay[]): boolean =>
+  JSON.stringify(existing.map((ov) => [ov.id, visualMeaningKey(ov), ov.status === 'removed'])) !==
+  JSON.stringify(edits.map((ov) => [ov.id, visualMeaningKey(ov), ov.status === 'removed']));

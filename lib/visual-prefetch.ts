@@ -46,7 +46,7 @@ export async function runVisualPrefetch(clipId: string, options: { cacheDir?: st
   const started = performance.now();
   const budget: VisualApiBudget = createVisualApiBudget(options.timeoutMs ?? 25000);
   const clip = await getClip(clipId);
-  const stats = (): VisualPrefetchStats => ({ plannerCalls: budget.plannerCalls, visionCalls: budget.visionCalls, attempts: budget.attempts, geminiMs: Math.round(budget.geminiMs), cacheHits: budget.cacheHits, prefetchMs: Math.round(performance.now() - started) });
+  const stats = (): VisualPrefetchStats => ({ geminiCalls: [...budget.geminiCalls], plannerCalls: budget.plannerCalls, visionCalls: budget.visionCalls, attempts: budget.attempts, geminiMs: Math.round(budget.geminiMs), cacheHits: budget.cacheHits, prefetchMs: Math.round(performance.now() - started) });
   if (!clip || clip.cancelling || clip.error === 'Cancelled by user.') return { cancelled: true, stats: stats() };
   if (getDatabase().prepare("SELECT id FROM jobs WHERE type = 'clip-processing' AND clip_id = ? AND status IN ('queued','running')").get(clipId)) return { cancelled: true, stats: stats() };
   const video = await getVideo(clip.videoId);

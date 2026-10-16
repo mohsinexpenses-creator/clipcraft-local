@@ -28,6 +28,8 @@ test('429/5xx retry uses backoff, rotates keys, and all logical batches share fo
     const options = { keys: ['test-a', 'test-b'], rpm: 100, task: 'planner' as const, body: {}, budget, pool: new GeminiKeyPool() };
     assert.equal(await requestGeminiJson(options), '{}');
     assert.equal(budget.attempts, 3);
+    assert.deepEqual(budget.geminiCalls.map(({ task, attempts, outcome }) => ({ task, attempts, outcome })), [{ task: 'planner', attempts: 3, outcome: 'ok' }]);
+    assert.ok(budget.geminiCalls[0].elapsedMs >= 350);
     assert.notEqual(seen[0], seen[1]);
     await assert.rejects(requestGeminiJson(options), /planner call cap/);
     await requestGeminiJson({ ...options, task: 'vision' });

@@ -1,3 +1,4 @@
+import type { VisualGeminiCallTiming } from './types';
 import { createHash } from 'node:crypto';
 
 export interface VisualApiBudget {
@@ -8,9 +9,10 @@ export interface VisualApiBudget {
   geminiMs: number;
   cacheHits: number;
   lastFailure?: string;
+  geminiCalls: VisualGeminiCallTiming[];
 }
 export function createVisualApiBudget(timeoutMs = 25000): VisualApiBudget {
-  return { deadline: Date.now() + timeoutMs, plannerCalls: 0, visionCalls: 0, attempts: 0, geminiMs: 0, cacheHits: 0 };
+  return { deadline: Date.now() + timeoutMs, plannerCalls: 0, visionCalls: 0, attempts: 0, geminiMs: 0, cacheHits: 0, geminiCalls: [] };
 }
 export function remainingVisualMs(budget?: VisualApiBudget, cap = 7000): number {
   const remaining = budget ? budget.deadline - Date.now() : cap;
@@ -64,6 +66,7 @@ export async function requestGeminiJson(options: {
   budget[field]++;
   const pool = options.pool ?? sharedPool;
   const started = Date.now();
+  let localAttempts = 0; let outcome: 'ok' | 'error' = 'error';
   try {
     for (let attempt = 0; attempt < 3; attempt++) {
       remainingVisualMs(budget);
@@ -71,7 +74,7 @@ export async function requestGeminiJson(options: {
       const key = await pool.acquire(options.keys, options.rpm ?? 10, budget.deadline);
       // Recheck after any asynchronous limiter wait; parallel batches share the cap.
       if (budget.attempts >= 4) throw new Error(`Gemini per-clip HTTP attempt cap (4) reached; includes retries. ${budget.lastFailure ?? ''}`);
-      budget.attempts++;
+      budget.attempts++; localAttempts++;
       let response: Response;
       try {
         response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent', {
@@ -85,21 +88,28 @@ export async function requestGeminiJson(options: {
         if (answer?.finishReason && answer.finishReason !== 'STOP') throw new Error(`Gemini incomplete output: ${answer.finishReason}`);
         const text = answer?.content?.parts?.filter((part) => !part.thought).map((part) => part.text ?? '').join('') ?? '';
         if (!text) throw new Error('Gemini returned no verdict/output');
+        outcome = 'ok';
         return text;
       }
       // Never log provider bodies/URLs: error messages can contain credentials or input.
       budget.lastFailure = `Gemini ${response.status === 429 ? 'quota/rate limit exhausted' : response.status >= 500 ? 'service unavailable' : 'key invalid or request rejected'} (HTTP ${response.status})`;
       const transient = response.status === 429 || response.status >= 500;
       const invalid = response.status === 400 || response.status === 401 || response.status === 403;
-      const retryAfter = Number(response.headers.get('retry-after'));
+      const retryHeader = response.headers.get('retry-after');
+      const retrySeconds = Number(retryHeader);
+      const retryMs = retryHeader && !Number.isFinite(retrySeconds) ? Date.parse(retryHeader) - Date.now() : retrySeconds * 1000;
       await response.body?.cancel().catch(() => undefined);
       if (invalid) pool.block(key, 60000);
-      if (response.status === 429) pool.block(key, Math.max(1000, Math.min(60000, Number.isFinite(retryAfter) ? retryAfter * 1000 : 1000)));
+      if (response.status === 429) pool.block(key, Math.max(1000, Math.min(86400000, Number.isFinite(retryMs) ? retryMs : 1000)));
       if ((!transient && !invalid) || attempt === 2) throw new Error(`Gemini ${invalid ? 'key invalid/access denied' : transient ? 'quota exhausted/service unavailable' : 'request rejected'} (HTTP ${response.status})`);
       const delay = Math.round(350 * 2 ** attempt + Math.random() * 200);
       if (Date.now() + delay >= budget.deadline) throw new Error(`Gemini quota/network deadline (HTTP ${response.status})`);
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
     throw new Error('Gemini retry budget exhausted');
-  } finally { budget.geminiMs += Date.now() - started; }
+  } finally {
+    const elapsedMs = Date.now() - started;
+    budget.geminiMs += elapsedMs;
+    budget.geminiCalls.push({ task: options.task, elapsedMs, attempts: localAttempts, outcome });
+  }
 }

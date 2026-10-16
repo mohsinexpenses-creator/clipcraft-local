@@ -826,7 +826,11 @@ export interface TextPreset {
   updatedAt: string;
 }
 
+export interface VisualGeminiCallTiming {
+  task: 'planner' | 'vision'; elapsedMs: number; attempts: number; outcome: 'ok' | 'error';
+}
 export interface VisualPrefetchStats {
+  geminiCalls?: VisualGeminiCallTiming[];
   plannerCalls: number; visionCalls: number; attempts: number; geminiMs: number;
   prefetchMs: number; cacheHits: number;
 }

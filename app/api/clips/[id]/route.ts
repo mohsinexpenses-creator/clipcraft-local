@@ -3,7 +3,7 @@ import path from 'path';
 import { NextResponse } from 'next/server';
 import { deleteClip, getClip, updateClip } from '@/lib/db';
 import { toErrorMessage, toErrorStatus } from '@/lib/errors';
-import { sanitizeClipEdits, preserveVerifiedVisualMetadata } from '@/lib/clip-edits';
+import { sanitizeClipEdits, preserveVerifiedVisualMetadata, hasVisualMeaningChanges } from '@/lib/clip-edits';
 
 export async function GET(
   request: Request,
@@ -47,7 +47,7 @@ export async function PATCH(
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
     const edits = sanitizeClipEdits(body);
     if (edits.visualOverlays) edits.visualOverlays = preserveVerifiedVisualMetadata(clip.visualOverlays ?? [], edits.visualOverlays);
-    const merged = { ...clip, ...edits, ...(edits.visualOverlays ? { visualsUseEditedMoments: true } : {}) };
+    const merged = { ...clip, ...edits, ...(edits.visualOverlays && hasVisualMeaningChanges(clip.visualOverlays ?? [], edits.visualOverlays) ? { visualsUseEditedMoments: true } : {}) };
 
     if (!(await updateClip(merged))) {
       return NextResponse.json({ error: 'Clip not found' }, { status: 404 });

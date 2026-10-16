@@ -536,3 +536,59 @@ $0.0074/clip, **$2.22/day** at 300 clips (actual image tokens/output vary; retri
 can increase billed tokens). Check RPM/TPM/RPD and provider quotas, then enable
 billing if the project's free quota cannot cover the measured workload. Multiple
 keys from one project do not make 300 clips/day possible by themselves.
+
+### Evaluate relevance and performance locally
+
+Read-only; the evaluator does **not** fetch, generate or render anything:
+
+```bash
+npm run eval:visuals -- --video VIDEO_ID --recent 20
+npm run eval:visuals -- --recent 50 --json --output data/visual-evaluation.json
+npm run eval:visuals -- --video VIDEO_ID --baseline data/before-timings.jsonl
+npm run eval:visuals -- --demo
+```
+
+It reports the spoken sentence/English meaning, query, chosen provider title,
+vision score, source time and decision/reason. JSON includes the top-three debug
+candidates. Missing debug files fall back to stored clip metadata. Missing or
+modified local frames do not count as accepted. Fill rate is **accepted local
+photos / ceil(source clip duration / 5.4s)**; empty and abstract buckets stay in the
+denominator, keyword pops and removed/skipped photos never inflate it. The target
+is 70%, not permission to use a wrong photo. Human review is still required.
+
+`--demo` uses the checked-in Roman Urdu/Urdu/Hindi fixture with scripted English
+meanings/queries; no SQLite/provider/vision access. Solar/field photos are explicitly
+skipped because vision was not run; the abstract understanding sentence is below
+threshold. It is **not** live relevance evidence.
+
+Before upgrading, copy `data/timings.jsonl` to `data/before-timings.jsonl` (PowerShell:
+`Copy-Item data/timings.jsonl data/before-timings.jsonl`). Rerender the **same clip
+IDs**, duration, encoder and preset after upgrade; keep source, hook, captions,
+layout, CRF and worker concurrency identical. The evaluator pairs only newer
+matching render rows, reports N/A for missing baselines, and separates prefetch
+from render. Uncached prefetch p50/p95 excludes zero-call cache hits; Gemini elapsed
+time includes RPM/retry waits and overlapping calls, not an isolated API RTT.
+`geminiCalls` logs each logical planner/vision call's elapsed time, physical attempt
+count and success/error; the evaluator reports separate planner/vision p50/p95.
+Malformed/truncated JSONL lines are counted and skipped. Logs may contain transcript
+text/debug metadata: keep `data/` local and review before sharing.
+
+For an offline Linux/Windows **FFmpeg-filter-only** A/B, run:
+
+```bash
+npm run benchmark:visuals -- --baseline f6e4e570d7e5dbb684f4e0028d8f3bd7770832e2 --rounds 3
+```
+
+This reads the old filter builder from Git (without switching branches), uses a
+10.8s 1080×1920/30fps lavfi fixture, two cached stills, fixed x264-ultrafast settings
+and alternating run order. Outputs/summary go to ignored `data/visual-render-benchmark/`
+and a separately labelled `visual-render-benchmark` row in `data/timings.jsonl`.
+It excludes Remotion, face detection, hook analysis and source decode; do not confuse
+it with the full-worker baseline or the i5-10500 Windows <=10% requirement.
+
+On the actual Windows machine verify FFmpeg filter availability, four-case caption
+layering (`npx tsx scripts/verify-visual-layering.ts`), QSV/NVENC/x264 selection,
+caption themes, hook/CTA/keyword/SFX playback, cancel/restart recovery and full-worker
+before/after timings. Live Gemini/provider quotas, 20–25s prefetch and 70% relevance
+fill must be measured with your saved keys and real transcripts. This sandbox did
+not send live provider/LLM requests or validate those Windows-only conditions.

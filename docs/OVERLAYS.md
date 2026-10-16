@@ -184,3 +184,14 @@ and source-transcript/meaning/settings fingerprints, then remaps hook windows.
 Edited/unresolved/manual frames without server verification are skipped with a
 visible reason; render never searches, calls Gemini, or prepares frames. Independent
 prefetch timing rows and call counts are written to `data/timings.jsonl`.
+
+### Evaluate, do not fill with unrelated photos
+
+`npm run eval:visuals -- --video VIDEO_ID --recent 20` prints sentence → query →
+chosen title → vision score → decision with source timing. `--json` includes debug
+candidate details; `--baseline FILE` compares genuine full-worker render timing
+rows separately from prefetch/cache metrics. Fill uses all 5.4-second source buckets
+(including abstract ones) and never counts keyword pops as photos. A lower fill
+rate is acceptable when candidates fail relevance; **do not lower the gate to make
+the metric green**. `--demo` shows Roman Urdu/Urdu/Hindi meanings and explicit strict
+skips without network or SQLite. SETUP documents exact commands and caveats.

@@ -1838,7 +1838,8 @@ export async function searchUnsplashCandidates(
 
 async function triggerUnsplashDownloadTracking(
   downloadLocationUrl?: string,
-  accessKey?: string
+  accessKey?: string,
+  timeoutMs = 4000
 ): Promise<void> {
   if (!downloadLocationUrl || !accessKey || !isUsableSecret(accessKey)) return;
   try {
@@ -1850,7 +1851,7 @@ async function triggerUnsplashDownloadTracking(
         Authorization: `Client-ID ${accessKey}`,
         'Accept-Version': 'v1',
       },
-      signal: AbortSignal.timeout(4_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch {
     // Best-effort download tracking per Unsplash API guidelines
@@ -2421,6 +2422,7 @@ export async function downloadVisualAssetSafely(params: {
 }> {
   const maxRedirects = params.maxRedirects ?? 3;
   const timeoutMs = params.timeoutMs ?? 10_000;
+  const deadline = Date.now() + timeoutMs;
   let currentUrl = validateSafeProviderDownloadUrl(params.imageUrl);
 
   const headers: Record<string, string> = {
@@ -2430,11 +2432,12 @@ export async function downloadVisualAssetSafely(params: {
 
   let response: Response | null = null;
   for (let hop = 0; hop <= maxRedirects; hop++) {
+    if (Date.now() >= deadline) throw new Error('Image download deadline exceeded');
     const res = await fetch(currentUrl.toString(), {
       method: 'GET',
       headers,
       redirect: 'manual',
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
     });
 
     if (res.status >= 300 && res.status < 400) {
@@ -2445,6 +2448,7 @@ export async function downloadVisualAssetSafely(params: {
       if (hop === maxRedirects) {
         throw new Error(`Exceeded maximum redirects (${maxRedirects}) downloading image.`);
       }
+      await res.body?.cancel().catch(() => undefined);
       const resolvedNext = new URL(location, currentUrl).toString();
       currentUrl = validateSafeProviderDownloadUrl(resolvedNext);
       continue;
@@ -2753,15 +2757,25 @@ export const visualCandidateId = (candidate: RawProviderCandidate): string =>
 
 let thumbnailActive = 0;
 const thumbnailWaiters: Array<() => void> = [];
-async function thumbnail(candidate: RawProviderCandidate, localPath?: string): Promise<string> {
-  if (thumbnailActive >= 4) await new Promise<void>((resolve) => thumbnailWaiters.push(resolve));
+async function thumbnail(candidate: RawProviderCandidate, localPath?: string, budget?: VisualApiBudget): Promise<string> {
+  const waitMs = remainingVisualMs(budget, 25000);
+  if (thumbnailActive >= 4) await new Promise<void>((resolve, reject) => {
+    const grant = () => { clearTimeout(timer); resolve(); };
+    const timer = setTimeout(() => {
+      const index = thumbnailWaiters.indexOf(grant);
+      if (index >= 0) thumbnailWaiters.splice(index, 1);
+      reject(new Error('Visual prefetch deadline exceeded waiting for thumbnail slot'));
+    }, waitMs);
+    thumbnailWaiters.push(grant);
+  });
   else thumbnailActive++;
   try {
+    const timeoutMs = remainingVisualMs(budget, 2500);
     let bytes: Buffer;
     if (localPath) bytes = fs.readFileSync(localPath);
     else {
       const url = validateSafeProviderDownloadUrl(candidate.thumbnailUrl || candidate.imageUrl);
-      const response = await fetch(url.toString(), { redirect: 'error', signal: AbortSignal.timeout(2500) });
+      const response = await fetch(url.toString(), { redirect: 'error', signal: AbortSignal.timeout(timeoutMs) });
       if (!response.ok) throw new Error(`thumbnail HTTP ${response.status}`);
       if (Number(response.headers.get('content-length')) > 2 * 1024 * 1024) throw new Error('thumbnail too large');
       const reader = response.body?.getReader();
@@ -2809,7 +2823,7 @@ export async function verifyClipVisualCandidatesWithGeminiVision(params: {
   const items = cachedText ? [] : await Promise.all(params.moments.map(async (moment) => {
     const candidates = await Promise.all(moment.candidates.slice(0, 3).map(async (candidate) => {
       try {
-        return { id: visualCandidateId(candidate.candidate), image: await thumbnail(candidate.candidate, (candidate as PoolCandidate).localPath), title: candidate.candidate.title };
+        return { id: visualCandidateId(candidate.candidate), image: await thumbnail(candidate.candidate, (candidate as PoolCandidate).localPath, params.budget), title: candidate.candidate.title };
       } catch (error) { log.warn(`Visual thumbnail skipped: ${error instanceof Error ? error.message : 'decode error'}`); return null; }
     }));
     return { moment, candidates: candidates.filter((item) => item !== null) };
@@ -2826,7 +2840,7 @@ export async function verifyClipVisualCandidatesWithGeminiVision(params: {
   const text = cachedText ?? await requestGeminiJson({
     keys: params.geminiApiKeys.filter(isUsableSecret), rpm: params.rpm, budget: params.budget, task: 'vision', timeoutMs: params.timeoutMs ?? 7000,
     body: { contents: [{ role: 'user', parts }], generationConfig: {
-      temperature: 0, maxOutputTokens: 4096, thinkingConfig: { thinkingBudget: 0 },
+      temperature: 0, maxOutputTokens: 6000, thinkingConfig: { thinkingBudget: 0 },
       responseMimeType: 'application/json', responseJsonSchema: VISION_SCHEMA,
     } },
   });
@@ -2844,7 +2858,8 @@ export async function verifyClipVisualCandidatesWithGeminiVision(params: {
   }
   if (!cachedText) {
     fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
-    fs.writeFileSync(cacheFile, text);
+    const temporary = `${cacheFile}.${crypto.randomUUID()}.tmp`;
+    fs.writeFileSync(temporary, text); fs.renameSync(temporary, cacheFile);
   }
   return scores;
 }
@@ -2852,13 +2867,13 @@ export async function verifyClipVisualCandidatesWithGeminiVision(params: {
 function bankCandidates(providers: VisualProviderName[]): Array<{ candidate: RawProviderCandidate; localPath: string; contentHash?: string }> {
   if (!providers.length) return [];
   try {
-    const rows = getDatabase().prepare(`SELECT * FROM image_bank WHERE provider IN (${providers.map(() => '?').join(',')}) ORDER BY last_used DESC LIMIT 200`).all(...providers) as Array<{ provider: VisualProviderName; asset_id: string; local_path: string; attribution_json: string; width: number; height: number; content_hash?: string }>;
+    const rows = getDatabase().prepare(`SELECT image_bank.*, image_bank_captions.caption AS verified_caption FROM image_bank LEFT JOIN image_bank_captions ON image_bank_captions.asset_key = image_bank.id WHERE image_bank.provider IN (${providers.map(() => '?').join(',')}) ORDER BY image_bank.last_used DESC LIMIT 200`).all(...providers) as Array<{ provider: VisualProviderName; asset_id: string; local_path: string; attribution_json: string; width: number; height: number; content_hash?: string; verified_caption?: string }>;
     return rows.flatMap((row) => {
       if (!fs.existsSync(row.local_path)) return [];
       try {
         const a = JSON.parse(row.attribution_json) as VisualAssetAttribution;
         return [{ localPath: row.local_path, contentHash: row.content_hash, candidate: {
-          provider: row.provider, assetId: row.asset_id, title: a.title, description: '', alt: '',
+          provider: row.provider, assetId: row.asset_id, title: a.title, description: row.verified_caption ?? '', alt: '',
           // Old bank tags are tainted by query terms. Never use them for matching.
           tags: tokenizeContentWords(a.title), creator: a.creator, creatorUrl: a.creatorUrl,
           licenseRaw: a.licenseCode || a.license, licenseUrl: a.licenseUrl,
@@ -2993,7 +3008,7 @@ export async function resolveVisualOverlaysForClip(overlays: ClipVisualOverlay[]
         assetMemoryCache.set(`${candidate.provider}:${candidate.assetId}`, { key: `${candidate.provider}:${candidate.assetId}`, provider: candidate.provider, assetId: candidate.assetId, localFilePath, contentHash: contentHash ?? '', mediaUrl, width: 1080, height: 1920, mimeType: 'image/jpeg', attribution, createdAtMs: Date.now() });
         upsertImageBankEntry({ provider: candidate.provider, assetId: candidate.assetId, localPath: localFilePath, tags: [...candidate.tags, ...tokenizeContentWords(candidate.title)], width: 1080, height: 1920, fileSize: fs.statSync(localFilePath).size, contentHash, attribution });
         if (visionScore !== undefined) getDatabase().prepare('INSERT INTO image_bank_captions (asset_key, caption, verified_at) VALUES (?, ?, ?) ON CONFLICT(asset_key) DO UPDATE SET caption=excluded.caption, verified_at=excluded.verified_at').run(`${candidate.provider}:${candidate.assetId}`, overlay.sentenceMeaningEn ?? overlay.quote, new Date().toISOString());
-        if (candidate.provider === 'unsplash') await triggerUnsplashDownloadTracking(candidate.downloadLocationUrl, options.unsplashAccessKey ?? '');
+        if (candidate.provider === 'unsplash') await triggerUnsplashDownloadTracking(candidate.downloadLocationUrl, options.unsplashAccessKey ?? '', remainingVisualMs(options.budget, 4000));
         selected = { ...overlay, status: 'resolved', skipReason: visionScore === undefined ? 'Lenient: vision unavailable; accepted text-score candidate' : undefined,
           localFilePath, mediaUrl, contentHash, width: 1080, height: 1920, attribution,
           relevanceScore: entry.score, visionScore, chosenQuery: entry.query, framing: entry.framing,

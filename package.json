@@ -15,7 +15,9 @@
     "typecheck": "tsc --noEmit",
     "setup:yunet": "node scripts/setup-yunet.mjs",
     "test:worker": "tsx --test tests/*.test.ts",
-    "verify:clip": "tsx scripts/verify-clip.ts"
+    "verify:clip": "tsx scripts/verify-clip.ts",
+    "eval:visuals": "tsx scripts/eval-visuals.ts",
+    "benchmark:visuals": "tsx scripts/benchmark-visual-render.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",

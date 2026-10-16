@@ -1,0 +1,128 @@
+[
+  {
+    "_id": "offline-demo-roman-urdu-hindi",
+    "videoId": "offline-demo-not-live",
+    "start": 0,
+    "end": 16.2,
+    "hookDuration": 0,
+    "hookText": "",
+    "filterPreset": "none",
+    "captionPresetId": "preset-bold-yellow",
+    "status": "pending",
+    "createdAt": "2026-10-16T00:00:00.000Z",
+    "updatedAt": "2026-10-16T00:00:00.000Z",
+    "visualsSkippedReason": "Offline demonstration: no provider search or Gemini vision was run. No photo is safer than an unverified one.",
+    "visualOverlays": [
+      {
+        "id": "demo-1",
+        "kind": "photo-card",
+        "quote": "Bijli nahi aa rahi, hum chhat par solar panel lagwa rahe hain.",
+        "sentenceMeaningEn": "Power is unavailable, so we are installing rooftop solar panels.",
+        "visualIntent": "Workers installing rooftop solar panels",
+        "segmentIds": [
+          1
+        ],
+        "sourceStart": 0.5,
+        "sourceEnd": 3.5,
+        "clipRelativeStart": 0.5,
+        "clipRelativeEnd": 3.5,
+        "displayDuration": 3,
+        "outputWindows": [
+          {
+            "segment": "main",
+            "start": 0.5,
+            "end": 3.5
+          }
+        ],
+        "category": "situation",
+        "entityName": "",
+        "emotionalPolarity": "neutral",
+        "confidence": 0.9,
+        "animation": "subtle-zoom",
+        "placement": "main",
+        "framing": "illustrative",
+        "searchQueries": [
+          "rooftop solar installation",
+          "sunlight energy independence",
+          "renewable energy panels"
+        ],
+        "negativeCues": [],
+        "visualizableScore": 9,
+        "status": "skipped",
+        "skipReason": "Offline demo: vision not run; strict gate skips unverified photos"
+      },
+      {
+        "id": "demo-2",
+        "kind": "photo-card",
+        "quote": "یہ بات سمجھنا مشکل ہے۔",
+        "sentenceMeaningEn": "This is difficult to understand.",
+        "visualIntent": "Abstract understanding",
+        "segmentIds": [
+          2
+        ],
+        "sourceStart": 5.5,
+        "sourceEnd": 8.5,
+        "clipRelativeStart": 5.5,
+        "clipRelativeEnd": 8.5,
+        "displayDuration": 3,
+        "outputWindows": [
+          {
+            "segment": "main",
+            "start": 5.5,
+            "end": 8.5
+          }
+        ],
+        "category": "concept",
+        "entityName": "",
+        "emotionalPolarity": "neutral",
+        "confidence": 0.9,
+        "animation": "subtle-zoom",
+        "placement": "main",
+        "framing": "illustrative",
+        "searchQueries": [],
+        "negativeCues": [],
+        "visualizableScore": 3,
+        "status": "skipped",
+        "skipReason": "Below visualizability threshold (3 < 6); no generic clock/portrait filler"
+      },
+      {
+        "id": "demo-3",
+        "kind": "photo-card",
+        "quote": "खेतों में पानी की कमी है।",
+        "sentenceMeaningEn": "The fields are short of water.",
+        "visualIntent": "Dry farmland with cracked soil",
+        "segmentIds": [
+          3
+        ],
+        "sourceStart": 10.8,
+        "sourceEnd": 13.8,
+        "clipRelativeStart": 10.8,
+        "clipRelativeEnd": 13.8,
+        "displayDuration": 3,
+        "outputWindows": [
+          {
+            "segment": "main",
+            "start": 10.8,
+            "end": 13.8
+          }
+        ],
+        "category": "situation",
+        "entityName": "",
+        "emotionalPolarity": "neutral",
+        "confidence": 0.9,
+        "animation": "subtle-zoom",
+        "placement": "main",
+        "framing": "illustrative",
+        "searchQueries": [
+          "dry farmland soil",
+          "empty water bucket",
+          "agricultural drought field"
+        ],
+        "negativeCues": [],
+        "visualizableScore": 9,
+        "status": "skipped",
+        "skipReason": "Offline demo: vision not run; strict gate skips unverified photos"
+      }
+    ]
+  }
+]
