@@ -2779,6 +2779,25 @@ export async function resolveVisualOverlaysForClip(overlays: ClipVisualOverlay[]
     if (left <= 250) throw new Error('Visual search ran out of prefetch budget');
     return Math.max(250, Math.min(cap, left));
   };
+  // Per-provider search health for one clip: slow providers must be visible in
+  // the worker log instead of only the last failure string.
+  const providerDiagnostics = new Map<VisualProviderName, { ok: number; timeout: number; failed: number }>();
+  const recordProviderOutcome = (provider: VisualProviderName, outcome: 'ok' | 'timeout' | 'failed'): void => {
+    const current = providerDiagnostics.get(provider) ?? { ok: 0, timeout: 0, failed: 0 };
+    current[outcome] += 1;
+    providerDiagnostics.set(provider, current);
+  };
+  const trackProviderSearch = async (provider: VisualProviderName, query: string, category: string, timeoutMs: number): Promise<RawProviderCandidate[]> => {
+    try {
+      const candidates = await searchProviderWithCache(provider, query, { ...options, timeoutMs }, category);
+      recordProviderOutcome(provider, 'ok');
+      return candidates;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'network error';
+      recordProviderOutcome(provider, /timeout|aborted/i.test(message) ? 'timeout' : 'failed');
+      throw error;
+    }
+  };
   const recent = recentVisualKeys(options.videoId, options.clipId);
   const poolById = new Map<string, PoolCandidate[]>();
   const queriesById = new Map<string, string[]>();
@@ -2790,14 +2809,14 @@ export async function resolveVisualOverlaysForClip(overlays: ClipVisualOverlay[]
   const faceChecked = (candidate: RawProviderCandidate, broll = false) => {
     const key = `${visualCandidateId(candidate)}:${broll}`;
     if (!assessed.has(key)) assessed.set(key, (async () => {
-      const file = candidate.verifiedLocalPath ?? (await downloadVisualAssetSafely({ imageUrl: candidate.imageUrl, userAgent: options.wikimediaUserAgent, timeoutMs: searchCap(2000) })).localFilePath;
+      const file = candidate.verifiedLocalPath ?? (await downloadVisualAssetSafely({ imageUrl: candidate.imageUrl, userAgent: options.wikimediaUserAgent, timeoutMs: searchCap(4000) })).localFilePath;
       const check = await inspectVisualFaces(file);
       if (!passesVisualFacePolicy(check, broll)) return;
       return { ...candidate, verifiedLocalPath: file, faceCheck: check, isBroll: broll };
     })().catch(() => undefined));
     return assessed.get(key)!;
   };
-  await mapVisualsLimited(overlays, 3, async (overlay) => {
+  await mapVisualsLimited(overlays, 2, async (overlay) => {
     if (overlay.status === 'removed' || overlay.kind === 'keyword-pop' || overlay.kind === 'zoom-beat') return;
     if (overlay.status === 'resolved' && overlay.visualVerificationHash === visualVerificationHash(overlay, options.renderSettings) && overlay.localFilePath?.endsWith('.fullscreen-v1.jpg') && fs.existsSync(overlay.localFilePath)) { alreadyResolved.add(overlay.id); return; }
     const providers = getProviderOrderForMoment({ moment: overlay, renderSettings: options.renderSettings,
@@ -2820,7 +2839,7 @@ export async function resolveVisualOverlaysForClip(overlays: ClipVisualOverlay[]
         if (!entityRequests.has(entityKey)) entityRequests.set(entityKey, entityImageCandidates(entity, options.wikimediaUserAgent ?? '', options.budget).catch(() => []));
         let candidates = await entityRequests.get(entityKey)!;
         if (candidates.length < 3) {
-          const extra = await searchProviderWithCache('openverse', entity.name, { ...options, timeoutMs: searchCap(2000) }, overlay.category).catch(() => []);
+          const extra = await trackProviderSearch('openverse', entity.name, overlay.category, searchCap(4000)).catch(() => []);
           candidates = [...candidates, ...extra.filter((c) => `${c.title} ${c.description}`.toLowerCase().includes(entity.name.toLowerCase())).map((c) => ({ ...c, entityQid: entity.qid, entitySourcePriority: 3, identityEvidence: `Exact full name in Openverse metadata; ${entity.qid}` }))];
         }
         candidates.sort((a, b) => (a.entitySourcePriority ?? 3) - (b.entitySourcePriority ?? 3) || Number(b.width < b.height) - Number(a.width < a.height) || b.width * b.height - a.width * a.height || (b.uploadedAt ?? '').localeCompare(a.uploadedAt ?? ''));
@@ -2837,7 +2856,7 @@ export async function resolveVisualOverlaysForClip(overlays: ClipVisualOverlay[]
         for (const query of overlay.brollQueries.slice(0, 2)) {
           if (pool.length >= 3 || collectionLeft() <= 250) break;
           const results = await Promise.all(providers.map((provider) =>
-            searchProviderWithCache(provider, query, { ...options, timeoutMs: searchCap(1500) }, 'situation').catch(() => [] as RawProviderCandidate[])));
+            trackProviderSearch(provider, query, 'situation', searchCap(4000)).catch(() => [] as RawProviderCandidate[])));
           for (const candidate of results.flat().slice(0, 3)) {
             if (pool.length >= 3 || collectionLeft() <= 250) break;
             const checked = await faceChecked(candidate, true); if (checked) add(checked, query, checked.verifiedLocalPath);
@@ -2854,10 +2873,24 @@ export async function resolveVisualOverlaysForClip(overlays: ClipVisualOverlay[]
       if (pool.length >= 3 || collectionLeft() <= 250) break;
       tried.push(query);
       // Providers run in parallel: one slow or blocked provider no longer
-      // serialises the whole beat against the wall clock.
+      // serialises the whole beat against the wall clock. A timeout is retried
+      // once with a longer cap (5s -> 7s) instead of losing the beat immediately.
       const results = await Promise.all(providers.map(async (provider) => {
-        try { return await searchProviderWithCache(provider, query, { ...options, timeoutMs: searchCap(2500) }, overlay.category); }
-        catch (error) { failures.set(overlay.id, `Provider unavailable: ${error instanceof Error ? error.message : 'network error'}`); return [] as RawProviderCandidate[]; }
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            const timeoutMs = searchCap(attempt === 0 ? 5000 : 7000);
+            const candidates = await trackProviderSearch(provider, query, overlay.category, timeoutMs);
+            return candidates;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : 'network error';
+            const timedOut = /timeout|aborted/i.test(message);
+            if (attempt === 0 && timedOut && collectionLeft() > 1500) continue;
+            log.warn(`Visual provider ${provider} failed for "${query}": ${message}`);
+            failures.set(overlay.id, `Provider unavailable (${provider}): ${message}`);
+            return [] as RawProviderCandidate[];
+          }
+        }
+        return [] as RawProviderCandidate[];
       }));
       for (const candidates of results) for (const candidate of candidates) add(candidate, query);
     }
@@ -2942,6 +2975,15 @@ export async function resolveVisualOverlaysForClip(overlays: ClipVisualOverlay[]
       queriesTried: queriesById.get(overlay.id) ?? [], top3: pool.map((entry) => ({ candidateId: visualCandidateId(entry.candidate), title: entry.candidate.title, textScore: entry.score, visionScore: scores?.get(visualCandidateId(entry.candidate)) ?? null })),
       chosenQuery: result.chosenQuery, chosenTitle: result.attribution?.title, visionScore: result.visionScore,
       decision: result.status === 'resolved' ? 'accepted' : 'skipped', reason: result.skipReason });
+  }
+  if (providerDiagnostics.size) {
+    const summary = (Object.keys(providerStates) as VisualProviderName[])
+      .filter((provider) => providerDiagnostics.has(provider))
+      .map((provider) => {
+        const stats = providerDiagnostics.get(provider)!;
+        return `${provider} ok=${stats.ok} timeout=${stats.timeout} failed=${stats.failed}`;
+      });
+    log.info(`[visuals] provider stats: ${summary.join(', ')}`);
   }
   if (options.clipId) {
     const dir = path.resolve('data/visual-debug'); fs.mkdirSync(dir, { recursive: true });

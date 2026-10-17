@@ -1,3 +1,9 @@
+// Prefer IPv4: on Windows a broken/absent IPv6 route makes every provider
+// search wait for a fallback. Must run before the worker opens any connection.
+import dns from 'node:dns';
+
+dns.setDefaultResultOrder('ipv4first');
+
 import { validateVisualGemini } from '../lib/startup-validation';
 import {
   closeDatabase,

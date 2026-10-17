@@ -63,6 +63,62 @@ test('render has no provider resolution, bank lookup, planner completion or fram
 });
 
 
+test('a provider search that times out is retried once and its results are still used', async (t) => {
+  createTemporaryDatabase(t);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-retry-'));
+  setVisualCacheDirForTests(dir); resetVisualProviderStateForTests();
+  const original = globalThis.fetch;
+  const originalTimeout = AbortSignal.timeout;
+  const caps: number[] = [];
+  // Record the abort caps so the retry is proven to use a longer timeout.
+  AbortSignal.timeout = ((ms: number) => { caps.push(ms); return originalTimeout.call(AbortSignal, ms); }) as typeof AbortSignal.timeout;
+  let searches = 0;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes('api.pexels.com')) {
+      searches += 1;
+      if (searches === 1) throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+      return Response.json({ photos: [1, 2, 3].map((id) => ({ id, width: 1080, height: 1920, alt: 'Workers installing rooftop solar panels', url: `https://www.pexels.com/photo/${id}`, src: { original: `https://images.pexels.com/${id}.png` }, photographer: 'Provider' })) });
+    }
+    if (url.includes('images.pexels.com')) return new Response(new Uint8Array(makeSamplePngBuffer()), { headers: { 'content-type': 'image/png' } });
+    if (url.includes('generativelanguage.googleapis.com')) return Response.json({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: '{"verdicts":[]}' }] } }] });
+    return new Response('', { status: 404 });
+  };
+  try {
+    const [result] = await resolveVisualOverlaysForClip([moment], {
+      pexelsApiKey: 'test-valid-pexels-key-1234',
+      geminiApiKeys: ['test-valid-gemini-key-1234'],
+      budget: createVisualApiBudget(60_000),
+      renderSettings: { visualProviders: { pexels: true, pixabay: false, unsplash: false, openverse: false, wikimedia: false } },
+    });
+    assert.equal(searches, 2, 'a timeout must be retried exactly once');
+    assert.deepEqual(caps.slice(0, 2), [5000, 7000], 'the retry uses a longer cap');
+    assert.doesNotMatch(result.skipReason ?? '', /Provider unavailable/, 'the retry must not surface as a provider failure');
+  } finally { globalThis.fetch = original; AbortSignal.timeout = originalTimeout; setVisualCacheDirForTests(null); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a non-timeout provider error is not retried and names the failing provider', async (t) => {
+  createTemporaryDatabase(t);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-fail-'));
+  setVisualCacheDirForTests(dir); resetVisualProviderStateForTests();
+  const original = globalThis.fetch;
+  let searches = 0;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes('api.pexels.com')) { searches += 1; throw new Error('socket ECONNRESET'); }
+    return new Response('', { status: 404 });
+  };
+  try {
+    const [result] = await resolveVisualOverlaysForClip([{ ...moment, brollQueries: [], searchQueries: ['rooftop solar installation'] }], {
+      pexelsApiKey: 'test-valid-pexels-key-1234',
+      budget: createVisualApiBudget(60_000),
+      renderSettings: { visualProviders: { pexels: true, pixabay: false, unsplash: false, openverse: false, wikimedia: false } },
+    });
+    assert.equal(searches, 1, 'only timeouts are retried');
+    assert.match(result.skipReason ?? '', /Provider unavailable \(pexels\): socket ECONNRESET/);
+  } finally { globalThis.fetch = original; setVisualCacheDirForTests(null); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('a slow search phase stops before the vision reserve instead of starving the relevance check', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'visual-phase-'));
   setVisualCacheDirForTests(dir); resetVisualProviderStateForTests();
