@@ -1,6 +1,6 @@
 import { entityImageCandidates, resolvePublicEntity, inspectVisualFaces, rememberEntityImage, passesVisualFacePolicy } from './entity-visuals';
 import { visualGeminiModels } from './gemini-pool';
-import { requestGeminiJson, remainingVisualMs, type VisualApiBudget } from './gemini-pool';
+import { requestGeminiJson, remainingVisualMs, VISION_RESERVE_MS, type VisualApiBudget } from './gemini-pool';
 import { Jimp } from 'jimp';
 import { log } from './logger';
 import { planVisualFrame } from './visual-frame';
@@ -2605,7 +2605,7 @@ let thumbnailActive = 0;
 const thumbnailWaiters: Array<() => void> = [];
 async function thumbnail(candidate: RawProviderCandidate, localPath?: string, budget?: VisualApiBudget): Promise<string> {
   const waitMs = remainingVisualMs(budget, 25000);
-  if (thumbnailActive >= 4) await new Promise<void>((resolve, reject) => {
+  if (thumbnailActive >= 6) await new Promise<void>((resolve, reject) => {
     const grant = () => { clearTimeout(timer); resolve(); };
     const timer = setTimeout(() => {
       const index = thumbnailWaiters.indexOf(grant);
@@ -2683,7 +2683,7 @@ export async function verifyClipVisualCandidatesWithGeminiVision(params: {
   if (cachedText) {
     params.moments.forEach((moment) => allowed.set(moment.momentId, new Set(moment.candidates.map((c) => visualCandidateId(c.candidate)))));
     if (params.budget) params.budget.cacheHits++;
-  } else if (!items.some((item) => item.candidates.length)) throw new Error('Vision unavailable: no decodable thumbnails');
+  } else if (!items.some((item) => item.candidates.length)) throw new Error(`Vision unavailable: no decodable thumbnails${params.budget && Date.now() >= params.budget.deadline ? ' (prefetch budget exhausted)' : ''}`);
   const text = cachedText ?? await requestGeminiJson({
     keys: params.geminiApiKeys.filter(isUsableSecret), rpm: params.rpm, budget: params.budget, task: 'vision', timeoutMs: params.timeoutMs ?? 10_000,
     body: { contents: [{ role: 'user', parts }], generationConfig: {
@@ -2767,6 +2767,18 @@ async function mapVisualsLimited<T>(items: T[], concurrency: number, fn: (item: 
 /** Prefetch only. One immutable pool is passed to vision and used for selection. */
 export async function resolveVisualOverlaysForClip(overlays: ClipVisualOverlay[], options: ResolveVisualOverlaysOptions = {}): Promise<ClipVisualOverlay[]> {
   if (!(options.renderSettings?.autoVisuals ?? DEFAULT_RENDER_SETTINGS.autoVisuals)) return overlays;
+  // The vision gate gets a guaranteed slice of the budget. Search and downloads
+  // stop before it and hand over whatever pools already exist; without this a
+  // slow search phase consumed the whole prefetch and every beat failed closed
+  // with "Vision unavailable: no decodable thumbnails".
+  const visionReserve = Math.min(VISION_RESERVE_MS, Math.max(2000, Math.floor((options.budget ? options.budget.deadline - Date.now() : 0) / 3)));
+  const collectionDeadline = options.budget ? options.budget.deadline - visionReserve : Number.POSITIVE_INFINITY;
+  const collectionLeft = () => collectionDeadline - Date.now();
+  const searchCap = (cap: number): number => {
+    const left = collectionLeft();
+    if (left <= 250) throw new Error('Visual search ran out of prefetch budget');
+    return Math.max(250, Math.min(cap, left));
+  };
   const recent = recentVisualKeys(options.videoId, options.clipId);
   const poolById = new Map<string, PoolCandidate[]>();
   const queriesById = new Map<string, string[]>();
@@ -2778,8 +2790,7 @@ export async function resolveVisualOverlaysForClip(overlays: ClipVisualOverlay[]
   const faceChecked = (candidate: RawProviderCandidate, broll = false) => {
     const key = `${visualCandidateId(candidate)}:${broll}`;
     if (!assessed.has(key)) assessed.set(key, (async () => {
-      remainingVisualMs(options.budget);
-      const file = candidate.verifiedLocalPath ?? (await downloadVisualAssetSafely({ imageUrl: candidate.imageUrl, userAgent: options.wikimediaUserAgent, timeoutMs: remainingVisualMs(options.budget, 2000) })).localFilePath;
+      const file = candidate.verifiedLocalPath ?? (await downloadVisualAssetSafely({ imageUrl: candidate.imageUrl, userAgent: options.wikimediaUserAgent, timeoutMs: searchCap(2000) })).localFilePath;
       const check = await inspectVisualFaces(file);
       if (!passesVisualFacePolicy(check, broll)) return;
       return { ...candidate, verifiedLocalPath: file, faceCheck: check, isBroll: broll };
@@ -2809,7 +2820,7 @@ export async function resolveVisualOverlaysForClip(overlays: ClipVisualOverlay[]
         if (!entityRequests.has(entityKey)) entityRequests.set(entityKey, entityImageCandidates(entity, options.wikimediaUserAgent ?? '', options.budget).catch(() => []));
         let candidates = await entityRequests.get(entityKey)!;
         if (candidates.length < 3) {
-          const extra = await searchProviderWithCache('openverse', entity.name, { ...options, timeoutMs: remainingVisualMs(options.budget, 2000) }, overlay.category).catch(() => []);
+          const extra = await searchProviderWithCache('openverse', entity.name, { ...options, timeoutMs: searchCap(2000) }, overlay.category).catch(() => []);
           candidates = [...candidates, ...extra.filter((c) => `${c.title} ${c.description}`.toLowerCase().includes(entity.name.toLowerCase())).map((c) => ({ ...c, entityQid: entity.qid, entitySourcePriority: 3, identityEvidence: `Exact full name in Openverse metadata; ${entity.qid}` }))];
         }
         candidates.sort((a, b) => (a.entitySourcePriority ?? 3) - (b.entitySourcePriority ?? 3) || Number(b.width < b.height) - Number(a.width < a.height) || b.width * b.height - a.width * a.height || (b.uploadedAt ?? '').localeCompare(a.uploadedAt ?? ''));
@@ -2824,12 +2835,13 @@ export async function resolveVisualOverlaysForClip(overlays: ClipVisualOverlay[]
       // A face-free topical candidate enters the SAME vision gate, never a random person.
       if (pool.length < 3 && overlay.brollQueries?.length) {
         for (const query of overlay.brollQueries.slice(0, 2)) {
-          for (const provider of providers) {
-            const candidates = await searchProviderWithCache(provider, query, { ...options, timeoutMs: remainingVisualMs(options.budget, 1500) }, 'situation').catch(() => []);
-            for (const candidate of candidates.slice(0, 2)) { const checked = await faceChecked(candidate, true); if (checked) add(checked, query, checked.verifiedLocalPath); if (pool.length >= 3) break; }
-            if (pool.length >= 3) break;
+          if (pool.length >= 3 || collectionLeft() <= 250) break;
+          const results = await Promise.all(providers.map((provider) =>
+            searchProviderWithCache(provider, query, { ...options, timeoutMs: searchCap(1500) }, 'situation').catch(() => [] as RawProviderCandidate[])));
+          for (const candidate of results.flat().slice(0, 3)) {
+            if (pool.length >= 3 || collectionLeft() <= 250) break;
+            const checked = await faceChecked(candidate, true); if (checked) add(checked, query, checked.verifiedLocalPath);
           }
-          if (pool.length >= 3) break;
         }
       }
       if (!pool.length) failures.set(overlay.id, entity?.qid ? 'No identity-evidenced single-face image or verified face-free B-roll' : 'No unambiguous public QID; no person photo. Face-free fallback unavailable');
@@ -2839,14 +2851,19 @@ export async function resolveVisualOverlaysForClip(overlays: ClipVisualOverlay[]
     for (const bank of bankCandidates(providers)) add(bank.candidate, overlay.searchQueries[0] ?? '', bank.localPath, bank.contentHash);
     const tried: string[] = [];
     for (const query of overlay.searchQueries.slice(0, 3)) {
-      if (pool.length >= 3) break;
+      if (pool.length >= 3 || collectionLeft() <= 250) break;
       tried.push(query);
-      for (const provider of providers) {
-        try { for (const candidate of await searchProviderWithCache(provider, query, { ...options, timeoutMs: remainingVisualMs(options.budget, 2500) }, overlay.category)) add(candidate, query); }
-        catch (error) { failures.set(overlay.id, `Provider unavailable: ${error instanceof Error ? error.message : 'network error'}`); }
-        if (pool.length >= 3) break;
-      }
+      // Providers run in parallel: one slow or blocked provider no longer
+      // serialises the whole beat against the wall clock.
+      const results = await Promise.all(providers.map(async (provider) => {
+        try { return await searchProviderWithCache(provider, query, { ...options, timeoutMs: searchCap(2500) }, overlay.category); }
+        catch (error) { failures.set(overlay.id, `Provider unavailable: ${error instanceof Error ? error.message : 'network error'}`); return [] as RawProviderCandidate[]; }
+      }));
+      for (const candidates of results) for (const candidate of candidates) add(candidate, query);
     }
+    if (!pool.length) failures.set(overlay.id, collectionLeft() <= 250
+      ? 'Visual search ran out of prefetch budget before any candidate could be verified'
+      : failures.get(overlay.id) ?? 'No candidate passed content, identity, license and safety filters');
     pool.sort((a, b) => b.score - a.score);
     poolById.set(overlay.id, pool.slice(0, 3)); queriesById.set(overlay.id, tried);
   });

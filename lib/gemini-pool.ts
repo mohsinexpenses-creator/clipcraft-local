@@ -18,9 +18,9 @@ export interface VisualApiBudget {
  * Whole prefetch budget. It is a background job, so waiting longer for a slow
  * connection is better than rendering every clip with zero photos.
  */
-export const DEFAULT_VISUAL_BUDGET_MS = 60_000;
+export const DEFAULT_VISUAL_BUDGET_MS = 90_000;
 /** Budget held back for the vision relevance check after the planner finishes. */
-export const VISION_RESERVE_MS = 15_000;
+export const VISION_RESERVE_MS = 20_000;
 /** Idle caps: abort only when the model sends NOTHING for this long. */
 export const DEFAULT_VISUAL_CALL_TIMEOUT_MS = 20_000;
 export const DEFAULT_VISION_CALL_TIMEOUT_MS = 10_000;

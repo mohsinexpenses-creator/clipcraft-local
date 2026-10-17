@@ -203,10 +203,17 @@ failures are refunded so trying the next model does not exhaust that cap.
 Responses are read as a stream, and the per-call timeout is an **idle cap**, not
 a total-time cap: the planner is cut off only when it sends nothing for 20
 seconds and vision after 10 seconds, while a slow-but-working connection may keep
-streaming. The whole prefetch has a 60-second budget with 15 seconds reserved for
-the vision relevance check after the plan arrives; local decode/face
+streaming. The whole prefetch has a 90-second budget. The last 20 seconds are
+reserved for the vision relevance check: provider search and image downloads stop
+before that window and hand over whatever candidates they already have, so a slow
+Pexels/Openverse/Wikimedia query can no longer starve the gate and fail every beat
+with "no decodable thumbnails". Provider queries for one beat run in parallel
+(one blocked provider does not serialise the rest). Local decode/face
 inference/frame preparation and disk writes can add time. Up to two persisted
-prefetch jobs run independently; render does not wait for all siblings.
+prefetch jobs run independently; render does not wait for all siblings. The worker
+log prints one line per clip with resolved count, total/gemini time, attempts and
+the first reason, e.g. `3/10 visual(s) resolved in 61240ms (gemini 31200ms, 4
+attempt(s))`.
 
 If the tile says `Visual prefetch unavailable`, the parenthetical names the task
 and the real cause, and the next chain model is still tried: `no response for
@@ -273,7 +280,7 @@ not proof of full uploaded-video transcription/AI behavior or live identity accu
 **Still requires the target Windows PC and real credentials:** whisper executable
 and VC++ runtime, QSV/NVENC driver/encoder smoke tests, a full upload→transcribe→AI
 selection→prefetch→render, real named-person/coreference review, actual model
-entitlement/quota recovery, long-clip fill rates, the 60-second prefetch budget,
+entitlement/quota recovery, long-clip fill rates, the 90-second prefetch budget,
 and cancellation/restart while real native jobs run. Test those before production.
 
 If text is hidden, compare the pre-caption debug encode and check stacking, not card

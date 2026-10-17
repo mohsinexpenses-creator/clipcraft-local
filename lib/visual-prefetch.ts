@@ -120,6 +120,9 @@ export async function runVisualPrefetch(clipId: string, options: { cacheDir?: st
   const timing = stats();
   if (!debug) debug = { clipId, videoId: clip.videoId, beats: [], reason };
   safeWrite(debugFile, { ...(debug as object), reason, stats: timing });
+  // One line per clip so the worker log shows where the budget went instead of
+  // only the final fail-closed reason.
+  log.detail(`${clipId}: ${resolvedCount}/${overlays.filter((ov) => ov.kind !== 'keyword-pop' && ov.kind !== 'zoom-beat' && ov.status !== 'removed').length} visual(s) resolved in ${timing.prefetchMs}ms (gemini ${timing.geminiMs}ms, ${timing.attempts} attempt(s))${reason ? ` · ${reason.split('; ')[0].slice(0, 140)}` : ''}`);
   if (cacheFile && !wholeCacheHit && !reason?.startsWith('Visual prefetch unavailable') && !overlays.some((ov) => ov.status === 'skipped' && /unavailable|quota|network|deadline|key|HTTP/i.test(ov.skipReason ?? ''))) safeWrite(cacheFile, { overlays, reason, debug } satisfies PrefetchCache);
   // Never resurrect a deleted/cancelled clip or overwrite edits/a manual render.
   let cancelled = false;

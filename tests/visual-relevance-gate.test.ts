@@ -63,6 +63,31 @@ test('render has no provider resolution, bank lookup, planner completion or fram
 });
 
 
+test('a slow search phase stops before the vision reserve instead of starving the relevance check', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'visual-phase-'));
+  setVisualCacheDirForTests(dir); resetVisualProviderStateForTests();
+  const original = globalThis.fetch;
+  globalThis.fetch = async (_input, init) => new Promise<Response>((_resolve, reject) => {
+    // AbortSignal.timeout is unref'ed; the guard keeps the loop alive like a socket.
+    const guard = setTimeout(() => reject(new Error('Fixture never aborted')), 10_000);
+    const abort = () => { clearTimeout(guard); reject(new Error('Fixture abort')); };
+    if (init?.signal?.aborted) abort();
+    else init?.signal?.addEventListener('abort', abort, { once: true });
+  });
+  const started = performance.now();
+  try {
+    const [result] = await resolveVisualOverlaysForClip([moment], {
+      pexelsApiKey: 'test-valid-pexels-key-1234',
+      geminiApiKeys: ['test-valid-gemini-key-1234'],
+      budget: createVisualApiBudget(3_000),
+      renderSettings: { visualProviders: { pexels: true, pixabay: false, unsplash: false, openverse: false, wikimedia: false } },
+    });
+    assert.equal(result.status, 'skipped');
+    assert.match(result.skipReason ?? '', /prefetch budget/);
+    assert.ok(performance.now() - started < 3_500, `search phase must yield to the vision reserve, took ${Math.round(performance.now() - started)}ms`);
+  } finally { globalThis.fetch = original; setVisualCacheDirForTests(null); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('thumbnail slot waits and fetches share the per-clip deadline; expired queued work starts no new network', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'visual-deadline-'));
   setVisualCacheDirForTests(dir);
@@ -85,7 +110,7 @@ test('thumbnail slot waits and fetches share the per-clip deadline; expired queu
       moments: [0, 1, 2].map((id) => ({ momentId: `deadline-${id}`, quote: moment.quote, visualIntent: moment.visualIntent, entityName: '', negativeCues: [], candidates })),
       geminiApiKeys: ['valid-test-gemini-key'], budget: createVisualApiBudget(100),
     }), /no decodable thumbnails/);
-    assert.ok(requests > 0 && requests <= 4, `only initial slots may fetch, got ${requests}`);
+    assert.ok(requests > 0 && requests <= 6, `only initial slots may fetch, got ${requests}`);
     assert.ok(performance.now() - started < 3000);
   } finally { globalThis.fetch = original; setVisualCacheDirForTests(null); fs.rmSync(dir, { recursive: true, force: true }); }
 });
