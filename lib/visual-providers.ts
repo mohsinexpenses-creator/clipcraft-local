@@ -24,12 +24,12 @@ import { isUsableSecret } from './app-settings';
 import { tokenizeContentWords, tokenizeWords } from './contextual-visuals';
 import { getDatabase } from './db';
 
-export const MAX_IMAGE_DOWNLOAD_BYTES = 12 * 1024 * 1024; // 12 MB
-export const DEFAULT_VISUAL_CACHE_MAX_BYTES = 5 * 1024 * 1024 * 1024; // 5 GB
-export const DEFAULT_VISUAL_SEARCH_TTL_DAYS = 21; // 14-30 day window
-export const MIN_IMAGE_DIMENSION = 200;
-export const MAX_IMAGE_DIMENSION = 8192;
-export const MAX_IMAGE_PIXELS = 25_000_000;
+ const MAX_IMAGE_DOWNLOAD_BYTES = 12 * 1024 * 1024; // 12 MB
+ const DEFAULT_VISUAL_CACHE_MAX_BYTES = 5 * 1024 * 1024 * 1024; // 5 GB
+ const DEFAULT_VISUAL_SEARCH_TTL_DAYS = 21; // 14-30 day window
+ const MIN_IMAGE_DIMENSION = 200;
+ const MAX_IMAGE_DIMENSION = 8192;
+ const MAX_IMAGE_PIXELS = 25_000_000;
 
 export interface RawProviderCandidate {
   entityQid?: string; identityEvidence?: string; uploadedAt?: string;
@@ -57,7 +57,7 @@ export interface RawProviderCandidate {
   mimeType?: string;
 }
 
-export interface EvaluatedLicense {
+ interface EvaluatedLicense {
   allowed: boolean;
   licenseCode?: VisualLicenseCode;
   displayLabel: string;
@@ -67,7 +67,7 @@ export interface EvaluatedLicense {
   reason?: string;
 }
 
-export interface ScoredCandidate {
+ interface ScoredCandidate {
   candidate: RawProviderCandidate;
   license: EvaluatedLicense;
   accepted: boolean;
@@ -76,7 +76,7 @@ export interface ScoredCandidate {
   reason?: string;
 }
 
-export interface ProviderRateLimitState {
+ interface ProviderRateLimitState {
   provider: VisualProviderName;
   limit: number | null;
   remaining: number | null;
@@ -300,21 +300,6 @@ function writeSqliteSearchCache(params: {
   }
 }
 
-export interface ImageBankRecord {
-  id: string;
-  provider: VisualProviderName;
-  assetId: string;
-  localPath: string;
-  tags: string[];
-  width: number;
-  height: number;
-  fileSize: number;
-  contentHash?: string;
-  attribution: VisualAssetAttribution;
-  lastUsed: string;
-  createdAt: string;
-}
-
 export function upsertImageBankEntry(entry: {
   provider: VisualProviderName;
   assetId: string;
@@ -364,7 +349,7 @@ export function upsertImageBankEntry(entry: {
   }
 }
 
-export function canonicalVisualFileStem(filePath?: string | null): string {
+ function canonicalVisualFileStem(filePath?: string | null): string {
   if (!filePath) return '';
   return path
     .basename(filePath)
@@ -416,152 +401,6 @@ export function registerVisualAssetDedupKeys(
 ): void {
   for (const key of keys) {
     if (key) usedSet.add(key);
-  }
-}
-
-export function findMatchingImageBankEntry(params: {
-  moment: Pick<
-    ClipVisualOverlay,
-    'category' | 'entityName' | 'visualIntent' | 'searchQueries' | 'negativeCues'
-  >;
-  allowedProviders: VisualProviderName[];
-  usedAssetIds: Set<string>;
-}): ImageBankRecord | null {
-  try {
-    if (params.allowedProviders.length === 0) return null;
-    const db = getDatabase();
-    const placeholders = params.allowedProviders.map(() => '?').join(', ');
-    const rows = db
-      .prepare(
-        `SELECT * FROM image_bank
-         WHERE provider IN (${placeholders})
-         ORDER BY last_used DESC
-         LIMIT 200`
-      )
-      .all(...params.allowedProviders) as Array<{
-      id: string;
-      provider: VisualProviderName;
-      asset_id: string;
-      local_path: string;
-      tags: string;
-      width: number;
-      height: number;
-      file_size: number;
-      content_hash: string | null;
-      attribution_json: string;
-      last_used: string;
-      created_at: string;
-    }>;
-
-    if (rows.length === 0) return null;
-
-    const entityTokens = tokenizeContentWords(params.moment.entityName || '');
-    const queryTokens = new Set<string>([
-      ...entityTokens,
-      ...params.moment.searchQueries.flatMap((q) => tokenizeContentWords(q)),
-      ...tokenizeContentWords(params.moment.visualIntent || ''),
-    ]);
-    if (queryTokens.size === 0) return null;
-
-    const negativeTokens = new Set<string>(
-      params.moment.negativeCues.flatMap((n) => tokenizeWords(n))
-    );
-
-    let bestMatch: { record: ImageBankRecord; overlap: number } | null = null;
-
-    for (const row of rows) {
-      const rowDedupKeys = getVisualAssetDedupKeys({
-        provider: row.provider,
-        assetId: row.asset_id,
-        localFilePath: row.local_path,
-        contentHash: row.content_hash,
-      });
-      if (hasAnyVisualAssetDedupKey(params.usedAssetIds, rowDedupKeys)) continue;
-      if (!row.local_path || !fs.existsSync(row.local_path)) continue;
-
-      let parsedTags: string[] = [];
-      try {
-        const raw = JSON.parse(row.tags);
-        if (Array.isArray(raw)) parsedTags = raw.map((t) => String(t).toLowerCase());
-      } catch {
-        parsedTags = tokenizeWords(row.tags);
-      }
-
-      const tagSet = new Set(parsedTags);
-      if ([...negativeTokens].some((neg) => tagSet.has(neg))) continue;
-
-      // Named entities must match all entity tokens
-      if (entityTokens.length > 0 && !entityTokens.every((t) => tagSet.has(t))) {
-        continue;
-      }
-
-      let overlap = 0;
-      for (const qt of queryTokens) {
-        if (tagSet.has(qt)) overlap += 1;
-      }
-
-      const minOverlap =
-        entityTokens.length > 0 ? entityTokens.length : queryTokens.size >= 3 ? 2 : 1;
-      if (overlap < minOverlap) continue;
-
-      let attribution: VisualAssetAttribution;
-      try {
-        attribution = JSON.parse(row.attribution_json) as VisualAssetAttribution;
-      } catch {
-        continue;
-      }
-
-      const resolvedLocalPath = preScaleCachedVisualImage(
-        row.local_path,
-        row.width || 1200,
-        row.height || 1200
-      );
-      if (
-        hasAnyVisualAssetDedupKey(
-          params.usedAssetIds,
-          getVisualAssetDedupKeys({ localFilePath: resolvedLocalPath })
-        )
-      ) {
-        continue;
-      }
-
-      const record: ImageBankRecord = {
-        id: row.id,
-        provider: row.provider,
-        assetId: row.asset_id,
-        localPath: resolvedLocalPath,
-        tags: parsedTags,
-        width: row.width,
-        height: row.height,
-        fileSize: row.file_size,
-        ...(row.content_hash ? { contentHash: row.content_hash } : {}),
-        attribution,
-        lastUsed: row.last_used,
-        createdAt: row.created_at,
-      };
-
-      if (!bestMatch || overlap > bestMatch.overlap) {
-        bestMatch = { record, overlap };
-      }
-    }
-
-    if (!bestMatch) return null;
-
-    registerVisualAssetDedupKeys(
-      params.usedAssetIds,
-      getVisualAssetDedupKeys({
-        provider: bestMatch.record.provider,
-        assetId: bestMatch.record.assetId,
-        localFilePath: bestMatch.record.localPath,
-        contentHash: bestMatch.record.contentHash,
-      })
-    );
-    const now = new Date().toISOString();
-    db.prepare(`UPDATE image_bank SET last_used = ? WHERE id = ?`).run(now, bestMatch.record.id);
-    bestMatch.record.lastUsed = now;
-    return bestMatch.record;
-  } catch {
-    return null;
   }
 }
 
@@ -829,7 +668,7 @@ export function updateProviderRateLimitFromResponse(
   }
 }
 
-export function isProviderCoolingDown(provider: VisualProviderName): boolean {
+ function isProviderCoolingDown(provider: VisualProviderName): boolean {
   const state = providerStates[provider];
   if (Date.now() < state.backoffUntilMs) return true;
   if (
@@ -2280,7 +2119,7 @@ export function validateSafeProviderDownloadUrl(rawUrl: string): URL {
   return parsed;
 }
 
-export interface InspectedImageBinary {
+ interface InspectedImageBinary {
   format: 'jpeg' | 'png' | 'webp';
   mimeType: 'image/jpeg' | 'image/png' | 'image/webp';
   extension: 'jpg' | 'png' | 'webp';
@@ -2513,7 +2352,7 @@ export async function downloadVisualAssetSafely(params: {
 }
 
 /** Prepare an immutable 1080x1920 frame once. Legacy size arguments are ignored. */
-export function preScaleCachedVisualImage(
+ function preScaleCachedVisualImage(
   localFilePath: string,
   _width: number,
   _height: number,
@@ -2549,7 +2388,7 @@ export function preScaleCachedVisualImage(
  * Attribution builder for a candidate + license
  * ------------------------------------------------------------------ */
 
-export function buildCandidateAttribution(
+ function buildCandidateAttribution(
   candidate: RawProviderCandidate,
   license: EvaluatedLicense
 ): VisualAssetAttribution {
@@ -2643,7 +2482,7 @@ export function buildCandidateAttribution(
  * End-to-end provider router & resolver for a clip's visual overlays
  * ------------------------------------------------------------------ */
 
-export interface ResolveVisualOverlaysOptions {
+ interface ResolveVisualOverlaysOptions {
   renderSettings?: Partial<RenderDefaults>;
   geminiApiKeys?: string[];
   pexelsApiKey?: string;
@@ -2750,7 +2589,7 @@ async function searchProviderWithCache(
   return candidates;
 }
 
-export interface VisionMomentBatchItem {
+ interface VisionMomentBatchItem {
   momentId: string;
   quote: string;
   visualIntent: string;
@@ -2759,7 +2598,7 @@ export interface VisionMomentBatchItem {
   candidates: ScoredCandidate[];
 }
 interface PoolCandidate extends ScoredCandidate { query: string; localPath?: string; contentHash?: string }
-export const visualCandidateId = (candidate: RawProviderCandidate): string =>
+ const visualCandidateId = (candidate: RawProviderCandidate): string =>
   crypto.createHash('sha256').update(`${candidate.provider}:${candidate.assetId}:${candidate.imageUrl}`).digest('hex').slice(0, 24);
 
 let thumbnailActive = 0;

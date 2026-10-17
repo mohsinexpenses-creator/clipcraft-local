@@ -41,12 +41,12 @@ test('settings sanitize and mask Pixabay and Unsplash keys and resolve visualVis
 
   const resolved = resolveSettings({
     ai: sanitized,
-    render: { visualCardAspect: 'portrait', visualVisionVerify: true },
+    render: { visualVisionVerify: true },
   });
   assert.equal(resolved.effective.ai.pixabayApiKey, 'pixabay_secret_key_1234567890');
   assert.equal(resolved.effective.ai.unsplashAccessKey, 'unsplash_access_key_9876543210');
   assert.equal(resolved.effective.render.visualVisionVerify, true);
-  assert.equal(resolved.effective.render.visualCardAspect, 'portrait');
+  assert.equal('visualCardAspect' in resolved.effective.render, false, 'retired shape setting cannot affect rendering');
 });
 
 test('orientation filter is sent to Pexels, Pixabay, Unsplash, and Openverse, and scoreVisualCandidate prefers matching aspect', async (t) => {
@@ -313,7 +313,6 @@ test('Gemini vision relevance check sends one batch call per clip uses stable ca
       renderSettings: {
         autoVisuals: true,
         visualVisionVerify: true,
-        visualCardAspect: 'portrait',
         visualProviders: {
           pexels: false,
           pixabay: true,

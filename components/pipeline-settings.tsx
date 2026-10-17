@@ -21,7 +21,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
  * Same panel, same clamping, no duplicated form.
  */
 
-export interface NumberFieldProps {
+ interface NumberFieldProps {
   id: string;
   value: number;
   onCommit: (next: number) => void;
@@ -145,7 +145,7 @@ function ToggleRow({
   );
 }
 
-export interface AutomationPanelProps {
+ interface AutomationPanelProps {
   value: PipelineOptions;
   onChange?: (next: PipelineOptions) => void;
   /** Show a Save button that commits the draft (dashboard); omit for live mode (upload). */

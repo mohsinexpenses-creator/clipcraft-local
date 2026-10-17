@@ -224,11 +224,6 @@ export function getDatabase(): SqliteDatabase {
   }
 }
 
-/** Backward-compatible alias for callers that await a database accessor. */
-export async function getDb(): Promise<SqliteDatabase> {
-  return getDatabase();
-}
-
 /** Test-only connection override; the application singleton remains untouched. */
 export function setDatabaseForTests(db: SqliteDatabase | null): void {
   databaseOverrideForTests = db;
@@ -615,7 +610,7 @@ function parseJson<T>(value: string, label: string): T {
  * A corrupt or unknown row must never take the app down, so reading is deliberately
  * forgiving: bad JSON or an unexpected shape is reported and skipped.
  */
-export interface AppSettingsRow {
+ interface AppSettingsRow {
   key: AppSettingsSection;
   value: unknown;
   updatedAt: string;
@@ -1332,16 +1327,6 @@ export async function listVideoSummaries(): Promise<VideoListEntry[]> {
     )
     .all() as VideoSummaryRow[];
   return rows.map(mapVideoSummary);
-}
-
-/** One video + its clip tally (same cheap projection as `listVideoSummaries`). */
-export async function getVideoSummary(
-  id: string,
-): Promise<VideoListEntry | null> {
-  const row = getDatabase()
-    .prepare(`SELECT ${VIDEO_SUMMARY_SELECT} FROM videos v WHERE v.id = ?`)
-    .get(id) as VideoSummaryRow | undefined;
-  return row ? mapVideoSummary(row) : null;
 }
 
 export async function deleteVideo(id: string): Promise<boolean> {

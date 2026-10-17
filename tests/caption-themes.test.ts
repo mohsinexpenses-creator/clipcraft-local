@@ -9,7 +9,7 @@ import { captionReservedBand } from '../lib/overlay-stack';
 import { DEFAULT_CAPTION_PRESETS, DEFAULT_OVERLAY_STYLE_PRESETS } from '../lib/presets';
 import { selectThemeCaptionData } from '../remotion/caption-themes/data';
 import { themeRegistry } from '../remotion/caption-themes/vendor/registry';
-import type { CaptionChunk } from '../remotion/AnimatedWord';
+import type { CaptionChunk } from '../remotion/caption-chunk';
 import { CAPTION_THEME_NAMES } from '../lib/types';
 
 function chunk(id: string, start: number, text: string): CaptionChunk {

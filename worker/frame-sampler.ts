@@ -27,7 +27,7 @@ export interface FaceTrackPoint {
   y: number;
 }
 
-export interface SampledFrames {
+ interface SampledFrames {
   frames: string[];
   /** The fps actually used (frames are at 0, 1/fps, 2/fps, ...). */
   fps: number;
@@ -38,7 +38,7 @@ export interface SampledFrames {
  * speaker pipeline asks for more (see `ASD_SAMPLE_WIDTH` in `./asd`): faces in a
  * wide shot are tiny, and the sample is all the detector ever sees.
  */
-export const DEFAULT_SAMPLE_WIDTH = 640;
+ const DEFAULT_SAMPLE_WIDTH = 640;
 
 export async function sampleSegmentFrames(
   videoPath: string,
@@ -162,7 +162,7 @@ export function decimateTrack(
  *   2. slew limit (a "camera pan" never teleports - it moves at most
  *      MAX_PAN_PX_PER_SEC between samples).
  */
-export const MAX_PAN_PX_PER_SEC = 8000;
+ const MAX_PAN_PX_PER_SEC = 8000;
 const EMA_ALPHA = 0.9;
 
 export function smoothTrack(

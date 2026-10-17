@@ -1,3 +1,4 @@
+import type { VisualMomentPlan } from '../lib/types';
 import { makeSamplePngBuffer } from './visual-fixtures';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -5,16 +6,10 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import {
-  DEFAULT_RENDER_SETTINGS,
-  TranscriptData,
-  ViralClip,
-  VisualMomentPlan,
-} from '../lib/types';
+import {DEFAULT_RENDER_SETTINGS, TranscriptData, ViralClip} from '../lib/types';
 import {
   buildClipCreditsManifest,
   mapVisualMomentToOutputTimeline,
-  planClipVisualMoments,
 } from '../lib/contextual-visuals';
 import {
   RawProviderCandidate,
@@ -41,7 +36,7 @@ import {
   sanitizeSettingsSection,
 } from '../lib/app-settings';
 import { sanitizeClipEdits } from '../lib/clip-edits';
-import { planVisualCardPlacement } from '../worker/overlay-layout';
+import { fullScreenVisualPlacement } from '../worker/overlay-layout';
 import {
   buildOverlayFilterStatements,
   buildVisualOverlayFilterStatements,
@@ -180,146 +175,6 @@ test('parseViralResponse accepts clips with or without visualMoments and rejects
     () => parseViralResponse(JSON.stringify({ clips: [badVisualClip] }), 3600),
     /visualMoments/
   );
-});
-
-test('planClipVisualMoments validates against transcript words, expands single-word flashes, merges duplicates, and enforces max count & confidence threshold', () => {
-  const rawMoments: VisualMomentPlan[] = [
-    // 1. Named historical event with a tiny 0.4s timestamp -> expanded to complete beat (>= 2.5s)
-    {
-      quote: 'Apollo 11 landed on the Moon',
-      timestamp: { start: '61.0', end: '61.4' },
-      category: 'named_event',
-      entity_name: 'Apollo 11',
-      visual_intent: 'Apollo 11 lunar module on the Moon surface',
-      emotional_polarity: 'tense',
-      search_queries: ['Apollo 11 lunar module Moon', 'Apollo 11 landing 1969'],
-      negative_cues: ['cartoon', 'toy'],
-      confidence: 0.92,
-      suggested_duration: 0.4,
-      animation: 'subtle-zoom',
-      placement: 'main',
-    },
-    // 2. Duplicate mention of Apollo 11 later in the clip -> merged with #1
-    {
-      quote: 'mentioned Apollo 11 again as the ultimate teamwork test',
-      timestamp: { start: '87.9', end: '94.0' },
-      category: 'named_event',
-      entity_name: 'Apollo 11',
-      visual_intent: 'Apollo 11 mission control teamwork',
-      emotional_polarity: 'positive',
-      search_queries: ['Apollo 11 mission control NASA'],
-      negative_cues: [],
-      confidence: 0.81,
-      suggested_duration: 3.2,
-      animation: 'fade',
-      placement: 'main',
-    },
-    // 3. High-confidence generic tense action beat
-    {
-      quote: 'Then the main alarm flashed red and fuel dropped below thirty seconds',
-      timestamp: { start: '68.0', end: '75.0' },
-      category: 'situation',
-      entity_name: '',
-      visual_intent: 'Red warning alarm indicator on cockpit control panel',
-      emotional_polarity: 'tense',
-      search_queries: ['cockpit warning alarm red light', 'control panel alert gauge'],
-      negative_cues: ['happy party', 'relaxing spa'],
-      confidence: 0.84,
-      suggested_duration: 3.5,
-      animation: 'slide-up',
-      placement: 'main',
-    },
-    // 4. Named public figure (3rd distinct moment, dropped when maxVisualMoments=2)
-    {
-      quote: 'Marie Curie pioneered radioactivity research in Paris',
-      timestamp: { start: '76.0', end: '82.0' },
-      category: 'person',
-      entity_name: 'Marie Curie',
-      visual_intent: 'Archival portrait of physicist Marie Curie in laboratory',
-      emotional_polarity: 'positive',
-      search_queries: ['Marie Curie portrait laboratory'],
-      negative_cues: ['modern actress'],
-      confidence: 0.78,
-      suggested_duration: 3.5,
-      animation: 'subtle-zoom',
-      placement: 'main',
-    },
-    // 5. Low-confidence moment -> rejected by threshold
-    {
-      quote: 'while mission control held its breath',
-      timestamp: { start: '64.0', end: '67.5' },
-      category: 'emotion',
-      entity_name: '',
-      visual_intent: 'Anxious person holding breath',
-      emotional_polarity: 'tense',
-      search_queries: ['anxious person waiting'],
-      negative_cues: [],
-      confidence: 0.42,
-      suggested_duration: 3.0,
-      animation: 'fade',
-      placement: 'main',
-    },
-    // 6. Unmatched quote completely absent from transcript -> rejected
-    {
-      quote: 'This sentence never appears anywhere in the transcript at all',
-      timestamp: { start: '10.0', end: '14.0' },
-      category: 'concept',
-      entity_name: '',
-      visual_intent: 'Unmatched concept',
-      emotional_polarity: 'neutral',
-      search_queries: ['abstract concept'],
-      negative_cues: [],
-      confidence: 0.95,
-      suggested_duration: 3.0,
-      animation: 'fade',
-      placement: 'main',
-    },
-  ];
-
-  const plannedDefault = planClipVisualMoments({
-    rawMoments,
-    clipStart: 60,
-    clipEnd: 95,
-    transcript: SAMPLE_TRANSCRIPT,
-    hookTiming: { start: 8, duration: 4 },
-    options: {
-      autoVisuals: true,
-      maxVisualMoments: 2,
-      confidenceThreshold: 0.65,
-      minDuration: 2.5,
-      defaultDuration: 3.5,
-    },
-  });
-
-  assert.equal(plannedDefault.length, 2, 'default cap is 2 high-value visual moments');
-  assert.equal(plannedDefault[0].entityName, 'Apollo 11');
-  assert.ok(
-    plannedDefault[0].displayDuration >= 2.5,
-    `never a single-word flash; got ${plannedDefault[0].displayDuration}s`
-  );
-  assert.ok(
-    plannedDefault[0].searchQueries.includes('Apollo 11 mission control NASA'),
-    'duplicate mentions of the same entity merge their search queries'
-  );
-  assert.equal(plannedDefault[0].framing, 'editorial');
-  assert.equal(plannedDefault[1].category, 'situation');
-  assert.equal(plannedDefault[1].framing, 'illustrative');
-
-  // Configurable up to 3 moments
-  const plannedThree = planClipVisualMoments({
-    rawMoments,
-    clipStart: 60,
-    clipEnd: 95,
-    transcript: SAMPLE_TRANSCRIPT,
-    hookTiming: { start: 8, duration: 4 },
-    options: {
-      autoVisuals: true,
-      maxVisualMoments: 3,
-      confidenceThreshold: 0.65,
-    },
-  });
-  assert.equal(plannedThree.length, 3);
-  assert.equal(plannedThree[2].entityName, 'Marie Curie');
 });
 
 test('mapVisualMomentToOutputTimeline accurately maps source times across [replayed hook][0.5s dip][full segment]', () => {
@@ -772,7 +627,7 @@ test('provider adapters normalize Pexels, Openverse (anonymous + OAuth2), and Wi
     assert.equal(wikiCandidates.length, 1);
     assert.equal(evaluateVisualLicense(wikiCandidates[0]).licenseCode, 'pdm');
 
-    const planned = planClipVisualMoments({
+    const planned = fixtureMoments({
       rawMoments: [
         {
           quote: 'Apollo 11 landed on the Moon',
@@ -852,7 +707,7 @@ test('lack of suitable image marks overlay as skipped and never throws', async (
     });
 
   try {
-    const planned = planClipVisualMoments({
+    const planned = fixtureMoments({
       rawMoments: [
         {
           quote: 'Apollo 11 landed on the Moon',
@@ -950,18 +805,8 @@ test('settings and clip-edits sanitize visual fields and mask Pexels/Openverse s
   assert.equal(edits.visualOverlays?.[0].animation, 'slide-up');
 });
 
-test('planVisualCardPlacement and buildOverlayFilterStatements composite visual cards in a single FFmpeg pass without overlapping captions', () => {
-  const card = planVisualCardPlacement({
-    plan: {
-      mode: 'single',
-      cropW: 608,
-      cropH: 1080,
-      points: [],
-      faceAnchorY: 0.32,
-    },
-    captionBand: { top: 1350, bottom: 1620 },
-    hookBand: { top: 1180, bottom: 1320 },
-  });
+test('fullScreenVisualPlacement and buildOverlayFilterStatements composite visual cards in a single FFmpeg pass without overlapping captions', () => {
+  const card = fullScreenVisualPlacement();
   assert.equal(card.height, 1920, 'visual fills the frame behind captions');
 
   const visStatements = buildVisualOverlayFilterStatements(
@@ -1009,3 +854,17 @@ test('planVisualCardPlacement and buildOverlayFilterStatements composite visual 
   assert.match(combined[1], /^\[vbase\]\[visimg0\]overlay=.*\[vvis\]$/);
   assert.match(combined[3], /^\[vvis\]\[overlay0\]overlay=.*\[v\]$/);
 });
+
+// Explicit provider fixtures; fuzzy-quote photo planning was deliberately removed.
+function fixtureMoments(params: { rawMoments: VisualMomentPlan[]; clipStart: number; clipEnd: number; [key: string]: unknown }) {
+  return params.rawMoments.map((raw, i) => {
+    const start = Number(raw.timestamp.start); const end = start + 3;
+    return { id: `fixture-${i}`, quote: raw.quote, sourceStart: start, sourceEnd: end,
+      clipRelativeStart: start - params.clipStart, clipRelativeEnd: end - params.clipStart, displayDuration: 3,
+      outputWindows: [{ segment: 'main' as const, start: start - params.clipStart, end: end - params.clipStart }],
+      category: raw.category, entityName: raw.entity_name, visualIntent: raw.visual_intent,
+      emotionalPolarity: raw.emotional_polarity, searchQueries: raw.search_queries, negativeCues: raw.negative_cues ?? [],
+      confidence: raw.confidence, animation: 'subtle-zoom' as const, placement: 'main' as const, framing: 'editorial' as const,
+      kind: 'photo-card' as const, status: 'planned' as const };
+  });
+}

@@ -1,4 +1,4 @@
-import React from "react";
+
 import { AudioLines, Clapperboard, Gauge, Sparkles } from "lucide-react";
 import { UploadWorkspace } from "@/components/upload-workspace";
 

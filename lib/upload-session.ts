@@ -31,7 +31,7 @@ import { PipelineOptions, VideoRecord } from './types';
  * operation even for a multi-gigabyte file - and only then probes/saves/queues.
  */
 
-export interface UploadSessionMeta {
+ interface UploadSessionMeta {
   id: string;
   originalName: string;
   /** What the client says it will send. 0 when unknown; used to detect truncated files. */
@@ -461,7 +461,7 @@ async function moveFile(from: string, to: string): Promise<void> {
  * this, every abandoned multi-GB upload would keep its bytes on disk forever.
  * Throttled so the check costs nothing on a normal upload.
  */
-export async function cleanupStaleUploadSessions(force = false): Promise<number> {
+ async function cleanupStaleUploadSessions(force = false): Promise<number> {
   const now = Date.now();
   if (!force && now - lastCleanupAt < CLEANUP_INTERVAL_MS) return 0;
   lastCleanupAt = now;

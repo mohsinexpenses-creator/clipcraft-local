@@ -6,7 +6,7 @@ import type {
   WordTimestamp,
 } from './types';
 
-export interface ResolvedCaptionLineStyle {
+ interface ResolvedCaptionLineStyle {
   fontFamily: string;
   fontSize: number;
   fontWeight: CaptionFontWeight;
@@ -22,7 +22,7 @@ export interface ResolvedCaptionLineStyle {
   lineHeight: number;
 }
 
-export interface CaptionVisualLine {
+ interface CaptionVisualLine {
   /** Index in lineStyles; overflow rows reuse the final style. */
   styleIndex: number;
   style: ResolvedCaptionLineStyle;

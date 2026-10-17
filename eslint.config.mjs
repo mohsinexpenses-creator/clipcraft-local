@@ -5,11 +5,12 @@ import nextTs from "eslint-config-next/typescript";
 const eslintConfig = defineConfig([
   ...nextVitals,
   ...nextTs,
+  { rules: { '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' }] } },
   // Override default ignores of eslint-config-next.
   globalIgnores([
     // Default ignores of eslint-config-next:
     ".next/**",
-    ".agents/**", // Agent reference skills are not application source.
+    ".tmp/**",
     "remotion/caption-themes/vendor/**", // Upstream theme files are vendored under their MIT license.
     "out/**",
     "build/**",

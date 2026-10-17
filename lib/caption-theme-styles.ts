@@ -5,7 +5,7 @@ import {
   type OverlayStylePreset,
 } from './types';
 
-export interface CaptionThemeDefinition {
+ interface CaptionThemeDefinition {
   id: CaptionThemeName;
   label: string;
   description: string;

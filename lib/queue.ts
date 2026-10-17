@@ -26,11 +26,11 @@ export const TRANSCRIPTION_QUEUE_NAME = 'transcription';
  * behaviour transcription and rendering already have.
  */
 export const VIRAL_DETECTION_QUEUE_NAME = 'viral-detection';
-export const DEFAULT_MAX_ATTEMPTS = 2;
-export const DEFAULT_RETRY_DELAY_MS = 2000;
+ const DEFAULT_MAX_ATTEMPTS = 2;
+ const DEFAULT_RETRY_DELAY_MS = 2000;
 export const QUEUE_POLL_INTERVAL_MS = 1000;
 
-export type JobStatus = 'queued' | 'running' | 'done' | 'failed';
+ type JobStatus = 'queued' | 'running' | 'done' | 'failed';
 
 export interface QueueJob<T = unknown> {
   id: string;
@@ -51,7 +51,7 @@ export interface QueueJob<T = unknown> {
   clipId?: string;
 }
 
-export interface EnqueueOptions {
+ interface EnqueueOptions {
   /** Stable IDs let a retry/re-render replace an old terminal row for that item. */
   id?: string;
   maxAttempts?: number;
@@ -212,7 +212,7 @@ export function enqueue<T>(
   return id;
 }
 
-export function isStrictVideoOrderEnabled(
+ function isStrictVideoOrderEnabled(
   db: SqliteDatabase = getDatabase(),
   explicit?: boolean
 ): boolean {
@@ -345,7 +345,7 @@ export function completeJob(id: string, resultValue: unknown, db: SqliteDatabase
   return result.changes > 0;
 }
 
-export type JobFailureOutcome = 'retry' | 'failed' | 'ignored';
+ type JobFailureOutcome = 'retry' | 'failed' | 'ignored';
 
 export function failJob(
   id: string,
@@ -396,17 +396,6 @@ export function getJob(id: string, db: SqliteDatabase = getDatabase()): QueueJob
 }
 
 /**
- * Delete a job only while it is still QUEUED. Returns true when a row was
- * removed. A running job is never deleted here - the process executing it owns
- * that row, and the per-record cancellation flags (`clip.cancelling`) are the
- * safe way to stop work that already started.
- */
-export function removeJobIfQueued(id: string, db: SqliteDatabase = getDatabase()): boolean {
-  const result = db.prepare(`DELETE FROM jobs WHERE id = ? AND status = 'queued'`).run(id);
-  return result.changes > 0;
-}
-
-/**
  * Cancels a job in the queue regardless of whether it is `queued` or `running`:
  * - `queued`: deletes the row immediately and returns `'removed'`.
  * - `running`: marks the row `failed` with `'Cancelled by user.'` and returns `'running'`.
@@ -432,11 +421,6 @@ export function cancelJob(
   if (running.changes > 0) return 'running';
 
   return 'none';
-}
-
-export function listJobs(db: SqliteDatabase = getDatabase()): QueueJob[] {
-  const rows = db.prepare('SELECT * FROM jobs ORDER BY created_at, id').all() as JobRow[];
-  return rows.map(mapJob);
 }
 
 export async function enqueueClipJob(jobData: JobData): Promise<void> {
@@ -609,23 +593,4 @@ export function listVideoPipelineJobs(
     )
     .all(videoId, videoId) as JobRow[];
   return rows.map(mapJob);
-}
-
-/** Terminal job state for a record (used to report why a step failed). */
-export function findLatestJob(
-  type: string,
-  selector: { videoId?: string; clipId?: string },
-  db: SqliteDatabase = getDatabase()
-): QueueJob | null {
-  const { videoId, clipId } = selector;
-  const row = (
-    clipId
-      ? db
-          .prepare(`SELECT * FROM jobs WHERE type = ? AND clip_id = ? ORDER BY created_at DESC LIMIT 1`)
-          .get(type, clipId)
-      : db
-          .prepare(`SELECT * FROM jobs WHERE type = ? AND video_id = ? ORDER BY created_at DESC LIMIT 1`)
-          .get(type, videoId ?? '')
-  ) as JobRow | undefined;
-  return row ? mapJob(row) : null;
 }

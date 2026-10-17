@@ -7,9 +7,9 @@
  */
 import type { CaptionFontWeight } from "./types";
 
-export type CaptionCssWeight = 400 | 700 | 800 | 900;
+ type CaptionCssWeight = 400 | 700 | 800 | 900;
 
-export interface CaptionFontFile {
+ interface CaptionFontFile {
   /** First family name used in a preset's `fontFamily` list. */
   family: string;
   /** CSS weight this file is registered under (see cssWeightFor). */
@@ -28,7 +28,7 @@ export const CAPTION_FONT_FILES: CaptionFontFile[] = [
   { family: "Bebas Neue", weight: 400, file: "BebasNeue-Regular.ttf" },
 ];
 
-export function cssWeightFor(
+ function cssWeightFor(
   weight: CaptionFontWeight | undefined,
 ): CaptionCssWeight {
   switch (weight) {

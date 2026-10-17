@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { evaluateVisualClips, evaluateVisualTimings, readTimingLines, type TimingRow } from '../lib/visual-evaluation';
+import { evaluateVisualClips, evaluateVisualTimings, readTimingLines, type TimingRow } from '../scripts/eval-visuals';
 import type { ClipRecord, ClipVisualOverlay } from '../lib/types';
 
 const overlay: ClipVisualOverlay = { id: 'solar', quote: 'Chhat par solar panel lagwa rahe hain.', sentenceMeaningEn: 'Installing solar panels on the roof.', visualIntent: 'Rooftop solar panels', sourceStart: 0.5, sourceEnd: 3.5, clipRelativeStart: 0.5, clipRelativeEnd: 3.5, displayDuration: 3, outputWindows: [], category: 'situation', entityName: '', emotionalPolarity: 'neutral', confidence: 0.9, searchQueries: ['rooftop solar panels'], negativeCues: [], animation: 'subtle-zoom', placement: 'main', framing: 'illustrative', kind: 'photo-card', status: 'resolved', localFilePath: '/photo.jpg', visionScore: 9, visualVerificationHash: 'proof', preparedContentHash: 'bytes' };

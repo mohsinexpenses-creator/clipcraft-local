@@ -8,7 +8,7 @@ import { parseTimestamp } from '../lib/viral-response';
  */
 export const DEFAULT_HOOK_FALLBACK_SECONDS = 3;
 
-export interface HookTimingInput {
+ interface HookTimingInput {
   enabled: boolean;
   clipStart: number;
   clipEnd: number;
@@ -21,7 +21,7 @@ export interface HookTimingInput {
   fallbackDuration?: number;
 }
 
-export interface ResolvedHookTiming {
+ interface ResolvedHookTiming {
   /** Hook start relative to the beginning of the selected clip segment. */
   start: number;
   /** Exact detected range when available; otherwise a bounded legacy fallback. */

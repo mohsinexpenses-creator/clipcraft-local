@@ -98,7 +98,7 @@ const isRiskyWord = (word: unknown): boolean => {
   );
 };
 
-export const isVisualMomentPlan = (moment: unknown): boolean => {
+ const isVisualMomentPlan = (moment: unknown): boolean => {
   const entry = moment as Record<string, unknown> | null;
   if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return false;
   const ts = entry.timestamp as Record<string, unknown> | null;

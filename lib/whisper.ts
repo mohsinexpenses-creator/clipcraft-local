@@ -8,7 +8,7 @@ import { transcribeWithDeepgram } from './deepgram';
 import { getStoredPathSettings, loadEffectiveSettings } from './app-settings';
 import { TranscriptData, TranscriptSegment, WordTimestamp } from './types';
 
-export interface TranscriptionEngineInfo {
+ interface TranscriptionEngineInfo {
   provider: 'deepgram' | 'whisper.cpp';
   label: string;
   model: string;
@@ -125,7 +125,7 @@ export function getWhisperModelPath(): string | null {
 }
 
 /** `auto` keeps whisper.cpp's language detection (needed for Urdu/Hindi content). */
-export function getWhisperLanguage(): string {
+ function getWhisperLanguage(): string {
   const raw = process.env.WHISPER_LANGUAGE?.trim().toLowerCase();
   if (!raw || looksLikePlaceholder(raw)) return 'auto';
   return raw.replace(/^--?/, '');

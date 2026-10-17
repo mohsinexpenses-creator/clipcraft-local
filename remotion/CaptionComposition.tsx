@@ -1,7 +1,7 @@
 import React from 'react';
 import { AbsoluteFill, OffthreadVideo, useCurrentFrame, useVideoConfig } from 'remotion';
 import { CaptionPreset, OverlayStylePreset, WordTimestamp } from '../lib/types';
-import type { CaptionChunk } from './AnimatedWord';
+import type { CaptionChunk } from './caption-chunk';
 import { getCaptionChunkWordLimit } from '../lib/caption-layout';
 import {
   captionReservedBand,
@@ -63,44 +63,6 @@ export interface CaptionCompositionProps {
 }
 
 /**
- * The rendered clip is [hook intro][full segment], so the transcript has to be
- * remapped onto that timeline:
- *
- * - During the intro (0..hookDuration) the video replays the HOOK MOMENT - the
- *   words around `hookStart` - so caption them as a preview, re-based to start
- *   at 0. With hookStart=0 the window is simply the start of the clip.
- * - After the intro, every word of the full segment moves later by exactly
- *   hookDuration seconds.
- *
- * Words overlapping both lists appear twice on purpose: once as the preview,
- * once when the clip reaches that moment for real.
- */
-export function buildRenderedWords(
-  words: WordTimestamp[],
-  hookStart: number,
-  hookDuration: number
-): WordTimestamp[] {
-  const shifted: WordTimestamp[] = words.map((w) => ({
-    ...w,
-    start: w.start + hookDuration,
-    end: w.end + hookDuration,
-  }));
-
-  const intro: WordTimestamp[] =
-    hookDuration > 0
-      ? words
-          .filter((w) => w.end > hookStart && w.start < hookStart + hookDuration)
-          .map((w) => ({
-            ...w,
-            start: Math.max(0, w.start - hookStart),
-            end: Math.min(w.end - hookStart, hookDuration),
-          }))
-      : [];
-
-  return [...intro, ...shifted];
-}
-
-/**
  * Caption chunks on the FINAL clip timeline, built the way the video is cut:
  *
  *   [hook intro 0..hookDuration]   words of the hook moment (preview)
@@ -140,7 +102,7 @@ export function buildFinalCaptionChunks(
 }
 
 /** Group the transcript into short readable caption lines (TikTok/Shorts style). */
-export function buildCaptionChunks(words: WordTimestamp[], wordsPerChunk = 4): CaptionChunk[] {
+ function buildCaptionChunks(words: WordTimestamp[], wordsPerChunk = 4): CaptionChunk[] {
   if (!words || words.length === 0) return [];
 
   const chunks: CaptionChunk[] = [];

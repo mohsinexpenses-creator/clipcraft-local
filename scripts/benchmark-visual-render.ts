@@ -38,7 +38,7 @@ async function main() {
       image.bitmap.data[index + 1] = (Math.floor(y / 50) * 13) % 230;
     });
     await image.write(fixture as `${string}.jpg`);
-    const visuals: StillVisualOverlayInput[] = [0.6, 6].map((time, i) => ({ id: String(i), imagePath: fixture, x: 0, y: 0, width: 1080, height: 1920, start: time, end: time + 3, animation: 'subtle-zoom', border: false }));
+    const visuals: StillVisualOverlayInput[] = [0.6, 6].map((time, i) => ({ id: String(i), imagePath: fixture, x: 0, y: 0, width: 1080, height: 1920, start: time, end: time + 3, animation: 'subtle-zoom' }));
     const encode = (builder: typeof buildVisualOverlayFilterStatements, name: string, round: number) => {
       const graph = builder(visuals, [1, 2], '0:v', 'photos');
       const filter = [...graph.statements, `[${graph.lastLabel}]drawbox=x=250:y=1400:w=600:h=65:color=white:t=fill,format=yuv420p[out]`].join(';');

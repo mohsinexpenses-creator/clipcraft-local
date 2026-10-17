@@ -4,14 +4,14 @@
  * editable pieces, and build the CSS string back from them.
  */
 
-export interface RgbParts {
+ interface RgbParts {
   /** #rrggbb */
   hex: string;
   /** 0..1 */
   alpha: number;
 }
 
-export type BackgroundParts =
+ type BackgroundParts =
   | { mode: 'solid'; color: RgbParts }
   | {
       mode: 'gradient';
@@ -25,13 +25,13 @@ function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
 
-export function rgbToHex(r: number, g: number, b: number): string {
+ function rgbToHex(r: number, g: number, b: number): string {
   const part = (v: number) =>
     Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0');
   return `#${part(r)}${part(g)}${part(b)}`;
 }
 
-export function hexToRgb(hex: string): [number, number, number] {
+ function hexToRgb(hex: string): [number, number, number] {
   let h = hex.trim().replace(/^#/, '');
   if (h.length === 3) {
     h = h

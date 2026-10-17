@@ -3,7 +3,7 @@ import React from 'react';
 import { AbsoluteFill, useCurrentFrame, useVideoConfig } from 'remotion';
 import type { CaptionPreset } from '../../lib/types';
 import { captionReservedBand, OVERLAY_CANVAS_HEIGHT } from '../../lib/overlay-stack';
-import type { CaptionChunk } from '../AnimatedWord';
+import type { CaptionChunk } from '../caption-chunk';
 import { useCaptionFonts } from '../caption-fonts';
 import { CaptionTheme } from './vendor';
 import { selectThemeCaptionData } from './data';

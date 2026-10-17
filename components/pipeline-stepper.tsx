@@ -1,6 +1,4 @@
 "use client"
-
-import * as React from "react"
 import {
   AlertTriangle,
   Check,
@@ -73,7 +71,7 @@ function StepIcon({ step }: { step: PipelineStep }) {
   }
 }
 
-export interface PipelineStepperProps {
+ interface PipelineStepperProps {
   status: PipelineStatus
   busy?: boolean
   onResume?: () => void

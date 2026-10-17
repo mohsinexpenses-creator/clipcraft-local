@@ -6,7 +6,7 @@ import { toErrorMessage, toErrorStatus } from '@/lib/errors';
 import { sanitizeClipEdits, preserveVerifiedVisualMetadata, hasVisualMeaningChanges } from '@/lib/clip-edits';
 
 export async function GET(
-  request: Request,
+  _request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
@@ -64,7 +64,7 @@ export async function PATCH(
 }
 
 export async function DELETE(
-  request: Request,
+  _request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {

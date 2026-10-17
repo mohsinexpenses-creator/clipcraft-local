@@ -60,7 +60,7 @@ export interface Track {
   missed: number;
 }
 
-export interface TrackerOptions {
+ interface TrackerOptions {
   /** How many consecutive missed frames before a track is closed. */
   maxMissed?: number;
   /** Association gate = gateFactor * (track.w + det.w) + jitterTolerance. */

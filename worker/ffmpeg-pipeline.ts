@@ -38,18 +38,16 @@ export interface StillVisualOverlayInput {
   start: number;
   end: number;
   animation: VisualOverlayAnimation;
-  border?: boolean;
-  cornerRadius?: number;
 }
 
-export interface SfxCueInput {
+ interface SfxCueInput {
   t: number;
   sfx: string;
   gain: number;
   filePath: string;
 }
 
-export interface ProcessSegmentOptions {
+ interface ProcessSegmentOptions {
   sourceVideoPath: string;
   /** Final deliverable path: crop, captions, overlays and audio are encoded in this one pass. */
   outputPath: string;
@@ -94,10 +92,6 @@ export interface ProcessSegmentOptions {
   isCancelled?: () => boolean;
 }
 
-/** The composition is 1080x1920; never upscale past it, never exceed it. */
-const MAX_OUTPUT_WIDTH = 1080;
-const MAX_OUTPUT_HEIGHT = 1920;
-
 /**
  * Length (s) of the dip-to-black transition between the hook intro and the
  * base clip: the last 0.5s of the hook fades to black (+ silence) and the
@@ -106,12 +100,6 @@ const MAX_OUTPUT_HEIGHT = 1920;
  * this 1s window - import this constant instead of re-hard-coding 0.5.
  */
 export const HOOK_TRANSITION_SECONDS = 0.5;
-
-/** libx264 refuses odd widths/heights, and `crop` happily produces them. */
-export function evenSize(value: number, minimum = 2): number {
-  const rounded = Math.floor(value / 2) * 2;
-  return Math.max(minimum, rounded);
-}
 
 /**
  * Snap an arbitrary source fps to a value that is both a sane composition fps and
@@ -166,7 +154,7 @@ const VIDEO_PRESETS = new Set([
   "placebo",
 ]);
 
-export type VideoEncoderChoice = "x264" | "nvenc" | "qsv";
+ type VideoEncoderChoice = "x264" | "nvenc" | "qsv";
 
 const VIDEO_ENCODERS = new Set<VideoEncoderChoice>(["x264", "nvenc", "qsv"]);
 
@@ -276,7 +264,7 @@ export function buildVideoCodecArgs(
   };
 }
 
-export interface VideoEncoderProbeResult {
+ interface VideoEncoderProbeResult {
   requested: VideoEncoderChoice;
   active: VideoEncoderChoice;
   presetLabel: string;
@@ -453,7 +441,7 @@ export function buildAudioTimestampReset(audioStartOffsetSeconds = 0): string {
   return `asetpts=PTS-STARTPTS${shift},aresample=async=1000:first_pts=0`;
 }
 
-export interface SfxAudioFilterPlan {
+ interface SfxAudioFilterPlan {
   extraArgs: string[];
   filters: string[];
   audioLabel: string;
@@ -559,77 +547,24 @@ export function buildVisualOverlayFilterStatements(
     const visLabel = `visimg${index}`;
     const outLabel =
       index === visualOverlays.length - 1 ? outputFinalLabel : `vvis${index}`;
-    const w = evenSize(visual.width, 64);
-    const h = evenSize(visual.height, 64);
-    const isFullScreen = w >= MAX_OUTPUT_WIDTH && h >= MAX_OUTPUT_HEIGHT;
-    const showBorder = !isFullScreen && visual.border !== false;
-    const borderPx = showBorder ? 4 : 0;
-    const innerW = Math.max(64, w - borderPx * 2);
-    const innerH = Math.max(64, h - borderPx * 2);
-    const x = Math.round(visual.x);
-    const y = Math.round(visual.y);
+    if (visual.width !== 1080 || visual.height !== 1920 || visual.x !== 0 || visual.y !== 0) {
+      throw new Error('Visual input must be a prepared 1080x1920 full-screen frame');
+    }
     const st = Math.max(0, visual.start);
     const en = Math.max(st + 0.3, visual.end);
-    const dur = Math.max(0.3, en - st);
+    const dur = en - st;
     const fadeInDur = Math.min(0.18, dur / 4);
-    const fadeOutDur = Math.min(isFullScreen ? 0.18 : 0.28, dur / 3);
+    const fadeOutDur = Math.min(0.18, dur / 3);
     const fadeOutSt = Math.max(st, en - fadeOutDur);
-
-    // Static 1.08x overscan scale + time-expression crop drift (constant output dimensions
-    // on every frame so pad/fade never reconfigure mid-stream), optional thin border via pad,
-    // and soft alpha fade in/out.
-    const overscanW = evenSize(Math.round(innerW * 1.08), 64);
-    const overscanH = evenSize(Math.round(innerH * 1.08), 64);
-    const progressExpr = `min(1,max(0,(t-${st.toFixed(3)})/${dur.toFixed(3)}))`;
-    const cropXExpr = `trunc((iw-${innerW})/2)`;
-    const cropYExpr = `trunc((ih-${innerH})*(0.5-0.35*${progressExpr}))`;
-    const borderFilter = showBorder
-      ? `,pad=${w}:${h}:${borderPx}:${borderPx}:color=white@0.88`
-      : "";
-
-    if (isFullScreen) {
-      // Input is a prepared full-screen frame. A 2% zoom settles over 0.36s;
-      // fixed dimensions and a centered crop avoid the old projectile motion.
-      const settle = visual.animation === "fade" ? "1" : `1+0.02*max(0,1-(on/30-${st.toFixed(3)})/0.36)`;
-      statements.push(
-        `[${input}:v]zoompan=z='${settle}':x='iw/2-iw/zoom/2':y='ih/2-ih/zoom/2':d=1:s=1080x1920:fps=30,format=rgba,` +
-        `fade=t=in:st=${st.toFixed(3)}:d=${fadeInDur.toFixed(3)}:alpha=1,` +
-        `fade=t=out:st=${fadeOutSt.toFixed(3)}:d=${fadeOutDur.toFixed(3)}:alpha=1[${visLabel}]`,
-      );
-    } else {
+    const settle = visual.animation === "fade" ? "1" : `1+0.02*max(0,1-(on/30-${st.toFixed(3)})/0.36)`;
     statements.push(
-      `[${input}:v]scale=${overscanW}:${overscanH}:force_original_aspect_ratio=increase,` +
-        `crop=w=${innerW}:h=${innerH}:x='${cropXExpr}':y='${cropYExpr}'${borderFilter},format=rgba,` +
-        `fade=t=in:st=${st.toFixed(3)}:d=${fadeInDur.toFixed(3)}:alpha=1,` +
-        `fade=t=out:st=${fadeOutSt.toFixed(3)}:d=${fadeOutDur.toFixed(3)}:alpha=1[${visLabel}]`,
+      `[${input}:v]zoompan=z='${settle}':x='iw/2-iw/zoom/2':y='ih/2-ih/zoom/2':d=1:s=1080x1920:fps=30,format=rgba,` +
+      `fade=t=in:st=${st.toFixed(3)}:d=${fadeInDur.toFixed(3)}:alpha=1,` +
+      `fade=t=out:st=${fadeOutSt.toFixed(3)}:d=${fadeOutDur.toFixed(3)}:alpha=1[${visLabel}]`,
     );
-    }
-
-    // Ball-toss projectile physics entrance & exit:
-    // Launches from the bottom edge of the 1920px canvas at fast upward speed,
-    // smoothly decelerates via cubic ease-out `pow(1 - dt/riseDur, 3)` to an apex
-    // slightly above `y` (`y - 6`), settles onto `y`, and drops back down under
-    // gravity `pow((dt - dropStart)/dropDur, 2)` on exit.
-    const dt = `(t-${st.toFixed(3)})`;
-    const launchDist = Math.max(420, MAX_OUTPUT_HEIGHT + 6 - y);
-    const riseDur = Number(Math.min(0.38, Math.max(0.22, dur * 0.18)).toFixed(2));
-    const settleEnd = Number((riseDur + 0.08).toFixed(2));
-    const dropDur = Number(Math.min(0.28, Math.max(0.18, dur * 0.14)).toFixed(2));
-    const dropStart = Number(Math.max(settleEnd + 0.05, dur - dropDur).toFixed(2));
-    let yExpr = String(y);
-    if (
-      !isFullScreen && (visual.animation === "slide-up" ||
-      visual.animation === "pop" ||
-      visual.animation === "subtle-zoom")
-    ) {
-      yExpr =
-        `if(lt(${dt},${riseDur}),${y}-6+${launchDist}*pow(1-${dt}/${riseDur},3),` +
-        `if(lt(${dt},${settleEnd}),${y}-6+6*(${dt}-${riseDur})/0.08,` +
-        `if(gt(${dt},${dropStart}),${y}+${launchDist}*pow((${dt}-${dropStart})/${dropDur},2),${y})))`;
-    }
 
     statements.push(
-      `[${lastVideoLabel}][${visLabel}]overlay=x=${x}:y='${yExpr}':format=auto:` +
+      `[${lastVideoLabel}][${visLabel}]overlay=x=0:y='0':format=auto:` +
         `enable='between(t,${st.toFixed(3)},${en.toFixed(3)})':eof_action=pass:shortest=0[${outLabel}]`,
     );
     lastVideoLabel = outLabel;
@@ -706,7 +641,7 @@ export function computeSeekPhase(
   return Number.isFinite(offset) && offset >= 0 && offset < 1 ? offset : 0;
 }
 
-export async function probeFirstFrameOffset(
+ async function probeFirstFrameOffset(
   sourceVideoPath: string,
   seekTo: number,
   videoStartTime = 0,
@@ -744,34 +679,6 @@ export async function probeFirstFrameOffset(
 
 /** Seek a hair BEFORE the frame so float rounding can never skip it (2 ms << one frame). */
 const SEEK_GUARD_SECONDS = 0.002;
-
-/**
- * Output canvas for the processed clip: ALWAYS the full 1080x1920 composition
- * canvas. The smart crop produces a 9:16 window (full source height, e.g.
- * 606x1080 from a 16:9 source); we UPSCALE it to exactly 1080x1920 so the
- * Remotion composition is a 1:1 blit with NO black bars around the video.
- * (The old "never upscale" behaviour left the clip at 606x1080 centred on a
- * black 1080x1920 canvas - the user saw a small clip with pillarboxing.)
- */
-export function computeOutputSize(
-  cropWidth: number,
-  cropHeight: number,
-): { width: number; height: number } {
-  /**
-   * Validate BEFORE evenSize(): evenSize(0) clamps up to 2, so a 0x0 crop used to
-   * produce a 2x2 output canvas instead of falling back to 1080x1920.
-   */
-  if (
-    !Number.isFinite(cropWidth) ||
-    !Number.isFinite(cropHeight) ||
-    cropWidth < 16 ||
-    cropHeight < 16
-  ) {
-    return { width: MAX_OUTPUT_WIDTH, height: MAX_OUTPUT_HEIGHT };
-  }
-
-  return { width: MAX_OUTPUT_WIDTH, height: MAX_OUTPUT_HEIGHT };
-}
 
 function assertUsableFile(filePath: string, step: string): void {
   if (!fs.existsSync(filePath)) {

@@ -33,8 +33,8 @@ import {
 } from '../lib/overlay-stack';
 import type { LayoutPlan } from './layout';
 
-export const CANVAS_WIDTH = 1080;
-export const CANVAS_HEIGHT = 1920;
+ const CANVAS_WIDTH = 1080;
+ const CANVAS_HEIGHT = 1920;
 
 /** Keep overlays this far from the very top / bottom edge of the canvas. */
 const EDGE_MARGIN = 40;
@@ -56,7 +56,7 @@ export type Band = OverlayBand;
  * above the captions instead of searching face-free spots, so their placement no
  * longer depends on the exact seconds they are visible.
  */
-export interface OverlayTiming {
+ interface OverlayTiming {
   clipDuration: number;
   /** Where in the clip the hook intro is replayed from. */
   hookStart: number;
@@ -65,7 +65,7 @@ export interface OverlayTiming {
   ctaDuration: number;
 }
 
-export interface OverlayAdaptationInput {
+ interface OverlayAdaptationInput {
   plan: LayoutPlan;
   timing?: OverlayTiming;
   caption: CaptionPreset;
@@ -252,7 +252,7 @@ export function describePlacements(result: OverlayAdaptation): string {
   return `captions ${fmt(result.placements.caption)}, hook ${fmt(result.placements.hook)}, CTA ${fmt(result.placements.cta)}`;
 }
 
-export interface VisualCardPlacement {
+ interface VisualCardPlacement {
   x: number;
   y: number;
   width: number;
@@ -261,18 +261,7 @@ export interface VisualCardPlacement {
   bottom: number;
 }
 
-/** Legacy placement options are accepted but ignored for saved settings compatibility. */
-export function planVisualCardPlacement(_params: {
-  plan: LayoutPlan;
-  captionBand?: Band;
-  hookBand?: Band;
-  ctaBand?: Band;
-  cardAspect?: 'portrait' | 'square';
-  cardWidth?: number;
-  cardHeight?: number;
-  placeBehindCaptions?: boolean;
-  fullScreen?: boolean;
-}): VisualCardPlacement {
-  void _params;
+/** Photos always fill the canvas behind the caption overlay. */
+export function fullScreenVisualPlacement(): VisualCardPlacement {
   return { x: 0, y: 0, width: CANVAS_WIDTH, height: CANVAS_HEIGHT, top: 0, bottom: CANVAS_HEIGHT };
 }

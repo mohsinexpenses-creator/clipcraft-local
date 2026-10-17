@@ -37,7 +37,7 @@ import {
 export const OUTPUT_WIDTH = 1080;
 export const OUTPUT_HEIGHT = 1920;
 
-export type LayoutMode = 'speaker-focus' | 'split-screen';
+ type LayoutMode = 'speaker-focus' | 'split-screen';
 
 /** One keyframe of a crop window's centre (mirrored source pixels). */
 export interface PanPoint {
@@ -64,13 +64,13 @@ export interface SinglePlan {
 }
 
 /** A vertical band of the 1080x1920 canvas (output pixels, top < bottom). */
-export interface CanvasZone {
+ interface CanvasZone {
   top: number;
   bottom: number;
 }
 
 /** Where one person's face / head are on the canvas at one sampled moment. */
-export interface FaceTraceSample {
+ interface FaceTraceSample {
   /** Seconds from the clip start (base clip, before the hook intro is prepended). */
   t: number;
   faceTop: number;
@@ -79,7 +79,7 @@ export interface FaceTraceSample {
   headBottom: number;
 }
 
-export interface CellPlan {
+ interface CellPlan {
   trackId: number;
   /** Position/size on the 1080x1920 canvas. */
   cellX: number;
@@ -128,7 +128,7 @@ const MAX_FACE_TARGET_FRAC = 0.55;
 /** Preferred output face height (38% of a pane) before zoom/source bounds apply. */
 const SPLIT_FACE_HEIGHT_FRAC = 0.38;
 
-export interface SplitFramingSettings {
+ interface SplitFramingSettings {
   /** Face-centre target, as a fraction from the top of each pane. */
   faceTargetFrac: number;
   /** Maximum crop enlargement; limited further when the source is too small. */
@@ -341,7 +341,6 @@ function median(values: number[]): number {
  */
 // `_srcW` is intentionally part of the signature (the pan expressions clamp
 // against the source size downstream); the anchor maths works in source px.
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function buildSpeakerPath(asd: AsdResult, _srcW: number): PanPoint[] {
   const byId = new Map<number, Track>();
   for (const track of asd.tracks) byId.set(track.id, track);
@@ -380,7 +379,7 @@ function buildSpeakerPath(asd: AsdResult, _srcW: number): PanPoint[] {
 }
 
 /** Largest 9:16 window that fits inside the source (even dimensions). */
-export function largest916Window(srcW: number, srcH: number): { w: number; h: number } {
+ function largest916Window(srcW: number, srcH: number): { w: number; h: number } {
   let h = evenSize(srcH);
   let w = evenSize(h * (9 / 16));
   if (w > srcW) {
@@ -495,7 +494,7 @@ export function cellCropSize(
  * (worker/overlay-layout.ts) keeps the hook / captions / CTA out of these bands.
  * Detections are median-filtered first so one bad box can't inflate a zone.
  */
-export function paneZones(
+ function paneZones(
   samples: CameraSample[],
   camera: CameraPath,
   pane: { cellY: number; cellH: number; cropH: number; faceTargetFrac?: number }
@@ -541,21 +540,6 @@ function unionOf(trace: FaceTraceSample[]): { face: CanvasZone; head: CanvasZone
       bottom: Math.max(...trace.map((p) => p.headBottom)),
     },
   };
-}
-
-/**
- * The face / head bands of a pane restricted to the base-clip seconds [t0, t1] -
- * where the person is while an overlay that only shows for that long is on screen.
- * Falls back to the whole-clip zones when the person was not detected in that window.
- */
-export function zonesBetween(
-  cell: Pick<CellPlan, 'trace' | 'faceZone' | 'headZone'>,
-  t0: number,
-  t1: number
-): { face: CanvasZone; head: CanvasZone } {
-  const inside = cell.trace.filter((p) => p.t >= t0 && p.t <= t1);
-  if (inside.length === 0) return { face: cell.faceZone, head: cell.headZone };
-  return unionOf(inside);
 }
 
 /**
@@ -866,7 +850,7 @@ export function buildSingleFilterParts(
 }
 
 /** Where a split graph reads from, what it is called and how its labels are namespaced. */
-export interface SplitGraphIo {
+ interface SplitGraphIo {
   /** Input stream specifier, e.g. `0:v`. */
   input: string;
   /** Label of the finished 1080x1920 stream (no brackets). */

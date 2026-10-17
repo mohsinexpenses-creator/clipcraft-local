@@ -1,4 +1,4 @@
-import React from "react";
+
 import { SettingsWorkspace } from "@/components/settings/settings-workspace";
 
 export const metadata = { title: "Settings" };

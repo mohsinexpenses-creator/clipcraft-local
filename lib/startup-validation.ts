@@ -18,9 +18,9 @@ import {
 } from './whisper';
 import { probeVideoEncoder } from '../worker/ffmpeg-pipeline';
 
-export type StartupCheckStatus = 'ok' | 'warning' | 'error';
+ type StartupCheckStatus = 'ok' | 'warning' | 'error';
 
-export interface StartupCheck {
+ interface StartupCheck {
   id: string;
   label: string;
   status: StartupCheckStatus;
@@ -29,7 +29,7 @@ export interface StartupCheck {
   resolution?: string;
 }
 
-export interface StartupValidationResult {
+ interface StartupValidationResult {
   ready: boolean;
   generatedAt: string;
   checks: StartupCheck[];
@@ -179,7 +179,7 @@ async function validateFfmpeg(): Promise<StartupCheck> {
   }
 }
 
-export interface MemoryConcurrencyEvaluation {
+ interface MemoryConcurrencyEvaluation {
   warning: boolean;
   clipConcurrency: number;
   effectiveRemotionTabs: number;

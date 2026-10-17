@@ -24,7 +24,7 @@ import { buildLayoutPlan, getSplitFramingSettings } from './layout';
 import {
   adaptOverlaysToLayout,
   describePlacements,
-  planVisualCardPlacement,
+  fullScreenVisualPlacement,
 } from './overlay-layout';
 import { color, log } from '../lib/logger';
 import {
@@ -528,7 +528,7 @@ export async function processClipJob(
           await updateClip(clip).catch(() => undefined);
 
           // Contextual photos always fill the canvas; Remotion captions composite above them.
-          const fullScreenPlacement = planVisualCardPlacement({ plan, fullScreen: true });
+          const fullScreenPlacement = fullScreenVisualPlacement();
           const renderedImageKeys = new Set<string>();
 
           for (const item of resolvedVisuals) {
@@ -561,7 +561,7 @@ export async function processClipJob(
                 start: win.start,
                 end: win.end,
                 animation: item.animation,
-                border: false,
+
               });
             }
           }

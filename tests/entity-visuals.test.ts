@@ -82,3 +82,11 @@ test('generic numeric/word pops remain while explicit celebrity-name pops are re
   assert.equal(isNamedPersonKeywordPop(pop, [person]), true);
   assert.equal(isNamedPersonKeywordPop({ ...pop, quote: '2026', visualIntent: '100 books' }, [person]), false);
 });
+
+test('pipeline retains generic numbers/words but defers ALL photos to the sole sentence planner', async () => {
+  const { normalizeGenericVisualPops } = await import('../lib/contextual-visuals');
+  const generic = { kind: 'keyword-pop', category: 'statistic', quote: '100 books', entity_name: '100 books', confidence: 0.9, timestamp: { start: '1', end: '4' } };
+  const result = normalizeGenericVisualPops({ rawMoments: [generic, { ...generic, kind: 'photo-card' }, { ...generic, category: 'person', entity_name: 'Kaia Gerber' }], clipStart: 0, clipEnd: 10, enabled: true, max: 12 });
+  assert.equal(result.length, 1); assert.equal(result[0].entityName, '100 books'); assert.equal(result[0].kind, 'keyword-pop');
+  assert.equal(normalizeGenericVisualPops({ rawMoments: [generic], clipStart: 0, clipEnd: 10, enabled: false, max: 12 }).length, 0);
+});

@@ -60,7 +60,7 @@ import { readAppSettingsSections, saveAppSettingsSection } from './db';
  * Remotion tab count is deliberately NOT here - `worker/runtime-settings.ts` refreshes
  * it before every job, so a change lands on the next render.
  */
-export const RESTART_REQUIRED_PATHS = ['worker.clipConcurrency', 'worker.viralConcurrency'] as const;
+ const RESTART_REQUIRED_PATHS = ['worker.clipConcurrency', 'worker.viralConcurrency'] as const;
 
 const FILTER_IDS = new Set(DEFAULT_FILTER_PRESETS.map((preset) => preset.id));
 const LAYOUTS = new Set(['speaker-focus', 'split-screen']);
@@ -72,8 +72,6 @@ const VISUAL_PROVIDER_SET = new Set<string>(VISUAL_PROVIDERS);
 /** A key long enough to be real; the `.env.example` placeholder is explicitly rejected. */
 const MIN_SECRET_LENGTH = 20;
 const MAX_KEY_POOL = 8;
-
-export type SecretKind = 'gemini' | 'deepgram' | 'pexels' | 'openverse';
 
 /* ------------------------------------------------------------------ *
  * Env access
@@ -150,7 +148,7 @@ export function maskAiSecrets(values: Record<string, unknown>): Record<string, u
  * `inEnvFile` is true when the name appears in the file even if this process has not
  * loaded it (the worker loads it itself, `next dev` only loads it for its own process).
  */
-export function envHints(): Record<string, EnvHint> {
+ function envHints(): Record<string, EnvHint> {
   const names = [
     'GEMINI_API_KEY',
     'DEEPGRAM_API_KEY',
@@ -433,16 +431,6 @@ export function sanitizeSettingsSection(
       if (input.visualShowOnVideoCredit !== undefined) {
         out.visualShowOnVideoCredit = boolOf(input.visualShowOnVideoCredit, 'On-video visual credit');
       }
-      if (input.visualCardAspect !== undefined) {
-        const aspect = stringValue(input.visualCardAspect);
-        if (aspect !== 'portrait' && aspect !== 'square') {
-          throw badRequest('Invalid visual card aspect ratio.', 'Choose portrait (4:5) or square (1:1).');
-        }
-        out.visualCardAspect = aspect;
-      }
-      if (input.visualCardBorder !== undefined) {
-        out.visualCardBorder = boolOf(input.visualCardBorder, 'Visual card border');
-      }
       if (input.visualVisionScoreThreshold !== undefined) {
         out.visualVisionScoreThreshold = numberIn(input.visualVisionScoreThreshold, { min: 0, max: 10, precision: 0, label: "Vision relevance threshold" });
       }
@@ -636,7 +624,7 @@ function pathString(value: unknown, label: string): string {
  * trusted to have the right type yet - every read below narrows first. A hand-edited or
  * half-written row degrades to the env/default value instead of breaking a render.
  */
-export interface StoredSettingsRows {
+ interface StoredSettingsRows {
   /** Already run through `sanitizePipelineOptions` on read, so it is a known shape. */
   pipeline?: PipelineOptions;
   render?: Partial<Record<keyof RenderDefaults, unknown>>;
@@ -833,12 +821,6 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
     visualProviderPriority: resolveVisualProviderPriorityStored(renderStored.visualProviderPriority),
     visualShowOnVideoCredit:
       boolValue(renderStored.visualShowOnVideoCredit) ?? DEFAULT_RENDER_SETTINGS.visualShowOnVideoCredit,
-    visualCardAspect:
-      renderStored.visualCardAspect === 'square' || renderStored.visualCardAspect === 'portrait'
-        ? renderStored.visualCardAspect
-        : (DEFAULT_RENDER_SETTINGS.visualCardAspect ?? 'portrait'),
-    visualCardBorder:
-      boolValue(renderStored.visualCardBorder) ?? (DEFAULT_RENDER_SETTINGS.visualCardBorder ?? true),
     visualVisionScoreThreshold: intInRange(renderStored.visualVisionScoreThreshold, 0, 10, 7),
     visualRelevanceStrictness: renderStored.visualRelevanceStrictness === "lenient" ? "lenient" : "strict",
     visualizableScoreThreshold: intInRange(renderStored.visualizableScoreThreshold, 0, 10, 6),
@@ -1210,50 +1192,9 @@ export async function clearSettingsSection(section: AppSettingsSection): Promise
   return store.write(section, null);
 }
 
-/* ------------------------------------------------------------------ *
- * Accessors used by the rest of the server
- * ------------------------------------------------------------------ */
-
-/**
- * The ordered Gemini key pool, exactly as saved on /settings. `index` lets a caller
- * rotate to the next key on a 429 without re-reading the table.
- */
-export async function resolveGeminiApiKeys(): Promise<string[]> {
-  const settings = await loadEffectiveSettings();
-  return settings.ai.geminiApiKeys;
-}
-
-/**
- * The key a chain entry should start with - `null` means "not configured, do not try".
- * Every slot is a Google AI Studio model reading the same Settings-managed pool, so the
- * env name on the entry no longer selects anything; the argument stays because callers
- * log it when the pool is empty.
- */
-export async function resolveLlmApiKey(envName?: string): Promise<string | null> {
-  void envName;
-  const keys = await resolveGeminiApiKeys();
-  return keys[0] ?? null;
-}
-
 export async function resolveDeepgram(): Promise<{ apiKey: string; model: string }> {
   const settings = await loadEffectiveSettings();
   return { apiKey: settings.ai.deepgramApiKey, model: settings.ai.deepgramModel || 'nova-2' };
-}
-
-export async function resolveTranscriptionProviderChoice(): Promise<'auto' | 'deepgram' | 'whisper'> {
-  const settings = await loadEffectiveSettings();
-  return settings.ai.transcriptionProvider;
-}
-
-export async function resolveProfanityAudioMode(): Promise<ProfanitySettings['audioMode']> {
-  const settings = await loadEffectiveSettings();
-  return settings.profanity.audioMode;
-}
-
-/** Used by the worker before each job so a per-job value applies without a restart. */
-export async function resolveWorkerSettings(): Promise<WorkerSettings> {
-  const settings = await loadEffectiveSettings();
-  return settings.worker;
 }
 
 export async function resolveVisualProviderSettings(): Promise<{
@@ -1280,5 +1221,3 @@ export async function resolveVisualProviderSettings(): Promise<{
     wikimediaUserAgent: settings.ai.wikimediaUserAgent,
   };
 }
-
-export { DEFAULT_RENDER_SETTINGS, OPTION_LIMITS };

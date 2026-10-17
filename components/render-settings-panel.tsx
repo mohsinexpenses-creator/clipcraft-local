@@ -29,7 +29,7 @@ import { cn } from "cn";
  * both always edit - and show - exactly what the database stores.
  */
 
-export interface RenderSettingsPanelProps {
+ interface RenderSettingsPanelProps {
   value: RenderDefaults;
   onChange: (next: RenderDefaults) => void;
   limits?: SettingsLimits;
@@ -365,8 +365,8 @@ export function RenderSettingsPanel({
                   onCommit={(visualizableScoreThreshold) => patch({ visualizableScoreThreshold })} disabled={disabled} />
               </Field>
               <Field
-                label="Card animation"
-                hint="Entrance style for contextual visual cards."
+                label="Photo animation"
+                hint="Full-screen photo zoom or fade."
               >
                 <Select
                   value={value.visualAnimation ?? "subtle-zoom"}
@@ -383,9 +383,8 @@ export function RenderSettingsPanel({
                   </SelectTrigger>
                   <SelectContent className="dark">
                     <SelectItem value="subtle-zoom">Subtle zoom</SelectItem>
-                    <SelectItem value="slide-up">Slide up</SelectItem>
+
                     <SelectItem value="fade">Smooth fade</SelectItem>
-                    <SelectItem value="pop">Pop in</SelectItem>
                   </SelectContent>
                 </Select>
               </Field>

@@ -23,7 +23,7 @@ import { getPlannedTranscriptionEngine } from './whisper';
  * streams bytes straight to disk instead of buffering them in RAM.
  */
 
-export const ALLOWED_EXTENSIONS = new Set(['.mp4', '.mov', '.avi', '.mkv', '.webm']);
+ const ALLOWED_EXTENSIONS = new Set(['.mp4', '.mov', '.avi', '.mkv', '.webm']);
 
 /**
  * Default chunk size for the resumable uploader when the client does not pick one.
@@ -144,7 +144,7 @@ export function validateUploadFileName(fileName: string): string {
  * survives (everything else becomes `_`, runs collapsed), capped at 60 chars
  * so the final stored name always stays well inside OS path limits.
  */
-export function sanitizeFileBase(originalName: string): string {
+ function sanitizeFileBase(originalName: string): string {
   const extIndex = originalName.lastIndexOf('.');
   const base = extIndex > 0 ? originalName.slice(0, extIndex) : originalName;
   const cleaned = base
@@ -160,7 +160,7 @@ export function sanitizeFileBase(originalName: string): string {
  * works without a database, and deleting files just reuses numbers, which is
  * fine for a personal tool.
  */
-export function nextUploadSequenceNumber(): number {
+ function nextUploadSequenceNumber(): number {
   const dir = resolveUploadDir();
   let max = 0;
   try {
@@ -198,7 +198,7 @@ export function buildStoredFileName(originalName: string): string {
  * showed as 0x0 / 0s. A probe failure is downgraded to zeros instead of rejecting an
  * upload that is already safely on disk.
  */
-export async function buildVideoRecord(
+ async function buildVideoRecord(
   originalName: string,
   fileName: string,
   filePath: string,

@@ -28,7 +28,7 @@ import {
 } from './queue';
 import { sanitizePipelineOptions, sanitizeViralOptions } from './pipeline-defaults';
 import { loadEffectiveSettings } from './app-settings';
-import { planClipVisualMoments } from './contextual-visuals';
+import { normalizeGenericVisualPops } from './contextual-visuals';
 import { runVisualPrefetch } from './visual-prefetch';
 import { parseTimestamp } from './viral-response';
 import {
@@ -65,7 +65,7 @@ import {
  * are read once per step from `lib/app-settings.ts`, which returns what was saved there
  * or the built-in default - never a surprise from `.env.local`.
  */
-export async function resolveRenderDefaults(): Promise<RenderDefaults> {
+ async function resolveRenderDefaults(): Promise<RenderDefaults> {
   const settings = await loadEffectiveSettings();
   return settings.render;
 }
@@ -104,7 +104,7 @@ export async function jobDataFromClip(
  * Effective pipeline for one video: an explicit request payload wins over the
  * settings stored on the record, which win over the app defaults.
  */
-export function resolvePipeline(
+ function resolvePipeline(
   video: Pick<VideoRecord, 'pipeline'>,
   payload?: unknown
 ): PipelineOptions {
@@ -131,7 +131,7 @@ export async function queueViralDetection(
   return 'queued';
 }
 
-export interface DetectionRunInput {
+ interface DetectionRunInput {
   /** Raw request body (or nothing) - see `resolvePipeline`. */
   pipeline?: unknown;
   /** Overrides the stored `autoRender` flag for this run. */
@@ -145,7 +145,7 @@ export interface DetectionRunInput {
   mode?: 'auto' | 'manual';
 }
 
-export interface DetectionRunResult {
+ interface DetectionRunResult {
   video: VideoRecord;
   clips: ClipRecord[];
   /** How many of the new clips were handed to the render queue. */
@@ -320,24 +320,13 @@ export async function runViralDetection(
         : 0;
 
     const autoVisualsEnabled = Boolean(options.includeVisuals && render.autoVisuals);
-    const initialVisualOverlays = planClipVisualMoments({
+    const initialVisualOverlays = normalizeGenericVisualPops({
       rawMoments: segment.clip.visualMoments,
       clipStart: segment.start,
       clipEnd: segment.end,
-      transcript: video.transcript,
-      hookTiming: {
-        start: hookStartOffset,
-        duration: hookIntervalDuration,
-      },
-      options: {
-        autoVisuals: autoVisualsEnabled,
-        maxVisualMoments: options.maxVisualMoments ?? render.maxVisualMoments,
-        confidenceThreshold: options.visualConfidenceThreshold ?? render.visualConfidenceThreshold,
-        minDuration: render.visualMinDuration,
-        defaultDuration: render.visualDefaultDuration,
-        defaultAnimation: render.visualAnimation,
-        fillDensityGaps: false,
-      },
+      hookTiming: { start: hookStartOffset, duration: hookIntervalDuration },
+      enabled: autoVisualsEnabled,
+      max: options.maxVisualMoments ?? render.maxVisualMoments,
     });
     const plannedVisualOverlays = initialVisualOverlays;
 
@@ -403,7 +392,7 @@ export async function runViralDetection(
 }
 
 /** Enqueue only. Provider/LLM work belongs to the worker's per-clip prefetch loop. */
-export async function prefetchClipVisualsForDetectedClips(clips: ClipRecord[]): Promise<void> {
+ async function prefetchClipVisualsForDetectedClips(clips: ClipRecord[]): Promise<void> {
   for (const clip of clips) if (clip.autoVisuals !== false) {
     await enqueueVisualPrefetchJob({ clipId: clip._id, videoId: clip.videoId, renderAfter: false });
   }
@@ -428,7 +417,7 @@ export async function processVisualPrefetchJob(data: VisualPrefetchJobData): Pro
  * preset default missing, a render already running) is marked failed with the
  * reason and the rest of the batch continues - one bad clip never stops a run.
  */
-export async function queueRenders(
+ async function queueRenders(
   clips: readonly ClipRecord[]
 ): Promise<{ queued: ClipRecord[]; failed: Array<{ clipId: string; error: string }> }> {
   const queued: ClipRecord[] = [];

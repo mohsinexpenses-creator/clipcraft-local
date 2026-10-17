@@ -16,7 +16,7 @@ import type { CaptionPreset, OverlayStylePreset } from './types';
 import { captionThemeReservedHeight } from './caption-theme-styles';
 import { resolveCaptionLineStyle } from './caption-layout';
 
-export const OVERLAY_CANVAS_WIDTH = 1080;
+ const OVERLAY_CANVAS_WIDTH = 1080;
 export const OVERLAY_CANVAS_HEIGHT = 1920;
 
 /** Clear space between the stacked card's bottom edge and the caption block. */

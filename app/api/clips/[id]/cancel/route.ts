@@ -12,7 +12,7 @@ import { cancelJob } from '@/lib/queue';
  *   kills any in-flight FFmpeg / Remotion child process within <500ms.
  */
 export async function POST(
-  request: Request,
+  _request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {

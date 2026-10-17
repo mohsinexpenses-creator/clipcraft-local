@@ -42,7 +42,7 @@ export interface SpeakerSegment {
   trackId: number | null;
 }
 
-export interface SpeakerTimelineInput {
+ interface SpeakerTimelineInput {
   /** Clip duration in seconds. */
   duration: number;
   /** Sampling fps of `voice` and of the track points. */
@@ -55,7 +55,7 @@ export interface SpeakerTimelineInput {
   frameWidth: number;
 }
 
-export interface SpeakerTimelineResult {
+ interface SpeakerTimelineResult {
   /** Merged runs of (time, active speaker). */
   segments: SpeakerSegment[];
   /** How many distinct people ever became the active speaker. */
@@ -311,12 +311,4 @@ export function buildSpeakerTimeline(input: SpeakerTimelineInput): SpeakerTimeli
 
   const speakerIds = new Set(segments.map((s) => s.trackId).filter((id): id is number => id !== null));
   return { segments, speakerCount: speakerIds.size };
-}
-
-/** Convenience: active speaker at an arbitrary clip-relative time. */
-export function speakerAtTime(segments: SpeakerSegment[], t: number): number | null {
-  for (const seg of segments) {
-    if (t >= seg.t0 && t < seg.t1) return seg.trackId;
-  }
-  return segments.length > 0 ? segments[segments.length - 1].trackId : null;
 }

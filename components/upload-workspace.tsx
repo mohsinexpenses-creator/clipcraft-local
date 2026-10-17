@@ -1,6 +1,4 @@
 'use client';
-
-import React from 'react';
 import Link from 'next/link';
 import { VideoUploader } from '@/components/video-uploader';
 import { AutomationPanel } from '@/components/pipeline-settings';

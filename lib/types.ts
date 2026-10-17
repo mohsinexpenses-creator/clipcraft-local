@@ -143,7 +143,7 @@ export const DEFAULT_PIPELINE_OPTIONS: PipelineOptions = {
  * i.e. before the user ever opens the editor. Presets are resolved from the
  * database (their configured defaults) - these are the non-preset knobs.
  */
-export const DEFAULT_RENDER_OPTIONS = {
+ const DEFAULT_RENDER_OPTIONS = {
   filterPreset: 'vibrant',
   layout: 'speaker-focus',
 } as const;
@@ -166,7 +166,7 @@ export type AppSettingsSection = (typeof APP_SETTINGS_SECTIONS)[number];
  * one you saved, or the built-in default - `.env.local` is not consulted for these
  * sections, so the page can never show one thing while the app does another.
  */
-export type SettingsSource = 'app' | 'default';
+ type SettingsSource = 'app' | 'default';
 
 export const VISUAL_PROVIDERS = ['pexels', 'pixabay', 'unsplash', 'openverse', 'wikimedia'] as const;
 export type VisualProviderName = (typeof VISUAL_PROVIDERS)[number];
@@ -250,10 +250,6 @@ export interface RenderDefaults {
   visualProviderPriority: VisualProviderName[];
   /** Burn a subtle credit badge onto visual cards that require attribution. */
   visualShowOnVideoCredit: boolean;
-  /** Aspect ratio for visual cards: 'portrait' (~720x900, 4:5, default) or 'square' (720x720, 1:1). */
-  visualCardAspect?: VisualCardAspect;
-  /** Render a crisp thin border around visual cards (default true). */
-  visualCardBorder?: boolean;
   /** Verify candidate photo relevance with a single Gemini vision call per clip (default true). */
   visualVisionVerify?: boolean;
   visualizableScoreThreshold?: number;
@@ -288,8 +284,6 @@ export const DEFAULT_RENDER_SETTINGS: RenderDefaults = {
   },
   visualProviderPriority: ['pexels', 'pixabay', 'unsplash', 'openverse', 'wikimedia'],
   visualShowOnVideoCredit: true,
-  visualCardAspect: 'portrait',
-  visualCardBorder: true,
   visualVisionVerify: true,
   visualizableScoreThreshold: 6,
   visualVisionScoreThreshold: 7,
@@ -298,9 +292,9 @@ export const DEFAULT_RENDER_SETTINGS: RenderDefaults = {
   sfxVolume: -14,
 };
 
-export type TranscriptionProviderChoice = 'auto' | 'deepgram' | 'whisper';
+ type TranscriptionProviderChoice = 'auto' | 'deepgram' | 'whisper';
 
-export const DEFAULT_WIKIMEDIA_USER_AGENT =
+ const DEFAULT_WIKIMEDIA_USER_AGENT =
   'ClipCraftLocal/1.0 (https://github.com/clipcraft-local; local-video-editor)';
 
 export interface AiProviderSettings {
@@ -484,7 +478,7 @@ export interface AppSettingsSnapshot {
  * schema lists them. lib/viral-response.ts rejects any other value.
  */
 export const RETENTION_STRENGTHS = ['Weak', 'Medium', 'Strong', 'Extreme'] as const;
-export type RetentionStrength = (typeof RETENTION_STRENGTHS)[number];
+ type RetentionStrength = (typeof RETENTION_STRENGTHS)[number];
 
 export const SAFETY_RISKS = ['Low', 'Medium', 'High'] as const;
 export type SafetyRisk = (typeof SAFETY_RISKS)[number];
@@ -499,16 +493,13 @@ export const PSYCHOLOGICAL_TRIGGERS = [
   'Controversy',
   'Humor',
 ] as const;
-export type PsychologicalTrigger = (typeof PSYCHOLOGICAL_TRIGGERS)[number];
+ type PsychologicalTrigger = (typeof PSYCHOLOGICAL_TRIGGERS)[number];
 
 export const RISKY_WORD_ACTIONS = ['censor', 'replace', 'mute', 'remove'] as const;
-export type RiskyWordAction = (typeof RISKY_WORD_ACTIONS)[number];
+ type RiskyWordAction = (typeof RISKY_WORD_ACTIONS)[number];
 
 export const VISUAL_BEAT_KINDS = ['photo-card', 'keyword-pop', 'zoom-beat'] as const;
 export type VisualBeatKind = (typeof VISUAL_BEAT_KINDS)[number];
-
-export const VISUAL_CARD_ASPECTS = ['portrait', 'square'] as const;
-export type VisualCardAspect = (typeof VISUAL_CARD_ASPECTS)[number];
 
 export interface KeywordPopOverlayItem {
   id: string;
@@ -695,7 +686,7 @@ export interface ViralSegment {
   clip: ViralClip;
 }
 
-export interface CropWindow {
+ interface CropWindow {
   x: number;
   y: number;
   width: number;

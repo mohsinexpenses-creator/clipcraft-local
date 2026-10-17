@@ -153,14 +153,14 @@ export function getFfprobePath(): string {
   return findExecutableOnPath("ffprobe") ?? executable;
 }
 
-export interface FfmpegProgress {
+ interface FfmpegProgress {
   frame?: number;
   fps?: number;
   timeSeconds?: number;
   percent?: number;
 }
 
-export interface RunFfmpegOptions {
+ interface RunFfmpegOptions {
   totalDurationSeconds?: number;
   onProgress?: (progress: FfmpegProgress) => void;
   /** Kill the process after this many ms. Default: 30 minutes. */
@@ -343,14 +343,14 @@ export interface FfprobeStreamMetadata {
   rotation: number | null;
 }
 
-export interface FfprobeMetadata {
+ interface FfprobeMetadata {
   formatDuration: number | null;
   formatStartTime: number | null;
   formatBitRate: number | null;
   streams: FfprobeStreamMetadata[];
 }
 
-export interface VideoMetadata {
+ interface VideoMetadata {
   duration: number;
   width: number;
   height: number;
@@ -489,7 +489,7 @@ export function parseVideoMetadataFromFfprobe(probe: FfprobeMetadata): VideoMeta
 }
 
 /** Parse `ffmpeg -i` stderr for installations without a standalone ffprobe. */
-export function parseFfmpegProbeOutput(stderr: string): Partial<VideoMetadata> {
+ function parseFfmpegProbeOutput(stderr: string): Partial<VideoMetadata> {
   const videoLine = stderr.match(/Stream[^\n]*?\bVideo:[^\n]*/i)?.[0] ?? "";
   const audioLine = stderr.match(/Stream[^\n]*?\bAudio:[^\n]*/i)?.[0] ?? "";
   const durationMatch = stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);

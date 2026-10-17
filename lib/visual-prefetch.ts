@@ -16,7 +16,7 @@ import type { ClipRecord, ClipVisualOverlay, RenderDefaults, TranscriptData, Vis
 
 export { hashVisualTranscript } from './visual-transcript';
 
-export function visualPrefetchFingerprint(clip: ClipRecord, transcript: TranscriptData, settings: Partial<RenderDefaults>): string {
+ function visualPrefetchFingerprint(clip: ClipRecord, transcript: TranscriptData, settings: Partial<RenderDefaults>): string {
   return crypto.createHash('sha256').update(JSON.stringify({
     version: 6, transcript: hashVisualTranscript(transcript, clip.start, clip.end), start: clip.start, end: clip.end,
     max: settings.maxVisualMoments, score: settings.visualizableScoreThreshold ?? 6, vision: settings.visualVisionScoreThreshold ?? 7,

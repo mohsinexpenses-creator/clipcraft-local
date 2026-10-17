@@ -19,7 +19,7 @@ for (const hook of [false, true]) for (const debug of [false, true]) {
     if (debug) prefix.push('[vbase]split=2[vprecap][vforoverlay]');
     const graph = [...prefix, ...buildOverlayFilterStatements(
       [{ name: 'captions-hook-cta-keywords', inputPattern: '/overlay_%05d.png', startAtSeconds: 0 }], [2], base,
-      [{ id: 'full', imagePath: '/photo.jpg', width: 1080, height: 1920, x: 0, y: 0, start: 1, end: 4, animation: 'slide-up', border: true }], [3],
+      [{ id: 'full', imagePath: '/photo.jpg', width: 1080, height: 1920, x: 0, y: 0, start: 1, end: 4, animation: 'slide-up' }], [3],
     )].join(';');
     assert.ok(graph.indexOf(`[${base}][visimg0]overlay`) < graph.indexOf('[vvis][overlay0]overlay'));
     assert.match(graph, /overlay=x=0:y='0'/);

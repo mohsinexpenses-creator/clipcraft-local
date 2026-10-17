@@ -93,7 +93,7 @@ function Group({ title, icon, children }: { title: string; icon: React.ReactNode
   )
 }
 
-export interface ClipAnalysisPanelProps {
+ interface ClipAnalysisPanelProps {
   clipId?: string
   analysis?: ViralClip
   visualOverlays?: ClipVisualOverlay[]

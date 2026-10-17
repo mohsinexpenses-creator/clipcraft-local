@@ -7,7 +7,7 @@ import {
   VideoSummary,
 } from './types';
 
-export type { ClipCounts };
+
 
 /**
  * Pure pipeline maths shared by the API and the dashboard.
@@ -19,12 +19,12 @@ export type { ClipCounts };
  * that could go stale.
  */
 
-export const TRANSCRIPTION_JOB_TYPE = 'transcription';
-export const VIRAL_DETECTION_JOB_TYPE = 'viral-detection';
-export const CLIP_JOB_TYPE = 'clip-processing';
-export const VISUAL_JOB_TYPE = 'visual-prefetch';
+ const TRANSCRIPTION_JOB_TYPE = 'transcription';
+ const VIRAL_DETECTION_JOB_TYPE = 'viral-detection';
+ const CLIP_JOB_TYPE = 'clip-processing';
+ const VISUAL_JOB_TYPE = 'visual-prefetch';
 
-export type PipelineStage =
+ type PipelineStage =
   /** Upload accepted; transcription queued but not started yet. */
   | 'queued'
   /** whisper.cpp / Deepgram is running. */
@@ -43,8 +43,8 @@ export type PipelineStage =
   /** The active step failed. */
   | 'failed';
 
-export type PipelineStepKey = 'transcript' | 'analyze' | 'visuals' | 'render';
-export type PipelineStepState = 'pending' | 'active' | 'done' | 'failed' | 'paused';
+ type PipelineStepKey = 'transcript' | 'analyze' | 'visuals' | 'render';
+ type PipelineStepState = 'pending' | 'active' | 'done' | 'failed' | 'paused';
 
 export interface PipelineStep {
   key: PipelineStepKey;
@@ -75,7 +75,7 @@ export interface PipelineJobLike {
 }
 
 /** How long the pipeline's steps have taken, in milliseconds. */
-export interface PipelineTimings {
+ interface PipelineTimings {
   /** Transcription job duration (latest attempt). */
   transcriptMs?: number;
   /** Viral detection job duration (latest attempt). */
@@ -87,7 +87,7 @@ export interface PipelineTimings {
   totalMs?: number;
 }
 
-export interface PipelineFacts {
+ interface PipelineFacts {
   videoStatus: VideoRecord['status'];
   transcriptReady: boolean;
   transcriptSegmentCount?: number;
@@ -191,7 +191,7 @@ function jobDurationMs(job: PipelineJobLike, now: number): number | undefined {
  * Per-step and overall durations from the queue rows. Pure given `now`, so the
  * dashboard can derive live counters without storing anything.
  */
-export function computePipelineTimings(
+ function computePipelineTimings(
   jobs: readonly PipelineJobLike[] | undefined,
   now: number
 ): { timings: PipelineTimings; stepDuration: Partial<Record<PipelineStepKey, number>> } {
@@ -460,12 +460,4 @@ export function pipelineStatusForSummary(
     jobs,
     ...(video.pipeline ? { pipeline: video.pipeline } : {}),
   });
-}
-
-/** Score-weighted ordering used by the clip grid (best clip top-left). */
-export function bestScoreOf(clips: readonly ClipRecord[]): number | null {
-  const scores = clips
-    .map((clip) => clip.aiAnalysis?.scores.viral_score)
-    .filter((score): score is number => typeof score === 'number');
-  return scores.length ? Math.max(...scores) : null;
 }

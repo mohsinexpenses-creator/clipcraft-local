@@ -48,7 +48,7 @@ type ClipEditField =
   | 'autoVisuals'
   | 'visualOverlays';
 
-export type ClipEdits = Pick<ClipRecord, ClipEditField>;
+ type ClipEdits = Pick<ClipRecord, ClipEditField>;
 
 function readNumber(value: unknown, field: string): number | undefined {
   if (value === undefined || value === null || value === '') return undefined;

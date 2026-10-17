@@ -90,7 +90,7 @@ export function aiResponse(clips: unknown[]): string {
 }
 
 /** A transcript with one segment per 10 seconds, so any window has text to quote. */
-export function makeTranscript(durationSeconds: number): TranscriptData {
+ function makeTranscript(durationSeconds: number): TranscriptData {
   const segments = [];
   const words = [];
   for (let start = 0, id = 0; start < durationSeconds; start += 10, id += 1) {

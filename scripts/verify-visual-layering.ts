@@ -36,7 +36,7 @@ async function main() {
       plan: { mode: 'single', cropW: 1080, cropH: 1920, points: [], faceAnchorY: 0.35 },
       sourceWidth: 1080, sourceHeight: 1920, targetFps: 30, sourceHasAudio: false,
       overlays: [{ name: 'captions', inputPattern: framePattern, startAtSeconds: 0 }],
-      visualOverlays: [{ id: 'bright', imagePath: photo, x: 0, y: 0, width: 1080, height: 1920, start: 0.7, end: 2.7, animation: 'subtle-zoom', border: false }],
+      visualOverlays: [{ id: 'bright', imagePath: photo, x: 0, y: 0, width: 1080, height: 1920, start: 0.7, end: 2.7, animation: 'subtle-zoom' }],
       ...(debug ? { debugOutputPath: path.join(dir, `debug-${hook}.mp4`) } : {}),
     });
     const pixels = run(['-ss', '1.5', '-i', output, '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1']);

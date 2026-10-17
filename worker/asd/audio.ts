@@ -1,6 +1,5 @@
 import { spawn } from 'child_process';
 import { getFfmpegPath } from '../../lib/ffmpeg';
-import { AppError } from '../../lib/errors';
 
 /**
  * Audio side of Active Speaker Detection (ASD).
@@ -138,22 +137,4 @@ export function extractPcmMono(
     child.on('error', () => resolve(new Int16Array(0)));
     child.on('close', () => finish());
   });
-}
-
-/** Convenience: full envelope in one call. Throws ONLY if ffmpeg cannot start. */
-export async function computeVoiceEnvelopeForClip(
-  videoPath: string,
-  start: number,
-  duration: number,
-  fps: number
-): Promise<{ voice: number[]; frames: number; voicedRatio: number }> {
-  const pcm = await extractPcmMono(videoPath, start, duration);
-  if (pcm.length === 0) {
-    throw new AppError('No decodable audio track found in the clip window.', {
-      status: 400,
-      details: `${videoPath} @ ${start}s +${duration}s`,
-      resolution: 'Check that the source video has an audio track, or re-upload it.',
-    });
-  }
-  return computeVoiceEnvelope(pcm, 16000, fps);
 }

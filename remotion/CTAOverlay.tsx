@@ -19,14 +19,14 @@ interface CTAOverlayProps {
   topPercent?: number;
 }
 
-export interface CtaWindow {
+ interface CtaWindow {
   startSeconds: number;
   endSeconds: number;
   active: boolean;
 }
 
 /** When the end-of-clip CTA is on screen, in seconds. */
-export function getCtaWindow(
+ function getCtaWindow(
   ctaDurationInSeconds: number,
   totalDurationInSeconds: number,
   currentTime: number

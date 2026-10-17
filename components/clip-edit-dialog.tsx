@@ -134,7 +134,7 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
   );
 }
 
-export interface ClipEditDialogProps {
+ interface ClipEditDialogProps {
   clip: ClipRecord | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -640,7 +640,7 @@ function ClipEditForm({
                             </SelectTrigger>
                             <SelectContent className="dark">
                               <SelectItem value="subtle-zoom">Subtle zoom</SelectItem>
-                              <SelectItem value="slide-up">Slide up</SelectItem>
+
                               <SelectItem value="fade">Smooth fade</SelectItem>
                               <SelectItem value="pop">Pop in</SelectItem>
                             </SelectContent>

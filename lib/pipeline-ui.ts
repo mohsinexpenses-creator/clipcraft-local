@@ -41,20 +41,8 @@ export function formatDuration(ms: number): string {
   return `${s}s`;
 }
 
-export function formatBytesCompact(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "—";
-  const units = ["B", "KB", "MB", "GB"];
-  let value = bytes;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  return `${value >= 10 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
-}
-
 /** Tailwind classes for a stage chip: label + the two tokens it paints with. */
-export interface StageMeta {
+ interface StageMeta {
   label: string;
   /** Short line shown next to the label when there is nothing better to say. */
   hint: string;
@@ -207,15 +195,4 @@ export function sortClipsForGrid<T extends ClipRecord>(
     if (rankA === rankB) return 0;
     return rankA < rankB ? -1 : 1;
   });
-}
-
-/** True while anything is still moving - decides whether we keep polling. */
-export function isPipelineActive(status: PipelineStatus | undefined): boolean {
-  if (!status) return false;
-  return status.stage === "transcribing" || status.stage === "analyzing" || status.stage === "rendering";
-}
-
-/** A clip that is queued or rendering - the grid shows progress on those. */
-export function isClipLive(clip: ClipRecord): boolean {
-  return clip.status === "processing" || clip.status === "pending";
 }

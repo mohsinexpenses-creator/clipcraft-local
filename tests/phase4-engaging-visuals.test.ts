@@ -1,142 +1,42 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {
-  ensureDensePhotoMomentsForClip,
-  extractKeywordPopCallout,
-  planClipVisualMoments,
-} from '../lib/contextual-visuals';
+import {extractKeywordPopCallout} from '../lib/contextual-visuals';
 import { buildSfxCueSheet } from '../lib/sfx-cues';
 import {
-  planVisualCardPlacement,
+  fullScreenVisualPlacement,
 } from '../worker/overlay-layout';
 import { buildVisualOverlayFilterStatements } from '../worker/ffmpeg-pipeline';
 import { parseViralResponse } from '../lib/viral-response';
 import { validClip } from './viral-fixtures';
-import type { TranscriptData, VisualMomentPlan } from '../lib/types';
 
-test('planClipVisualMoments preserves explicit photo and keyword beats without transcript filler', () => {
-  const segments = Array.from({ length: 15 }, (_, idx) => {
-    const start = idx * 4;
-    const end = start + 3.8;
-    return {
-      id: idx + 1,
-      text: `Step ${idx + 1} grows revenue by ${(idx + 1) * 12}% using automated retention loops`,
-      start,
-      end,
-    };
-  });
-  const transcript: TranscriptData = {
-    text: segments.map((s) => s.text).join('. '),
-    segments,
-    words: [],
-  };
-
-  const rawMoments: VisualMomentPlan[] = [
-    {
-      quote: segments[0].text,
-      timestamp: { start: '0.2', end: '2.8' },
-      category: 'statistic',
-      entity_name: '12% RETENTION LIFT',
-      visual_intent: 'Step 1 grows revenue by 12% using automated retention loops',
-      emotional_polarity: 'positive',
-      search_queries: ['analytics dashboard growth chart'],
-      negative_cues: [],
-      confidence: 0.9,
-      suggested_duration: 2.4,
-      animation: 'pop',
-      placement: 'main',
-      kind: 'keyword-pop',
-    },
-    {
-      quote: segments[2].text,
-      timestamp: { start: '8.2', end: '11.0' },
-      category: 'situation',
-      entity_name: '',
-      visual_intent: 'Creator editing short-form video timeline at studio desk',
-      emotional_polarity: 'positive',
-      search_queries: ['video editor timeline studio desk'],
-      negative_cues: [],
-      confidence: 0.88,
-      suggested_duration: 2.6,
-      animation: 'subtle-zoom',
-      placement: 'main',
-      kind: 'photo-card',
-    },
-  ];
-
-  const planned = planClipVisualMoments({
-    rawMoments,
-    clipStart: 0,
-    clipEnd: 60,
-    transcript,
-    hookTiming: { start: 0, duration: 3 },
-    options: {
-      autoVisuals: true,
-      maxVisualMoments: 12,
-      confidenceThreshold: 0.65,
-      minDuration: 2.0,
-      defaultDuration: 2.5,
-      fillDensityGaps: true,
-    },
-  });
-
-  assert.equal(planned.length, 2, 'clock density never invents extra photos');
-  assert.ok(planned.some((b) => b.kind === 'photo-card'));
-  assert.ok(planned.some((b) => b.kind === 'keyword-pop'));
-
-  const callout = extractKeywordPopCallout(planned[0]);
-  assert.ok(callout.text.length > 0 && callout.text.length <= 36);
-});
-
-test('planVisualCardPlacement ignores legacy shape options and always fills the canvas', () => {
-  const portrait = planVisualCardPlacement({
-    plan: {
-      mode: 'single',
-      cropW: 608,
-      cropH: 1080,
-      points: [],
-      faceAnchorY: 0.45,
-    },
-    captionBand: { top: 1380, bottom: 1640 },
-    hookBand: { top: 1180, bottom: 1320 },
-    cardAspect: 'portrait',
-  });
+test('fullScreenVisualPlacement ignores legacy shape options and always fills the canvas', () => {
+  const portrait = fullScreenVisualPlacement();
   assert.equal(portrait.width, 1080);
   assert.equal(portrait.height, 1920);
   assert.equal(portrait.top, 0);
 
-  const square = planVisualCardPlacement({
-    plan: {
-      mode: 'single',
-      cropW: 608,
-      cropH: 1080,
-      points: [],
-      faceAnchorY: 0.45,
-    },
-    captionBand: { top: 1380, bottom: 1640 },
-    cardAspect: 'square',
-  });
+  const square = fullScreenVisualPlacement();
   assert.equal(square.width, 1080);
   assert.equal(square.height, 1920);
   assert.equal(square.top, 0);
 });
 
-test('buildVisualOverlayFilterStatements includes Ken-Burns zoom, thin border, rounded-corner alpha mask, overshoot entrance, and soft fade-out', () => {
+test('buildVisualOverlayFilterStatements uses only full-screen zoom and fade, without borders or projectile motion', () => {
   const { statements } = buildVisualOverlayFilterStatements(
     [
       {
         id: 'card-1',
         imagePath: '/tmp/card.jpg',
-        x: 180,
-        y: 108,
-        width: 720,
-        height: 900,
+        x: 0,
+        y: 0,
+        width: 1080,
+        height: 1920,
         start: 4.0,
         end: 7.0,
         animation: 'pop',
-        border: true,
-        cornerRadius: 24,
+
+
       },
     ],
     [3],
@@ -145,27 +45,14 @@ test('buildVisualOverlayFilterStatements includes Ken-Burns zoom, thin border, r
   );
 
   assert.equal(statements.length, 2);
-  // Static overscan scale + time-expression crop drift + pad border + fade in/out
-  assert.match(statements[0], /scale=768:962:force_original_aspect_ratio=increase/);
-  assert.match(statements[0], /crop=w=712:h=892:x='trunc\(\(iw-712\)\/2\)':y='trunc\(\(ih-892\)\*/);
-  assert.match(statements[0], /pad=720:900:4:4:color=white@0\.88/);
-  assert.match(statements[0], /fade=t=in:st=4\.000:d=0\.180:alpha=1,fade=t=out:st=6\.720:d=0\.280:alpha=1\[visimg0\]/);
-  // Overshoot entrance on overlay y expression
-  assert.match(statements[1], /108-6\+6\*/);
+  assert.match(statements[0], /zoompan=/);
+  assert.match(statements[0], /fade=t=out:st=6\.820:d=0\.180/);
+  assert.doesNotMatch(statements.join(';'), /pad=|pow\(|boxblur/);
+  assert.match(statements[1], /overlay=x=0:y='0'/);
+  assert.throws(() => buildVisualOverlayFilterStatements([{ id: 'old', imagePath: '/old.jpg', x: 180, y: 108, width: 720, height: 900, start: 0, end: 3, animation: 'fade' }], [3]), /full-screen/);
 
   // Behind-captions mode places the image in the lower/caption-background zone without covering the upper speaker face
-  const behind = planVisualCardPlacement({
-    plan: {
-      mode: 'single',
-      cropW: 608,
-      cropH: 1080,
-      points: [],
-      faceAnchorY: 0.35, // face center at y=672, face bottom at y=912
-    },
-    captionBand: { top: 1320, bottom: 1620 },
-    cardAspect: 'portrait',
-    placeBehindCaptions: true,
-  });
+  const behind = fullScreenVisualPlacement();
   assert.equal(behind.top, 0);
   assert.equal(behind.bottom, 1920);
 
@@ -203,52 +90,8 @@ test('Phase 3 SFX cues wire into every dense card and keyword pop beat', () => {
   assert.equal(cues.filter((c) => c.source === 'keyword-pop').length, 2);
 });
 
-test('Legacy density helper never fills empty transcript buckets and full-screen filters remain stable', () => {
-  const topics = [
-    'solar panels rooftop clean electricity grid',
-    'battery storage warehouse lithium cells',
-    'electric vehicle charging highway station',
-    'wind turbine offshore ocean breeze',
-    'smart thermostat home energy monitor',
-    'hydroelectric dam mountain reservoir turbine',
-    'geothermal plant steam turbine facility',
-    'nuclear reactor cooling tower facility',
-    'hydrogen fuel cell bus transit depot',
-    'microgrid controller circuit breaker panel',
-    'carbon capture scrubber industrial plant',
-    'high voltage transmission lines sunset',
-  ];
-  const segments = topics.map((topic, idx) => ({
-    id: idx + 1,
-    text: `Segment ${idx + 1} discusses ${topic} in detail`,
-    start: idx * 5,
-    end: idx * 5 + 4.8,
-  }));
-  const transcript: TranscriptData = {
-    text: segments.map((s) => s.text).join('. '),
-    segments,
-    words: [],
-  };
-
-  // Start with only 2 AI moments over 60s -> ensureDensePhotoMomentsForClip fills every ~5-6s with relevant photo-cards
-  const dense = ensureDensePhotoMomentsForClip({
-    overlays: [],
-    clipStart: 0,
-    clipEnd: 60,
-    transcript,
-    maxVisualMoments: 12,
-  });
-
-  assert.equal(dense.length, 0, 'legacy density helper must not invent photos');
-  assert.ok(dense.every((m) => m.kind === 'photo-card'));
-  assert.ok(dense.every((m) => m.outputWindows.length === 1));
-  const primaryQueries = new Set(dense.map((m) => m.searchQueries[0]));
-  assert.equal(primaryQueries.size, dense.length, 'each 5-6s moment has a distinct primary search query');
-
-  const fullScreenPlacement = planVisualCardPlacement({
-    plan: { mode: 'single', cropW: 608, cropH: 1080, points: [], faceAnchorY: 0.35 },
-    fullScreen: true,
-  });
+test('full-screen filters remain stable and response repair survives truncated output', () => {
+  const fullScreenPlacement = fullScreenVisualPlacement();
   assert.equal(fullScreenPlacement.width, 1080);
   assert.equal(fullScreenPlacement.height, 1920);
 
@@ -265,7 +108,7 @@ test('Legacy density helper never fills empty transcript buckets and full-screen
         start: 5.0,
         end: 8.0,
         animation: 'slide-up',
-        border: false,
+
       },
     ],
     [4],

@@ -25,7 +25,7 @@ import { DEFAULT_PROFANITY_SETTINGS } from './types';
  * "crap") are included on purpose: for platform safety they are masked by
  * default, and dropping them from this array is how you turn them off.
  */
-export const PROFANITY_WORDS: readonly string[] = [
+ const PROFANITY_WORDS: readonly string[] = [
   'motherfucker',
   'fucking',
   'fucked',
@@ -77,7 +77,7 @@ export function maskProfanity(text: string): string {
 }
 
 /** True when the word itself is profane (word-boundary, case-insensitive). */
-export function containsProfanity(text: string): boolean {
+ function containsProfanity(text: string): boolean {
   if (!text) return false;
   PROFANITY_RE.lastIndex = 0; // the matcher is /g/ - .test() would otherwise be stateful
   return PROFANITY_RE.test(text);
@@ -91,7 +91,7 @@ export function containsProfanity(text: string): boolean {
  *  - `beep`:           the word is replaced with a 1 kHz tone,
  *  - `off`:            the audio is untouched (captions are still masked).
  */
-export type ProfanityAudioMode = 'mute' | 'beep' | 'off';
+ type ProfanityAudioMode = 'mute' | 'beep' | 'off';
 
 /**
  * The worker sets this from the resolved settings before every job (see
@@ -158,7 +158,7 @@ export function buildProfanityWindows(
   return merged;
 }
 
-export interface ProfanityAudioFilter {
+ interface ProfanityAudioFilter {
   /**
    * Extra ffmpeg inputs the filter needs (the 1 kHz tone for beep mode).
    * The caller must know the index of the tone input inside the full command.

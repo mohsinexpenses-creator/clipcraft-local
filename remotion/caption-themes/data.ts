@@ -1,27 +1,27 @@
-import type { CaptionChunk } from '../AnimatedWord';
+import type { CaptionChunk } from '../caption-chunk';
 import type { CaptionThemeName, WordTimestamp } from '../../lib/types';
 
-export interface ThemeCaptionWord {
+ interface ThemeCaptionWord {
   text: string;
   start: number;
   end: number;
 }
 
-export interface ThemeCaptionLine {
+ interface ThemeCaptionLine {
   words: ThemeCaptionWord[];
 }
 
-export interface ThemeCaptionData {
+ interface ThemeCaptionData {
   lines: ThemeCaptionLine[];
 }
 
-export interface SelectedThemeCaption {
+ interface SelectedThemeCaption {
   activeChunk: CaptionChunk;
   data: ThemeCaptionData;
 }
 
-export const THEME_CAPTION_HOLD_SECONDS = 0.35;
-export const THEME_CAPTION_LOOKAHEAD_SECONDS = 0.06;
+ const THEME_CAPTION_HOLD_SECONDS = 0.35;
+ const THEME_CAPTION_LOOKAHEAD_SECONDS = 0.06;
 
 function toThemeWord(word: WordTimestamp): ThemeCaptionWord {
   return { text: word.word, start: word.start, end: word.end };

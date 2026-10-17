@@ -26,9 +26,9 @@ export interface UploadFileProgress {
   etaSeconds: number | null;
 }
 
-export type UploadPhase = 'uploading' | 'finalizing';
+ type UploadPhase = 'uploading' | 'finalizing';
 
-export interface UploadVideoFileOptions {
+ interface UploadVideoFileOptions {
   /**
    * Resume an existing server session (e.g. after "Resume upload"). When omitted a new
    * session is created.
@@ -48,7 +48,7 @@ export interface UploadVideoFileOptions {
   pipeline?: PipelineOptions;
 }
 
-export interface UploadVideoFileResult {
+ interface UploadVideoFileResult {
   video: VideoRecord;
   transcriptionQueued: boolean;
   message?: string;
@@ -62,7 +62,7 @@ export class UploadAbortedError extends Error {
 }
 
 /** Thrown for a fatal server answer (bad request, disk full, ...). Not retried. */
-export class UploadRequestError extends Error {
+ class UploadRequestError extends Error {
   public readonly status: number;
   public readonly resolution?: string;
 

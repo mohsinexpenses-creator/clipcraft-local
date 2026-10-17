@@ -285,8 +285,3 @@ export function cameraPositionAt(path: CameraPath, t: number): { x: number; y: n
   }
   return prev;
 }
-
-/** True when the window never moves. */
-export function isStaticCamera(path: CameraPath): boolean {
-  return path.moves.length === 0;
-}

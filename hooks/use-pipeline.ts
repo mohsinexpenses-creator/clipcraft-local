@@ -17,7 +17,7 @@ import { useToast } from "@/components/ui/toaster"
  * from here, so they can never disagree mid-run.
  */
 
-export interface PipelineDetail {
+ interface PipelineDetail {
   video: {
     _id: string
     originalName: string
@@ -455,5 +455,3 @@ export function usePipeline(selectedVideoId: string | null) {
     loadTranscript,
   };
 }
-
-export type PipelineController = ReturnType<typeof usePipeline>;

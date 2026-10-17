@@ -48,9 +48,9 @@ const PIPELINE_STEPS = [
   },
 ] as const;
 
-export type FileItemStatus = 'queued' | 'uploading' | 'finalizing' | 'done' | 'failed';
+ type FileItemStatus = 'queued' | 'uploading' | 'finalizing' | 'done' | 'failed';
 
-export interface UploadQueueItem {
+ interface UploadQueueItem {
   id: string;
   file: File;
   status: FileItemStatus;
@@ -61,7 +61,7 @@ export interface UploadQueueItem {
   pipelineSnapshot?: PipelineOptions;
 }
 
-export interface VideoUploaderProps {
+ interface VideoUploaderProps {
   /** Automation to store on each uploaded video; defaults to the saved upload defaults. */
   pipeline: PipelineOptions;
 }

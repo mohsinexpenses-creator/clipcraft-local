@@ -19,7 +19,7 @@ export interface PreparedCaptionOverlays {
   sequences: OverlayFrameSequence[];
 }
 
-export interface PrepareRemotionOverlaysOptions {
+ interface PrepareRemotionOverlaysOptions {
   fps: number;
   totalDuration: number;
   hookText: string;

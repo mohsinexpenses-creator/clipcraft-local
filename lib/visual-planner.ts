@@ -33,7 +33,7 @@ const beatProperties = {
   kind: { type: 'string', enum: ['literal', 'metaphor'] },
   visualizable_score: { type: 'number', minimum: 0, maximum: 10 },
 };
-export const VISUAL_PLAN_SCHEMA = {
+ const VISUAL_PLAN_SCHEMA = {
   type: 'object', additionalProperties: false, required: ['beats'],
   properties: { beats: { type: 'array', items: { type: 'object', additionalProperties: false, required: Object.keys(beatProperties), properties: beatProperties } } },
 };

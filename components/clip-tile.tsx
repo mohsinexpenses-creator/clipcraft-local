@@ -115,7 +115,7 @@ function StatusChip({ clip }: { clip: ClipRecord }) {
   }
 }
 
-export interface ClipTileProps {
+ interface ClipTileProps {
   clip: ClipRecord;
   captionPresets: CaptionPreset[];
   busy?: boolean;

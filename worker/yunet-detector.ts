@@ -56,10 +56,7 @@ function projectRequire(): NodeJS.Require {
 }
 const nodeRequire = projectRequire();
 
-export const YUNET_MODEL_RELPATH = path.join('models', 'yunet', 'face_detection_yunet_2023mar.onnx');
-
-/** Official OpenCV Zoo file - verified by SHA-256 in scripts/setup-yunet.mjs. */
-export const YUNET_MODEL_SHA256 = '8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4';
+ const YUNET_MODEL_RELPATH = path.join('models', 'yunet', 'face_detection_yunet_2023mar.onnx');
 
 const STRIDES = [8, 16, 32] as const;
 /**
@@ -96,19 +93,19 @@ const SEAM_MARGIN = 0.02;
 /** A box mostly inside a higher-scoring box is the same face seen at another scale. */
 const CONTAINMENT_THRESHOLD = 0.8;
 
-export interface FaceBox {
+ interface FaceBox {
   x: number;
   y: number;
   width: number;
   height: number;
 }
 
-export interface FaceLandmarks {
+ interface FaceLandmarks {
   /** Landmark order matches YuNet: right eye, left eye, nose tip, right mouth corner, left mouth corner. */
   points: Array<{ x: number; y: number }>;
 }
 
-export interface DetectedFace {
+ interface DetectedFace {
   box: FaceBox;
   landmarks: FaceLandmarks;
   score: number;
@@ -142,11 +139,7 @@ type OrtModule = {
 let runtimePromise: Promise<YuNetRuntime | null> | null = null;
 let unavailableReason: string | null = null;
 
-export function getYunetUnavailableReason(): string | null {
-  return unavailableReason;
-}
-
-export function yunetModelPath(): string {
+ function yunetModelPath(): string {
   return process.env.YUNET_MODEL_PATH?.trim() || path.join(process.cwd(), YUNET_MODEL_RELPATH);
 }
 
@@ -232,14 +225,14 @@ function pickOutput(outputs: Record<string, OrtTensor>, name: string, canonicalI
   return outputs[CANONICAL_OUTPUT_ORDER[canonicalIndex]] ?? ordered[canonicalIndex] ?? ordered[0];
 }
 
-export interface RawFrame {
+ interface RawFrame {
   /** RGBA pixels, e.g. from Jimp. */
   data: Buffer | Uint8Array;
   width: number;
   height: number;
 }
 
-export interface DetectOptions {
+ interface DetectOptions {
   /** Score gate (default 0.65). */
   confThreshold?: number;
   /** Smallest face to keep, as a fraction of the frame width (default 1.4%). */
@@ -252,7 +245,7 @@ export interface DetectOptions {
 }
 
 /** One rectangle of the frame that is fed to the model as a 640x640 letterboxed image. */
-export interface DetectRegion {
+ interface DetectRegion {
   x: number;
   y: number;
   w: number;

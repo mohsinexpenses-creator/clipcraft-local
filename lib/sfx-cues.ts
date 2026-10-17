@@ -2,19 +2,11 @@ import fs from 'fs';
 import path from 'path';
 import type { ClipVisualOverlay, OverlayStylePreset } from './types';
 
-export type SfxAssetId = 'whoosh' | 'pop' | 'click' | 'typewriter-tick' | 'ding';
+ type SfxAssetId = 'whoosh' | 'pop' | 'click' | 'typewriter-tick' | 'ding';
 
-export const SFX_ASSET_IDS: readonly SfxAssetId[] = [
-  'whoosh',
-  'pop',
-  'click',
-  'typewriter-tick',
-  'ding',
-] as const;
+ type OverlaySfxChoice = 'default' | 'none' | SfxAssetId;
 
-export type OverlaySfxChoice = 'default' | 'none' | SfxAssetId;
-
-export type SfxCueSource =
+ type SfxCueSource =
   | 'hook-entrance'
   | 'hook-typewriter'
   | 'hook-transition'
@@ -23,7 +15,7 @@ export type SfxCueSource =
   | 'visual-out'
   | 'keyword-pop';
 
-export interface SfxCue {
+ interface SfxCue {
   /** Timestamp in seconds on the final output timeline (including any prepended hook segment). */
   t: number;
   /** Which built-in sound effect to trigger. */
@@ -34,10 +26,10 @@ export interface SfxCue {
   source: SfxCueSource;
 }
 
-export const DEFAULT_SFX_LEVEL_DB = -14;
-export const TYPEWRITER_CHARS_PER_SECOND = 20;
+ const DEFAULT_SFX_LEVEL_DB = -14;
+ const TYPEWRITER_CHARS_PER_SECOND = 20;
 export const TYPEWRITER_MAX_TICKS = 14;
-export const TYPEWRITER_MIN_TICK_INTERVAL_SECONDS = 0.095;
+ const TYPEWRITER_MIN_TICK_INTERVAL_SECONDS = 0.095;
 
 export function dbToLinearGain(db: number): number {
   if (!Number.isFinite(db)) return Math.pow(10, DEFAULT_SFX_LEVEL_DB / 20);
@@ -53,7 +45,7 @@ function roundGain(gain: number): number {
   return Math.max(0.01, Math.min(0.85, Math.round(gain * 10000) / 10000));
 }
 
-export interface VisualCueWindowInput {
+ interface VisualCueWindowInput {
   id?: string;
   kind?: 'photo-card' | 'keyword-pop' | 'zoom-beat';
   start: number;
@@ -62,7 +54,7 @@ export interface VisualCueWindowInput {
   sfxChoice?: OverlaySfxChoice;
 }
 
-export interface BuildSfxCueSheetOptions {
+ interface BuildSfxCueSheetOptions {
   /** Main clip duration (`end - start`) in seconds. */
   segmentDuration: number;
   /** Prepended hook intro duration in seconds (`0` when disabled). */

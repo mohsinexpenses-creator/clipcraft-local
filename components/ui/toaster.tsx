@@ -11,9 +11,9 @@ import { cn } from "cn"
  * through a polite live region.
  */
 
-export type ToastTone = "info" | "success" | "error"
+ type ToastTone = "info" | "success" | "error"
 
-export interface Toast {
+ interface Toast {
   id: number
   title: string
   description?: string

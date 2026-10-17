@@ -36,9 +36,9 @@ import { AppError, toErrorMessage } from "./errors";
 import { loadEffectiveSettings } from "./app-settings";
 import { repairMalformedViralJson } from "./viral-response";
 
-export type LlmProviderKind = "openai-compatible" | "gemini-native";
+ type LlmProviderKind = "openai-compatible" | "gemini-native";
 
-export interface LlmProviderEntry {
+ interface LlmProviderEntry {
   /** Stable id used in logs and error details. */
   id: string;
   /** Human-readable provider name for logs. */
@@ -137,7 +137,7 @@ export interface LlmCompletionRequest {
   responseJsonSchema?: Record<string, unknown>;
 }
 
-export interface LlmCompletionResult {
+ interface LlmCompletionResult {
   /** The model's raw response text. */
   text: string;
   /** The provider/model entry that actually answered. */

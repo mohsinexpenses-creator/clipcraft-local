@@ -91,7 +91,7 @@ async function requireTemplate(type: string): Promise<PromptTemplate> {
 // `resolveViralOptions` lives in lib/pipeline-defaults.ts - a dependency-free
 // module the browser can import too, so the settings panel clamps values exactly
 // the way the server does. Re-exported here for the existing callers.
-export { resolveViralOptions };
+
 
 /** Fill every supported {{placeholder}} (all occurrences) in a template. */
 function fillTemplate(template: string, values: Record<string, string | number>): string {

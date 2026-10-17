@@ -12,9 +12,9 @@ import { LLM_PROVIDER_CHAIN } from './llm';
 
 const VERIFY_TIMEOUT_MS = 15_000;
 
-export type VerifyStatus = 'ok' | 'rejected' | 'limited' | 'unreachable' | 'error';
+ type VerifyStatus = 'ok' | 'rejected' | 'limited' | 'unreachable' | 'error';
 
-export type VerifyTarget = 'gemini' | 'deepgram' | 'pexels' | 'openverse' | 'wikimedia';
+ type VerifyTarget = 'gemini' | 'deepgram' | 'pexels' | 'openverse' | 'wikimedia';
 
 export interface VerifyProbeResult {
   target: VerifyTarget;

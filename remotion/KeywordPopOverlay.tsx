@@ -2,7 +2,7 @@ import React from 'react';
 import { interpolate } from 'remotion';
 import type { KeywordPopOverlayItem } from '../lib/types';
 
-export interface KeywordPopOverlayProps {
+ interface KeywordPopOverlayProps {
   items: KeywordPopOverlayItem[];
   frame: number;
   fps: number;

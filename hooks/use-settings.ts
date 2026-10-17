@@ -16,19 +16,19 @@ export interface VerifyResult {
   notes?: string[];
 }
 
-export interface SettingsOptions {
+ interface SettingsOptions {
   captionPresets: Array<{ id: string; name: string; isDefault: boolean }>;
   overlayPresets: Array<{ id: string; kind: "hook" | "cta"; name: string; isDefault: boolean }>;
 }
 
-export interface SettingsPayload extends AppSettingsSnapshot {
+ interface SettingsPayload extends AppSettingsSnapshot {
   /** The lists the selects are built from, sent with the snapshot so the page is one request. */
   options: SettingsOptions;
   /** The directories/binaries in effect right now - placeholders for the path fields. */
   resolvedPaths?: ResolvedPaths;
 }
 
-export type SettingsBusy =
+ type SettingsBusy =
   | "load"
   | `save:${AppSettingsSection}`
   | `reset:${AppSettingsSection}`

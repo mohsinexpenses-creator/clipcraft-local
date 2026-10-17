@@ -63,7 +63,7 @@ export interface AsdResult {
   sampleWidth?: number;
 }
 
-export interface AsdOptions {
+ interface AsdOptions {
   /** False when the source has no audio stream. */
   hasAudio: boolean;
   /** Upper bound on the frame-sampling fps (default 8). */
@@ -80,7 +80,7 @@ const DEFAULT_MAX_FRAMES = 480;
  * sharper face-motion thumbnails) for ~25ms of extra JPEG decode per frame.
  * Never larger than the source itself.
  */
-export const ASD_SAMPLE_WIDTH = 960;
+ const ASD_SAMPLE_WIDTH = 960;
 const THUMB = 16;
 
 /** 16x16 grayscale thumbnail of a face region (scale-invariant motion cue). */
