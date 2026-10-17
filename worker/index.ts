@@ -1,3 +1,4 @@
+import { validateVisualGemini } from '../lib/startup-validation';
 import {
   closeDatabase,
   getClip,
@@ -15,6 +16,7 @@ import {
   QUEUE_POLL_INTERVAL_MS,
   TRANSCRIPTION_QUEUE_NAME,
   VIRAL_DETECTION_QUEUE_NAME,
+  VISUAL_PREFETCH_QUEUE_NAME,
   QueueJob,
   claimNextJob,
   completeJob,
@@ -22,9 +24,9 @@ import {
   recoverRunningJobs,
   updateJobProgress,
 } from '../lib/queue';
-import { JobData, TranscriptionJobData, ViralDetectionJobData } from '../lib/types';
+import { JobData, TranscriptionJobData, ViralDetectionJobData, VisualPrefetchJobData } from '../lib/types';
 import { transcribeVideo } from '../lib/whisper';
-import { continueAfterTranscription, recoverAutoPipelines, runViralDetection } from '../lib/pipeline';
+import { continueAfterTranscription, recoverAutoPipelines, runViralDetection, processVisualPrefetchJob } from '../lib/pipeline';
 import { processClipJob } from './processor';
 import { probeVideoEncoder } from './ffmpeg-pipeline';
 import { getRemotionBundle } from './remotion-renderer';
@@ -234,10 +236,13 @@ async function startWorker(): Promise<void> {
   const detectionConcurrency = workerSettings.viralConcurrency;
 
   log.section('ClipCraft worker starting');
+  const visualModel = await validateVisualGemini();
+  if (visualModel.status === 'ok') log.detail(visualModel.summary); else log.warn(visualModel.summary);
   log.detail(`SQLite: ${getDatabasePath()} (WAL, busy_timeout=5000ms)`);
   log.detail(`Clip concurrency: ${clipConcurrency} (Settings -> Worker & limits; restart the worker to change it)`);
   log.detail(`Transcription concurrency: ${transcriptionConcurrency}`);
   log.detail(`Viral detection concurrency: ${detectionConcurrency}`);
+  log.detail("Visual prefetch concurrency: 2 (per clip, provider caps still apply)");
   if (recovered > 0) log.warn(`Recovered ${recovered} job(s) left running by a previous worker process.`);
 
   // Probe the configured FFmpeg binary + hardware encoder (VIDEO_ENCODER=x264|nvenc|qsv)
@@ -272,6 +277,8 @@ async function startWorker(): Promise<void> {
 
   const state: LoopState = { stopping: false };
   const loops = Promise.all([
+    runQueueLoop(VISUAL_PREFETCH_QUEUE_NAME, 'visual prefetch', 2,
+      async (job) => processVisualPrefetchJob(job.payload as VisualPrefetchJobData), state),
     runQueueLoop(
       CLIP_QUEUE_NAME,
       'clip',

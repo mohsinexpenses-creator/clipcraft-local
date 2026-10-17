@@ -1,3 +1,6 @@
+import { isNamedPersonKeywordPop } from '../lib/contextual-visuals';
+import { createHash } from 'node:crypto';
+import { hashVisualTranscript } from '../lib/visual-transcript';
 import fs from 'fs';
 import path from 'path';
 import {
@@ -19,9 +22,7 @@ import { ClipLayout, ClipRecord, JobData, OverlayStylePreset } from '../lib/type
 import { detectSpeakerTimeline } from './asd';
 import { buildLayoutPlan, getSplitFramingSettings } from './layout';
 import {
-  VisualDisplayMode,
   adaptOverlaysToLayout,
-  chooseVisualDisplayMode,
   describePlacements,
   planVisualCardPlacement,
 } from './overlay-layout';
@@ -42,18 +43,15 @@ import {
 import { resolveVisualProviderSettings } from '../lib/app-settings';
 import {
   buildClipCreditsManifest,
-  ensureDensePhotoMomentsForClip,
-  planClipVisualMoments,
+  extractKeywordPopCallout,
+  mapVisualMomentToOutputTimeline,
 } from '../lib/contextual-visuals';
 import type { KeywordPopOverlayItem } from '../lib/types';
 import {
-  findMatchingImageBankEntry,
-  getProviderOrderForMoment,
   getVisualAssetDedupKeys,
   hasAnyVisualAssetDedupKey,
-  preScaleCachedVisualImage,
   registerVisualAssetDedupKeys,
-  resolveVisualOverlaysForClip,
+  visualVerificationHash,
 } from '../lib/visual-providers';
 import { appendClipTimingRecord, formatClipTimingSummary } from '../lib/timings';
 import { buildSfxCueSheet, filterPlayableSfxCues } from '../lib/sfx-cues';
@@ -474,15 +472,14 @@ export async function processClipJob(
     let remotionOverlayMs = 0;
     let ffmpegEncodeMs = 0;
 
-    // Resolve contextual visual overlays before Remotion & FFmpeg so keyword-pop beats
-    // (including any photo moment that falls back when no local image is ready) render
-    // directly inside the single Remotion overlay composition.
+    // Read pre-resolved local visuals only. Keyword beats stay in the Remotion sequence.
     const visualsStartMs = performance.now();
     const ffmpegVisualOverlays: StillVisualOverlayInput[] = [];
     const keywordPops: KeywordPopOverlayItem[] = [];
     let effectiveRenderSettings = (await resolveVisualProviderSettings()).render;
     try {
       const visualSettings = await resolveVisualProviderSettings();
+      visualSettings.render = { ...visualSettings.render, ...clip.visualPrefetchSettings };
       effectiveRenderSettings = visualSettings.render;
       const autoVisualsEnabled =
         (jobData.autoVisuals ?? clip.autoVisuals ?? visualSettings.render.autoVisuals) !== false;
@@ -496,7 +493,7 @@ export async function processClipJob(
         const otherById = new Map(
           (baseList === fromClip ? fromJob : fromClip).map((ov) => [ov.id, ov])
         );
-        let planned = baseList.map((ov) => {
+        const planned = baseList.map((ov) => {
           const alt = otherById.get(ov.id);
           if (
             (!ov.localFilePath || !fs.existsSync(ov.localFilePath)) &&
@@ -508,181 +505,30 @@ export async function processClipJob(
           return ov;
         });
 
-        if (planned.length === 0 && clip.aiAnalysis?.visualMoments?.length) {
-          planned = planClipVisualMoments({
-            rawMoments: clip.aiAnalysis.visualMoments,
-            clipStart: start,
-            clipEnd: end,
-            transcript: video.transcript,
-            hookTiming: {
-              start: hookStart,
-              duration: safeHookDuration,
-            },
-            options: {
-              autoVisuals: true,
-              maxVisualMoments: visualSettings.render.maxVisualMoments,
-              confidenceThreshold: visualSettings.render.visualConfidenceThreshold,
-              minDuration: visualSettings.render.visualMinDuration,
-              defaultDuration: visualSettings.render.visualDefaultDuration,
-              defaultAnimation: visualSettings.render.visualAnimation,
-              fillDensityGaps: true,
-            },
-          });
-        }
-
-        // Ensure dense, relevant photo moments every ~5-6s across the clip without duplicate queries
-        planned = ensureDensePhotoMomentsForClip({
-          overlays: planned,
-          clipStart: start,
-          clipEnd: end,
-          transcript: video.transcript,
-          hookTiming: {
-            start: hookStart,
-            duration: safeHookDuration,
-          },
-          maxVisualMoments: visualSettings.render.maxVisualMoments,
-          minDuration: visualSettings.render.visualMinDuration,
-          defaultDuration: visualSettings.render.visualDefaultDuration,
-          defaultAnimation: visualSettings.render.visualAnimation,
-        });
-
         if (planned.length > 0) {
-          // 1. Check existing local files and SQLite image_bank first, strictly deduplicating
-          // so the same image is never assigned to two moments in the same clip.
-          const usedAssetKeys = new Set<string>();
-          let resolvedVisuals = planned.map((item) => {
-            if (item.status === 'removed') return item;
-            if (item.localFilePath && fs.existsSync(item.localFilePath)) {
-              const converted = preScaleCachedVisualImage(
-                item.localFilePath,
-                item.width ?? 1200,
-                item.height ?? 1200
-              );
-              const itemKeys = getVisualAssetDedupKeys({
-                provider: item.attribution?.provider,
-                assetId: item.attribution?.assetId,
-                localFilePath: converted,
-                contentHash: item.contentHash,
-                imageUrl: item.attribution?.imageUrl,
-              });
-              if (!hasAnyVisualAssetDedupKey(usedAssetKeys, itemKeys)) {
-                registerVisualAssetDedupKeys(usedAssetKeys, itemKeys);
-                return {
-                  ...item,
-                  kind: 'photo-card' as const,
-                  status: 'resolved' as const,
-                  localFilePath: converted,
-                  mediaUrl: `/api/media/visual-cache/${path.basename(converted)}`,
-                };
-              }
-            }
-            const allowedProviders = getProviderOrderForMoment({
-              moment: item,
-              renderSettings: visualSettings.render,
-              hasPexelsKey: Boolean(visualSettings.pexelsApiKey),
-              hasPixabayKey: Boolean(visualSettings.pixabayApiKey),
-              hasUnsplashKey: Boolean(visualSettings.unsplashAccessKey),
-            });
-            const bankHit = findMatchingImageBankEntry({
-              moment: item,
-              allowedProviders,
-              usedAssetIds: usedAssetKeys,
-            });
-            if (bankHit && fs.existsSync(bankHit.localPath)) {
-              return {
-                ...item,
-                kind: 'photo-card' as const,
-                status: 'resolved' as const,
-                localFilePath: bankHit.localPath,
-                mediaUrl: `/api/media/visual-cache/${path.basename(bankHit.localPath)}`,
-                contentHash: bankHit.contentHash,
-                width: bankHit.width,
-                height: bankHit.height,
-                attribution: bankHit.attribution,
-              };
-            }
-            return {
-              ...item,
-              localFilePath: undefined,
-              mediaUrl: undefined,
-              kind: 'photo-card' as const,
-              status: 'planned' as const,
-            };
-          });
-
-          // 2. If any moment still lacks a local image, resolve from cached search results / providers.
-          const needsProviderResolve = resolvedVisuals.some(
-            (item) =>
-              item.status !== 'removed' &&
-              (!item.localFilePath || !fs.existsSync(item.localFilePath))
-          );
-          if (needsProviderResolve) {
-            resolvedVisuals = await resolveVisualOverlaysForClip(resolvedVisuals, {
-              renderSettings: { ...visualSettings.render, visualVisionVerify: false },
-              geminiApiKeys: visualSettings.geminiApiKeys,
-              pexelsApiKey: visualSettings.pexelsApiKey,
-              pixabayApiKey: visualSettings.pixabayApiKey,
-              unsplashAccessKey: visualSettings.unsplashAccessKey,
-              openverseClientId: visualSettings.openverseClientId,
-              openverseClientSecret: visualSettings.openverseClientSecret,
-              wikimediaUserAgent: visualSettings.wikimediaUserAgent,
-            });
-          }
-
+          // Render is local-only: never plan, search a bank, fetch, verify or prepare images.
           const finalDedupKeys = new Set<string>();
-          resolvedVisuals = resolvedVisuals.map((item) => {
+          const resolvedVisuals = planned.map((item) => {
             if (item.status === 'removed') return item;
-            if (item.localFilePath && fs.existsSync(item.localFilePath)) {
-              const converted = preScaleCachedVisualImage(
-                item.localFilePath,
-                item.width ?? 1200,
-                item.height ?? 1200
-              );
-              const keys = getVisualAssetDedupKeys({
-                provider: item.attribution?.provider,
-                assetId: item.attribution?.assetId,
-                localFilePath: converted,
-                contentHash: item.contentHash,
-                imageUrl: item.attribution?.imageUrl,
-              });
-              if (!hasAnyVisualAssetDedupKey(finalDedupKeys, keys)) {
-                registerVisualAssetDedupKeys(finalDedupKeys, keys);
-                return {
-                  ...item,
-                  kind: 'photo-card' as const,
-                  status: 'resolved' as const,
-                  localFilePath: converted,
-                  mediaUrl: `/api/media/visual-cache/${path.basename(converted)}`,
-                };
-              }
+            if (isNamedPersonKeywordPop(item, planned)) return { ...item, status: 'removed' as const };
+            if (item.kind === 'keyword-pop' || item.kind === 'zoom-beat') {
+              const callout = extractKeywordPopCallout(item);
+              for (const win of item.outputWindows) keywordPops.push({ id: `${item.id}-${win.segment}`, ...callout, start: win.start, end: win.end, x: 140, y: 1100, width: 800, animation: item.animation });
+              return item;
             }
-            return {
-              ...item,
-              localFilePath: undefined,
-              mediaUrl: undefined,
-              status: 'skipped' as const,
-              skipReason: item.skipReason ?? 'No unique relevant local image available.',
-            };
+            if ((!clip.visualsTranscriptHash || (video.transcript && clip.visualsTranscriptHash === hashVisualTranscript(video.transcript, start, end))) && item.sourceStart >= start && item.sourceEnd <= end && item.status === 'resolved' && item.visualVerificationHash === visualVerificationHash(item, visualSettings.render) && item.localFilePath?.endsWith('.fullscreen-v1.jpg') && fs.existsSync(item.localFilePath) && item.preparedContentHash === createHash('sha256').update(fs.readFileSync(item.localFilePath)).digest('hex')) {
+              const keys = getVisualAssetDedupKeys({ provider: item.attribution?.provider, assetId: item.attribution?.assetId, localFilePath: item.localFilePath, contentHash: item.contentHash });
+              if (!hasAnyVisualAssetDedupKey(finalDedupKeys, keys)) { registerVisualAssetDedupKeys(finalDedupKeys, keys); return { ...item, outputWindows: mapVisualMomentToOutputTimeline({ sourceStart: item.sourceStart, sourceEnd: item.sourceEnd, clipStart: start, clipEnd: end, placement: 'main', hookTiming: { start: hookStart, duration: safeHookDuration }, allowDuplicateHookReplay: false }).outputWindows }; }
+            }
+            return { ...item, localFilePath: undefined, mediaUrl: undefined, status: 'skipped' as const, skipReason: item.skipReason ?? 'Unresolved or stale visual at render start; prefetch required (render is offline).' };
           });
-
+          const skipped = resolvedVisuals.filter((item) => item.status === 'skipped').map((item) => item.skipReason).filter(Boolean);
+          clip.visualsSkippedReason = skipped.length ? [...new Set(skipped)].join('; ') : clip.visualsSkippedReason;
           clip.visualOverlays = resolvedVisuals;
           await updateClip(clip).catch(() => undefined);
 
-          // Mix full-screen (1080x1920 behind captions) and face-safe behind-captions card placements.
-          const behindCaptionsPlacement = planVisualCardPlacement({
-            plan,
-            captionBand: overlayLayout.placements.caption,
-            hookBand: overlayLayout.placements.hook,
-            ctaBand: overlayLayout.placements.cta,
-            cardAspect: visualSettings.render.visualCardAspect ?? 'portrait',
-            placeBehindCaptions: true,
-          });
-          const fullScreenPlacement = planVisualCardPlacement({
-            plan,
-            fullScreen: true,
-          });
-
-          const chosenModes: VisualDisplayMode[] = [];
+          // Contextual photos always fill the canvas; Remotion captions composite above them.
+          const fullScreenPlacement = planVisualCardPlacement({ plan, fullScreen: true });
           const renderedImageKeys = new Set<string>();
 
           for (const item of resolvedVisuals) {
@@ -703,14 +549,7 @@ export async function processClipJob(
               if (!win) continue;
 
               registerVisualAssetDedupKeys(renderedImageKeys, itemKeys);
-              const mode = chooseVisualDisplayMode(
-                chosenModes.length,
-                `${clip._id}:${item.id}`,
-                chosenModes
-              );
-              chosenModes.push(mode);
-              const placement =
-                mode === 'fullscreen' ? fullScreenPlacement : behindCaptionsPlacement;
+              const placement = fullScreenPlacement;
 
               ffmpegVisualOverlays.push({
                 id: `${item.id}_${win.segment}`,
@@ -722,10 +561,7 @@ export async function processClipJob(
                 start: win.start,
                 end: win.end,
                 animation: item.animation,
-                border:
-                  mode === 'fullscreen'
-                    ? false
-                    : (visualSettings.render.visualCardBorder ?? true),
+                border: false,
               });
             }
           }

@@ -30,6 +30,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 const STEP_ICONS = {
   transcript: TextCursorInput,
   analyze: Sparkles,
+  visuals: Sparkles,
   render: Scissors,
 } as const
 

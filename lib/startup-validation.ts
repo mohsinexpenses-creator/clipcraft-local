@@ -1,3 +1,4 @@
+import { probeVisualGeminiModels } from './gemini-pool';
 import { spawn } from 'child_process';
 import { createRequire } from 'module';
 import fs from 'fs';
@@ -521,12 +522,20 @@ async function validateRemotion(): Promise<StartupCheck> {
   });
 }
 
+export async function validateVisualGemini(): Promise<StartupCheck> {
+  try {
+    const { model } = await probeVisualGeminiModels((await loadEffectiveSettings()).ai.geminiApiKeys);
+    return { id: 'visual-gemini', label: 'Visual Gemini model', status: model ? 'ok' : 'warning', summary: model ? `Verified via models.list: ${model}` : 'No configured chain model is available for this key.', resolution: model ? undefined : 'Update LLM_PROVIDER_CHAIN to a generateContent model returned by models.list.' };
+  } catch (error) { return { id: 'visual-gemini', label: 'Visual Gemini model', status: 'warning', summary: `Model availability unverified: ${toErrorMessage(error)}`, resolution: 'Save a valid Gemini key in Settings → AI, check quota/network, and restart the worker.' }; }
+}
+
 export async function runStartupValidation(): Promise<StartupValidationResult> {
   const checks = await Promise.all([
     validateSqlite(),
     validateFfmpeg(),
     validateTranscription(),
     validateAiProvider(),
+    validateVisualGemini(),
     validatePromptTemplates(),
     validateYunetModel(),
     validateRemotion(),

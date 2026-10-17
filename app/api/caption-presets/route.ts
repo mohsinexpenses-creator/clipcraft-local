@@ -109,9 +109,7 @@ function coerceCaptionPreset(body: Record<string, unknown>, id: string): Caption
 }
 
 function invalidThemeResponse(body: Record<string, unknown>): NextResponse | null {
-  if (!Object.prototype.hasOwnProperty.call(body, 'captionTheme')) return null;
   const value = body.captionTheme;
-  if (value === null || value === undefined || value === '') return null;
   return isCaptionThemeName(value)
     ? null
     : NextResponse.json({ error: 'Invalid caption theme.' }, { status: 400 });

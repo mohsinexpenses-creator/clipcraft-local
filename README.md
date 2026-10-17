@@ -111,19 +111,19 @@ row created by an older build never picks up a changed default — **Reset to sh
 styles** re-syncs the built-in rows from `lib/presets.ts` while keeping every preset you
 made yourself and the preset you marked default.
 
-The caption theme selector and style gallery include all 13 locally bundled Remotion themes
-(Pop, Karaoke, Kinetic 01/02, Hustle, Grape, Beast, Poppin, Aarit, Soft AI, Gaming Stream,
-Simple One Word, and Podcast). The original eight styles are preserved; Bold Punch remains
-the Kinetic 01 style, and the other twelve themes appear as individually named gallery
-cards. New theme cards are seeded into existing databases on the next app start, without a
-reset. Hook and CTA cards can match the chosen theme's font, accent, card and motion, while
-retaining their existing text and timing. A default you previously chose is preserved
-when built-ins are reset.
+The caption gallery contains exactly 13 shipped theme presets: **cc-bold-punch**
+(Kinetic 01, default, first, position 28%) and twelve `caption-theme-*` rows.
+Caption style controls are theme, primary/accent colors, font size, vertical
+position, words per caption and matching Hook/CTA style. Theme components own
+motion and typography; unsupported theme-specific overrides are not promised.
+There is no classic caption renderer or celebrity-name keyword animation.
 
-Caption theme source is vendored under `remotion/caption-themes/vendor` with its MIT
-license. Caption fonts are bundled locally in `public/fonts` (including the theme fonts);
-third-party Google font OFL licenses are in `public/fonts/licenses`.
-Old built-in caption presets are removed from existing databases on the next start; presets you created yourself are kept.
+On upgrade, retired built-ins and every custom row without a valid captionTheme
+are backed up to `data/backups/caption-presets-removed-<timestamp>-<id>.json`
+**before deletion**. Clips/render settings are repointed to the theme default.
+Valid custom themes remain. Reset seeds only the 13 themes and preserves a valid
+chosen default. Caption POST/PUT require a valid theme, including on updates.
+Third-party caption/font attribution and licenses are listed below.
 
 ## Tech stack
 
@@ -209,7 +209,6 @@ scripts/                setup-whisper.{mjs,ps1}, setup-yunet.mjs, verify-clip.ts
 bin/whisper-win-x64/    committed Windows whisper.cpp build (whisper-cli + DLLs)
 models/yunet/           committed YuNet face-detection model (232 KB)
 tests/                  node:test unit tests (tsx --test)
-docs/                   feature guides (layouts, overlays, viral prompt)
 ```
 
 ## Hard constraints (by design)
@@ -226,10 +225,38 @@ docs/                   feature guides (layouts, overlays, viral prompt)
 ## Documentation
 
 - **[SETUP.md](./SETUP.md)** — install, env vars, running, troubleshooting
-- **[docs/LAYOUTS.md](./docs/LAYOUTS.md)** — speaker focus vs split screen + how
-  active-speaker tracking works
-- **[docs/OVERLAYS.md](./docs/OVERLAYS.md)** — hook/CTA text, style presets, the
-  background picker
-- **[docs/VIRAL_PROMPT_GUIDE.md](./docs/VIRAL_PROMPT_GUIDE.md)** — the viral-detection
-  prompt, its variables, and how to customize it
-- **[docs/sqlite-migration-inventory.md](./docs/sqlite-migration-inventory.md)** — legacy collections, indexes, queue payloads, and behavior recorded before migration
+
+## Layout, overlay and prompt essentials
+
+Speaker focus follows the active speaker in one 9:16 pane. Split screen locks a
+stable pane per speaker (2–4 cells); it does not reorder people mid-clip. YuNet
+locates faces, not identities. Missing required face detections fail clearly.
+See the existing layout/worker settings before changing framing or concurrency.
+
+The stacking rule is **speaker → full-screen photo → transparent caption/hook/CTA/
+generic keyword-pop overlay**. Photos must never obscure text. Hook replay uses
+the detected interval, not an arbitrary shortened duration; photos stay out of the
+hook dip. Caption copy, hook/CTA copy and their style presets are separate layers.
+Generic word/number pops remain; celebrity-name animated keyword pops are not a feature.
+
+Edit viral prompts at `/prompt-templates`. Preserve `{{transcript}}`, `{{clipCount}}`,
+`{{minClipDuration}}` and `{{maxClipDuration}}`, and the strict JSON object with a
+`clips` array. Ask for complete standalone moments, truthful hooks, concrete payoff,
+no invented gossip or identities, and exact timestamp ranges. Hook/CTA fallback
+prompts use `{{clipTranscript}}`. Templates seed only when missing: reset shipped
+templates explicitly to pick up new defaults, rather than overwriting custom text.
+Video option snapshots still win over later changes to global defaults.
+
+## Third-party attribution and reproducible downloads
+
+The 13 caption components derive from
+[vshukla7/remotion-captions-themes](https://github.com/vshukla7/remotion-captions-themes),
+version 1.0.8, MIT; the vendor LICENSE remains beside the source. CSS transitions
+were replaced by frame-driven animation. Beast uses local OFL Bangers; Podcast
+uses local Anton. Final masked caption chunks are adapted through CaptionThemeOverlay.
+Font OFL licenses remain in `public/fonts/licenses`.
+
+Downloaded Whisper binaries and YuNet weights are not tracked. After clone run
+`npm run setup:whisper` (Windows binary/model download) and `npm run setup:yunet`
+(SHA-256-verified official OpenCV model). Their setup scripts are idempotent; local
+copies are retained when untracking. See SETUP for non-Windows Whisper compilation.

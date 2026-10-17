@@ -47,7 +47,7 @@ test('database startup seeds each separate theme card into a pre-existing databa
 
   const seeded = await listCaptionPresets();
   const themed = seeded.filter((preset) => preset.captionTheme);
-  assert.equal(seeded.length, 20, 'the eight shipped styles remain alongside twelve additions');
+  assert.equal(seeded.length, 13, 'only the thirteen theme styles are seeded');
   assert.equal(themed.length, 13, 'Bold Punch represents Kinetic 01 without a duplicate card');
   assert.deepEqual(
     themed.map((preset) => preset.captionTheme).sort(),
@@ -71,6 +71,7 @@ test('reset restores an edited built-in and leaves custom rows alone', async (t)
   const custom: CaptionPreset = {
     _id: 'user-custom-style',
     name: 'Mine',
+    captionTheme: 'pop',
     fontFamily: 'Georgia, serif',
     fontSize: 44,
     fontWeight: 'normal',

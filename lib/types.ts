@@ -256,6 +256,9 @@ export interface RenderDefaults {
   visualCardBorder?: boolean;
   /** Verify candidate photo relevance with a single Gemini vision call per clip (default true). */
   visualVisionVerify?: boolean;
+  visualizableScoreThreshold?: number;
+  visualVisionScoreThreshold?: number;
+  visualRelevanceStrictness?: "strict" | "lenient";
   /** Master toggle for sound effects on hooks, transitions, visual cards, and CTAs. */
   sfxEnabled?: boolean;
   /** Master SFX volume in dB (default -14 dB). */
@@ -288,6 +291,9 @@ export const DEFAULT_RENDER_SETTINGS: RenderDefaults = {
   visualCardAspect: 'portrait',
   visualCardBorder: true,
   visualVisionVerify: true,
+  visualizableScoreThreshold: 6,
+  visualVisionScoreThreshold: 7,
+  visualRelevanceStrictness: "strict",
   sfxEnabled: true,
   sfxVolume: -14,
 };
@@ -305,6 +311,7 @@ export interface AiProviderSettings {
    * so instead of quietly using an env value you cannot see.
    */
   geminiApiKeys: string[];
+  geminiRequestsPerMinute?: number;
   /** Empty means "no cloud transcription"; local whisper.cpp is used. */
   deepgramApiKey: string;
   /** Empty means `nova-2`. */
@@ -331,6 +338,7 @@ export interface AiProviderSettings {
 
 export const DEFAULT_AI_SETTINGS: AiProviderSettings = {
   geminiApiKeys: [],
+  geminiRequestsPerMinute: 10,
   deepgramApiKey: '',
   deepgramModel: '',
   transcriptionProvider: 'auto',
@@ -568,7 +576,31 @@ export interface VisualTimelineWindow {
   end: number;
 }
 
+export interface VisualEntity {
+  name: string; type: 'person' | 'place' | 'event' | 'org'; description_en: string; public_figure: boolean;
+  qid?: string; commonsCategory?: string;
+}
+export interface VisualFaceCheck {
+  prominent: number; total: number; face?: { x: number; y: number; width: number; height: number };
+  width: number; height: number;
+}
 export interface ClipVisualOverlay {
+  entities?: VisualEntity[];
+  primaryEntity?: VisualEntity;
+  brollQueries?: string[];
+  identityEvidence?: string;
+  faceCheck?: VisualFaceCheck;
+  isBroll?: boolean;
+
+  segmentIds?: number[];
+  visionScore?: number;
+  visualVerificationHash?: string;
+  preparedContentHash?: string;
+  chosenQuery?: string;
+  sentenceMeaningEn?: string;
+  visualSubjectEn?: string;
+  visualKind?: "literal" | "metaphor";
+  visualizableScore?: number;
   id: string;
   quote: string;
   sourceStart: number;
@@ -809,7 +841,25 @@ export interface TextPreset {
   updatedAt: string;
 }
 
+export interface VisualGeminiCallTiming {
+  task: 'planner' | 'vision'; elapsedMs: number; attempts: number; outcome: 'ok' | 'error';
+}
+export interface VisualPrefetchStats {
+  geminiCalls?: VisualGeminiCallTiming[];
+  plannerCalls: number; visionCalls: number; attempts: number; geminiMs: number;
+  prefetchMs: number; cacheHits: number;
+}
+export interface VisualPrefetchJobData {
+  clipId: string; videoId: string; renderAfter: boolean;
+}
 export interface ClipRecord {
+  visualPrefetchSettings?: Partial<RenderDefaults>;
+  visualsUseEditedMoments?: boolean;
+  visualsPrefetchedAt?: string;
+  visualsTranscriptHash?: string;
+  visualsPrefetchFingerprint?: string;
+  visualsPrefetchStats?: VisualPrefetchStats;
+  visualsSkippedReason?: string;
   _id: string;
   videoId: string;
   videoTitle?: string;

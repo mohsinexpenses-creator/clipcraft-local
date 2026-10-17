@@ -11,10 +11,13 @@ import {
   TranscriptionJobData,
   VideoRecord,
   ViralDetectionJobData,
+  VisualPrefetchJobData,
+  ClipRecord,
 } from './types';
 import type { SqliteDatabase } from './db';
 
 export const CLIP_QUEUE_NAME = 'clip-processing';
+export const VISUAL_PREFETCH_QUEUE_NAME = 'visual-prefetch';
 export const TRANSCRIPTION_QUEUE_NAME = 'transcription';
 /**
  * Viral-segment detection is a queue job rather than a request the browser has
@@ -286,6 +289,7 @@ export function claimNextJob(
           WHERE status = 'queued'
             AND available_at <= ?
             AND type IN (${placeholders})
+            AND (type != 'visual-prefetch' OR (SELECT COUNT(*) FROM jobs WHERE type = 'visual-prefetch' AND status = 'running') < 2)
             AND (
               video_id IS NULL
               OR video_id = (
@@ -313,6 +317,7 @@ export function claimNextJob(
         WHERE id = (
           SELECT id FROM jobs
           WHERE status = 'queued' AND available_at <= ? AND type IN (${placeholders})
+            AND (type != 'visual-prefetch' OR (SELECT COUNT(*) FROM jobs WHERE type = 'visual-prefetch' AND status = 'running') < 2)
           ORDER BY created_at ASC, id ASC
           LIMIT 1
         ) AND status = 'queued'
@@ -481,6 +486,24 @@ export async function enqueueClipJob(jobData: JobData): Promise<void> {
       clipId: jobData.clipId,
       videoId: jobData.videoId,
     }, db);
+  }).immediate();
+}
+
+/** Per-clip persistent prefetch step. Saved render intent survives restart/recovery. */
+export async function enqueueVisualPrefetchJob(data: VisualPrefetchJobData, clipToUpdate?: ClipRecord): Promise<string> {
+  const clip = clipToUpdate ?? await getClip(data.clipId);
+  if (!clip || clip.videoId !== data.videoId) throw new AppError('Clip not found for visual prefetch', { status: 404 });
+  const db = getDatabase();
+  return db.transaction(() => {
+    if (findActiveJob(CLIP_QUEUE_NAME, { clipId: data.clipId }, db)) throw new AppError('A render is already queued or running for this clip.', { status: 409 });
+    const active = findActiveJob(VISUAL_PREFETCH_QUEUE_NAME, { clipId: data.clipId }, db);
+    if (active) {
+      if (clipToUpdate) throw new AppError('Visual prefetch is already queued or running.', { status: 409 });
+      if (data.renderAfter && !(active.payload as VisualPrefetchJobData).renderAfter) db.prepare('UPDATE jobs SET payload_json = ? WHERE id = ?').run(json({ ...active.payload as VisualPrefetchJobData, renderAfter: true }), active.id);
+      return active.id;
+    }
+    if (!updateClipRecordSync(db, clip)) throw new AppError('Clip was deleted before prefetch could be queued', { status: 404 });
+    return enqueue(VISUAL_PREFETCH_QUEUE_NAME, data, { id: `visual:${data.clipId}`, clipId: data.clipId, videoId: data.videoId, maxAttempts: 2 }, db);
   }).immediate();
 }
 

@@ -10,7 +10,7 @@ import {
 import { AppError, toErrorMessage, toErrorStatus } from '@/lib/errors';
 import { enqueueClipJob } from '@/lib/queue';
 import { jobDataFromClip } from '@/lib/pipeline';
-import { sanitizeClipEdits } from '@/lib/clip-edits';
+import { sanitizeClipEdits, preserveVerifiedVisualMetadata, hasVisualMeaningChanges } from '@/lib/clip-edits';
 
 export const runtime = 'nodejs';
 
@@ -61,6 +61,8 @@ export async function POST(request: Request) {
 
     const video = await getVideo(existingClip.videoId);
     const edits = sanitizeClipEdits(body, { duration: video?.duration });
+    if (edits.visualOverlays) edits.visualOverlays = preserveVerifiedVisualMetadata(existingClip.visualOverlays ?? [], edits.visualOverlays);
+    if (edits.visualOverlays && hasVisualMeaningChanges(existingClip.visualOverlays ?? [], edits.visualOverlays)) existingClip.visualsUseEditedMoments = true;
     Object.assign(existingClip, edits);
 
     // Preset ids fall back to the configured database defaults, so a re-render

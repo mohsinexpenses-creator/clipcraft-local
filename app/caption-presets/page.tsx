@@ -8,14 +8,13 @@ import React, {
   useRef,
 } from "react";
 import {
-  CaptionLineStyle,
   CaptionPreset,
-  CaptionThemeName,
   OverlayStylePreset,
 } from "@/lib/types";
 import {
   CAPTION_THEME_CATALOG,
   getCaptionThemeDefinition,
+  isCaptionThemeName,
 } from "@/lib/caption-theme-styles";
 import { CaptionPreview } from "@/components/caption-preview";
 import { OverlayStyleEditor } from "@/components/overlay-style-editor";
@@ -60,13 +59,6 @@ import {
   Trash2,
 } from "lucide-react";
 import { cn } from "cn";
-
-const ANIMATION_LABELS: Record<string, string> = {
-  karaoke: "Karaoke",
-  "word-pop": "Word pop",
-  "fade-in": "Fade in",
-  static: "Static",
-};
 
 function ColorField({
   label,
@@ -119,7 +111,7 @@ export default function CaptionPresetsPage() {
   const [sampleHookText, setSampleHookText] = useState(
     "THE 1 SECRET YOU WERE NEVER TOLD",
   );
-  const [sampleCtaText, setSampleCtaText] = useState(
+  const [sampleCtaText] = useState(
     "FOLLOW FOR MORE BREAKDOWNS",
   );
   const [isSaving, setIsSaving] = useState(false);
@@ -217,6 +209,8 @@ export default function CaptionPresetsPage() {
     const newPreset: CaptionPreset = {
       _id: `preset_${Date.now()}_${Math.random().toString(36).substring(7)}`,
       name: "Custom preset",
+      captionTheme: "kinetic-01",
+      matchOverlayTheme: true,
       fontFamily: "Inter, sans-serif",
       fontSize: 50,
       fontWeight: "bold",
@@ -250,7 +244,7 @@ export default function CaptionPresetsPage() {
         body: JSON.stringify({
           ...activePreset,
           // Explicit null lets PUT clear a previously saved theme (undefined is omitted by JSON).
-          captionTheme: activePreset.captionTheme ?? null,
+          captionTheme: activePreset.captionTheme ?? "kinetic-01",
         }),
       });
 
@@ -341,82 +335,6 @@ export default function CaptionPresetsPage() {
         err instanceof Error ? err.message : "Failed to delete caption preset.",
       );
     }
-  };
-
-  const toggleRichStyles = (enabled: boolean) => {
-    if (!enabled) {
-      setActivePreset({
-        ...activePreset,
-        lineStyles: [],
-        lineGap: undefined,
-        lineAlignment: undefined,
-      });
-      return;
-    }
-    const makeLine = (index: number, maxWords: number): CaptionLineStyle => ({
-      maxWords,
-      fontFamily: activePreset.fontFamily,
-      fontSize: Math.max(12, activePreset.fontSize + (index === 0 ? 6 : -4)),
-      fontWeight: activePreset.fontWeight,
-      textColor: activePreset.textColor,
-      highlightColor: activePreset.highlightColor,
-      strokeColor: activePreset.strokeColor,
-      strokeWidth: activePreset.strokeWidth,
-      uppercase: activePreset.uppercase ?? true,
-      animationStyle: activePreset.animationStyle,
-      lineHeight: 1.12,
-    });
-    setActivePreset({
-      ...activePreset,
-      lineStyles: activePreset.lineStyles?.length
-        ? activePreset.lineStyles
-        : [makeLine(0, 2), makeLine(1, 3)],
-      lineGap: activePreset.lineGap ?? 5,
-      lineAlignment: activePreset.lineAlignment ?? "center",
-    });
-  };
-
-  const patchLineStyle = (index: number, patch: Partial<CaptionLineStyle>) => {
-    const lineStyles = activePreset.lineStyles ?? [];
-    setActivePreset({
-      ...activePreset,
-      lineStyles: lineStyles.map((line, lineIndex) =>
-        lineIndex === index ? { ...line, ...patch } : line,
-      ),
-    });
-  };
-
-  const addLineStyle = () => {
-    const lineStyles = activePreset.lineStyles ?? [];
-    if (lineStyles.length >= 6) return;
-    setActivePreset({
-      ...activePreset,
-      lineStyles: [
-        ...lineStyles,
-        {
-          maxWords: 2,
-          fontFamily: activePreset.fontFamily,
-          fontSize: activePreset.fontSize,
-          fontWeight: activePreset.fontWeight,
-          textColor: activePreset.textColor,
-          highlightColor: activePreset.highlightColor,
-          strokeColor: activePreset.strokeColor,
-          strokeWidth: activePreset.strokeWidth,
-          uppercase: activePreset.uppercase ?? true,
-          animationStyle: activePreset.animationStyle,
-          lineHeight: 1.12,
-        },
-      ],
-    });
-  };
-
-  const removeLineStyle = (index: number) => {
-    const lineStyles = activePreset.lineStyles ?? [];
-    if (lineStyles.length <= 1) return;
-    setActivePreset({
-      ...activePreset,
-      lineStyles: lineStyles.filter((_, lineIndex) => lineIndex !== index),
-    });
   };
 
   /**
@@ -607,8 +525,7 @@ export default function CaptionPresetsPage() {
                             <span>
                               {theme
                                 ? `Theme · ${theme.label}`
-                                : (ANIMATION_LABELS[p.animationStyle] ??
-                                  p.animationStyle)}
+                                : "Kinetic 01"}
                             </span>
                             <span className="text-muted-foreground/40">·</span>
                             <span>
@@ -667,665 +584,21 @@ export default function CaptionPresetsPage() {
                   </CardAction>
                 </CardHeader>
 
-                <CardContent>
-                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                    <div className="space-y-2 sm:col-span-2">
-                      <Label htmlFor="preset-name">Preset name</Label>
-                      <Input
-                        id="preset-name"
-                        value={activePreset.name}
-                        onChange={(e) =>
-                          setActivePreset({
-                            ...activePreset,
-                            name: e.target.value,
-                          })
-                        }
-                      />
-                    </div>
-
-                    <div className="space-y-2 sm:col-span-2">
-                      <Label htmlFor="sample-hook">
-                        Sample hook text (preview)
-                      </Label>
-                      <Input
-                        id="sample-hook"
-                        value={sampleHookText}
-                        onChange={(e) => setSampleHookText(e.target.value)}
-                      />
-                    </div>
-
-                    <div className="space-y-2 sm:col-span-2">
-                      <Label htmlFor="sample-cta">
-                        Sample CTA text (preview)
-                      </Label>
-                      <Input
-                        id="sample-cta"
-                        value={sampleCtaText}
-                        onChange={(e) => setSampleCtaText(e.target.value)}
-                      />
-                    </div>
-
-                    <div className="space-y-4 rounded-lg border p-4 sm:col-span-2">
-                      <div className="space-y-2">
-                        <Label id="caption-theme-label">Caption theme</Label>
-                        <Select
-                          value={activePreset.captionTheme ?? "classic"}
-                          onValueChange={(value) => {
-                            if (value === "classic") {
-                              setActivePreset({
-                                ...activePreset,
-                                captionTheme: undefined,
-                                matchOverlayTheme: false,
-                              });
-                              return;
-                            }
-                            const theme = getCaptionThemeDefinition(
-                              value as CaptionThemeName,
-                            );
-                            if (!theme) return;
-                            setActivePreset({
-                              ...activePreset,
-                              captionTheme: theme.id,
-                              matchOverlayTheme: true,
-                              textColor: theme.captionPrimaryColor,
-                              highlightColor: theme.captionAccentColor,
-                            });
-                          }}
-                        >
-                          <SelectTrigger aria-labelledby="caption-theme-label">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="classic">
-                              ClipCraft classic
-                            </SelectItem>
-                            {CAPTION_THEME_CATALOG.map((theme) => (
-                              <SelectItem key={theme.id} value={theme.id}>
-                                {theme.label}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        {activePreset.captionTheme ? (
-                          <p className="text-xs text-muted-foreground">
-                            {
-                              getCaptionThemeDefinition(
-                                activePreset.captionTheme,
-                              )?.description
-                            }{" "}
-                            Theme font:{" "}
-                            {
-                              getCaptionThemeDefinition(
-                                activePreset.captionTheme,
-                              )?.captionFontFamily.split(",")[0]
-                            }
-                            . Theme typography and motion replace the classic
-                            line/stroke controls; size, placement and caption
-                            colors remain adjustable.
-                          </p>
-                        ) : (
-                          <p className="text-xs text-muted-foreground">
-                            Use ClipCraft’s existing customizable caption
-                            renderer.
-                          </p>
-                        )}
-                        <p className="text-xs text-muted-foreground">
-                          The 13 theme animations are rendered by Remotion in
-                          headless Chrome.
-                        </p>
-                      </div>
-
-                      {activePreset.captionTheme ? (
-                        <div className="flex items-center justify-between gap-4 rounded-md border bg-muted/30 p-3">
-                          <div className="space-y-0.5">
-                            <Label htmlFor="match-overlay-theme">
-                              Match Hook + CTA to theme
-                            </Label>
-                            <p className="text-xs text-muted-foreground">
-                              Applies the theme font, palette, card shape and
-                              motion; saved overlay sizes, badge text and
-                              placement remain.
-                            </p>
-                          </div>
-                          <Switch
-                            id="match-overlay-theme"
-                            checked={activePreset.matchOverlayTheme !== false}
-                            onCheckedChange={(matchOverlayTheme) =>
-                              setActivePreset({
-                                ...activePreset,
-                                matchOverlayTheme,
-                              })
-                            }
-                          />
-                        </div>
-                      ) : null}
-
-                      <div className="flex items-center justify-between gap-4 border-t pt-4">
-                        <div className="space-y-0.5">
-                          <Label htmlFor="rich-line-toggle">
-                            Rich multi-line styling
-                          </Label>
-                          <p className="text-xs text-muted-foreground">
-                            Split each timed transcript chunk into styled visual
-                            lines for the classic caption renderer.
-                          </p>
-                        </div>
-                        <Switch
-                          id="rich-line-toggle"
-                          checked={Boolean(activePreset.lineStyles?.length)}
-                          onCheckedChange={toggleRichStyles}
-                        />
-                      </div>
-
-                      {activePreset.lineStyles?.length ? (
-                        <div className="space-y-4 border-t pt-4">
-                          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                            <div className="space-y-2">
-                              <Label id="line-alignment-label">
-                                Line alignment
-                              </Label>
-                              <Select
-                                value={activePreset.lineAlignment ?? "center"}
-                                onValueChange={(value) =>
-                                  setActivePreset({
-                                    ...activePreset,
-                                    lineAlignment:
-                                      value === "left" || value === "right"
-                                        ? value
-                                        : "center",
-                                  })
-                                }
-                              >
-                                <SelectTrigger aria-labelledby="line-alignment-label">
-                                  <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="left">Left</SelectItem>
-                                  <SelectItem value="center">Center</SelectItem>
-                                  <SelectItem value="right">Right</SelectItem>
-                                </SelectContent>
-                              </Select>
-                            </div>
-                            <div className="space-y-2">
-                              <Label htmlFor="line-gap-input">
-                                Line gap (px)
-                              </Label>
-                              <Input
-                                id="line-gap-input"
-                                type="number"
-                                min={0}
-                                max={80}
-                                value={activePreset.lineGap ?? 5}
-                                onChange={(event) =>
-                                  setActivePreset({
-                                    ...activePreset,
-                                    lineGap: Math.max(
-                                      0,
-                                      Math.min(
-                                        80,
-                                        Number(event.target.value) || 0,
-                                      ),
-                                    ),
-                                  })
-                                }
-                              />
-                            </div>
-                          </div>
-
-                          {activePreset.lineStyles.map((line, index) => (
-                            <div
-                              key={`rich-line-${index}`}
-                              className="space-y-4 rounded-md bg-muted/40 p-4"
-                            >
-                              <div className="flex items-center justify-between">
-                                <h3 className="text-sm font-semibold">
-                                  Visual line {index + 1}
-                                </h3>
-                                {activePreset.lineStyles!.length > 1 && (
-                                  <Button
-                                    type="button"
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={() => removeLineStyle(index)}
-                                  >
-                                    Remove line
-                                  </Button>
-                                )}
-                              </div>
-                              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                                <div className="space-y-2">
-                                  <Label htmlFor={`line-font-${index}`}>
-                                    Font family
-                                  </Label>
-                                  <Input
-                                    id={`line-font-${index}`}
-                                    value={
-                                      line.fontFamily ?? activePreset.fontFamily
-                                    }
-                                    onChange={(event) =>
-                                      patchLineStyle(index, {
-                                        fontFamily: event.target.value,
-                                      })
-                                    }
-                                  />
-                                </div>
-                                <div className="space-y-2">
-                                  <Label htmlFor={`line-max-words-${index}`}>
-                                    Maximum words on this line
-                                  </Label>
-                                  <Input
-                                    id={`line-max-words-${index}`}
-                                    type="number"
-                                    min={1}
-                                    max={8}
-                                    value={line.maxWords ?? 4}
-                                    onChange={(event) =>
-                                      patchLineStyle(index, {
-                                        maxWords: Math.max(
-                                          1,
-                                          Math.min(
-                                            8,
-                                            Math.round(
-                                              Number(event.target.value) || 1,
-                                            ),
-                                          ),
-                                        ),
-                                      })
-                                    }
-                                  />
-                                </div>
-                                <div className="space-y-2">
-                                  <Label id={`line-weight-label-${index}`}>
-                                    Line font weight
-                                  </Label>
-                                  <Select
-                                    value={
-                                      line.fontWeight ?? activePreset.fontWeight
-                                    }
-                                    onValueChange={(value) =>
-                                      patchLineStyle(index, {
-                                        fontWeight:
-                                          (value as CaptionPreset["fontWeight"]) ||
-                                          activePreset.fontWeight,
-                                      })
-                                    }
-                                  >
-                                    <SelectTrigger
-                                      aria-labelledby={`line-weight-label-${index}`}
-                                    >
-                                      <SelectValue />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                      <SelectItem value="normal">
-                                        Normal
-                                      </SelectItem>
-                                      <SelectItem value="bold">Bold</SelectItem>
-                                      <SelectItem value="extra-bold">
-                                        Extra bold
-                                      </SelectItem>
-                                      <SelectItem value="black">
-                                        Black
-                                      </SelectItem>
-                                    </SelectContent>
-                                  </Select>
-                                </div>
-                                <div className="space-y-2">
-                                  <Label id={`line-animation-label-${index}`}>
-                                    Line animation
-                                  </Label>
-                                  <Select
-                                    value={
-                                      line.animationStyle ??
-                                      activePreset.animationStyle
-                                    }
-                                    onValueChange={(value) =>
-                                      patchLineStyle(index, {
-                                        animationStyle:
-                                          (value as CaptionPreset["animationStyle"]) ||
-                                          activePreset.animationStyle,
-                                      })
-                                    }
-                                  >
-                                    <SelectTrigger
-                                      aria-labelledby={`line-animation-label-${index}`}
-                                    >
-                                      <SelectValue />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                      <SelectItem value="karaoke">
-                                        Karaoke
-                                      </SelectItem>
-                                      <SelectItem value="word-pop">
-                                        Word pop
-                                      </SelectItem>
-                                      <SelectItem value="fade-in">
-                                        Fade in
-                                      </SelectItem>
-                                      <SelectItem value="static">
-                                        Static
-                                      </SelectItem>
-                                    </SelectContent>
-                                  </Select>
-                                </div>
-                                <div className="space-y-3 sm:col-span-2">
-                                  <div className="flex items-center justify-between">
-                                    <Label htmlFor={`line-font-size-${index}`}>
-                                      Line font size
-                                    </Label>
-                                    <span className="text-xs text-muted-foreground">
-                                      {line.fontSize ?? activePreset.fontSize}px
-                                    </span>
-                                  </div>
-                                  <Slider
-                                    id={`line-font-size-${index}`}
-                                    min={12}
-                                    max={120}
-                                    value={
-                                      line.fontSize ?? activePreset.fontSize
-                                    }
-                                    onValueChange={(fontSize) =>
-                                      patchLineStyle(index, { fontSize })
-                                    }
-                                    aria-label={`Line ${index + 1} font size`}
-                                  />
-                                </div>
-                                <ColorField
-                                  label="Line text color"
-                                  value={
-                                    line.textColor ?? activePreset.textColor
-                                  }
-                                  onChange={(textColor) =>
-                                    patchLineStyle(index, { textColor })
-                                  }
-                                />
-                                <ColorField
-                                  label="Line active-word highlight"
-                                  value={
-                                    line.highlightColor ??
-                                    activePreset.highlightColor
-                                  }
-                                  onChange={(highlightColor) =>
-                                    patchLineStyle(index, { highlightColor })
-                                  }
-                                />
-                                <ColorField
-                                  label="Line stroke color"
-                                  value={
-                                    line.strokeColor ?? activePreset.strokeColor
-                                  }
-                                  onChange={(strokeColor) =>
-                                    patchLineStyle(index, { strokeColor })
-                                  }
-                                />
-                                <div className="space-y-3">
-                                  <div className="flex items-center justify-between">
-                                    <Label>Line stroke width</Label>
-                                    <span className="text-xs text-muted-foreground">
-                                      {line.strokeWidth ??
-                                        activePreset.strokeWidth}
-                                      px
-                                    </span>
-                                  </div>
-                                  <Slider
-                                    min={0}
-                                    max={20}
-                                    value={
-                                      line.strokeWidth ??
-                                      activePreset.strokeWidth
-                                    }
-                                    onValueChange={(strokeWidth) =>
-                                      patchLineStyle(index, { strokeWidth })
-                                    }
-                                    aria-label={`Line ${index + 1} stroke width`}
-                                  />
-                                </div>
-                                <div className="space-y-2">
-                                  <Label htmlFor={`line-spacing-${index}`}>
-                                    Letter spacing (px)
-                                  </Label>
-                                  <Input
-                                    id={`line-spacing-${index}`}
-                                    type="number"
-                                    min={-5}
-                                    max={30}
-                                    step={0.1}
-                                    value={line.letterSpacing ?? 0}
-                                    onChange={(event) =>
-                                      patchLineStyle(index, {
-                                        letterSpacing: Math.max(
-                                          -5,
-                                          Math.min(
-                                            30,
-                                            Number(event.target.value) || 0,
-                                          ),
-                                        ),
-                                      })
-                                    }
-                                  />
-                                </div>
-                                <div className="space-y-2">
-                                  <Label htmlFor={`line-height-${index}`}>
-                                    Line height multiplier
-                                  </Label>
-                                  <Input
-                                    id={`line-height-${index}`}
-                                    type="number"
-                                    min={0.75}
-                                    max={2.5}
-                                    step={0.05}
-                                    value={line.lineHeight ?? 1.12}
-                                    onChange={(event) =>
-                                      patchLineStyle(index, {
-                                        lineHeight: Math.max(
-                                          0.75,
-                                          Math.min(
-                                            2.5,
-                                            Number(event.target.value) || 1.12,
-                                          ),
-                                        ),
-                                      })
-                                    }
-                                  />
-                                </div>
-                                <div className="flex items-center justify-between rounded-md border p-3">
-                                  <Label htmlFor={`line-uppercase-${index}`}>
-                                    Uppercase
-                                  </Label>
-                                  <Switch
-                                    id={`line-uppercase-${index}`}
-                                    checked={
-                                      line.uppercase ??
-                                      activePreset.uppercase ??
-                                      true
-                                    }
-                                    onCheckedChange={(uppercase) =>
-                                      patchLineStyle(index, { uppercase })
-                                    }
-                                  />
-                                </div>
-                                <div className="flex items-center justify-between rounded-md border p-3">
-                                  <Label htmlFor={`line-italic-${index}`}>
-                                    Italic
-                                  </Label>
-                                  <Switch
-                                    id={`line-italic-${index}`}
-                                    checked={line.italic ?? false}
-                                    onCheckedChange={(italic) =>
-                                      patchLineStyle(index, { italic })
-                                    }
-                                  />
-                                </div>
-                              </div>
-                            </div>
-                          ))}
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={addLineStyle}
-                            disabled={activePreset.lineStyles.length >= 6}
-                          >
-                            <Plus />
-                            Add line style
-                          </Button>
-                        </div>
-                      ) : null}
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label id="animation-label">
-                        Classic animation
-                      </Label>
-                      <Select
-                        value={activePreset.animationStyle}
-                        onValueChange={(v) =>
-                          setActivePreset({
-                            ...activePreset,
-                            animationStyle:
-                              (v as CaptionPreset["animationStyle"]) ||
-                              "karaoke",
-                          })
-                        }
-                      >
-                        <SelectTrigger aria-labelledby="animation-label">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="karaoke">Karaoke fill</SelectItem>
-                          <SelectItem value="word-pop">Word pop</SelectItem>
-                          <SelectItem value="fade-in">Fade in</SelectItem>
-                          <SelectItem value="static">Static</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <p className="text-xs text-muted-foreground">
-                        Used by ClipCraft classic captions (when no caption
-                        theme is selected).
-                      </p>
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label id="weight-label">Font weight</Label>
-                      <Select
-                        value={activePreset.fontWeight}
-                        onValueChange={(v) =>
-                          setActivePreset({
-                            ...activePreset,
-                            fontWeight:
-                              (v as CaptionPreset["fontWeight"]) || "bold",
-                          })
-                        }
-                      >
-                        <SelectTrigger aria-labelledby="weight-label">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="normal">Normal</SelectItem>
-                          <SelectItem value="bold">Bold</SelectItem>
-                          <SelectItem value="extra-bold">Extra bold</SelectItem>
-                          <SelectItem value="black">Black</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between">
-                        <Label>Font size</Label>
-                        <span className="text-xs font-medium text-muted-foreground tabular-nums">
-                          {activePreset.fontSize}px
-                        </span>
-                      </div>
-                      <Slider
-                        min={24}
-                        max={72}
-                        value={activePreset.fontSize}
-                        onValueChange={(v) =>
-                          setActivePreset({ ...activePreset, fontSize: v })
-                        }
-                        aria-label="Font size"
-                      />
-                    </div>
-
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between">
-                        <Label>Vertical position</Label>
-                        <span className="text-xs font-medium text-muted-foreground tabular-nums">
-                          {activePreset.positionY}% from bottom
-                        </span>
-                      </div>
-                      <Slider
-                        min={10}
-                        max={50}
-                        value={activePreset.positionY}
-                        onValueChange={(v) =>
-                          setActivePreset({ ...activePreset, positionY: v })
-                        }
-                        aria-label="Vertical position"
-                      />
-                    </div>
-
-                    <ColorField
-                      label="Text color"
-                      value={activePreset.textColor}
-                      onChange={(v) =>
-                        setActivePreset({ ...activePreset, textColor: v })
-                      }
-                    />
-
-                    <ColorField
-                      label="Active word highlight"
-                      value={activePreset.highlightColor}
-                      onChange={(v) =>
-                        setActivePreset({ ...activePreset, highlightColor: v })
-                      }
-                    />
-
-                    <ColorField
-                      label="Stroke color"
-                      value={activePreset.strokeColor}
-                      onChange={(v) =>
-                        setActivePreset({ ...activePreset, strokeColor: v })
-                      }
-                    />
-
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between">
-                        <Label>Stroke width</Label>
-                        <span className="text-xs font-medium text-muted-foreground tabular-nums">
-                          {activePreset.strokeWidth}px
-                        </span>
-                      </div>
-                      <Slider
-                        min={0}
-                        max={8}
-                        value={activePreset.strokeWidth}
-                        onValueChange={(v) =>
-                          setActivePreset({ ...activePreset, strokeWidth: v })
-                        }
-                        aria-label="Stroke width"
-                      />
-                    </div>
-
-                    <div className="flex items-center justify-between rounded-lg border p-3 sm:col-span-2">
-                      <div className="space-y-0.5">
-                        <Label htmlFor="uppercase-toggle">
-                          Uppercase captions
-                        </Label>
-                        <p className="text-xs text-muted-foreground">
-                          Render all caption text in capital letters
-                        </p>
-                      </div>
-                      <Switch
-                        id="uppercase-toggle"
-                        checked={activePreset.uppercase ?? true}
-                        onCheckedChange={(checked) =>
-                          setActivePreset({
-                            ...activePreset,
-                            uppercase: checked,
-                          })
-                        }
-                      />
-                    </div>
+                <CardContent className="grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-2 sm:col-span-2"><Label>Preset name</Label><Input value={activePreset.name} onChange={(e) => setActivePreset({ ...activePreset, name: e.target.value })} /></div>
+                  <div className="space-y-2"><Label>Caption theme</Label>
+                    <Select value={activePreset.captionTheme ?? "kinetic-01"} onValueChange={(value) => { const theme = getCaptionThemeDefinition(isCaptionThemeName(value) ? value : "kinetic-01"); if (theme) setActivePreset({ ...activePreset, captionTheme: theme.id }); }}>
+                      <SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{CAPTION_THEME_CATALOG.map((theme) => <SelectItem key={theme.id} value={theme.id}>{theme.label}</SelectItem>)}</SelectContent>
+                    </Select>
                   </div>
+                  <div className="space-y-2"><Label>Sample hook text (preview)</Label><Input value={sampleHookText} onChange={(e) => setSampleHookText(e.target.value)} /></div>
+                  <ColorField label="Primary color" value={activePreset.textColor} onChange={(textColor) => setActivePreset({ ...activePreset, textColor })} />
+                  <ColorField label="Accent color" value={activePreset.highlightColor} onChange={(highlightColor) => setActivePreset({ ...activePreset, highlightColor })} />
+                  <div className="space-y-2"><Label>Font size: {activePreset.fontSize}px</Label><Slider value={activePreset.fontSize} min={12} max={160} onValueChange={(fontSize) => setActivePreset({ ...activePreset, fontSize })} /></div>
+                  <div className="space-y-2"><Label>Position: {activePreset.positionY}% from bottom</Label><Slider value={activePreset.positionY} min={0} max={100} onValueChange={(positionY) => setActivePreset({ ...activePreset, positionY })} /></div>
+                  <div className="space-y-2"><Label>Words per caption: {activePreset.lineStyles?.[0]?.maxWords ?? 4}</Label><Slider value={activePreset.lineStyles?.[0]?.maxWords ?? 4} min={1} max={8} onValueChange={(maxWords) => setActivePreset({ ...activePreset, lineStyles: [{ maxWords }] })} /></div>
+                  <div className="flex items-center justify-between"><Label>Match Hook + CTA to theme</Label><Switch checked={activePreset.matchOverlayTheme ?? true} onCheckedChange={(matchOverlayTheme) => setActivePreset({ ...activePreset, matchOverlayTheme })} /></div>
+                  <p className="text-xs text-muted-foreground sm:col-span-2">Theme components own typography and motion. Colors/font size apply where supported by the selected theme; position and caption grouping apply to all themes.</p>
                 </CardContent>
 
                 <CardFooter className="justify-between border-t pt-5">

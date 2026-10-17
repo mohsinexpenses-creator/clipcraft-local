@@ -627,6 +627,12 @@ function ProvidersCard({
             </span>
           </div>
 
+          <label className="block text-[11px] text-muted-foreground">
+            Gemini per-key RPM cap (planner + vision; project quotas still apply)
+            <input type="number" min={1} max={1000} defaultValue={effective.ai.geminiRequestsPerMinute ?? 10}
+              className="mt-1 block w-24 rounded border bg-background px-2 py-1"
+              onBlur={(event) => { const value = Number(event.currentTarget.value); if (Number.isInteger(value) && value >= 1 && value <= 1000 && value !== effective.ai.geminiRequestsPerMinute) void settings.save("ai", { geminiRequestsPerMinute: value }); }} />
+          </label>
           {effective.ai.geminiApiKeys.length === 0 ? (
             <div className="rounded-lg border border-dashed bg-muted/30 px-3 py-2.5 text-[11.5px] leading-snug text-muted-foreground">
               <p>

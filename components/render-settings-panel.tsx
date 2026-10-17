@@ -320,7 +320,7 @@ export function RenderSettingsPanel({
             <div className="grid gap-3 sm:grid-cols-4">
               <Field
                 label="Max visuals / clip"
-                hint="Default 12 beats per 60s clip (~1 every 4-5s, up to 16)."
+                hint="Maximum photos per clip; sentence relevance may leave buckets empty."
               >
                 <NumberField
                   id="default-max-visual-moments"
@@ -350,30 +350,20 @@ export function RenderSettingsPanel({
                 />
               </Field>
 
-              <Field
-                label="Card shape"
-                hint="Portrait 4:5 (720x900) or Square 1:1 (720x720)."
-              >
-                <Select
-                  value={value.visualCardAspect ?? "portrait"}
-                  onValueChange={(next) =>
-                    patch({
-                      visualCardAspect: (next ??
-                        "portrait") as RenderDefaults["visualCardAspect"],
-                    })
-                  }
-                  disabled={disabled}
-                >
-                  <SelectTrigger className="h-8 text-[12px]">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="dark">
-                    <SelectItem value="portrait">Portrait 4:5 (720×900)</SelectItem>
-                    <SelectItem value="square">Square 1:1 (720×720)</SelectItem>
-                  </SelectContent>
+              <Field label="Relevance strictness" hint="Strict skips photos when vision is unavailable. Lenient can accept text-score winners.">
+                <Select value={value.visualRelevanceStrictness ?? "strict"} onValueChange={(next) => patch({ visualRelevanceStrictness: next === "lenient" ? "lenient" : "strict" })} disabled={disabled}>
+                  <SelectTrigger className="h-8 text-[12px]"><SelectValue /></SelectTrigger>
+                  <SelectContent className="dark"><SelectItem value="strict">Strict (default)</SelectItem><SelectItem value="lenient">Lenient</SelectItem></SelectContent>
                 </Select>
               </Field>
-
+              <Field label="Vision relevance threshold" hint="Accept photo verdicts at or above this score (default 7/10).">
+                <NumberField id="vision-relevance-score" value={value.visualVisionScoreThreshold ?? 7} min={0} max={10} step={1}
+                  onCommit={(visualVisionScoreThreshold) => patch({ visualVisionScoreThreshold })} disabled={disabled} />
+              </Field>
+              <Field label="Visualizable score threshold" hint="Skip abstract or ambiguous sentences below this score (0–10).">
+                <NumberField id="visualizable-score-threshold" value={value.visualizableScoreThreshold ?? 6} min={0} max={10} step={1}
+                  onCommit={(visualizableScoreThreshold) => patch({ visualizableScoreThreshold })} disabled={disabled} />
+              </Field>
               <Field
                 label="Card animation"
                 hint="Entrance style for contextual visual cards."
@@ -518,18 +508,7 @@ export function RenderSettingsPanel({
                 />
                 <span>Wikimedia Commons (entities &amp; places)</span>
               </label>
-              <label className="inline-flex items-center gap-1.5 cursor-pointer ml-auto">
-                <input
-                  type="checkbox"
-                  checked={value.visualVisionVerify ?? true}
-                  onChange={(e) =>
-                    patch({ visualVisionVerify: e.target.checked })
-                  }
-                  disabled={disabled}
-                  className="rounded border-border"
-                />
-                <span>Gemini vision relevance check</span>
-              </label>
+
             </div>
             <p className="text-[10.5px] text-muted-foreground">
               Photos provided by{" "}

@@ -22,6 +22,7 @@ export type { ClipCounts };
 export const TRANSCRIPTION_JOB_TYPE = 'transcription';
 export const VIRAL_DETECTION_JOB_TYPE = 'viral-detection';
 export const CLIP_JOB_TYPE = 'clip-processing';
+export const VISUAL_JOB_TYPE = 'visual-prefetch';
 
 export type PipelineStage =
   /** Upload accepted; transcription queued but not started yet. */
@@ -34,6 +35,7 @@ export type PipelineStage =
   | 'awaiting-detection'
   /** Render jobs queued or running. */
   | 'rendering'
+  | 'prefetching'
   /** Clips detected but their renders were left to the user. */
   | 'awaiting-render'
   /** Nothing is running and at least one clip is finished. */
@@ -41,7 +43,7 @@ export type PipelineStage =
   /** The active step failed. */
   | 'failed';
 
-export type PipelineStepKey = 'transcript' | 'analyze' | 'render';
+export type PipelineStepKey = 'transcript' | 'analyze' | 'visuals' | 'render';
 export type PipelineStepState = 'pending' | 'active' | 'done' | 'failed' | 'paused';
 
 export interface PipelineStep {
@@ -80,6 +82,7 @@ export interface PipelineTimings {
   analyzeMs?: number;
   /** Sum of all clip render job durations, including re-renders. */
   renderMs?: number;
+  visualsMs?: number;
   /** First job start to the last finish - the whole pipeline so far. */
   totalMs?: number;
 }
@@ -210,6 +213,12 @@ export function computePipelineTimings(
     stepDuration.analyze = analyzeMs;
   }
 
+  const visualJobs = jobs.filter((job) => job.type === VISUAL_JOB_TYPE);
+  if (visualJobs.some((job) => job.startedAt)) {
+    timings.visualsMs = visualJobs.reduce((sum, job) => sum + (jobDurationMs(job, now) ?? 0), 0);
+    stepDuration.visuals = timings.visualsMs;
+  }
+
   // Every render attempt counts - re-renders are time the user actually spent.
   let renderMs = 0;
   let sawRender = false;
@@ -282,6 +291,9 @@ export function derivePipelineStatus(facts: PipelineFacts): PipelineStatus {
     counts.clips === 0 &&
     (detectionJob?.status === 'failed' || (videoStatus === 'failed' && transcriptReady));
 
+  const visualJobs = jobs?.filter((job) => job.type === VISUAL_JOB_TYPE) ?? [];
+  const prefetchActive = visualJobs.some((job) => job.status === 'queued' || job.status === 'running');
+  const renderJobActive = jobs?.some((job) => job.type === CLIP_JOB_TYPE && (job.status === 'queued' || job.status === 'running'));
   const renderActive =
     counts.active > 0 || (counts.queued > 0 && pipeline.autoRender && !detectionActive);
   const allClipsFailed =
@@ -293,6 +305,7 @@ export function derivePipelineStatus(facts: PipelineFacts): PipelineStatus {
   else if (transcriptionFailed) stage = 'failed';
   else if (detectionActive) stage = 'analyzing';
   else if (detectionFailed) stage = 'failed';
+  else if (prefetchActive && !renderJobActive) stage = 'prefetching';
   else if (renderActive) stage = 'rendering';
   else if (counts.clips > 0 && awaitingRender) stage = 'awaiting-render';
   else if (counts.clips > 0 && allClipsFailed) stage = 'failed';
@@ -365,6 +378,15 @@ export function derivePipelineStatus(facts: PipelineFacts): PipelineStatus {
     );
   }
 
+  if (visualJobs.length) {
+    const done = visualJobs.filter((job) => job.status === 'done').length;
+    const running = visualJobs.filter((job) => job.status === 'running').length;
+    const failed = visualJobs.some((job) => job.status === 'failed');
+    const visualStep = step('visuals', 'Relevant images', prefetchActive ? 'active' : failed ? 'failed' : 'done', visualJobs.length ? done / visualJobs.length * 100 : 0,
+      { detail: `${done}/${visualJobs.length} prefetched${running ? ` · ${running} active` : ''}` });
+    steps.splice(2, 0, visualStep);
+  }
+
   const error = stage === 'failed' ? clipError ?? videoError : undefined;
 
   // Per-step and overall wall time, straight from the queue timestamps. `now`
@@ -382,6 +404,7 @@ export function derivePipelineStatus(facts: PipelineFacts): PipelineStatus {
   if (stage === 'ready') progress = 100;
   else if (stage === 'transcribing') progress = 5 + (transcriptionJob?.progress ?? 0) * 0.45;
   else if (stage === 'analyzing') progress = 50 + (detectionJob?.progress ?? 0) * 0.2;
+  else if (stage === 'prefetching') progress = 70;
   else if (stage === 'rendering') progress = 70 + counts.progress * 0.3;
   else if (stage === 'awaiting-render') progress = 70;
   else if (stage === 'awaiting-detection') progress = 50;

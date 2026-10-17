@@ -134,6 +134,7 @@ export interface LlmCompletionRequest {
   temperature?: number;
   /** Ask the provider for a raw JSON answer (no markdown fences, no prose around it). */
   json?: boolean;
+  responseJsonSchema?: Record<string, unknown>;
 }
 
 export interface LlmCompletionResult {
@@ -310,6 +311,7 @@ async function callGeminiNative(
             temperature: request.temperature ?? 0.5,
             maxOutputTokens: maxTokens,
             ...(request.json ? { responseMimeType: "application/json" } : {}),
+            ...(request.responseJsonSchema ? { responseJsonSchema: request.responseJsonSchema } : {}),
           },
         }),
         signal: AbortSignal.timeout(LLM_CALL_TIMEOUT_MS),
@@ -524,4 +526,26 @@ export async function completeWithFallback(
         "in the details above, and retry.",
     },
   );
+}
+
+/** Visual planning uses one bounded logical request, not the unbounded model fallback chain. */
+export async function completeVisualJson(
+  request: LlmCompletionRequest,
+  options?: { keys: string[]; rpm?: number; budget?: import('./gemini-pool').VisualApiBudget }
+): Promise<{ text: string }> {
+  const { requestGeminiJson } = await import('./gemini-pool');
+  const settings = options ? undefined : await loadEffectiveSettings();
+  const text = await requestGeminiJson({
+    keys: options?.keys ?? settings!.ai.geminiApiKeys,
+    rpm: options?.rpm ?? settings?.ai.geminiRequestsPerMinute ?? 10,
+    budget: options?.budget,
+    task: 'planner', timeoutMs: 7000,
+    body: {
+      systemInstruction: { parts: [{ text: request.system ?? '' }] },
+      contents: [{ role: 'user', parts: [{ text: request.prompt }] }],
+      generationConfig: { temperature: request.temperature ?? 0.1, maxOutputTokens: request.maxTokens ?? 6000,
+        thinkingConfig: { thinkingBudget: 0 }, responseMimeType: 'application/json', responseJsonSchema: request.responseJsonSchema },
+    },
+  });
+  return { text };
 }

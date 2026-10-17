@@ -1,9 +1,9 @@
+import { makeSamplePngBuffer } from './visual-fixtures';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import zlib from 'node:zlib';
 
 import {
   findFallbackCachedVisualFile,
@@ -25,33 +25,6 @@ import { POST as cancelPipelinePost } from '../app/api/videos/[id]/cancel-pipeli
 import { createTemporaryDatabase } from './sqlite-test-helpers';
 import type { ClipVisualOverlay } from '../lib/types';
 
-function makeSamplePngBuffer(width = 800, height = 1000): Buffer {
-  const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
-  const ihdrData = Buffer.alloc(13);
-  ihdrData.writeUInt32BE(width, 0);
-  ihdrData.writeUInt32BE(height, 4);
-  ihdrData[8] = 8;
-  ihdrData[9] = 2;
-
-  function chunk(type: string, data: Buffer): Buffer {
-    const len = Buffer.alloc(4);
-    len.writeUInt32BE(data.length, 0);
-    const typeBuf = Buffer.from(type, 'ascii');
-    const crcBuf = Buffer.alloc(4);
-    crcBuf.writeUInt32BE(zlib.crc32(Buffer.concat([typeBuf, data])) >>> 0, 0);
-    return Buffer.concat([len, typeBuf, data, crcBuf]);
-  }
-
-  const rawScanline = Buffer.alloc(1 + 4 * 3, 128);
-  rawScanline[0] = 0;
-  const idatData = zlib.deflateSync(rawScanline);
-  return Buffer.concat([
-    signature,
-    chunk('IHDR', ihdrData),
-    chunk('IDAT', idatData),
-    chunk('IEND', Buffer.alloc(0)),
-  ]);
-}
 
 test('settings sanitize and mask Pixabay and Unsplash keys and resolve visualVisionVerify', () => {
   const sanitized = sanitizeSettingsSection(
@@ -208,17 +181,17 @@ test('orientation filter is sent to Pexels, Pixabay, Unsplash, and Openverse, an
   }
 });
 
-test('Gemini vision relevance check sends one batch call per clip and can promote candidate #1 or skip a moment to keyword-pop', async (t) => {
+test('Gemini vision relevance check sends one batch call per clip uses stable candidate IDs and scores, promotes candidate #1 or skips a beat', async (t) => {
   createTemporaryDatabase(t);
   const tempCache = fs.mkdtempSync(path.join(os.tmpdir(), 'clipcraft-vision-'));
   setVisualCacheDirForTests(tempCache);
   resetVisualProviderStateForTests();
 
-  const pngBytes = makeSamplePngBuffer(800, 1000);
+  const pngBytes = makeSamplePngBuffer(1080, 1920);
   let geminiCallCount = 0;
   const origFetch = globalThis.fetch;
 
-  globalThis.fetch = async (input) => {
+  globalThis.fetch = async (input, init) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
     if (url.includes('pixabay.com/api/')) {
       return new Response(
@@ -257,6 +230,17 @@ test('Gemini vision relevance check sends one batch call per clip and can promot
     }
     if (url.includes('generativelanguage.googleapis.com')) {
       geminiCallCount += 1;
+      const body = JSON.parse(String(init?.body));
+      assert.equal(body.generationConfig.thinkingConfig.thinkingLevel, 'low');
+      assert.ok(body.generationConfig.responseJsonSchema);
+      let momentId = ''; let index = 0;
+      const verdicts: Array<{ momentId: string; candidateId: string; relevance: number }> = [];
+      for (const part of body.contents[0].parts) {
+        if (!part.text?.startsWith('{')) continue;
+        const data = JSON.parse(part.text);
+        if (data.momentId) { momentId = data.momentId; index = 0; }
+        if (data.candidateId) verdicts.push({ momentId, candidateId: data.candidateId, relevance: momentId === 'm-keep' ? (index++ === 1 ? 9 : 3) : 1 });
+      }
       return new Response(
         JSON.stringify({
           candidates: [
@@ -264,12 +248,7 @@ test('Gemini vision relevance check sends one batch call per clip and can promot
               content: {
                 parts: [
                   {
-                    text: JSON.stringify({
-                      decisions: [
-                        { momentId: 'm-keep', pickIndex: 1 },
-                        { momentId: 'm-skip', pickIndex: -1 },
-                      ],
-                    }),
+                    text: JSON.stringify({ verdicts }),
                   },
                 ],
               },
@@ -357,7 +336,7 @@ test('Gemini vision relevance check sends one batch call per clip and can promot
     assert.ok(resolved[0].localFilePath && fs.existsSync(resolved[0].localFilePath));
 
     // m-skip was rejected by Gemini vision (pickIndex: -1) and converted to keyword-pop
-    assert.equal(resolved[1].kind, 'keyword-pop');
+    assert.equal(resolved[1].kind, 'photo-card', 'rejected photos must not become forced keyword pops');
     assert.equal(resolved[1].status, 'skipped');
   } finally {
     globalThis.fetch = origFetch;
@@ -374,11 +353,11 @@ test('Clip cancel, pipeline cancel, and visual cache disk fallback work reliably
   try {
     // 1. Visual cache disk fallback finds downloaded images in data/visual-cache/
     const sampleImgPath = path.join(tempCache, 'cached_photo.png');
-    fs.writeFileSync(sampleImgPath, makeSamplePngBuffer(800, 1000));
+    fs.writeFileSync(sampleImgPath, makeSamplePngBuffer(1080, 1920));
     const usedPaths = new Set<string>();
     const found = findFallbackCachedVisualFile(usedPaths);
     assert.ok(found);
-    assert.ok(found.localFilePath.endsWith('cached_photo.png'));
+    assert.ok(found.localFilePath.endsWith('cached_photo.fullscreen-v1.jpg'));
     assert.equal(findFallbackCachedVisualFile(usedPaths), null);
 
     // 2. Cancel clip and cancel pipeline transition clips/video out of pending/processing

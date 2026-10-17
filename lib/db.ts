@@ -1,3 +1,4 @@
+import { isCaptionThemeName } from './caption-theme-styles';
 import { randomUUID } from "crypto";
 import fs from "fs";
 import path from "path";
@@ -514,6 +515,19 @@ function ensureVisualCacheTables(db: SqliteDatabase): void {
       last_used TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS entity_visual_cache (
+      qid TEXT NOT NULL, asset_id TEXT NOT NULL, candidate_json TEXT NOT NULL,
+      local_path TEXT NOT NULL, content_hash TEXT NOT NULL, expires_at INTEGER NOT NULL,
+      PRIMARY KEY (qid, asset_id)
+    );
+    CREATE TABLE IF NOT EXISTS entity_resolution_cache (
+      name TEXT PRIMARY KEY, entity_json TEXT NOT NULL, expires_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS image_bank_captions (
+      asset_key TEXT PRIMARY KEY,
+      caption TEXT NOT NULL,
+      verified_at TEXT NOT NULL
+    );
     CREATE UNIQUE INDEX IF NOT EXISTS image_bank_provider_asset_idx ON image_bank(provider, asset_id);
     CREATE INDEX IF NOT EXISTS image_bank_last_used_idx ON image_bank(last_used DESC);
   `);
@@ -659,14 +673,29 @@ export function saveAppSettingsSection(
  * One-way cleanup for the caption redesign: deletes the retired built-in caption presets
  * (RETIRED_CAPTION_PRESET_IDS) from an existing database and re-points everything that
  * still referenced them at the new default. Idempotent - a database without retired rows
- * is untouched. User-created presets (any other id) are never touched.
+ * is untouched. Valid themed custom presets survive; invalid custom rows are backed up and retired.
  */
 function retireOldCaptionPresets(db: SqliteDatabase): void {
-  const retired = [...RETIRED_CAPTION_PRESET_IDS];
-  const marks = retired.map(() => "?").join(", ");
-  const present = db
-    .prepare(`SELECT id FROM caption_presets WHERE id IN (${marks})`)
-    .all(...retired) as Array<{ id: string }>;
+  const rows = db.prepare('SELECT * FROM caption_presets').all() as CaptionPresetRow[];
+  const removed = rows.filter((row) => {
+    try { return RETIRED_CAPTION_PRESET_IDS.includes(row.id) || !isCaptionThemeName(JSON.parse(row.config_json)?.captionTheme); }
+    catch { return true; }
+  });
+  const retired = removed.map((row) => row.id);
+  const marks = retired.map(() => '?').join(',');
+  // Preserve the original bytes before deleting even a corrupt built-in/default.
+  if (removed.length) {
+    const directory = path.resolve('data/backups'); fs.mkdirSync(directory, { recursive: true });
+    const backup = path.join(directory, `caption-presets-removed-${Date.now()}-${randomUUID()}.json`);
+    fs.writeFileSync(backup, JSON.stringify(removed, null, 2), { flag: 'wx' });
+    db.prepare(`DELETE FROM caption_presets WHERE id IN (${marks})`).run(...retired);
+    const insert = db.prepare('INSERT OR IGNORE INTO caption_presets (id,name,is_default,created_at,updated_at,config_json) VALUES (?,?,0,?,?,?)');
+    for (const preset of DEFAULT_CAPTION_PRESETS) {
+      const config = Object.fromEntries(Object.entries(preset).filter(([key]) => !['_id', 'name', 'isDefault', 'createdAt', 'updatedAt'].includes(key)));
+      const now = new Date().toISOString();
+      insert.run(preset._id, preset.name, preset.createdAt ?? now, preset.updatedAt ?? now, serializeJson(config));
+    }
+  }
   const newDefaultId = DEFAULT_CAPTION_PRESETS.find(
     (preset) => preset.isDefault === true,
   )?._id;
@@ -684,22 +713,20 @@ function retireOldCaptionPresets(db: SqliteDatabase): void {
       newDefaultId,
     );
   }
-  if (present.length === 0) return;
+  if (removed.length === 0) return;
 
+  const hasTable = (name: string) => Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
   // 2. Clips and the saved render settings that pointed at a retired preset.
-  db.prepare(
+  if (hasTable('clips')) db.prepare(
     `UPDATE clips SET record_json = json_set(record_json, '$.captionPresetId', ?)
        WHERE json_extract(record_json, '$.captionPresetId') IN (${marks})`,
   ).run(newDefaultId, ...retired);
-  db.prepare(
+  if (hasTable('app_settings')) db.prepare(
     `UPDATE app_settings SET value_json = json_set(value_json, '$.captionPresetId', ?)
        WHERE key = 'render' AND json_extract(value_json, '$.captionPresetId') IN (${marks})`,
   ).run(newDefaultId, ...retired);
 
-  // 3. Finally the retired rows themselves.
-  db.prepare(`DELETE FROM caption_presets WHERE id IN (${marks})`).run(
-    ...retired,
-  );
+
 }
 
 function seedDefaults(db: SqliteDatabase): void {
@@ -928,6 +955,7 @@ function mapCaptionPreset(row: CaptionPresetRow): CaptionPreset {
   >(row.config_json, "caption preset config");
   return {
     ...config,
+    captionTheme: isCaptionThemeName(config.captionTheme) ? config.captionTheme : 'kinetic-01',
     _id: row.id,
     name: row.name,
     ...(row.is_default !== null ? { isDefault: row.is_default === 1 } : {}),
@@ -1458,11 +1486,13 @@ export async function updateClip(clip: ClipRecord): Promise<boolean> {
   return updateClipRecordSync(getDatabase(), clip);
 }
 
-export async function getClip(id: string): Promise<ClipRecord | null> {
-  const row = getDatabase()
-    .prepare(`SELECT ${CLIP_COLUMNS} FROM clips WHERE id = ?`)
-    .get(id) as ClipRow | undefined;
+export function getClipRecordSync(db: SqliteDatabase, id: string): ClipRecord | null {
+  const row = db.prepare(`SELECT ${CLIP_COLUMNS} FROM clips WHERE id = ?`).get(id) as ClipRow | undefined;
   return row ? mapClip(row) : null;
+}
+
+export async function getClip(id: string): Promise<ClipRecord | null> {
+  return getClipRecordSync(getDatabase(), id);
 }
 
 export async function listClips(videoId?: string): Promise<ClipRecord[]> {
@@ -1557,7 +1587,7 @@ export async function resetPromptTemplates(): Promise<PromptTemplate[]> {
 
 export async function listCaptionPresets(): Promise<CaptionPreset[]> {
   const rows = getDatabase()
-    .prepare("SELECT * FROM caption_presets ORDER BY rowid")
+    .prepare("SELECT * FROM caption_presets ORDER BY CASE WHEN id = 'cc-bold-punch' THEN 0 ELSE 1 END, rowid")
     .all() as CaptionPresetRow[];
   return rows.map(mapCaptionPreset);
 }
@@ -1662,6 +1692,8 @@ export async function resetCaptionPresets(): Promise<CaptionPreset[]> {
       void updatedAt;
       upsert.run(_id, name, 0, createdAt ?? now, now, serializeJson(config));
     }
+
+    retireOldCaptionPresets(db);
 
     // A database with no default at all (a half-finished migration, or a hand-edited row)
     // is repaired, because every render needs one; a deliberate choice is left alone.

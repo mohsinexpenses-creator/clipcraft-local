@@ -192,13 +192,26 @@ function ClipEditForm({
           ...(customQuery?.trim() ? { customQuery: customQuery.trim() } : {}),
         }),
       });
-      const data = (await response.json()) as {
+      let data = (await response.json()) as {
+        queued?: boolean;
+        jobStatus?: string;
         visualOverlays?: ClipVisualOverlay[];
         error?: string;
       };
       if (!response.ok) {
         setError(data.error || "Could not resolve contextual visuals.");
         return;
+      }
+      if (data.queued) {
+        for (let attempt = 0; attempt < 120; attempt++) {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          const status = await fetch(`/api/clips/${clip._id}/visuals`, { cache: "no-store" });
+          if (!status.ok) throw new Error("Could not read visual prefetch status");
+          data = await status.json();
+          if (data.jobStatus === "done") break;
+          if (data.jobStatus === "failed") throw new Error(data.error || "Visual prefetch failed");
+          if (attempt === 119) throw new Error("Visual prefetch is still queued. Reopen the clip after the worker finishes.");
+        }
       }
       if (Array.isArray(data.visualOverlays)) {
         patch({ visualOverlays: data.visualOverlays });

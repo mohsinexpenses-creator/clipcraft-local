@@ -443,6 +443,16 @@ export function sanitizeSettingsSection(
       if (input.visualCardBorder !== undefined) {
         out.visualCardBorder = boolOf(input.visualCardBorder, 'Visual card border');
       }
+      if (input.visualVisionScoreThreshold !== undefined) {
+        out.visualVisionScoreThreshold = numberIn(input.visualVisionScoreThreshold, { min: 0, max: 10, precision: 0, label: "Vision relevance threshold" });
+      }
+      if (input.visualRelevanceStrictness !== undefined) {
+        if (input.visualRelevanceStrictness !== 'strict' && input.visualRelevanceStrictness !== 'lenient') throw new Error('Invalid relevance strictness');
+        out.visualRelevanceStrictness = input.visualRelevanceStrictness;
+      }
+      if (input.visualizableScoreThreshold !== undefined) {
+        out.visualizableScoreThreshold = numberIn(input.visualizableScoreThreshold, { min: 0, max: 10, precision: 0, label: "Visualizable score threshold" });
+      }
       if (input.visualVisionVerify !== undefined) {
         out.visualVisionVerify = boolOf(input.visualVisionVerify, 'Gemini vision relevance check');
       }
@@ -462,6 +472,9 @@ export function sanitizeSettingsSection(
     case 'ai': {
       const input = record(value, 'AI provider settings');
       const out: Record<string, unknown> = {};
+      if (input.geminiRequestsPerMinute !== undefined) {
+        out.geminiRequestsPerMinute = numberIn(input.geminiRequestsPerMinute, { min: 1, max: 1000, precision: 0, label: 'Gemini requests per minute per key' });
+      }
       if ('geminiApiKeys' in input) {
         out.geminiApiKeys = mergeKeyPool(input.geminiApiKeys, context.storedAi?.geminiApiKeys ?? []);
       }
@@ -826,6 +839,9 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
         : (DEFAULT_RENDER_SETTINGS.visualCardAspect ?? 'portrait'),
     visualCardBorder:
       boolValue(renderStored.visualCardBorder) ?? (DEFAULT_RENDER_SETTINGS.visualCardBorder ?? true),
+    visualVisionScoreThreshold: intInRange(renderStored.visualVisionScoreThreshold, 0, 10, 7),
+    visualRelevanceStrictness: renderStored.visualRelevanceStrictness === "lenient" ? "lenient" : "strict",
+    visualizableScoreThreshold: intInRange(renderStored.visualizableScoreThreshold, 0, 10, 6),
     visualVisionVerify:
       boolValue(renderStored.visualVisionVerify) ?? (DEFAULT_RENDER_SETTINGS.visualVisionVerify ?? true),
     sfxEnabled: boolValue(renderStored.sfxEnabled) ?? (DEFAULT_RENDER_SETTINGS.sfxEnabled ?? true),
@@ -876,6 +892,7 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
 
   const ai: AiProviderSettings = {
     geminiApiKeys,
+    geminiRequestsPerMinute: intInRange(aiStored.geminiRequestsPerMinute, 1, 1000, 10),
     deepgramApiKey,
     deepgramModel: deepgramModel || 'nova-2',
     transcriptionProvider,
@@ -1242,6 +1259,7 @@ export async function resolveWorkerSettings(): Promise<WorkerSettings> {
 export async function resolveVisualProviderSettings(): Promise<{
   render: RenderDefaults;
   geminiApiKeys: string[];
+  geminiRequestsPerMinute?: number;
   pexelsApiKey: string;
   pixabayApiKey: string;
   unsplashAccessKey: string;
@@ -1253,6 +1271,7 @@ export async function resolveVisualProviderSettings(): Promise<{
   return {
     render: settings.render,
     geminiApiKeys: settings.ai.geminiApiKeys,
+    geminiRequestsPerMinute: settings.ai.geminiRequestsPerMinute ?? 10,
     pexelsApiKey: settings.ai.pexelsApiKey,
     pixabayApiKey: settings.ai.pixabayApiKey ?? '',
     unsplashAccessKey: settings.ai.unsplashAccessKey ?? '',

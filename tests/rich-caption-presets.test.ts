@@ -10,16 +10,7 @@ import {
 import { splitCaptionWordsIntoLines } from "../lib/caption-layout";
 import { CAPTION_THEME_NAMES } from "../lib/types";
 
-const LEGACY_IDS = [
-  "cc-bold-punch",
-  "cc-spotlight",
-  "cc-storyteller",
-  "cc-authority",
-  "cc-composite",
-  "cc-minimalist",
-  "cc-kinetic",
-  "cc-cinematic",
-];
+const LEGACY_IDS = ["cc-bold-punch"];
 const EXPECTED_IDS = [
   ...LEGACY_IDS,
   ...CAPTION_THEME_NAMES.filter((theme) => theme !== "kinetic-01").map(
@@ -27,12 +18,12 @@ const EXPECTED_IDS = [
   ),
 ];
 
-test("the built-in caption catalogue keeps the eight original styles and adds all themes", () => {
+test("the built-in caption catalogue contains exactly the thirteen themes", () => {
   assert.deepEqual(
     DEFAULT_CAPTION_PRESETS.map((preset) => preset._id),
     EXPECTED_IDS,
   );
-  assert.equal(DEFAULT_CAPTION_PRESETS.length, 20);
+  assert.equal(DEFAULT_CAPTION_PRESETS.length, 13);
   assert.equal(
     DEFAULT_CAPTION_PRESETS.filter((preset) => preset.captionTheme).length,
     13,
@@ -52,7 +43,7 @@ test("the built-in caption catalogue keeps the eight original styles and adds al
 
 test("no retired preset id is reused by the new catalogue", () => {
   const retired = new Set(RETIRED_CAPTION_PRESET_IDS);
-  assert.equal(retired.size, 26);
+  assert.equal(retired.size, 33);
   assert.ok(
     DEFAULT_CAPTION_PRESETS.every((preset) => !retired.has(preset._id)),
   );
@@ -90,7 +81,6 @@ test("each style groups words into the line capacities it was designed for", () 
       DEFAULT_CAPTION_PRESETS.find((preset) => preset._id === id)!,
     )[0].words.length;
   assert.equal(firstLineWords("cc-bold-punch"), 3);
-  assert.equal(firstLineWords("cc-kinetic"), 2);
-  assert.equal(firstLineWords("cc-minimalist"), 6);
-  assert.equal(firstLineWords("cc-composite"), 2);
+  assert.equal(firstLineWords("caption-theme-pop"), 3);
+  assert.equal(firstLineWords("caption-theme-podcast"), 3);
 });

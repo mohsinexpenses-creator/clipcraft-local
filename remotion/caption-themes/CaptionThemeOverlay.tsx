@@ -1,6 +1,7 @@
+import { isCaptionThemeName } from '../../lib/caption-theme-styles';
 import React from 'react';
 import { AbsoluteFill, useCurrentFrame, useVideoConfig } from 'remotion';
-import type { CaptionPreset, CaptionThemeName } from '../../lib/types';
+import type { CaptionPreset } from '../../lib/types';
 import { captionReservedBand, OVERLAY_CANVAS_HEIGHT } from '../../lib/overlay-stack';
 import type { CaptionChunk } from '../AnimatedWord';
 import { useCaptionFonts } from '../caption-fonts';
@@ -26,14 +27,14 @@ export const CaptionThemeOverlay: React.FC<CaptionThemeOverlayProps> = ({
   useCaptionFonts();
   const frame = useCurrentFrame();
   const { fps, height } = useVideoConfig();
-  const theme = preset.captionTheme as CaptionThemeName | undefined;
-  if (!theme || chunks.length === 0) return null;
+  const theme = isCaptionThemeName(preset.captionTheme) ? preset.captionTheme : 'kinetic-01';
+  if (chunks.length === 0) return null;
 
   const currentTime = frame / fps;
   const selected = selectThemeCaptionData(chunks, theme, currentTime);
   if (!selected) return null;
 
-  const band = captionReservedBand(preset);
+  const band = captionReservedBand({ ...preset, captionTheme: theme });
   const centerY = (band.top + band.bottom) / 2;
   const canvasScale = height / OVERLAY_CANVAS_HEIGHT;
   const offsetY = (centerY - OVERLAY_CANVAS_HEIGHT / 2) * canvasScale -

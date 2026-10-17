@@ -1,7 +1,7 @@
 # ClipCraft Local — Setup & Troubleshooting (Windows-first)
 
 Practical guide to installing and running ClipCraft. The product overview lives in
-[README.md](./README.md); feature guides in [`docs/`](./docs).
+[README.md](./README.md).
 
 Everything runs on your own PC: Next.js + a separate worker backed by a local SQLite
 file. **No Python, Docker, MongoDB, or Redis service is needed.** The existing
@@ -77,7 +77,7 @@ Both `npm run dev` and `npm run worker` load `.env.local` (via `@next/env`'s
 | Variable | Default | Notes |
 |---|---|---|
 | `DATABASE_PATH` | `./data/clipcraft.db` | Path to the SQLite database, relative to the repository root unless absolute. Parent folders are created automatically. Web and worker processes must use the same path; restart both after changing it. The file is ignored by Git. |
-| **moved to /settings** | — | `GEMINI_API_KEY`, `DEEPGRAM_API_KEY`, `DEEPGRAM_MODEL`, `WORKER_CONCURRENCY`, `VIRAL_CONCURRENCY`, `REMOTION_CONCURRENCY` and `PROFANITY_AUDIO_MODE` are no longer read from this file. Their values live in the `app_settings` table and are edited on **Settings** — the page even points out any of those names still sitting unused in your `.env.local`. The Gemini chain itself is unchanged: 5 slots, newest-first (`gemini-3.8-flash` → `3.6-flash` → `3.5-flash-lite` → `3.1-flash-lite` → `2.5-flash-lite`), each model with its own free daily pool, and every key you save is tried on each model before the next model — so a second key is real 503-redundancy. Model order lives in `LLM_PROVIDER_CHAIN` in `lib/llm.ts`; the other free providers were removed after live testing (Groq 413 + 429s, Cerebras 402 paid, Mistral ~1 RPM, NVIDIA NIM 404/410 + timeouts). |
+| **moved to /settings** | — | `GEMINI_API_KEY`, `DEEPGRAM_API_KEY`, `DEEPGRAM_MODEL`, `WORKER_CONCURRENCY`, `VIRAL_CONCURRENCY`, `REMOTION_CONCURRENCY` and `PROFANITY_AUDIO_MODE` are no longer read from this file. Their values live in the `app_settings` table and are edited on **Settings** — the page even points out any of those names still sitting unused in your `.env.local`. Detection uses the fallback chain configured in `lib/llm.ts`; availability and quotas depend on your project/model/tier, not the number of keys. Additional keys provide redundancy, **not extra quota within the same project**. The visual planner/vision use the separate bounded Gemini 2.5 Flash transport described below. |
 | `WHISPER_CLI_PATH` | auto-detect | Overrides binary discovery (searches `.whisper/…`, `bin/whisper-win-x64/whisper-cli.exe`, `bin/whisper-cli`). |
 | `WHISPER_MODEL_PATH` | auto-detect | Overrides model discovery (`models/ggml-*.bin`). |
 | `WHISPER_LANGUAGE` | `auto` | e.g. `ur`, `hi`, `en`. `auto` detects the spoken language (needed for Urdu/Hindi/Punjabi). |
@@ -211,7 +211,7 @@ Hugging Face mirrors, and refuses a file that doesn't match the official
 **There is no fallback detector** (no skin-tone heuristic, no static-crop
 "pretend tracking"). If the model is missing or the ONNX runtime fails, speaker
 layout renders **stop with a clear error** telling you to run
-`npm run setup:yunet` — see [docs/LAYOUTS.md](./docs/LAYOUTS.md) for the full
+`npm run setup:yunet` — see README for the
 tracking design (audio↔motion fusion, hysteresis, the locked split-screen panes).
 
 ---
@@ -445,3 +445,191 @@ scripts/verify-clip.ts     ffprobe report for resolution, rates, stream timing a
 models/yunet/              committed YuNet face-detection model (232 KB)
 bin/whisper-win-x64/       committed Windows x64 whisper.cpp build (whisper-cli + DLLs)
 ```
+
+### Full-screen photo quality and provider renditions
+
+FFmpeg is required during visual prefetch as well as final encoding. Prepared
+1080×1920 frames are cached next to downloaded originals; keep the visual cache
+when re-rendering. Legacy low-resolution images may now be skipped rather than
+upscaled beyond 1.5×. Settings for old card shapes/borders no longer affect output.
+
+Provider documentation checked 2026-10-16:
+- [Pexels](https://www.pexels.com/api/documentation/): search uses portrait;
+  prefer `src.original`, then `large2x`. Default quota is 200/hour and
+  20,000/month; retain photographer/Pexels attribution and links.
+- [Pixabay](https://pixabay.com/api/docs/): use vertical; prefer returned
+  `imageURL`/`fullHDURL` when the account has high-resolution access, otherwise
+  `largeImageURL` (maximum dimension 1280). Do not fabricate restricted URLs.
+  Some standard-access portraits cannot meet the upscale limit and are skipped.
+  Cache searches for at least 24 hours; no systematic mass downloading.
+- [Unsplash](https://unsplash.com/documentation): portrait search, prefer the
+  returned `urls.full` over `regular` (1080-wide). Preserve returned URLs,
+  download tracking and attribution. Demo quota is 50/hour. Unsplash requires
+  CDN hotlinking for application display; local video export is not evidence of
+  blanket permission for a persistent image-bank service. Confirm the intended
+  export/cache use with Unsplash before enabling it in production.
+
+Linux lavfi tests cannot certify i5-10500 Windows/GPU performance. Run the layering
+script above and compare `data/timings.jsonl` using real clips on the target PC.
+
+### Gemini vision request format
+
+Checked against the current [generateContent thinking guide](https://ai.google.dev/gemini-api/docs/generate-content/thinking)
+and [API reference](https://ai.google.dev/api/generate-content): Gemini **2.5 Flash**
+supports `generationConfig.thinkingConfig.thinkingBudget: 0` (not the Gemini 3
+`thinkingLevel` parameter). Vision sends `responseMimeType: application/json`,
+`responseJsonSchema`, and `maxOutputTokens: 6000`, validates actual IDs/scores and
+rejects incomplete output. Keys are sent in `x-goog-api-key`, never URLs or logs.
+The old `visualVisionVerify` boolean is retained for stored JSON compatibility but
+cannot disable the gate; use Relevance strictness to opt into lenient behavior.
+
+
+### Per-clip image prefetch, quotas and pricing (checked 2026-10-16)
+
+`visual-prefetch` is a persisted SQLite job, separate from render. One worker runs
+up to **two** prefetch jobs concurrently; the database claim enforces this cap.
+Each resolved clip can hand off immediately to render while its sibling is still
+searching. Strict video FIFO still blocks later-video Phase 1 jobs. Restart recovery
+requeues interrupted prefetch; cancellation/deletion cannot enqueue a new render.
+Restart the worker after upgrading.
+
+The visual transport rotates saved Gemini keys round-robin. **AI → Gemini visual
+RPM/key** defaults to 10, with a rolling minute window, bounded waiting, 429/5xx
+backoff+jitter and Retry-After cooldowns. Invalid keys are cooled down; messages
+identify quota, invalid-key, network and deadline failures without exposing keys.
+This limiter covers **planner + vision**, not legacy detection/hook/CTA completions.
+
+Each uncached clip has one logical planner call and at most three parallel vision
+batches; retries share a **four physical HTTP-attempt cap**. The network budget is
+25 seconds including waits/searches/downloads. Local JPEG processing and disk/DB
+writes can add time; this is a target, not a proven wall-clock SLA. Slow/quota-limited
+results skip rather than bypass relevance. Captions and keyword pops survive.
+
+Whole results are keyed by timed-transcript/settings fingerprints (credential
+identities are hashed, never written in plaintext). Hook/caption style edits and
+rerenders reuse results. Raw sentence plans and vision verdicts are cached too;
+verdict hits avoid even thumbnail fetches. Missing cached frames skip with no API
+call. Manual render never fetches; use the editor's visual-prefetch action first
+for new queries. Client edits cannot manufacture verification metadata. Prepared
+frame hashes and meaning/settings fingerprints are checked locally before encode.
+Caches live under ignored `data/visual-prefetch/`, `data/visual-plans/` and the visual
+cache's `verdicts/`; after a temporary cached failure, remove that failed prefetch
+entry to explicitly retry. Existing queued render jobs do not fetch to repair it.
+
+Official [rate-limit documentation](https://ai.google.dev/gemini-api/docs/rate-limits)
+says limits are **per project, not per API key**, and RPM/TPM/RPD are independent;
+RPD resets at midnight Pacific. The current model/project/tier limits must be
+read in [AI Studio](https://aistudio.google.com/rate-limit?timeRange=last-28-days).
+Do not assume an old public free-RPD number applies to your account.
+
+The current [Gemini 2.5 Flash pricing table](https://ai.google.dev/gemini-api/docs/pricing#gemini-2.5-flash)
+lists free-tier input/output as free of charge, subject to quota; standard paid
+text/image/video input is **$0.30 / million tokens**, output (including thinking)
+**$2.50 / million tokens**. This pipeline disables thinking with budget 0. It does
+not use Search grounding, batch discounts, audio input or image generation.
+
+At 300 uncached clips/day, budget **up to 1,200 visual HTTP attempts/day**, plus
+separate detection/hook/CTA calls and provider searches/downloads. One planner plus
+one vision batch is commonly only 600 logical calls/day, but this is not a promised
+quota or cost. Example only: 8k total input + 2k output tokens/clip costs about
+$0.0074/clip, **$2.22/day** at 300 clips (actual image tokens/output vary; retries
+can increase billed tokens). Check RPM/TPM/RPD and provider quotas, then enable
+billing if the project's free quota cannot cover the measured workload. Multiple
+keys from one project do not make 300 clips/day possible by themselves.
+
+### Evaluate relevance and performance locally
+
+Read-only; the evaluator does **not** fetch, generate or render anything:
+
+```bash
+npm run eval:visuals -- --video VIDEO_ID --recent 20
+npm run eval:visuals -- --recent 50 --json --output data/visual-evaluation.json
+npm run eval:visuals -- --video VIDEO_ID --baseline data/before-timings.jsonl
+npm run eval:visuals -- --demo
+```
+
+It reports the spoken sentence/English meaning, query, chosen provider title,
+vision score, source time and decision/reason. JSON includes the top-three debug
+candidates. Missing debug files fall back to stored clip metadata. Missing or
+modified local frames do not count as accepted. Fill rate is **accepted local
+photos / ceil(source clip duration / 5.4s)**; empty and abstract buckets stay in the
+denominator, keyword pops and removed/skipped photos never inflate it. The target
+is 70%, not permission to use a wrong photo. Human review is still required.
+
+`--demo` uses the checked-in Roman Urdu/Urdu/Hindi fixture with scripted English
+meanings/queries; no SQLite/provider/vision access. Solar/field photos are explicitly
+skipped because vision was not run; the abstract understanding sentence is below
+threshold. It is **not** live relevance evidence.
+
+Before upgrading, copy `data/timings.jsonl` to `data/before-timings.jsonl` (PowerShell:
+`Copy-Item data/timings.jsonl data/before-timings.jsonl`). Rerender the **same clip
+IDs**, duration, encoder and preset after upgrade; keep source, hook, captions,
+layout, CRF and worker concurrency identical. The evaluator pairs only newer
+matching render rows, reports N/A for missing baselines, and separates prefetch
+from render. Uncached prefetch p50/p95 excludes zero-call cache hits; Gemini elapsed
+time includes RPM/retry waits and overlapping calls, not an isolated API RTT.
+`geminiCalls` logs each logical planner/vision call's elapsed time, physical attempt
+count and success/error; the evaluator reports separate planner/vision p50/p95.
+Malformed/truncated JSONL lines are counted and skipped. Logs may contain transcript
+text/debug metadata: keep `data/` local and review before sharing.
+
+For an offline Linux/Windows **FFmpeg-filter-only** A/B, run:
+
+```bash
+npm run benchmark:visuals -- --baseline f6e4e570d7e5dbb684f4e0028d8f3bd7770832e2 --rounds 3
+```
+
+This reads the old filter builder from Git (without switching branches), uses a
+10.8s 1080×1920/30fps lavfi fixture, two cached stills, fixed x264-ultrafast settings
+and alternating run order. Outputs/summary go to ignored `data/visual-render-benchmark/`
+and a separately labelled `visual-render-benchmark` row in `data/timings.jsonl`.
+It excludes Remotion, face detection, hook analysis and source decode; do not confuse
+it with the full-worker baseline or the i5-10500 Windows <=10% requirement.
+
+On the actual Windows machine verify FFmpeg filter availability, four-case caption
+layering (`npx tsx scripts/verify-visual-layering.ts`), QSV/NVENC/x264 selection,
+caption themes, hook/CTA/keyword/SFX playback, cancel/restart recovery and full-worker
+before/after timings. Live Gemini/provider quotas, 20–25s prefetch and 70% relevance
+fill must be measured with your saved keys and real transcripts. This sandbox did
+not send live provider/LLM requests or validate those Windows-only conditions.
+
+
+### Source checkout cleanup
+
+Only README/SETUP contain product documentation. CLAUDE/AGENTS contain repository
+instructions; third-party LICENSE files remain with vendored code/fonts. `.agents`
+and `skills-lock.json` are not runtime inputs and are removed. Whisper `.exe`/DLLs
+and YuNet `.onnx` are downloaded with `npm run setup:whisper` / `npm run setup:yunet`;
+run those after cloning. Untracking does not delete your existing local copies.
+
+
+### Gemini model availability (model 404 recovery)
+
+Visual planner/vision now use `LLM_PROVIDER_CHAIN` from `lib/llm.ts`, not a hardcoded
+2.5 Flash URL. At worker start and in startup validation, GET `/v1beta/models`
+(paginated, `supportedGenerationMethods: generateContent`) verifies which chain
+models this key exposes and reports the selected name. A probe failure is labelled
+unverified, never proof a guessed name exists. Save keys in Settings → AI and
+restart the worker after changing model availability.
+
+404 models are logged once and negatively cached for the process; 404/429/5xx
+advance through the finite chain. These routing failures are refunded from the
+four charged-attempt cap, **not** from physical-call/RPM accounting or the 25s
+wall budget. Actual physical attempts can therefore exceed four. Gemini 3 uses
+`thinkingLevel: low`; 2.5 uses `thinkingBudget: 0`. No quota bypass is implied.
+Temporary failed whole-prefetch results are no longer cached; legacy entries whose
+reason begins `Visual prefetch unavailable` are ignored. Clip tiles show planned
+and resolved photo counts separately, plus the skip reason. No render-time network
+is introduced. Live model availability still requires your key and network access.
+
+
+### Theme-only caption upgrade
+
+Opening the DB retires the seven old cc-* classic styles and any row lacking a
+valid captionTheme. Deleted rows are backed up first under `data/backups/`; if
+backup writing fails, the migration transaction aborts. Valid custom themes stay.
+Clip/render-setting references are repointed to `cc-bold-punch`; the single-default
+index remains enforced. A new DB has exactly 13 themes. Reset and caption API
+POST/PUT accept themes only. Theme-less render props fall back to Kinetic 01.
+The UI exposes only theme renderer/grouping/placement controls, not classic line,
+font-family/stroke/animation editors. Restart both web and worker after upgrading.

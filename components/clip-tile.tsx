@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   Clock,
   Download,
+  Copy,
   EllipsisVertical,
   Film,
   Loader2,
@@ -286,11 +287,16 @@ export function ClipTile({ clip, captionPresets, busy, onEdit, onRender, onCance
           ) : null}
           {clip.visualOverlays && clip.visualOverlays.length > 0 ? (
             <span className="rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
-              {clip.visualOverlays.length} visual{clip.visualOverlays.length === 1 ? "" : "s"}
+              {clip.visualOverlays.filter((ov) => ov.kind !== 'keyword-pop' && ov.kind !== 'zoom-beat' && ov.status !== 'removed').length} planned, {clip.visualOverlays.filter((ov) => ov.kind !== 'keyword-pop' && ov.kind !== 'zoom-beat' && ov.status === 'resolved').length} resolved
             </span>
           ) : null}
         </div>
 
+        {clip.visualsSkippedReason && (
+          <p className="rounded-md bg-amber-500/10 px-2 py-1 text-[10.5px] leading-snug text-amber-700 dark:text-amber-300">
+            Visuals: {clip.visualsSkippedReason}
+          </p>
+        )}
         {clip.layoutNote && (
           <p className="rounded-md bg-amber-500/10 px-2 py-1 text-[10.5px] leading-snug text-amber-700 dark:text-amber-300">
             {clip.layoutNote}
@@ -360,6 +366,14 @@ export function ClipTile({ clip, captionPresets, busy, onEdit, onRender, onCance
                 <Sparkles />
                 {isDone ? "Re-render with stored settings" : "Render now"}
               </DropdownMenuItem>
+              <DropdownMenuItem onClick={async () => {
+                try {
+                  const response = await fetch(`/api/clips/${encodeURIComponent(clip._id)}/credits?format=txt`);
+                  if (!response.ok) throw new Error('Could not load photo credits');
+                  const text = await response.text();
+                  await navigator.clipboard.writeText(text);
+                } catch (error) { window.alert(error instanceof Error ? error.message : 'Could not copy photo credits'); }
+              }}><Copy />Copy photo credits</DropdownMenuItem>
               <DropdownMenuItem onClick={() => onEdit(clip)}>
                 <PencilLine />
                 Edit & re-render

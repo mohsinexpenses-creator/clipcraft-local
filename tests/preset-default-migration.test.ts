@@ -12,6 +12,7 @@ import {
 } from '../lib/db';
 
 const captionConfig = JSON.stringify({
+  captionTheme: 'kinetic-01',
   fontFamily: 'Arial, sans-serif',
   fontSize: 48,
   fontWeight: 'bold',

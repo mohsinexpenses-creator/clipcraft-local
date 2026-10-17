@@ -1,7 +1,7 @@
 import React from 'react';
 import { AbsoluteFill, OffthreadVideo, useCurrentFrame, useVideoConfig } from 'remotion';
 import { CaptionPreset, OverlayStylePreset, WordTimestamp } from '../lib/types';
-import { AnimatedWord, CaptionChunk } from './AnimatedWord';
+import type { CaptionChunk } from './AnimatedWord';
 import { getCaptionChunkWordLimit } from '../lib/caption-layout';
 import {
   captionReservedBand,
@@ -295,23 +295,7 @@ export const CaptionComposition: React.FC<CaptionCompositionProps> = ({
         />
       ) : null}
 
-      {preset ? (
-        preset.captionTheme ? (
-          <CaptionThemeOverlay
-            chunks={chunks}
-            preset={preset}
-            bottomLiftPercent={captionLiftPercent}
-          />
-        ) : (
-          <AnimatedWord
-            chunks={chunks}
-            frame={frame}
-            fps={fps}
-            preset={preset}
-            bottomLiftPercent={captionLiftPercent}
-          />
-        )
-      ) : null}
+      {preset ? <CaptionThemeOverlay chunks={chunks} preset={preset} bottomLiftPercent={captionLiftPercent} /> : null}
 
       {ctaDuration > 0 ? (
         <CTAOverlay

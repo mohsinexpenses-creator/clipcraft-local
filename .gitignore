@@ -32,8 +32,10 @@
 /models/*.bin
 /bin/ffmpeg/
 
-# The tiny YuNet face-detection model under /models/yunet/ (~230KB) IS committed;
-# /models/*.bin only matches .bin files directly in /models, so the .onnx survives.
+/models/yunet/*.onnx
+/bin/whisper-win-*/**/*.dll
+/bin/whisper-win-*/*.dll
+/bin/whisper-win-*/*.exe
 
 # misc
 .DS_Store

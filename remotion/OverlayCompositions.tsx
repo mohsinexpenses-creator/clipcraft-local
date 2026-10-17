@@ -7,7 +7,6 @@ import {
   WordTimestamp,
 } from '../lib/types';
 import { getCtaBottomLiftPercent } from './CTAOverlay';
-import { AnimatedWord } from './AnimatedWord';
 import { buildFinalCaptionChunks } from './CaptionComposition';
 import { getCaptionChunkWordLimit } from '../lib/caption-layout';
 import { resolveCaptionThemeOverlayStyle } from '../lib/caption-theme-styles';
@@ -98,21 +97,8 @@ export const CaptionOverlayComposition: React.FC<CaptionOverlayCompositionProps>
           style={themedHookStyle}
         />
       ) : null}
-      {preset.captionTheme ? (
-        <CaptionThemeOverlay
-          chunks={chunks}
-          preset={preset}
-          bottomLiftPercent={captionLift}
-        />
-      ) : (
-        <AnimatedWord
-          chunks={chunks}
-          frame={frame}
-          fps={fps}
-          preset={preset}
-          bottomLiftPercent={captionLift}
-        />
-      )}
+      <CaptionThemeOverlay chunks={chunks} preset={preset} bottomLiftPercent={captionLift} />
+
       {ctaDuration > 0 && ctaText.trim() ? (
         <CTAOverlay
           ctaText={ctaText}

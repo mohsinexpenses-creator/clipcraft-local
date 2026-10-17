@@ -1,3 +1,4 @@
+import { makeSamplePngBuffer } from './visual-fixtures';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -134,17 +135,6 @@ const SAMPLE_TRANSCRIPT: TranscriptData = {
   ],
 };
 
-function makeSamplePngBuffer(width = 640, height = 480): Buffer {
-  const buf = Buffer.alloc(64);
-  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(buf, 0);
-  buf.writeUInt32BE(13, 8);
-  buf.write('IHDR', 12, 'ascii');
-  buf.writeUInt32BE(width, 16);
-  buf.writeUInt32BE(height, 20);
-  buf[24] = 8;
-  buf[25] = 6;
-  return buf;
-}
 
 function makeCandidate(overrides: Partial<RawProviderCandidate>): RawProviderCandidate {
   return {
@@ -627,7 +617,7 @@ test('provider adapters normalize Pexels, Openverse (anonymous + OAuth2), and Wi
 
   const tempCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clipcraft-visual-test-'));
   setVisualCacheDirForTests(tempCacheDir);
-  const samplePng = makeSamplePngBuffer(1080, 1350);
+  const samplePng = makeSamplePngBuffer(1080, 1920);
   const originalFetch = globalThis.fetch;
 
   globalThis.fetch = async (input, init) => {
@@ -820,7 +810,7 @@ test('provider adapters normalize Pexels, Openverse (anonymous + OAuth2), and Wi
     });
 
     const resolved = await resolveVisualOverlaysForClip(planned, {
-      renderSettings: DEFAULT_RENDER_SETTINGS,
+      renderSettings: { ...DEFAULT_RENDER_SETTINGS, visualRelevanceStrictness: "lenient" },
       pexelsApiKey: 'pexels-test-key-123456',
       openverseClientId: 'openverse-client-id-123',
       openverseClientSecret: 'openverse-client-secret-123',
@@ -972,7 +962,7 @@ test('planVisualCardPlacement and buildOverlayFilterStatements composite visual 
     captionBand: { top: 1350, bottom: 1620 },
     hookBand: { top: 1180, bottom: 1320 },
   });
-  assert.ok(card.y + card.height <= 1180, 'visual card stays above hook + caption stack');
+  assert.equal(card.height, 1920, 'visual fills the frame behind captions');
 
   const visStatements = buildVisualOverlayFilterStatements(
     [
@@ -993,7 +983,7 @@ test('planVisualCardPlacement and buildOverlayFilterStatements composite visual 
     'vvis'
   );
   assert.equal(visStatements.statements.length, 2);
-  assert.match(visStatements.statements[0], /^\[3:v\]scale=768:962:force_original_aspect_ratio=increase,crop=w=712:h=892/);
+  assert.match(visStatements.statements[0], /^\[3:v\]zoompan=/);
   assert.match(visStatements.statements[1], /enable='between\(t,6\.500,10\.000\)'/);
 
   const combined = buildOverlayFilterStatements(

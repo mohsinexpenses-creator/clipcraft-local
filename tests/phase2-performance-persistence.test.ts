@@ -200,7 +200,7 @@ test('3. SQLite visual_search_cache (14-30 day TTL) and image_bank persist acros
   const ttlDays = ttlMs / (24 * 3600 * 1000);
   assert.ok(ttlDays >= 14 && ttlDays <= 30, `TTL ${ttlDays} days must be in 14-30 day window`);
 
-  const pngBytes = createValidPngBuffer(480, 600);
+  const pngBytes = createValidPngBuffer(1080, 1920);
   let searchHttpCalls = 0;
   let imageHttpCalls = 0;
   const originalFetch = globalThis.fetch;
@@ -266,6 +266,7 @@ test('3. SQLite visual_search_cache (14-30 day TTL) and image_bank persist acros
 
     const resolved1 = await resolveSingleVisualOverlay(moment1, {
       pexelsApiKey: 'pexels_valid_test_key_1234567890',
+      renderSettings: { visualRelevanceStrictness: 'lenient' },
     });
     assert.equal(resolved1.status, 'resolved');
     assert.equal(searchHttpCalls, 1);
@@ -287,11 +288,12 @@ test('3. SQLite visual_search_cache (14-30 day TTL) and image_bank persist acros
 
     const resolved2 = await resolveSingleVisualOverlay(moment2, {
       pexelsApiKey: 'pexels_valid_test_key_1234567890',
+      renderSettings: { visualRelevanceStrictness: 'lenient' },
     });
     assert.equal(resolved2.status, 'resolved');
-    assert.equal(searchHttpCalls, 1, 'image_bank match must avoid API search calls');
+    assert.equal(searchHttpCalls, 2, 'bank candidates do not bypass building the ordinary pool');
     assert.equal(imageHttpCalls, 1, 'image_bank match must avoid image download calls');
-    assert.ok(getVisualProviderStates().pexels.cacheHits >= 1);
+    assert.ok(getVisualProviderStates().pexels.requestsCount >= 1);
   } finally {
     globalThis.fetch = originalFetch;
   }

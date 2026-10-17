@@ -1,3 +1,4 @@
+import type { VisualGeminiCallTiming } from './types';
 import fs from 'fs';
 import path from 'path';
 
@@ -51,4 +52,25 @@ export function appendClipTimingRecord(
   };
   fs.appendFileSync(targetPath, `${JSON.stringify(normalized)}\n`, 'utf8');
   return targetPath;
+}
+
+export interface VisualPrefetchTimingRecord {
+  timestamp: string;
+  phase: 'visual-prefetch';
+  geminiCalls?: VisualGeminiCallTiming[];
+  clipId: string;
+  videoId: string;
+  plannerCalls: number;
+  visionCalls: number;
+  attempts: number;
+  geminiMs: number;
+  cacheHits: number;
+  prefetchMs: number;
+  cancelled?: boolean;
+}
+export function appendVisualPrefetchTiming(record: VisualPrefetchTimingRecord, customPath?: string): string {
+  const file = resolveTimingsLogPath(customPath);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.appendFileSync(file, `${JSON.stringify(record)}\n`, 'utf8');
+  return file;
 }
