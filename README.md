@@ -1,262 +1,140 @@
 # ClipCraft Local
 
-A **personal, local-first** AI clip generator: give it one long landscape video
-(podcast, interview, sermon, lecture) and it produces short, vertical **9:16 clips**
-optimized for social feeds — each with an active-speaker crop, a duplicated intro covering
-the full detected hook timestamp range, on-screen hook/CTA text, and word-synced captions.
+Windows-first, single-user video clipping for English celebrity/gossip commentary.
+Upload a video, transcribe locally, select complete moments with AI, then render
+1080×1920 clips with themed captions, hooks/CTAs and relevant licensed photographs.
+Media, SQLite records and the durable job queue stay on your PC. Gemini and optional
+image/transcription providers require internet; they may have quotas or charges.
 
-Everything heavy runs **on your own machine** (Node.js only, no Python). Videos,
-transcripts, presets, and job state live in a local SQLite file (`./data/clipcraft.db`)
-using `better-sqlite3`; no database service or Docker is needed. The existing viral
-segment and hook/CTA generation calls use Google AI Studio; speech-to-text and face
-detection run locally with whisper.cpp and OpenCV YuNet.
+## Quick start
 
----
-
-## What it does, end to end
-
-**Upload is the only step you press.** The moment a file lands, the app queues the
-transcript, then viral detection, then a render of every clip with the default
-configuration (steps 2, 3 and 6 below). Closing the page or restarting the worker only
-pauses the chain: it recovers at the step where it stopped.
-
-1. **Upload** — resumable, chunked, **no size limit** (a 3-hour podcast is a normal
-   input). Files are stored as `uploads/001_my_recording.mp4`. The upload form also
-   captures the automation you want (`autoDetect` / `autoRender` + AI clip options);
-   it is saved on the video record (`videos.pipeline_json`) so later retries and
-   re-runs use exactly the same settings.
-2. **Transcribe** — whisper.cpp (local) produces a transcript with **word-level
-   timestamps**, stored in SQLite. (Optional Deepgram override if you set a key.)
-3. **Detect viral segments** — the Gemini LLM picks the most promising windows and
-   writes `{start, end, hookText, ctaText, reason, score}`. If it returns fewer
-   clips than requested, a **top-up pass** tops the list up to the exact count.
-   Clips appear in the dashboard grid as soon as they exist, each showing its **score**,
-   and the full AI analysis behind it (drop-down on the tile).
-   - **Edit and re-render one clip** — _Edit_ on any tile changes the window, hook/CTA
-     text, caption and layout for that clip alone and re-renders only it. The rest of the
-     grid is untouched (`POST /api/clips` = save + render in one call).
-4. **Replay the hook** — the complete `hook_timestamp.start`→`hook_timestamp.end`
-   interval returned during viral detection is duplicated at the **start** with a
-   0.5 s dip-to-black, so the clip opens with the detected hook and then builds back to it.
-5. **Frame the speaker** — active-speaker detection (YuNet faces + audio/motion
-   fusion, `worker/asd/`) drives the 9:16 crop:
-   - **Speaker focus** — one window that glides to follow whoever is talking.
-   - **Split screen** — an adaptive 2/3/4-cell grid with one pane per person. Each pane
-     is a **locked** camera: placed on the person once, perfectly still while their
-     head stays in frame, and it only glides to re-centre them if they actually leave
-     it. Two people = two stacked halves with a **stable** assignment (left person
-     always the top pane, right person the bottom) — it never swaps mid-clip. Captions,
-     hook text and the CTA card are placed so they never cover a face.
-     There is **no fallback detector**: if no face can be found, the render fails
-     with a clear explanation instead of guessing.
-6. **Render** — Remotion paints the animated caption + hook + CTA overlay frames
-   in headless Chrome, then one FFmpeg filter graph performs the mirror/crop/colour
-   work, hook intro, caption + card compositing, and the single final H.264 encode.
-   The result is a 1080×1920 output with no lossy intermediate video.
-   On-screen hook/CTA text comes from user-editable **style presets** (font,
-   colours, position, animation, solid or **gradient** card background).
-7. **Mask profanity** — captions and overlay text are always masked on screen
-   (`fuck` → `f**k`, while `class`/`pass`/`glass` stay untouched); the **audio** of
-   a profane word is muted, beeped, or left alone (`PROFANITY_AUDIO_MODE`) — all at
-   render time, so re-rendering after a settings change never re-transcribes.
-8. **Store** — output lands in `generated-clips/001_my_recording/<clip title>.mp4`
-   with a SQLite record (status, score, layout, engines, presets). The dashboard
-   streams it back over a Range-enabled HTTP endpoint for preview/download.
-
-## Settings (`/settings`)
-
-Every default the studio asks you for lives in one sidebar page, in five sections:
-
-| Section              | What it holds                                                                                                                                                                                           |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Pipeline defaults    | auto-detect / auto-render and the viral-detection request (clip count, duration window, hook/CTA text)                                                                                                  |
-| Render clip defaults | layout, filter preset, caption + hook/CTA style presets, hook/CTA durations                                                                                                             |
-| AI providers         | Gemini key pool, Deepgram key + model, and which transcription engine to use. Every key field is Test + Save on its own - Test asks the provider, Save stores it (keys are only ever shown back masked) |
-| Worker               | clip / viral-detection / Remotion concurrency                                                                                                                                                           |
-| Profanity            | what happens to the _audio_ of a flagged word (mute / beep / leave it)                                                                                                                                  |
-
-The rule is one line long, in both processes:
-
-**what you saved on this page, otherwise the built-in default.**
-
-`.env.local` is _not_ a fallback for these five sections — a value can never come from a
-file you are not looking at, so the page and the app cannot disagree. (Everything
-without a form field — binary paths, model files, CRF, upload limits, timeouts — still
-lives in `.env.local` exactly as before.) A row saved here is marked `settings`;
-"Reset to defaults" deletes the row and the shipped default applies again. Keys are
-stored in the local SQLite file (same trust boundary as `.env.local` used to be) and the
-API only ever returns them masked — pasting a masked value back means "keep it".
-
-Pipeline and render defaults are **snapshotted onto the video at upload**, so a clip
-already being rendered is never changed from under the worker, and editing a clip in the
-studio always wins over the default.
-
-The Verify column calls the real upstream APIs with `fetch` and labels each key by its
-mask, so a rotated key is obvious, and unsaved keys can be tested first (paste → test →
-save). Everything applies to the next job except the two loop sizes: **clip and detection
-concurrency need `npm run worker` restarted**, because those are read when its polling
-loops start (the page says so while such an override is saved).
-
-The `hook/CTA` durations are the one field with a subtlety: the rendered clip is
-`[replayed hook][full segment]`, and the replay length is **the hook interval the prompt
-returned** (`hook_timestamp.start → end`), used at its exact length. "Hook intro fallback"
-is what applies only when a clip's analysis has no usable interval, and `0` turns the
-replay and the hook text off for a clip.
-
-### Style presets
-
-`/caption-presets` edits the caption, hook and CTA styles, and the built-ins are seeded
-into SQLite once (`INSERT OR IGNORE`) so your edits survive an upgrade. That also means a
-row created by an older build never picks up a changed default — **Reset to shipped
-styles** re-syncs the built-in rows from `lib/presets.ts` while keeping every preset you
-made yourself and the preset you marked default.
-
-The caption gallery contains exactly 13 shipped theme presets: **cc-bold-punch**
-(Kinetic 01, default, first, position 28%) and twelve `caption-theme-*` rows.
-Caption style controls are theme, primary/accent colors, font size, vertical
-position, words per caption and matching Hook/CTA style. Theme components own
-motion and typography; unsupported theme-specific overrides are not promised.
-There is no classic caption renderer or celebrity-name keyword animation.
-
-On upgrade, retired built-ins and every custom row without a valid captionTheme
-are backed up to `data/backups/caption-presets-removed-<timestamp>-<id>.json`
-**before deletion**. Clips/render settings are repointed to the theme default.
-Valid custom themes remain. Reset seeds only the 13 themes and preserves a valid
-chosen default. Caption POST/PUT require a valid theme, including on updates.
-Third-party caption/font attribution and licenses are listed below.
-
-## Tech stack
-
-| Layer            | Choice                                                                                          |
-| ---------------- | ----------------------------------------------------------------------------------------------- |
-| Frontend + API   | Next.js 16 (App Router), TypeScript, Tailwind v4, shadcn-style UI                               |
-| Persistence      | SQLite via `better-sqlite3` — typed video, clip, preset, template, and job tables               |
-| Queue            | SQLite jobs table — separate polling loops for transcription and rendering                      |
-| Worker           | long-running `tsx worker/index.ts` process (not serverless)                                     |
-| Video            | `ffmpeg-static` + `child_process` (no fluent-ffmpeg), mirrored before face tracking             |
-| Speech-to-text   | whisper.cpp (local binary + ggml model; optional Deepgram override)                             |
-| Face detection   | OpenCV **YuNet** ONNX on `onnxruntime-node` (no face-api, no vision APIs)                       |
-| LLM              | Google AI Studio only — a 5-slot Gemini fallback chain in `lib/llm.ts` (plain `fetch`, no SDKs) |
-| Caption overlays | Remotion transparent frames painted in headless Chrome       |
-
-## Quickstart
-
-Full instructions (env vars, troubleshooting, Windows specifics) live in
-**[SETUP.md](./SETUP.md)**. The short version:
+Install Node.js 20+ and the Microsoft Visual C++ x64 Redistributable on Windows.
 
 ```powershell
-# 1. dependencies
-npm install
-
-# 2. configure (DATABASE_PATH is optional; this is the default)
-copy .env.example .env.local   # set DATABASE_PATH / paths here; keys live in the app
-
-# 3. whisper.cpp model (Windows build is committed; this fetches the ggml model)
+npm ci
+Copy-Item .env.example .env.local
 npm run setup:whisper
-
-# 4. worker + web (or just double-click start-clipcraft.bat)
-npm run worker
+npm run setup:yunet
 npm run dev
+# In a second terminal, from the same repository:
+npm run worker
 ```
 
-Then open <http://localhost:3000>, paste a Google AI Studio key into
-**`/settings` → AI providers** (Test it, then save — keys are configured in the app, not
-in `.env.local`), and start at **`/startup-validation`**: it checks SQLite read/write
-access, WAL mode, FFmpeg, the transcription engine, the LLM chain, and the Remotion
-renderer, and tells you exactly what to fix.
+Open `http://localhost:3000`, save keys under **Settings → AI providers**, and check
+`/startup-validation`. Alternatively use `start-clipcraft.bat` after setup. Run only
+**one worker process per database**. See [SETUP.md](./SETUP.md) for native binaries,
+ffprobe, encoders, settings, troubleshooting and Windows acceptance checks.
 
-## Project structure
+## Pipeline and persistence
 
+1. Upload resumably to local storage.
+2. Transcribe with local whisper.cpp (Deepgram is an optional paid override).
+3. Detect complete standalone clips and truthful hook/CTA copy.
+4. Persist an independent `visual-prefetch` job per clip. One clip can finish
+   prefetch and begin rendering while another is still searching.
+5. Paint transparent caption/hook/CTA/generic-pop frames with Remotion, then
+   composite onto the video in one final FFmpeg encode.
+
+SQLite (`better-sqlite3`, WAL) stores videos, clips, settings and jobs. Atomic
+claims, bounded retries, cancellation and startup recovery survive browser reloads
+and worker restarts. Both processes must use the same `DATABASE_PATH`.
+
+**Render is network-free for visual selection:** it consumes only prepared,
+locally verified photo frames. Missing/modified frames are skipped, never repaired
+with a provider or Gemini call during encoding. Install/cache the browser and
+fonts before an offline render; first-time browser installation needs internet.
+
+## Captions and layouts
+
+Exactly **13 shipped caption presets**: first/default `cc-bold-punch` uses
+`kinetic-01` with positionY 28, plus 12 `caption-theme-*` presets. There is no classic
+caption editor/renderer. Valid themed custom presets survive resets; themeless,
+invalid and retired rows are backed up under `data/backups/` before removal, and
+clip/default references are repointed. Back up your database before upgrading.
+
+Speaker focus follows the active speaker in one pane. Split screen locks stable
+speaker panes rather than reordering people mid-clip. YuNet detects boxes and
+landmarks; it does **not** identify people.
+
+The fixed stacking order is **speaker → full-screen photo → transparent
+caption/hook/CTA/generic-pop layer**. Photos have only zoom/fade motion: no card
+shape, border, face-safe placement or ball-toss path. Photos avoid the hook dip.
+Generic word/number pops remain; **celebrity-name animated pops are not a photo
+fallback and are removed**.
+
+## Identity-safe photographs
+
+The sole sentence planner reads the whole clip, including pronouns such as
+“Kaia Gerber … she has her book club.” Each beat carries entities and a primary
+person/place/event/organization. Public-person names are resolved textually using
+Wikidata labels and descriptions. **No unambiguous QID means no person photo.**
+
+Sources are the optional credited local library, Wikidata P18/Wikipedia lead,
+Commons category, then exact-name Openverse metadata. Stock providers never stand
+in for a named person. Identity evidence is metadata/QID-based, not facial
+recognition; upstream metadata is not a mathematical guarantee of identity.
+Gemini judges suitability, not who a face belongs to. Any-era portraits are valid.
+YuNet rejects group photos; portrait framing preserves face/headroom or uses a
+sharp fit over a blurred background. QID image caches last 30 days and validate
+bytes; reused candidates still pass safety/suitability gates.
+
+If portraits fail, sentence-relevant B-roll must have no prominent face and pass
+the vision gate, otherwise the beat is skipped. The target is **7 images/minute**,
+roughly one beat every 5–8 seconds, displayed 2.4–3.4 seconds without overlap.
+Relevance, identity, configured planning limits and the prefetch deadline win over
+fill: the tile reports planned/resolved counts and shortfall reasons. There is no
+random-image or celebrity-name-pop padding. No Google/Bing/Getty/social/news scraping.
+
+Use the tile menu’s **Copy photo credits**, or
+`GET /api/clips/<id>/credits?format=txt`. Licenses/creator/source links remain in the
+manifest; confirm your intended reuse rights. Local library setup is in SETUP.
+
+## Settings and prompts
+
+The five Settings sections are pipeline, render, AI, worker and profanity. A saved
+value wins; otherwise the built-in default applies. Form-backed settings do **not**
+fall back to `.env.local`. Uploads snapshot pipeline defaults; editing app defaults
+must not silently change an existing video. Secrets are masked in API responses.
+
+Edit prompts at `/prompt-templates`. Preserve `{{transcript}}`, `{{clipCount}}`,
+`{{minClipDuration}}`, `{{maxClipDuration}}` and strict JSON with a `clips` array.
+Ask for complete moments, exact source intervals, concrete payoff and truthful
+hooks—never invented gossip or identities. Caption text and hook/CTA copy/styles
+are separate layers; editing one must not corrupt source-word timing.
+
+## Checks and diagnostics
+
+```powershell
+npm test
+npm run typecheck
+npm run lint
+npm run verify:captions          # real Chromium -> 3 themed PNG sequences -> MP4
+npm run eval:visuals -- --recent 20
+npm run eval:visuals -- --demo --json
+npm run verify:clip -- generated-clips/<video>/<clip>.mp4
 ```
-app/                    Next.js pages + API routes
-  page.tsx              the studio: library sidebar, live pipeline, clip grid
-  upload/               upload page (resumable multi-file chunked uploads)
-  caption-presets/      caption style preset manager (live preview)
-  prompt-templates/     edit the LLM prompt templates
-  startup-validation/   pre-flight checks UI
-  settings/             defaults for pipeline + render, AI keys, worker, profanity
-  api/                  videos, clips, transcript, detect-viral, upload(+session),
-                        media (Range file server), presets, templates, settings (+
-                        settings/verify, which probes Google and Deepgram)
-lib/                    shared server logic
-  llm.ts                Gemini fallback chain (config array, plain fetch)
-  ai.ts                 prompt templates, JSON parsing, exact-count top-up
-  whisper.ts            whisper.cpp discovery + transcription
-  ffmpeg.ts             FFmpeg/ffprobe resolution, stream probing + spawn wrapper
-  queue.ts              SQLite job queue (transcription + clip render)
-  pipeline.ts           the automatic chain: transcript -> detection -> render
-  pipeline-status.ts    derives the live stage/progress from queue + clip rows
-  pipeline-defaults.ts  clip options + their limits, shared by client and server
-  app-settings.ts       the one resolver for stored settings: precedence, clamping,
-                        key masking, verification payloads (no raw secrets out)
-  settings-verify.ts    live probes: Google model list/test + Deepgram /v1/auth/token
-  clip-edits.ts         validates a single-clip edit before it is saved/rendered
-  profanity.ts          word masking + render-time mute/beep windows
-  overlay-bg.ts         solid/gradient card-background picker helpers
-  presets.ts            default caption/overlay/text presets
-  upload*.ts            upload policy, resumable sessions, browser client
-  db.ts                 typed SQLite tables, schema migrations, and prepared CRUD
-worker/                 the long-running SQLite queue consumer
-  index.ts              both workers + graceful shutdown
-  processor.ts          per-clip orchestration (hook, layout, engines, masking)
-  asd/                  active-speaker detection (audio, YuNet, tracker, scoring)
-  yunet-detector.ts     YuNet ONNX pre/post-processing (OpenCV-exact)
-  layout.ts             speaker-focus vs split-grid plans (peak-concurrent cells)
-  ffmpeg-pipeline.ts    crop/overlay graph and single final H.264 encode
-  remotion-renderer.ts  transparent overlay-frame renderer (Remotion)
-remotion/               compositions: captions, hook overlay, CTA overlay
-scripts/                setup-whisper.{mjs,ps1}, setup-yunet.mjs, verify-clip.ts
-bin/whisper-win-x64/    committed Windows whisper.cpp build (whisper-cli + DLLs)
-models/yunet/           committed YuNet face-detection model (232 KB)
-tests/                  node:test unit tests (tsx --test)
-```
 
-## Hard constraints (by design)
+`verify:captions` writes synthetic test media only under ignored `data/`; it does
+not call AI or photo providers. It can take a local Chrome executable as its first
+argument. The single visual evaluation CLI reports beat/entity/QID, source/evidence,
+face checks, vision scores, decision/reason, images/minute and timing distributions.
+It does not claim human-verified relevance or a Windows performance result.
 
-- **No Python anywhere.** Everything is Node.js/TypeScript.
-- **No database services or Docker.** SQLite and the durable local jobs table replace MongoDB, Redis, and BullMQ.
-- **Local + free.** Single user, runs on one PC, no multi-tenant auth, no billing,
-  no cloud media services. The only paid-capable dependency is the Gemini key,
-  which is free-tier.
-- **No `fluent-ffmpeg`.** `ffmpeg-static` + `child_process.spawn` directly.
-- **9:16 output, always** (1080×1920).
-- **Not for Vercel** — heavy processing needs a long-running local worker.
+## Repository and attribution
 
-## Documentation
+- `app/`, `components/`, `hooks/`: Next.js UI and local API.
+- `lib/`: settings, persistence, queue, AI, sentence planner and visual prefetch.
+- `worker/`: orchestration, active-speaker detection, layouts and FFmpeg.
+- `remotion/`: theme captions, transparent hook/CTA and generic-pop overlays.
+- `scripts/`: reproducible setup and documented verification/evaluation tools.
+- `tests/`: node:test regressions; no cloud credentials required.
 
-- **[SETUP.md](./SETUP.md)** — install, env vars, running, troubleshooting
-
-## Layout, overlay and prompt essentials
-
-Speaker focus follows the active speaker in one 9:16 pane. Split screen locks a
-stable pane per speaker (2–4 cells); it does not reorder people mid-clip. YuNet
-locates faces, not identities. Missing required face detections fail clearly.
-See the existing layout/worker settings before changing framing or concurrency.
-
-The stacking rule is **speaker → full-screen photo → transparent caption/hook/CTA/
-generic keyword-pop overlay**. Photos must never obscure text. Hook replay uses
-the detected interval, not an arbitrary shortened duration; photos stay out of the
-hook dip. Caption copy, hook/CTA copy and their style presets are separate layers.
-Generic word/number pops remain; celebrity-name animated keyword pops are not a feature.
-
-Edit viral prompts at `/prompt-templates`. Preserve `{{transcript}}`, `{{clipCount}}`,
-`{{minClipDuration}}` and `{{maxClipDuration}}`, and the strict JSON object with a
-`clips` array. Ask for complete standalone moments, truthful hooks, concrete payoff,
-no invented gossip or identities, and exact timestamp ranges. Hook/CTA fallback
-prompts use `{{clipTranscript}}`. Templates seed only when missing: reset shipped
-templates explicitly to pick up new defaults, rather than overwriting custom text.
-Video option snapshots still win over later changes to global defaults.
-
-## Third-party attribution and reproducible downloads
-
-The 13 caption components derive from
-[vshukla7/remotion-captions-themes](https://github.com/vshukla7/remotion-captions-themes),
-version 1.0.8, MIT; the vendor LICENSE remains beside the source. CSS transitions
-were replaced by frame-driven animation. Beast uses local OFL Bangers; Podcast
-uses local Anton. Final masked caption chunks are adapted through CaptionThemeOverlay.
-Font OFL licenses remain in `public/fonts/licenses`.
-
-Downloaded Whisper binaries and YuNet weights are not tracked. After clone run
-`npm run setup:whisper` (Windows binary/model download) and `npm run setup:yunet`
-(SHA-256-verified official OpenCV model). Their setup scripts are idempotent; local
-copies are retained when untracking. See SETUP for non-Windows Whisper compilation.
+Whisper binaries and YuNet weights are **downloaded, not tracked**. Run their
+setup scripts after cloning. Retain vendor licenses. The 13 theme components derive
+from [vshukla7/remotion-captions-themes](https://github.com/vshukla7/remotion-captions-themes)
+1.0.8 (MIT); animation is frame-driven for Remotion. Bangers/Anton and other local
+font licenses remain under `public/fonts/licenses`. The unchanged shadcn 4.21.0
+Tailwind variants stylesheet is vendored under `app/vendor/shadcn/` with its MIT
+license, avoiding installation of the unused scaffold CLI and its dependency tree. This app is not a Vercel/serverless
+service: media processing requires a persistent local worker. No Docker, Redis,
+MongoDB or Python is required by the application.

@@ -32,7 +32,7 @@ import { getDatabase } from './db';
  const MAX_IMAGE_PIXELS = 25_000_000;
 
 export interface RawProviderCandidate {
-  entityQid?: string; identityEvidence?: string; uploadedAt?: string;
+  entityQid?: string; identityEvidence?: string; uploadedAt?: string; entitySourcePriority?: number;
   verifiedLocalPath?: string; faceCheck?: VisualFaceCheck; isBroll?: boolean;
   provider: VisualProviderName;
   assetId: string;
@@ -2810,9 +2810,9 @@ export async function resolveVisualOverlaysForClip(overlays: ClipVisualOverlay[]
         let candidates = await entityRequests.get(entityKey)!;
         if (candidates.length < 3) {
           const extra = await searchProviderWithCache('openverse', entity.name, { ...options, timeoutMs: remainingVisualMs(options.budget, 2000) }, overlay.category).catch(() => []);
-          candidates = [...candidates, ...extra.filter((c) => `${c.title} ${c.description}`.toLowerCase().includes(entity.name.toLowerCase())).map((c) => ({ ...c, entityQid: entity.qid, identityEvidence: `Exact full name in Openverse metadata; ${entity.qid}` }))];
+          candidates = [...candidates, ...extra.filter((c) => `${c.title} ${c.description}`.toLowerCase().includes(entity.name.toLowerCase())).map((c) => ({ ...c, entityQid: entity.qid, entitySourcePriority: 3, identityEvidence: `Exact full name in Openverse metadata; ${entity.qid}` }))];
         }
-        candidates.sort((a, b) => Number(b.width < b.height) - Number(a.width < a.height) || b.width * b.height - a.width * a.height || (b.uploadedAt ?? '').localeCompare(a.uploadedAt ?? ''));
+        candidates.sort((a, b) => (a.entitySourcePriority ?? 3) - (b.entitySourcePriority ?? 3) || Number(b.width < b.height) - Number(a.width < a.height) || b.width * b.height - a.width * a.height || (b.uploadedAt ?? '').localeCompare(a.uploadedAt ?? ''));
         const offset = Math.max(0, overlays.filter((ov) => ov.primaryEntity?.name === raw.name || ov.entityName === raw.name).findIndex((ov) => ov.id === overlay.id)) * 2 % Math.max(1, candidates.length);
         const rotated = [...candidates.slice(offset), ...candidates.slice(0, offset)].slice(0, 3);
         for (const candidate of rotated) {
@@ -2884,7 +2884,7 @@ export async function resolveVisualOverlaysForClip(overlays: ClipVisualOverlay[]
     }
     const ranked = pool.map((entry) => ({ entry, visionScore: scores?.get(visualCandidateId(entry.candidate)) }))
       .filter(({ visionScore }) => visionScore !== undefined ? visionScore >= threshold : !scores && !overlay.primaryEntity && overlay.category !== 'person' && options.renderSettings?.visualRelevanceStrictness === 'lenient')
-      .sort((a, b) => Number(a.entry.candidate.isBroll) - Number(b.entry.candidate.isBroll) || (b.visionScore ?? 0) - (a.visionScore ?? 0) || b.entry.score - a.entry.score);
+      .sort((a, b) => Number(a.entry.candidate.isBroll) - Number(b.entry.candidate.isBroll) || (a.entry.candidate.entitySourcePriority ?? 3) - (b.entry.candidate.entitySourcePriority ?? 3) || (b.visionScore ?? 0) - (a.visionScore ?? 0) || b.entry.score - a.entry.score);
     for (const { entry, visionScore } of selected ? [] : ranked) {
       const candidate = entry.candidate;
       try {

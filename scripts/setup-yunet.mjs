@@ -8,8 +8,8 @@
  *
  * The model enables active-speaker tracking: the worker runs YuNet on sampled
  * frames to find faces, tracks them across the clip, and drives the 9:16 crop
- * (speaker-focus and split-screen layouts). Without it, renders still work but
- * fall back to a static center crop.
+ * (speaker-focus and split-screen layouts). Missing or invalid weights fail face-required rendering clearly;
+ * entity portraits and face-free B-roll are skipped if face safety cannot be checked.
  *
  * Usage:
  *   node scripts/setup-yunet.mjs            # download + verify

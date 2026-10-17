@@ -13,7 +13,7 @@ import { buildVisualOverlayFilterStatements, type StillVisualOverlayInput } from
 async function main() {
   const args = process.argv.slice(2);
   if (args.includes('--help')) { console.log('Usage: npx tsx scripts/benchmark-visual-render.ts [--baseline COMMIT] [--rounds N]'); return; }
-  let baseline = 'f6e4e570d7e5dbb684f4e0028d8f3bd7770832e2'; let rounds = 3;
+  let baseline = '09b7432'; let rounds = 3;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--baseline') baseline = args[++i] ?? '';
     else if (args[i] === '--rounds') rounds = Number(args[++i]);
@@ -26,7 +26,7 @@ async function main() {
   if (start < 0 || end < 0) throw new Error('Baseline does not contain the expected filter builder');
   const scratch = path.resolve('.tmp'); fs.mkdirSync(scratch, { recursive: true });
   const modulePath = path.join(scratch, `visual-baseline-${randomUUID()}.ts`);
-  fs.writeFileSync(modulePath, `import { evenSize, type StillVisualOverlayInput } from '../worker/ffmpeg-pipeline';\nconst MAX_OUTPUT_WIDTH=1080, MAX_OUTPUT_HEIGHT=1920;\n${old.slice(start, end)}`);
+  fs.writeFileSync(modulePath, `import type { StillVisualOverlayInput } from '../worker/ffmpeg-pipeline';\nconst evenSize = (value: number, minimum = 2) => Math.max(minimum, Math.floor(value / 2) * 2);\nconst MAX_OUTPUT_WIDTH=1080, MAX_OUTPUT_HEIGHT=1920;\n${old.slice(start, end)}`);
   try {
     const previous = (await import(pathToFileURL(modulePath).href)).buildVisualOverlayFilterStatements as typeof buildVisualOverlayFilterStatements;
     const dir = path.resolve('data/visual-render-benchmark'); fs.mkdirSync(dir, { recursive: true });

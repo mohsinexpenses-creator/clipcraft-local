@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createTemporaryDatabase } from './sqlite-test-helpers';
 import { chooseEntity, resolvePublicEntity, inspectVisualFaces, passesVisualFacePolicy } from '../lib/entity-visuals';
-import { planSentenceVisuals, selectVisualBeats, type VisualBeat } from '../lib/visual-planner';
+import { planSentenceVisuals, selectVisualBeats, parseVisualBeats, type VisualBeat } from '../lib/visual-planner';
 import { scoreVisualCandidate, resolveVisualOverlaysForClip } from '../lib/visual-providers';
 import { makeSamplePngBuffer } from './visual-fixtures';
 import type { VisualEntity } from '../lib/types';
@@ -89,4 +89,12 @@ test('pipeline retains generic numbers/words but defers ALL photos to the sole s
   const result = normalizeGenericVisualPops({ rawMoments: [generic, { ...generic, kind: 'photo-card' }, { ...generic, category: 'person', entity_name: 'Kaia Gerber' }], clipStart: 0, clipEnd: 10, enabled: true, max: 12 });
   assert.equal(result.length, 1); assert.equal(result[0].entityName, '100 books'); assert.equal(result[0].kind, 'keyword-pop');
   assert.equal(normalizeGenericVisualPops({ rawMoments: [generic], clipStart: 0, clipEnd: 10, enabled: false, max: 12 }).length, 0);
+});
+
+
+test('planner cannot inject a QID or non-English identity description as trusted evidence', () => {
+  const segments = [{ id: 1, start: 0, end: 4, text: 'Kaia Gerber discusses her book club.' }];
+  for (const entity of [{ ...kaia, qid: 'Q22673974' }, { ...kaia, description_en: 'actrice française' }]) {
+    assert.throws(() => parseVisualBeats(JSON.stringify({ beats: [{ ...beat(0), entities: [entity] }] }), segments), /Invalid visual entities/);
+  }
 });

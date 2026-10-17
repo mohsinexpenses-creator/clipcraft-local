@@ -1,635 +1,269 @@
-# ClipCraft Local — Setup & Troubleshooting (Windows-first)
+# Setup and troubleshooting — Windows first
 
-Practical guide to installing and running ClipCraft. The product overview lives in
-[README.md](./README.md).
+See [README.md](./README.md) for product behavior. Use English celebrity/gossip
+videos for the intended visual-planning workflow.
 
-Everything runs on your own PC: Next.js + a separate worker backed by a local SQLite
-file. **No Python, Docker, MongoDB, or Redis service is needed.** The existing
-viral-analysis and hook/CTA prompts call Google AI Studio; Deepgram is an *optional*
-paid transcription override, off by default.
+## 1. Install and start
 
-One-click on Windows: **`start-clipcraft.bat`** starts the worker and web app, then
-opens the browser. The steps below are what it does, manually.
-
----
-
-## 1. Prerequisites
-
-| Tool | Why | Check |
-|---|---|---|
-| Node.js 20+ (LTS) | Next.js 16, the worker, and `better-sqlite3` | `node -v` |
-| **Microsoft Visual C++ Redistributable (x64)** | `whisper-cli.exe` is a native build and needs `vcruntime140.dll` / `msvcp140.dll` | Install once: <https://aka.ms/vs/17/release/vc_redist.x64.exe> |
-| Google AI Studio API key | Viral-segment detection + hook/CTA text — pasted into **Settings → AI providers**, not into `.env.local` | Free: <https://aistudio.google.com/app/apikey> |
-
-FFmpeg is normally provided by `ffmpeg-static` during `npm install`. VFR detection
-and `verify:clip` also use **ffprobe**; `ffmpeg-static` does not bundle it, so install
-a full local FFmpeg distribution (which includes ffprobe) or set `FFPROBE_PATH` to
-an existing local executable. If ffprobe is absent, the worker falls back to FFmpeg's
-text probe but marks VFR/stream-start diagnostics as unavailable.
-
----
-
-## 2. Install
+Requirements: Node.js 20+ LTS, a current browser, adequate free disk space for
+source videos/PNG sequences, and on Windows the
+[Visual C++ x64 Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe).
 
 ```powershell
-cd clipcraft-local
-npm install
-```
-
-`npm install` fetches:
-
-- `better-sqlite3` → the native SQLite binding used for local records and the durable jobs table
-- `ffmpeg-static` → the FFmpeg binary used for trimming, cropping, compositing,
-  and the one final H.264 encode
-- a full local FFmpeg install / `FFPROBE_PATH` → stream rates, start times and
-  durations for VFR detection and `npm run verify:clip`
-- `@remotion/bundler` + `@remotion/renderer` → the headless browser Remotion needs
-  to paint transparent caption / hook / CTA frames (first render downloads Chromium automatically)
-- `onnxruntime-node` → the ONNX runtime that runs the committed YuNet face model
-  (fully local, no vision API)
-
----
-
-## 3. Configure `.env.local`
-
-```powershell
-copy .env.example .env.local
-```
-
-Then edit `.env.local` for the machine-level knobs (paths, FFmpeg, uploads). SQLite
-creates its database and parent directory automatically, so `DATABASE_PATH` is only
-needed for a non-default location.
-
-```ini
-DATABASE_PATH=./data/clipcraft.db
-```
-
-**API keys are not configured here.** The Google AI Studio key — and the optional Deepgram
-key, worker concurrency, render defaults and profanity mode — are set on **`/settings`**
-inside the app, which is their only source of truth (see
-[Defaults live in two places](#defaults-live-in-two-places)).
-
-Both `npm run dev` and `npm run worker` load `.env.local` (via `@next/env`'s
-`loadEnvConfig` in `lib/errors.ts`) — **start the worker from the repository root**.
-
-### All variables
-
-| Variable | Default | Notes |
-|---|---|---|
-| `DATABASE_PATH` | `./data/clipcraft.db` | Path to the SQLite database, relative to the repository root unless absolute. Parent folders are created automatically. Web and worker processes must use the same path; restart both after changing it. The file is ignored by Git. |
-| **moved to /settings** | — | `GEMINI_API_KEY`, `DEEPGRAM_API_KEY`, `DEEPGRAM_MODEL`, `WORKER_CONCURRENCY`, `VIRAL_CONCURRENCY`, `REMOTION_CONCURRENCY` and `PROFANITY_AUDIO_MODE` are no longer read from this file. Their values live in the `app_settings` table and are edited on **Settings** — the page even points out any of those names still sitting unused in your `.env.local`. Detection uses the fallback chain configured in `lib/llm.ts`; availability and quotas depend on your project/model/tier, not the number of keys. Additional keys provide redundancy, **not extra quota within the same project**. The visual planner/vision use the separate bounded Gemini 2.5 Flash transport described below. |
-| `WHISPER_CLI_PATH` | auto-detect | Overrides binary discovery (searches `.whisper/…`, `bin/whisper-win-x64/whisper-cli.exe`, `bin/whisper-cli`). |
-| `WHISPER_MODEL_PATH` | auto-detect | Overrides model discovery (`models/ggml-*.bin`). |
-| `WHISPER_LANGUAGE` | `auto` | e.g. `ur`, `hi`, `en`. `auto` detects the spoken language (needed for Urdu/Hindi/Punjabi). |
-| `WHISPER_THREADS` | half your cores (2–8) | CPU threads for whisper. |
-| `FFMPEG_PATH` | `ffmpeg-static` | Point at your own FFmpeg binary if the npm download failed. Must be FFmpeg ≥ 5.1 (`-fps_mode` is used). |
-| `FFPROBE_PATH` | sibling / PATH | Full path to a local ffprobe if it is not beside FFmpeg or on PATH. Needed for VFR detection and clip verification. |
-| `VIDEO_ENCODER` | `x264` | Final H.264 encoder: `x264` (CPU libx264), `nvenc` (NVIDIA `h264_nvenc -preset p6 -tune hq -rc vbr -cq 19`), or `qsv` (Intel QuickSync `h264_qsv -preset slower -global_quality 20`). Probed on worker start with a 1s `lavfi` test encode; falls back to `x264` with a warning if unavailable. |
-| `VIDEO_CRF` | `17` | Final libx264 quality; accepted range is 16–18 (lower means larger, higher-quality files). |
-| `VIDEO_PRESET` | `medium` | libx264 speed/efficiency preset (default `medium`). Use `slow` for maximum compression efficiency or `medium` for ~2.5x faster CPU encodes at CRF 17. |
-| `CAPTION_OFFSET_MS` | `0` | Caption-only timing adjustment. Positive delays captions; negative advances them. Audio/profanity timing is unchanged. |
-| `SAVE_PRECAPTION_DEBUG` | `0` | Set `1` to keep `<clipId>_precaption.mp4` (video/audio before caption/card overlays) beside the final output. It adds a diagnostic encode only when enabled. |
-| `SPLIT_FACE_TARGET_FRAC` | `0.38` | Split-grid face-box centre as a fraction of pane height; clamped to `0.25–0.55`. Applies consistently to 2/3/4-cell layouts. |
-| `SPLIT_ZOOM` | `1.5` | Maximum split crop magnification; clamped to `1–2`. Set `1.0` to avoid enlargement. Low-resolution inputs may still need enlargement to fill output. |
-| `PORT` | `3000` | Next.js port. |
-| `ALLOWED_DEV_ORIGINS` | `*.e2b.app` (built in) | Extra hostnames allowed for dev assets (tunnels, LAN). Comma-separated, no scheme/port. |
-| **worker limits** | on `/settings` | Clip concurrency, viral-detection concurrency and Chrome tabs per render are set on **Settings → Worker & limits**. Built-in default is `clipConcurrency: 1`; **for 16 GB RAM machines (e.g. 6c/12t + NVENC/QSV), we recommend `clipConcurrency: 2` and `REMOTION_CONCURRENCY: 3` (Chrome tabs per render = 3)** so 6 total Chrome tabs stay well within 16 GB RAM. |
-| `REMOTION_LOG_LEVEL` | `info` | `verbose` when debugging a render. |
-| `REMOTION_TIMEOUT_MINUTES` | `60` | Per-render ceiling. |
-| **profanity audio mode** | on `/settings` | Chosen on **Settings → Profanity & masking**: `mute` (silence the word), `beep` (1 kHz tone), `off` (leave the audio alone). Captions and overlay text are masked **regardless**; the stored transcript keeps the original words, so changing this only needs a re-render. |
-| `UPLOAD_DIR` | `uploads` | Where source videos + in-progress upload sessions are stored. |
-| `MAX_UPLOAD_MB` | `0` (unlimited) | Optional guard rail for a single upload. Long podcasts need no limit — leave at 0. |
-| `UPLOAD_CHUNK_MB` | `8` | Chunk size the resumable uploader sends. |
-| `MAX_MULTIPART_MB` | `256` | Size cap for the single-request `POST /api/upload` (it buffers the body in RAM). The UI never uses that endpoint. |
-| `UPLOAD_SESSION_TTL_HOURS` | `24` | Unfinished upload sessions are deleted after this long. |
-
----
-
-### Settings is the only source of truth for those values
-
-`/settings` (in the sidebar) owns pipeline defaults, render clip defaults, the Gemini key
-pool, Deepgram key + model + engine choice, worker concurrency, and the profanity audio
-mode. The values are stored as `app_settings` rows in the same SQLite file as your videos,
-and the rule is: **what you saved there, otherwise the built-in default**. `.env.local` is
-not consulted for any of them — a value can never come from a file you are not looking at,
-which is why a row either says `settings` or shows no chip at all.
-
-Practical consequences worth knowing:
-
-- **a fresh clone has no keys until you add one.** That is on purpose: paste a key into
-  Settings → AI providers, press **Test** (it calls Google before anything is saved), then
-  save. `/startup-validation` tells you the same thing if you skipped it.
-- if your `.env.local` still holds `GEMINI_API_KEY` / `DEEPGRAM_API_KEY`, the AI card shows
-  a **Copy into Settings** button once, so an existing setup is a click rather than a
-  retyping session. Nothing reads the env file at the moment a value is used; that button
-  writes into the table.
-- **Deepgram has its own Test + Save** in that card, because it is optional and easy to
-  leave half-configured. Test calls `GET /v1/auth/token`, the key check Deepgram documents -
-  it answers for any key, so a rejection there is about the key and nothing else. Removing the
-  key (Save with the field empty, or the **Remove** link) falls transcription back to
-  whisper.cpp by itself.
-- keys are returned **masked** (`AIza…9f3`) and never in full. Pasting a masked entry back
-  and saving means "keep that stored key", so you can reorder or trim the pool without
-  retyping. Secrets sit in the git-ignored SQLite file — the same trust boundary as
-  `.env.local` always was.
-- **clip and detection concurrency need `npm run worker` restarted** — the polling loops are
-  sized when the process starts, and the card says so while such an override is saved.
-  Everything else, including Chrome tabs per render, transcription, render defaults and the
-  profanity mode, applies to the next job.
-- `Reset to defaults` deletes a section's row, which leaves the *built-in* default — it does
-  not hand the value back to `.env.local`.
-
-## 4. SQLite database and job queue
-
-No separate database or queue process is required. The web server and worker open the
-same file at `DATABASE_PATH` (default `./data/clipcraft.db`). The app creates the
-parent directory and database on first use, enables WAL mode with
-`busy_timeout=5000`, and applies versioned schema migrations. Back up the database
-file while both processes are stopped; in WAL mode, SQLite may also use adjacent
-`-wal` and `-shm` files while running.
-
-The SQLite `jobs` table replaces BullMQ/Redis. The worker polls independent
-transcription and render queues; keep `npm run worker` running while processing. It
-preserves two total attempts (one retry after 2 seconds by default; the exponential
-backoff doubles if a job is configured for more attempts) and requeues interrupted
-claims on startup. Run exactly one worker process per database: the clip-concurrency value
-on **Settings → Worker & limits** controls parallel render slots inside that process, while
-transcription uses one slot.
-A terminal job row is retained until that record is queued again or deleted; deleting
-a clip/video also removes its job rows.
-
-**Existing MongoDB data is not imported.** This migration intentionally starts with a
-fresh SQLite database; old MongoDB records do not appear automatically. Existing media
-files in `uploads/` remain on disk, but their metadata is not carried over. Back them
-up and re-upload them if they are still needed.
-
----
-
-## 5. Download a whisper.cpp model
-
-The repo ships a **Windows x64** whisper.cpp build at `bin/whisper-win-x64/`
-(`whisper-cli.exe` + its DLLs). The ggml *models* are 75 MB–1.5 GB and are
-deliberately **not** committed — download one:
-
-```powershell
-npm run setup:whisper        # Node script (Windows/macOS/Linux)
-npm run setup:whisper:ps     # pure PowerShell equivalent
-
-# options
-npm run setup:whisper -- --model small --force
-```
-
-The script:
-
-1. fetches a whisper.cpp release binary into `.whisper/` (skipped on Windows when
-   the committed `bin/whisper-win-x64/whisper-cli.exe` exists; on macOS/Linux it
-   prints build-from-source instructions),
-2. downloads a ggml model into `models/` (default **`small`** — much better for
-   Urdu/Hindi; `tiny` faster/rougher, `medium`/`large-v3` best/slowest), and
-3. writes `WHISPER_CLI_PATH` / `WHISPER_MODEL_PATH` into `.env.local`.
-
-For non-English audio use `small` or better, and set `WHISPER_LANGUAGE=ur` (or
-leave `auto`).
-
-> If your network blocks GitHub/Hugging Face, download `ggml-small.bin` manually
-> from <https://huggingface.co/ggerganov/whisper.cpp/tree/main> into `models/` and
-> set `WHISPER_MODEL_PATH=models/ggml-small.bin`.
-
----
-
-## 6. YuNet face model (active-speaker tracking)
-
-Clips frame the active speaker with OpenCV's **YuNet** detector
-(`face_detection_yunet_2023mar.onnx`) running on `onnxruntime-node` — fully local.
-The 232 KB model is **committed** at `models/yunet/`, so there is nothing to do.
-
-`npm run setup:yunet` is idempotent: it re-downloads and SHA-256-verifies the model
-(if the committed copy is ever missing/corrupt) from OpenCV Zoo / jsDelivr /
-Hugging Face mirrors, and refuses a file that doesn't match the official
-232 589-byte checksum.
-
-**There is no fallback detector** (no skin-tone heuristic, no static-crop
-"pretend tracking"). If the model is missing or the ONNX runtime fails, speaker
-layout renders **stop with a clear error** telling you to run
-`npm run setup:yunet` — see README for the
-tracking design (audio↔motion fusion, hysteresis, the locked split-screen panes).
-
----
-
-## 7. Run the app (two processes)
-
-```powershell
-# 1. worker (transcription + rendering) — leave this running
-npm run worker
-
-# 2. web app
+npm ci
+Copy-Item .env.example .env.local
+npm run setup:whisper
+npm run setup:yunet
 npm run dev
+# Second terminal, same repository and environment:
+npm run worker
 ```
 
-(or double-click **`start-clipcraft.bat`** to start both and open the browser)
+Open `http://localhost:3000`. Save a Gemini key in **Settings → AI providers**;
+use its Test button and `/startup-validation`. `start-clipcraft.bat` is the Windows
+launcher after installation. Run exactly one worker per DB; its polling loops
+provide internal concurrency. Restart both processes after a database-path change,
+and restart the worker after worker-loop settings or an upgrade change.
 
-Open <http://localhost:3000>, then **visit `/startup-validation` first**. That page
-checks SQLite open/write/read access, WAL mode and `busy_timeout`, FFmpeg, the
-transcription engine (using the *same* discovery logic as the real run), the AI
-provider chain, and the Remotion renderer, and tells you exactly what to fix.
+`better-sqlite3` and `onnxruntime-node` are native modules. If installation fails,
+use a supported x64 Node LTS build, install the VC++ runtime, and rerun `npm ci`.
+A SQLite source build additionally requires the platform's C++ build toolchain.
+Do not copy `node_modules` between operating systems.
 
-### What happens after you upload
+### Local engines and browser
 
-1. The browser uploads through `POST /api/upload/session` +
-   `PUT /api/upload/session/{id}` in chunks (8 MB default). **No size limit** — a
-   three-hour podcast is normal — and each chunk streams straight to disk, so a
-   multi-GB file never sits in the server's RAM. Losing the connection (VPN hiccup,
-   dev-server reload, laptop sleep) is fine: press **Resume upload** and it
-   continues from the last confirmed byte. The single-request `POST /api/upload`
-   remains for scripts/Postman, but it buffers the body in memory, so it is capped
-   at `MAX_MULTIPART_MB` (256 MB).
-2. Finishing the upload moves the file into `uploads/` (named
-   `001_my_recording.mp4` — 3-digit sequence + original name), probes it with
-   FFmpeg and enqueues a **transcription job** — the request returns immediately.
-   The automation you ticked on the upload form (`autoDetect`, `autoRender`, plus
-   the AI clip options) is stored with the video record in `videos.pipeline_json`,
-   so the rest of the chain keeps running with those settings after a reload, a
-   retry, or a worker restart. It is editable per video from the dashboard's
-   **Pipeline** panel.
-3. The worker transcribes with whisper.cpp (or Deepgram, if you opted in) and
-   stores word-level timestamps in SQLite.
-4. **Detect viral segments** asks the Gemini chain (5-slot fallback) for
-   `{start, end, hookText, ctaText, reason, score}` — with an automatic **top-up
-   pass** if it returns fewer than the requested count. It is queued by the worker as
-   soon as step 3 finishes, so you never have to press it (unless you switched
-   *auto-detect* off). Clip count, minimum clip length (max is fixed internally at
-   90 s), and the hook/CTA switches come from the video's stored settings; the form
-   remembers your last choice in `localStorage` as the default for the next upload.
-5. **Render** (per clip, queued for every detected clip when *auto-render* is on —
-   the default, using the stock configuration; turn it off to review the scores in the
-   grid first): the complete hook interval returned by viral detection
-   (`hook_timestamp.start`→`hook_timestamp.end`) is duplicated to the **start**, with
-   a 0.5 s dip-to-black → active-speaker layout planning (`worker/asd/` +
-   `worker/layout.ts`) → transparent caption / hook / CTA frames are painted by
-   Remotion in headless Chrome → one FFmpeg graph does the source trim, mirror,
-   crop, colour, hook intro, overlay compositing, audio handling and the single
-   final H.264 encode (1080×1920).
-6. Output: `generated-clips/001_my_recording/<clip title>.mp4`, tracked in
-   SQLite. The dashboard plays it through `/api/media/...` (Range-enabled, so
-   seeking works). Each clip in the grid shows its viral score and the AI analysis;
-   **Edit** on a clip saves new settings and re-renders that one clip only.
+- FFmpeg normally comes from `ffmpeg-static` during `npm ci`. If its download is
+  blocked, install a full FFmpeg distribution and set `FFMPEG_PATH`.
+- ffprobe is a separate executable. Install it beside FFmpeg/on PATH or set
+  `FFPROBE_PATH`. Without it, text probing can work, but VFR and stream diagnostics
+  are incomplete; verification commands require ffprobe.
+- Remotion installs/caches a compatible headless browser on first use. Run a test
+  render while online before expecting an offline workflow. Use local fonts; do not
+  replace bundled font loading with Google Fonts/network fetches during rendering.
+- `setup:whisper` fetches the Windows whisper.cpp release and the selected ggml
+  model and writes their paths. Large models need substantial RAM/disk. On other
+  platforms build [whisper.cpp](https://github.com/ggml-org/whisper.cpp) locally and
+  set `WHISPER_CLI_PATH` and `WHISPER_MODEL_PATH` to your own compatible build/model.
+- `setup:yunet` downloads the official OpenCV Zoo 2023mar model, validating size
+  232589 and SHA-256
+  `8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4`.
+  Weights/binaries are ignored, not committed. Run setup again after a fresh clone.
+  YuNet runs in Node through ONNX Runtime, using RGBA decoding/resizing and box
+  detection only—no embeddings or face recognition. Missing weights/runtime fail
+  face-required work clearly; person/B-roll safety never silently bypasses it.
 
----
+## 2. Settings versus environment
 
-## 8. Troubleshooting
+**Settings → pipeline/render/AI/worker/profanity:** saved value, otherwise built-in
+default. `.env.local` is not a fallback for these form-backed fields. API key masks
+mean “keep this saved key,” not a new key. The explicit Import environment action
+is the only supported way to copy legacy env-backed form values into Settings.
 
-**`YuNet face detection is unavailable` / `No faces were detected in this clip window`**
-Speaker layouts have no fallback detector by design: run `npm run setup:yunet`
-(model), and if a face genuinely can't be found, pick a window where the speaker
-is visible, reasonably large and well lit — then re-render.
+Per-video pipeline options are snapshotted at upload and win over later default
+changes. Use the clip editor to change an existing clip. The database is local
+SQLite with WAL and a durable jobs table, not a separate database/queue service.
 
-**Remotion overlay-frame rendering fails**
-The worker uses Remotion only to paint transparent PNG overlays; the source video
-never enters Chrome. On the first run Remotion downloads its browser shell. Check
-the `[Remotion Renderer]` log for bundle/browser errors, then lower **Chrome tabs per
-render** (Settings → Worker & limits) if memory is constrained. Increase
-`REMOTION_TIMEOUT_MINUTES` only for legitimately long overlay sequences.
+Environment values without form fields remain supported; `.env.example` is the
+full inventory. Common examples:
 
-**Rendered clip has no video / black frames**
-The source crop and overlays are composed in the final FFmpeg pass. Check the
-`[FFmpeg]` log for the filter/encode error and verify `FFMPEG_PATH` points to a
-build with libx264; the transparent overlay render cannot replace or decode the
-source video.
+| Value | Purpose |
+| --- | --- |
+| `DATABASE_PATH` | Shared DB; default `./data/clipcraft.db` |
+| `WHISPER_CLI_PATH`, `WHISPER_MODEL_PATH` | Local engine and ggml weights |
+| `WHISPER_LANGUAGE` | `en` for this workflow; `auto` for multilingual inputs |
+| `WHISPER_THREADS` | Local transcription CPU budget |
+| `FFMPEG_PATH`, `FFPROBE_PATH` | Optional executable overrides |
+| `VIDEO_ENCODER` | `x264` (default), `qsv`, or `nvenc` |
+| `VIDEO_CRF`, `VIDEO_PRESET` | Software encode quality/speed; see template |
+| `REMOTION_TIMEOUT_MINUTES` | Bound long browser renders |
+| `SAVE_PRECAPTION_DEBUG` | Keep an extra pre-caption video for diagnosing layers |
+| `ALLOWED_DEV_ORIGINS` | Comma-separated development tunnel/LAN hosts |
 
-**Rendered clip is silent**
-The final FFmpeg pass maps the source audio (or creates a silent `anullsrc` track
-when the source has none) and encodes it as AAC. The profanity audio mode (default
-**mute**) intentionally silences transcript windows; check the `[FFmpeg]` mapping/filter
-log if other audio is missing.
+QSV/NVENC require supported hardware and working drivers. The worker runs a short
+probe for the requested encoder and falls back to x264 when hardware is unavailable.
+Choose `x264` for a portable CPU baseline; lower CRF means higher
+quality/larger files. Browser frame rendering and photo preparation still use CPU
+and are not accelerated merely by choosing a hardware final encoder.
 
-**Captions out of sync / audio drifts / clip plays at the wrong speed**
-Run `npm run verify:clip -- <file>` to inspect avg/r frame rates, VFR classification,
-stream start times/durations and bitrates. The worker uses the average rate, explicitly
-normalizes VFR branches before hook concatenation, and aligns audio timestamps against
-the video stream start. Use `CAPTION_OFFSET_MS` only for a remaining caption-vs-speech
-latency (`+` delays captions, `-` advances them); it never changes audio. Set
-`SAVE_PRECAPTION_DEBUG=1` to compare the pre-overlay output with the final render.
+## 3. Caption themes and layout
 
-**Crop is on the wrong side of the speaker**
-Sample frames are extracted with `hflip` applied, because the render chain is
-`hflip,crop=…` — crop coordinates must live in *mirrored* space. If you change the
-pipeline, keep sampling and cropping in the same space.
+There are 13 shipped themed presets. `cc-bold-punch` is first/default: kinetic-01,
+positionY 28. The 12 other built-ins use `caption-theme-*` IDs. POST/PUT require a
+valid `captionTheme`. There is no classic caption mode or unused classic styling
+panel. Reset restores shipped themes without deleting valid custom themes or
+replacing a valid custom default.
 
-**Re-rendering a clip does nothing**
-The SQLite queue uses a stable job ID per clip and resets a terminal/queued row when
-re-enqueuing. A render already marked `running` returns HTTP 409; wait for it to finish
-before submitting that clip again. Different clips from the same source video may
-render concurrently.
+Upgrade retirement backs up invalid/themeless/retired rows **before** deletion to
+`data/backups/caption-presets-removed-<timestamp>-<id>.json`. Raw config bytes are
+preserved, including malformed JSON. Corrupt built-ins are reseeded in the same
+transaction/open, and clip/render-default references are repointed. Keep a backup
+of the DB and these JSON files if you may want to reconstruct an old style.
 
-**`whisper-cli.exe` fails with "VCRUNTIME140.dll was not found"**
-Install the VC++ redistributable (§1).
+The layer order is speaker video → full-screen photograph → transparent Remotion
+captions/hook/CTA/generic pops. Photo movement is zoom/fade, not animated cards.
+Hook replay follows the detected hook interval; its dip/fades must stay free of
+photos/text. Speaker focus uses active-speaker tracking; split layouts keep stable
+panes. Generic word/number pops remain. Names of celebrities are never substituted
+as animated text when photos cannot be found.
 
-**Whisper complains about an unknown option (`-ojf`, `-sow`, `-wt`)**
-Those are newer whisper.cpp flags. The committed build supports them; if you point
-`WHISPER_CLI_PATH` at an older build, use one that accepts `-ojf` (or re-run
-`npm run setup:whisper --force`).
+## 4. Celebrity library and licensed sources
 
-**Upload fails with a size error**
-The UI's resumable path has **no limit**. Size errors mean an optional guard rail
-is set: `MAX_UPLOAD_MB` (unlimited unless you set it) or `MAX_MULTIPART_MB` for the
-single-request endpoint (scripts only).
+Configure a meaningful **Wikimedia User-Agent** in AI settings, e.g.
+`ClipCraftLocal/1.0 (contact: your-real-email@example.org)` with your actual contact.
+Wikidata resolution uses exact labels/aliases and English descriptions to choose a
+QID; ambiguous matches and private people do not get person photos. The planner
+uses whole-clip context for pronouns, not just the nearest sentence.
 
-**Upload stops at a certain percentage / the connection drops mid-upload**
-Nothing is lost: the in-flight chunk is re-sent from the last confirmed byte, and
-the uploader retries automatically. If the page reloaded or the dev server
-restarted, press **Resume upload** — it continues from the server's byte count.
-Chunks live in `uploads/.upload-sessions/<id>/`; unfinished sessions are deleted
-after `UPLOAD_SESSION_TTL_HOURS` (24 h default).
+Source preference: credited local library → Wikidata P18/Wikipedia lead → Commons
+category → exact-name Openverse metadata. Named people never use stock substitutes.
+Any-era portraits can be used. Identity evidence is QID/category/full-name metadata;
+Gemini must only judge suitability, not recognize the person. Metadata can be wrong:
+review the actual output and do not treat the gate as an identity guarantee.
 
-**The dev server gets slow or OOMs during a large upload**
-It should not: bytes stream to disk with backpressure, so memory stays flat. The
-one buffered path left is the single-shot `POST /api/upload` — which is exactly why
-it is capped and why the UI always uses the chunked endpoint.
+Optional local library, with a credited sidecar **for every image**:
 
-**Video stuck in `transcribing` / clip stuck in `processing`**
-The worker may not be running (`npm run worker`). Transcription and rendering are
-stored in the SQLite jobs table, not tied to the HTTP request; after a worker crash,
-starting it again recovers jobs that were left running. Check the worker log and
-`DATABASE_PATH` if the status does not change.
+```text
+data/celebrity-library/Kaia Gerber/portrait.jpg
+data/celebrity-library/Kaia Gerber/portrait.jpg.json
+```
 
-**SQLite cannot open the database / reports a lock timeout**
-Confirm `DATABASE_PATH` points to a writable local disk and that both the web app and
-worker use the same value. Stop/restart both processes after changing it. SQLite is
-configured for WAL and waits up to five seconds for a competing writer; do not place
-the file on a network share or sync folder.
+```json
+{
+  "qid": "Q22673974",
+  "creator": "Actual photographer",
+  "license": "CC BY 4.0",
+  "sourcePageUrl": "https://commons.wikimedia.org/wiki/File:YOUR_ACTUAL_FILE.jpg"
+}
+```
 
-**`ffmpeg-static` binary missing after install**
-Its postinstall download was blocked. Set `FFMPEG_PATH` to your own `ffmpeg.exe`
-(any FFmpeg 5+ build works), or run `npm rebuild ffmpeg-static`.
+Replace the example file URL/creator with the actual source. The folder must match
+the resolved canonical name (spacing/punctuation are normalized). Supply only
+correctly identified public-figure images you have rights to reuse. Missing or
+mismatched QID/credit/license metadata skips that file. Supported local inputs are
+JPEG, PNG and WebP. Avoid large collections of huge files; only a bounded subset is
+considered. This is not permission to download copyrighted agency/news/social photos.
 
-**Port 3000 already in use**
-`set PORT=3001` (PowerShell: `$env:PORT=3001`) before `npm run dev`.
+YuNet requires one detected face for a person portrait and rejects groups. The
+prefetch frame planner centers the face with headroom or fits it sharply over a
+blurred background if a crop would cut it. Resolution/upscale, reuse rights,
+watermarks, collages, distortions and suitability remain gated. QID caches use
+30-day TTL plus byte hashes; new candidate reuse still runs face/suitability checks.
 
----
+If no portrait passes, the fallback is relevant objects/venues/books/magazines
+with **no prominent face**, verified by YuNet and vision, or nothing. No lookalikes,
+random people, name pops, Google/Bing/Getty/social/news scraping or render-time
+hotlink repair. Generic stock providers only serve applicable illustrative queries;
+review each provider's export/cache terms before enabling it (especially Unsplash,
+whose display/hotlink requirements are not blanket permission for a persistent bank).
 
-## 8b. Known harmless warnings
+The target is 7 images/60 seconds with 5–8-second sentence beats and 2.4–3.4-second
+nonoverlapping displays. Strict selection tries lower text-score eligibility when
+short, but identity/face/vision gates do not drop. Later coreferent sentences may
+use another verified entity image. Planning caps, shortages, quota and deadlines
+can yield fewer; the tile and debug output explain skipped beats/shortfalls.
+Use **Copy photo credits** in the tile menu, or download
+`/api/clips/<id>/credits?format=txt&download=1`.
 
-**`next build` prints "Static analysis determined that this filesystem access
-causes the whole project to be traced"**
-Expected. `lib/ffmpeg.ts`, `lib/whisper.ts` and `app/api/media/[...path]/route.ts`
-resolve paths at runtime (`uploads/`, `generated-clips/`, `models/`, `bin/`) —
-exactly what a local app has to do. The build still finishes successfully; the
-warning matters only for a Vercel deployment, which this project is explicitly not.
+### Wikimedia/API compatibility
 
-**First render downloads a headless browser**
-Remotion fetches its headless Chrome shell on the first `renderFrames` call (and
-`npm run studio` needs it too) — a one-time download of a few hundred MB. If your
-network blocks it, allow the Chrome-for-Testing CDN, or run
-`npx remotion browser ensure`.
+The implementation uses `wbsearchentities` (English labels/descriptions),
+`wbgetentities` (`claims|sitelinks`), claims P18/P373, Wikipedia `pageimages` with
+`piprop=name` and `pilicense=free`, and Commons `imageinfo` with
+`url|size|extmetadata|timestamp`. Category requests use `generator=categorymembers`,
+`gcmtype=file`. License/artist/description metadata is obtained separately; “free
+page image” alone is not complete attribution. Read-only GETs include the configured
+User-Agent, `maxlag=5`, bounded concurrency/timeouts and positive caching. HTTP
+429/503/maxlag fail closed rather than creating a retry storm. Do not assume an
+universal fixed requests/second limit: honor service responses and policies.
 
----
+References: [Wikidata API](https://www.wikidata.org/w/api.php?action=help&modules=wbsearchentities),
+[Commons API](https://commons.wikimedia.org/wiki/Commons:API/MediaWiki),
+[MediaWiki etiquette](https://www.mediawiki.org/wiki/API:Etiquette).
 
-## 9. Useful commands
+## 5. Gemini models, quotas and failures
+
+Visual planner/vision use the same model chain as `lib/llm.ts`; no separate hidden
+visual model. At worker start, `GET https://generativelanguage.googleapis.com/v1beta/models`
+checks available `generateContent` models; startup validation reports the discovered
+choice. A configured name is not proof your key/project has access. Completion uses
+`POST /v1beta/models/<actual-name>:generateContent`, keys in `x-goog-api-key`.
+
+- **404:** unavailable/deleted/wrong model. The process negative-caches it and logs
+  once, then tries the next chain model. Correct the chain if none are discovered;
+  restart after fixing access/model configuration.
+- **429:** rate/daily quota exhaustion. Honor Retry-After and project limits; adding
+  keys for the same project does not multiply quota. Cool down/retry later.
+- **503/5xx:** transient service failure; bounded backoff/fallback, not a bypass.
+- **Invalid key:** retest in Settings and save the correct one. Never paste secrets
+  in logs/issues. Startup cannot certify account entitlement without a live key.
+
+An uncached clip has one logical planner and up to three vision batches. The
+per-clip attempt budget is four charged attempts; 404/429/5xx fallback attempts are
+refunded so trying the next model does not exhaust that cap. The network deadline
+is 25 seconds; local decode/face inference/frame preparation and disk writes can
+add time. **20–25 seconds is a target, not a measured Windows SLA.** Up to two
+persisted prefetch jobs run independently; render does not wait for all siblings.
+
+Failed prefetches are not cached. Legacy cached reasons starting “Visual prefetch
+unavailable” are ignored. Timed-transcript/settings hashes key whole-clip caches;
+vision verdicts bind candidate identity and local bytes. Rerenders with unchanged
+meaning/settings reuse frames. A changed query requires an explicit new prefetch,
+not network work during render. Deleting a clip/video cancels pending handoffs.
+
+Use [models.list](https://ai.google.dev/api/models#method:-models.list),
+[rate limits](https://ai.google.dev/gemini-api/docs/rate-limits) and
+[pricing](https://ai.google.dev/gemini-api/docs/pricing) for your actual model/tier.
+Limits are project-based RPM/TPM/RPD, not a promised per-key allowance. Model names,
+free-tier availability and prices can change; this guide does not promise a daily
+volume or fixed per-clip cost.
+
+## 6. Verify and diagnose
 
 ```powershell
-npm run worker           # SQLite-backed worker (transcription + rendering)
-npm run dev              # Next.js dev server
-npm run studio           # Remotion Studio — inspect CaptionComposition frame by frame
-npm run setup:whisper    # whisper.cpp binary (non-Windows) + ggml model
-npm run setup:yunet      # (re)download + verify the YuNet face model
-npm run typecheck        # tsc --noEmit
-npm test                 # node:test unit tests (tsx --test tests/*.test.ts)
-npm run verify:clip -- generated-clips/<video>/<clip>.mp4  # ffprobe output diagnostics
-npm run lint             # eslint
-npm run build            # production build
+npm test
+npm run typecheck
+npm run lint
+npm run verify:captions
+# Optional installed Chrome path instead of Remotion's browser:
+npm run verify:captions -- "C:\Program Files\Google\Chrome\Application\chrome.exe"
+npx tsx scripts/verify-visual-layering.ts
+npm run eval:visuals -- --recent 20
+npm run eval:visuals -- --video VIDEO_ID --json --output data/evaluation.json
+npm run eval:visuals -- --demo --json
+npm run verify:clip -- generated-clips/<video>/<clip>.mp4
+# Optional synthetic filter A/B, NOT an end-to-end speed claim:
+npm run benchmark:visuals -- --baseline 09b7432 --rounds 3
+node scripts/generate-sfx.mjs
 ```
 
----
+`verify:captions` renders kinetic-01/pop/podcast through real Chromium to transparent
+PNGs, composites a photo above synthetic speaker video but below captions with
+FFmpeg, then checks 1080×1920 H.264 output and caption pixels with ffprobe. Outputs
+stay in ignored `data/final-render-validation/`. It does not call AI or providers.
+The layering script covers hook on/off × debug on/off. The visual evaluation CLI is
+read-only: beats, entity/QID, source/evidence, face checks, vision, decision/reason,
+images/minute and timing distributions; metadata acceptance is not human review.
 
-## 10. Where things live
+Checks performed in Linux on 2026-10-17: 292 unit tests (zero skipped), typecheck
+with noUnusedLocals/noUnusedParameters, lint with unused errors, actual Node YuNet
+inference, and real Chromium→PNG→FFmpeg MP4s for the three themes (1.2 seconds, 36
+frames, 1080×1920, captions verified above a full-screen image). All four hook/debug layering combinations also passed (5,898–5,905
+caption pixels visible above the image). A single synthetic filter-only A/B round
+measured 16.730s → 13.494s against the preserved checkpoint; that is not a Windows
+or full-pipeline speed claim. Synthetic media is
+not proof of full uploaded-video transcription/AI behavior or live identity accuracy.
 
-```
-app/api/videos/            upload, list, probe; [id]/transcript + [id]/detect-viral
-app/api/clips/             list, create/render, [id] (status/file), [id]/cancel
-app/api/upload/            single-shot multipart (capped)
-app/api/upload/session/    resumable chunked upload (no limit) + finalize/abort
-app/api/media/[...path]/   Range-enabled HTTP file server for uploads/ + generated-clips/
-app/api/{caption,overlay,text}-presets/ + prompt-templates/ + startup-validation/
-app/caption-presets/       caption style preset manager (live preview)
-app/prompt-templates/      edit the LLM prompt templates
-app/startup-validation/    pre-flight checks UI
-lib/upload.ts              shared upload policy: names, sizes, video record, enqueue
-lib/upload-session.ts      resumable sessions on disk (append, finalize, TTL sweep)
-lib/upload-client.ts       browser chunking, progress, retry + resume
-lib/ffmpeg.ts              FFmpeg/ffprobe resolution + structured stream probe + spawn wrapper
-lib/whisper.ts             cross-platform whisper.cpp discovery & transcription
-lib/deepgram.ts            optional cloud STT override (REST, no SDK)
-lib/queue.ts               prepared SQLite jobs: atomic claims, retries, and recovery
-lib/llm.ts                 Gemini fallback chain (config array + plain fetch, no SDKs)
-lib/ai.ts                  prompt templates + JSON parsing + exact-count top-up
-lib/profanity.ts           word masking + render-time mute/beep windows
-lib/overlay-bg.ts          solid/gradient card-background picker helpers
-lib/presets.ts             default caption/overlay/text presets
-lib/startup-validation.ts  the checks behind /startup-validation
-lib/db.ts                  SQLite schema migrations, prepared helpers, and typed CRUD
-worker/index.ts            SQLite queue loops, recovery, graceful shutdown
-worker/processor.ts        per-clip orchestration (hook, layout, engines, masking)
-worker/asd/                active-speaker detection: audio.ts, yunet, tracker.ts,
-                           speaker.ts (fusion + timeline)
-worker/yunet-detector.ts   YuNet ONNX detector (OpenCV-exact pre/post-processing)
-worker/frame-sampler.ts    mirrored frame sampling + pan smoothing/decimation
-worker/layout.ts           speaker-focus vs split-grid plans (peak-concurrent cells)
-worker/camera-lock.ts      locked split-pane camera (hold still, re-centre only when the head leaves)
-worker/overlay-layout.ts   layout-aware caption / hook / CTA placement (off the faces in a split)
-worker/ffmpeg-pipeline.ts  One final FFmpeg graph: hflip → crop → colour → hook → overlays → H.264
-worker/remotion-renderer.ts  transparent full-timeline overlay PNG sequence (Remotion)
-remotion/                  CaptionComposition + AnimatedWord + Hook/CTA overlays
-scripts/setup-whisper.*    binary + ggml model downloader (.mjs and .ps1)
-scripts/setup-yunet.mjs    YuNet model downloader with SHA-256 verification
-scripts/verify-clip.ts     ffprobe report for resolution, rates, stream timing and bitrates
-models/yunet/              committed YuNet face-detection model (232 KB)
-bin/whisper-win-x64/       committed Windows x64 whisper.cpp build (whisper-cli + DLLs)
-```
+**Still requires the target Windows PC and real credentials:** whisper executable
+and VC++ runtime, QSV/NVENC driver/encoder smoke tests, a full upload→transcribe→AI
+selection→prefetch→render, real named-person/coreference review, actual model
+entitlement/quota recovery, long-clip fill rates, the 20–25-second prefetch target,
+and cancellation/restart while real native jobs run. Test those before production.
 
-### Full-screen photo quality and provider renditions
+If text is hidden, compare the pre-caption debug encode and check stacking, not card
+placement controls (removed). If photos are missing, inspect the skipped reason,
+QID/evidence, face count, license, resolution, vision verdict and deadline before
+changing settings. A missing/modified verified frame intentionally renders without
+that image. Never lower gates just to fill a quota.
 
-FFmpeg is required during visual prefetch as well as final encoding. Prepared
-1080×1920 frames are cached next to downloaded originals; keep the visual cache
-when re-rendering. Legacy low-resolution images may now be skipped rather than
-upscaled beyond 1.5×. Settings for old card shapes/borders no longer affect output.
-
-Provider documentation checked 2026-10-16:
-- [Pexels](https://www.pexels.com/api/documentation/): search uses portrait;
-  prefer `src.original`, then `large2x`. Default quota is 200/hour and
-  20,000/month; retain photographer/Pexels attribution and links.
-- [Pixabay](https://pixabay.com/api/docs/): use vertical; prefer returned
-  `imageURL`/`fullHDURL` when the account has high-resolution access, otherwise
-  `largeImageURL` (maximum dimension 1280). Do not fabricate restricted URLs.
-  Some standard-access portraits cannot meet the upscale limit and are skipped.
-  Cache searches for at least 24 hours; no systematic mass downloading.
-- [Unsplash](https://unsplash.com/documentation): portrait search, prefer the
-  returned `urls.full` over `regular` (1080-wide). Preserve returned URLs,
-  download tracking and attribution. Demo quota is 50/hour. Unsplash requires
-  CDN hotlinking for application display; local video export is not evidence of
-  blanket permission for a persistent image-bank service. Confirm the intended
-  export/cache use with Unsplash before enabling it in production.
-
-Linux lavfi tests cannot certify i5-10500 Windows/GPU performance. Run the layering
-script above and compare `data/timings.jsonl` using real clips on the target PC.
-
-### Gemini vision request format
-
-Checked against the current [generateContent thinking guide](https://ai.google.dev/gemini-api/docs/generate-content/thinking)
-and [API reference](https://ai.google.dev/api/generate-content): Gemini **2.5 Flash**
-supports `generationConfig.thinkingConfig.thinkingBudget: 0` (not the Gemini 3
-`thinkingLevel` parameter). Vision sends `responseMimeType: application/json`,
-`responseJsonSchema`, and `maxOutputTokens: 6000`, validates actual IDs/scores and
-rejects incomplete output. Keys are sent in `x-goog-api-key`, never URLs or logs.
-The old `visualVisionVerify` boolean is retained for stored JSON compatibility but
-cannot disable the gate; use Relevance strictness to opt into lenient behavior.
-
-
-### Per-clip image prefetch, quotas and pricing (checked 2026-10-16)
-
-`visual-prefetch` is a persisted SQLite job, separate from render. One worker runs
-up to **two** prefetch jobs concurrently; the database claim enforces this cap.
-Each resolved clip can hand off immediately to render while its sibling is still
-searching. Strict video FIFO still blocks later-video Phase 1 jobs. Restart recovery
-requeues interrupted prefetch; cancellation/deletion cannot enqueue a new render.
-Restart the worker after upgrading.
-
-The visual transport rotates saved Gemini keys round-robin. **AI → Gemini visual
-RPM/key** defaults to 10, with a rolling minute window, bounded waiting, 429/5xx
-backoff+jitter and Retry-After cooldowns. Invalid keys are cooled down; messages
-identify quota, invalid-key, network and deadline failures without exposing keys.
-This limiter covers **planner + vision**, not legacy detection/hook/CTA completions.
-
-Each uncached clip has one logical planner call and at most three parallel vision
-batches; retries share a **four physical HTTP-attempt cap**. The network budget is
-25 seconds including waits/searches/downloads. Local JPEG processing and disk/DB
-writes can add time; this is a target, not a proven wall-clock SLA. Slow/quota-limited
-results skip rather than bypass relevance. Captions and keyword pops survive.
-
-Whole results are keyed by timed-transcript/settings fingerprints (credential
-identities are hashed, never written in plaintext). Hook/caption style edits and
-rerenders reuse results. Raw sentence plans and vision verdicts are cached too;
-verdict hits avoid even thumbnail fetches. Missing cached frames skip with no API
-call. Manual render never fetches; use the editor's visual-prefetch action first
-for new queries. Client edits cannot manufacture verification metadata. Prepared
-frame hashes and meaning/settings fingerprints are checked locally before encode.
-Caches live under ignored `data/visual-prefetch/`, `data/visual-plans/` and the visual
-cache's `verdicts/`; after a temporary cached failure, remove that failed prefetch
-entry to explicitly retry. Existing queued render jobs do not fetch to repair it.
-
-Official [rate-limit documentation](https://ai.google.dev/gemini-api/docs/rate-limits)
-says limits are **per project, not per API key**, and RPM/TPM/RPD are independent;
-RPD resets at midnight Pacific. The current model/project/tier limits must be
-read in [AI Studio](https://aistudio.google.com/rate-limit?timeRange=last-28-days).
-Do not assume an old public free-RPD number applies to your account.
-
-The current [Gemini 2.5 Flash pricing table](https://ai.google.dev/gemini-api/docs/pricing#gemini-2.5-flash)
-lists free-tier input/output as free of charge, subject to quota; standard paid
-text/image/video input is **$0.30 / million tokens**, output (including thinking)
-**$2.50 / million tokens**. This pipeline disables thinking with budget 0. It does
-not use Search grounding, batch discounts, audio input or image generation.
-
-At 300 uncached clips/day, budget **up to 1,200 visual HTTP attempts/day**, plus
-separate detection/hook/CTA calls and provider searches/downloads. One planner plus
-one vision batch is commonly only 600 logical calls/day, but this is not a promised
-quota or cost. Example only: 8k total input + 2k output tokens/clip costs about
-$0.0074/clip, **$2.22/day** at 300 clips (actual image tokens/output vary; retries
-can increase billed tokens). Check RPM/TPM/RPD and provider quotas, then enable
-billing if the project's free quota cannot cover the measured workload. Multiple
-keys from one project do not make 300 clips/day possible by themselves.
-
-### Evaluate relevance and performance locally
-
-Read-only; the evaluator does **not** fetch, generate or render anything:
-
-```bash
-npm run eval:visuals -- --video VIDEO_ID --recent 20
-npm run eval:visuals -- --recent 50 --json --output data/visual-evaluation.json
-npm run eval:visuals -- --video VIDEO_ID --baseline data/before-timings.jsonl
-npm run eval:visuals -- --demo
-```
-
-It reports the spoken sentence/English meaning, query, chosen provider title,
-vision score, source time and decision/reason. JSON includes the top-three debug
-candidates. Missing debug files fall back to stored clip metadata. Missing or
-modified local frames do not count as accepted. Fill rate is **accepted local
-photos / ceil(source clip duration / 5.4s)**; empty and abstract buckets stay in the
-denominator, keyword pops and removed/skipped photos never inflate it. The target
-is 70%, not permission to use a wrong photo. Human review is still required.
-
-`--demo` uses the checked-in Roman Urdu/Urdu/Hindi fixture with scripted English
-meanings/queries; no SQLite/provider/vision access. Solar/field photos are explicitly
-skipped because vision was not run; the abstract understanding sentence is below
-threshold. It is **not** live relevance evidence.
-
-Before upgrading, copy `data/timings.jsonl` to `data/before-timings.jsonl` (PowerShell:
-`Copy-Item data/timings.jsonl data/before-timings.jsonl`). Rerender the **same clip
-IDs**, duration, encoder and preset after upgrade; keep source, hook, captions,
-layout, CRF and worker concurrency identical. The evaluator pairs only newer
-matching render rows, reports N/A for missing baselines, and separates prefetch
-from render. Uncached prefetch p50/p95 excludes zero-call cache hits; Gemini elapsed
-time includes RPM/retry waits and overlapping calls, not an isolated API RTT.
-`geminiCalls` logs each logical planner/vision call's elapsed time, physical attempt
-count and success/error; the evaluator reports separate planner/vision p50/p95.
-Malformed/truncated JSONL lines are counted and skipped. Logs may contain transcript
-text/debug metadata: keep `data/` local and review before sharing.
-
-For an offline Linux/Windows **FFmpeg-filter-only** A/B, run:
-
-```bash
-npm run benchmark:visuals -- --baseline f6e4e570d7e5dbb684f4e0028d8f3bd7770832e2 --rounds 3
-```
-
-This reads the old filter builder from Git (without switching branches), uses a
-10.8s 1080×1920/30fps lavfi fixture, two cached stills, fixed x264-ultrafast settings
-and alternating run order. Outputs/summary go to ignored `data/visual-render-benchmark/`
-and a separately labelled `visual-render-benchmark` row in `data/timings.jsonl`.
-It excludes Remotion, face detection, hook analysis and source decode; do not confuse
-it with the full-worker baseline or the i5-10500 Windows <=10% requirement.
-
-On the actual Windows machine verify FFmpeg filter availability, four-case caption
-layering (`npx tsx scripts/verify-visual-layering.ts`), QSV/NVENC/x264 selection,
-caption themes, hook/CTA/keyword/SFX playback, cancel/restart recovery and full-worker
-before/after timings. Live Gemini/provider quotas, 20–25s prefetch and 70% relevance
-fill must be measured with your saved keys and real transcripts. This sandbox did
-not send live provider/LLM requests or validate those Windows-only conditions.
-
-
-### Source checkout cleanup
-
-Only README/SETUP contain product documentation. CLAUDE/AGENTS contain repository
-instructions; third-party LICENSE files remain with vendored code/fonts. `.agents`
-and `skills-lock.json` are not runtime inputs and are removed. Whisper `.exe`/DLLs
-and YuNet `.onnx` are downloaded with `npm run setup:whisper` / `npm run setup:yunet`;
-run those after cloning. Untracking does not delete your existing local copies.
-
-
-### Gemini model availability (model 404 recovery)
-
-Visual planner/vision now use `LLM_PROVIDER_CHAIN` from `lib/llm.ts`, not a hardcoded
-2.5 Flash URL. At worker start and in startup validation, GET `/v1beta/models`
-(paginated, `supportedGenerationMethods: generateContent`) verifies which chain
-models this key exposes and reports the selected name. A probe failure is labelled
-unverified, never proof a guessed name exists. Save keys in Settings → AI and
-restart the worker after changing model availability.
-
-404 models are logged once and negatively cached for the process; 404/429/5xx
-advance through the finite chain. These routing failures are refunded from the
-four charged-attempt cap, **not** from physical-call/RPM accounting or the 25s
-wall budget. Actual physical attempts can therefore exceed four. Gemini 3 uses
-`thinkingLevel: low`; 2.5 uses `thinkingBudget: 0`. No quota bypass is implied.
-Temporary failed whole-prefetch results are no longer cached; legacy entries whose
-reason begins `Visual prefetch unavailable` are ignored. Clip tiles show planned
-and resolved photo counts separately, plus the skip reason. No render-time network
-is introduced. Live model availability still requires your key and network access.
-
-
-### Theme-only caption upgrade
-
-Opening the DB retires the seven old cc-* classic styles and any row lacking a
-valid captionTheme. Deleted rows are backed up first under `data/backups/`; if
-backup writing fails, the migration transaction aborts. Valid custom themes stay.
-Clip/render-setting references are repointed to `cc-bold-punch`; the single-default
-index remains enforced. A new DB has exactly 13 themes. Reset and caption API
-POST/PUT accept themes only. Theme-less render props fall back to Kinetic 01.
-The UI exposes only theme renderer/grouping/placement controls, not classic line,
-font-family/stroke/animation editors. Restart both web and worker after upgrading.
+Production `npm run build` also passed. Turbopack reports dynamic-filesystem tracing
+warnings in the local media/worker paths; this is not a standalone/serverless deployment.

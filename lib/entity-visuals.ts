@@ -65,7 +65,7 @@ function commonsCandidates(data: Record<string, unknown>, entity: VisualEntity, 
       licenseRaw: strip(meta.LicenseShortName.value), licenseUrl: meta.LicenseUrl?.value,
       sourcePageUrl: info.descriptionurl ?? `https://commons.wikimedia.org/wiki/${encodeURIComponent(page.title ?? '')}`,
       imageUrl: info.url, thumbnailUrl: info.thumburl ?? info.url, width: info.width ?? 0, height: info.height ?? 0,
-      entityQid: entity.qid, identityEvidence: evidence, uploadedAt: info.timestamp }];
+      entityQid: entity.qid, entitySourcePriority: evidence.startsWith('Commons category') ? 2 : 1, identityEvidence: evidence, uploadedAt: info.timestamp }];
   });
 }
 
@@ -86,7 +86,7 @@ export async function entityImageCandidates(entity: VisualEntity, userAgent: str
         const credits = JSON.parse(fs.readFileSync(`${file}.json`, 'utf8')) as { qid: string; creator: string; license: string; sourcePageUrl: string };
         if (credits.qid !== entity.qid || !credits.creator || !credits.sourcePageUrl || !credits.license) continue;
         const image = await Jimp.read(file);
-        results.unshift({ provider: 'wikimedia', assetId: `library-${crypto.createHash('sha256').update(file).digest('hex').slice(0, 20)}`, title: `${entity.name} — ${entry.name}`, description: entity.description_en, alt: '', tags: [], creator: credits.creator, licenseRaw: credits.license, sourcePageUrl: credits.sourcePageUrl, imageUrl: credits.sourcePageUrl, width: image.width, height: image.height, verifiedLocalPath: file, entityQid: entity.qid, identityEvidence: `User library sidecar ${entity.qid}` });
+        results.unshift({ provider: 'wikimedia', assetId: `library-${crypto.createHash('sha256').update(file).digest('hex').slice(0, 20)}`, title: `${entity.name} — ${entry.name}`, description: entity.description_en, alt: '', tags: [], creator: credits.creator, licenseRaw: credits.license, sourcePageUrl: credits.sourcePageUrl, imageUrl: credits.sourcePageUrl, width: image.width, height: image.height, verifiedLocalPath: file, entityQid: entity.qid, entitySourcePriority: 0, identityEvidence: `User library sidecar ${entity.qid}` });
       } catch { /* Missing/invalid credits or unsupported image is not usable. */ }
     }
   }
