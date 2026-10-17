@@ -2685,7 +2685,7 @@ export async function verifyClipVisualCandidatesWithGeminiVision(params: {
     if (params.budget) params.budget.cacheHits++;
   } else if (!items.some((item) => item.candidates.length)) throw new Error('Vision unavailable: no decodable thumbnails');
   const text = cachedText ?? await requestGeminiJson({
-    keys: params.geminiApiKeys.filter(isUsableSecret), rpm: params.rpm, budget: params.budget, task: 'vision', timeoutMs: params.timeoutMs ?? 7000,
+    keys: params.geminiApiKeys.filter(isUsableSecret), rpm: params.rpm, budget: params.budget, task: 'vision', timeoutMs: params.timeoutMs ?? 10_000,
     body: { contents: [{ role: 'user', parts }], generationConfig: {
       temperature: 0, maxOutputTokens: 6000, thinkingConfig: { thinkingBudget: 0 },
       responseMimeType: 'application/json', responseJsonSchema: VISION_SCHEMA,

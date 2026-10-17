@@ -14,7 +14,18 @@ export interface VisualApiBudget {
   lastFailure?: string;
   geminiCalls: VisualGeminiCallTiming[];
 }
-export function createVisualApiBudget(timeoutMs = 25000): VisualApiBudget {
+/**
+ * Whole prefetch budget. It is a background job, so waiting longer for a slow
+ * connection is better than rendering every clip with zero photos.
+ */
+export const DEFAULT_VISUAL_BUDGET_MS = 60_000;
+/** Budget held back for the vision relevance check after the planner finishes. */
+export const VISION_RESERVE_MS = 15_000;
+/** Idle caps: abort only when the model sends NOTHING for this long. */
+export const DEFAULT_VISUAL_CALL_TIMEOUT_MS = 20_000;
+export const DEFAULT_VISION_CALL_TIMEOUT_MS = 10_000;
+
+export function createVisualApiBudget(timeoutMs = DEFAULT_VISUAL_BUDGET_MS): VisualApiBudget {
   return { deadline: Date.now() + timeoutMs, plannerCalls: 0, visionCalls: 0, attempts: 0, chargedAttempts: 0, geminiMs: 0, cacheHits: 0, geminiCalls: [] };
 }
 export function remainingVisualMs(budget?: VisualApiBudget, cap = 7000): number {
@@ -22,9 +33,6 @@ export function remainingVisualMs(budget?: VisualApiBudget, cap = 7000): number 
   if (remaining <= 0) throw new Error('Visual prefetch deadline exceeded; unresolved beats skipped');
   return Math.max(1, Math.min(cap, remaining));
 }
-
-/** Per-attempt cap for visual planning/vision calls that do not pass their own. */
-export const DEFAULT_VISUAL_CALL_TIMEOUT_MS = 7000;
 
 /**
  * Turn a rejected `fetch` into one short, actionable cause.
@@ -47,6 +55,77 @@ export function describeGeminiFetchFailure(error: unknown, capMs: number): strin
   if (/ECONNREFUSED|ECONNRESET|ENETUNREACH|EHOSTUNREACH|ETIMEDOUT/i.test(code)) return `connection failed (${code}) - network or firewall blocked generativelanguage.googleapis.com`;
   const detail = causeMessage || (error instanceof Error ? error.message : String(error));
   return `network unavailable${detail ? ` (${detail.slice(0, 160)})` : ''}`;
+}
+
+/** A parsed-but-unusable answer: retrying the same model cannot help. */
+class GeminiPayloadError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'GeminiPayloadError';
+  }
+}
+
+interface GeminiPart { text?: string; thought?: boolean }
+interface GeminiChunk {
+  candidates?: Array<{ finishReason?: string; content?: { parts?: GeminiPart[] } }>;
+  promptFeedback?: { blockReason?: string };
+  error?: { message?: string; status?: string };
+}
+
+function finishGeminiText(text: string, finishReason: string | undefined, blockReason: string | undefined): string {
+  if (finishReason && finishReason !== 'STOP') throw new GeminiPayloadError(`Gemini incomplete output: ${finishReason}`);
+  if (!text.trim()) throw new GeminiPayloadError(blockReason ? `blocked by safety filter (${blockReason})` : 'Gemini returned no verdict/output');
+  return text;
+}
+
+/** Non-streaming body (`application/json`) - also the path when a proxy buffers SSE. */
+async function readGeminiJson(response: Response): Promise<string> {
+  const payload = await response.json() as GeminiChunk;
+  const answer = payload.candidates?.[0];
+  return finishGeminiText(
+    (answer?.content?.parts ?? []).filter((part) => !part.thought).map((part) => part.text ?? '').join(''),
+    answer?.finishReason, payload.promptFeedback?.blockReason);
+}
+
+/**
+ * Read `streamGenerateContent?alt=sse` and concatenate the text parts.
+ *
+ * `onActivity` re-arms the idle timer on every received chunk, so a long plan
+ * over a slow link is never cut off mid-answer while a dead socket still fails
+ * after the short idle cap.
+ */
+export async function readGeminiStream(response: Response, onActivity: () => void): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) throw new GeminiPayloadError('Gemini returned an empty response body');
+  const decoder = new TextDecoder();
+  let buffer = ''; let text = ''; let finishReason: string | undefined; let blockReason: string | undefined;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value?.length) onActivity();
+      buffer += decoder.decode(value, { stream: true });
+      let newline = buffer.indexOf('\n');
+      while (newline >= 0) {
+        const line = buffer.slice(0, newline).replace(/\r$/, '').trim();
+        buffer = buffer.slice(newline + 1);
+        newline = buffer.indexOf('\n');
+        if (!line.startsWith('data:')) continue;
+        const raw = line.slice(5).trim();
+        if (!raw || raw === '[DONE]') continue;
+        let chunk: GeminiChunk;
+        try { chunk = JSON.parse(raw) as GeminiChunk; } catch { continue; }
+        if (chunk.error) throw new GeminiPayloadError(`Gemini ${chunk.error.message ?? chunk.error.status ?? 'stream error'}`);
+        const candidate = chunk.candidates?.[0];
+        finishReason = candidate?.finishReason ?? finishReason;
+        blockReason = chunk.promptFeedback?.blockReason ?? blockReason;
+        for (const part of candidate?.content?.parts ?? []) if (!part.thought && part.text) text += part.text;
+      }
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+  return finishGeminiText(text, finishReason, blockReason);
 }
 
 interface KeyState { timestamps: number[]; blockedUntil: number }
@@ -116,7 +195,7 @@ export async function requestGeminiJson(options: {
   keys: string[]; rpm?: number; task: 'planner' | 'vision'; body: Record<string, unknown>;
   budget?: VisualApiBudget; timeoutMs?: number; pool?: GeminiKeyPool; models?: string[];
 }): Promise<string> {
-  const budget = options.budget ?? createVisualApiBudget(options.timeoutMs ?? 10000);
+  const budget = options.budget ?? createVisualApiBudget();
   const field = options.task === 'planner' ? 'plannerCalls' : 'visionCalls';
   if (budget[field] >= (field === 'plannerCalls' ? 1 : 3)) throw new Error(`Gemini ${options.task} call cap reached`);
   budget[field]++;
@@ -135,42 +214,73 @@ export async function requestGeminiJson(options: {
       if (/^gemini-3/.test(model)) config.thinkingConfig = { thinkingLevel: 'low' };
       else if (/^gemini-2\.5/.test(model)) config.thinkingConfig = { thinkingBudget: 0 };
       else delete config.thinkingConfig;
-      // The cap is resolved once so the abort signal and the reported cause are
-      // the same number. `remainingVisualMs` may throw (deadline) and that must
-      // never be reported as a network failure.
-      const capMs = remainingVisualMs(budget, options.timeoutMs ?? DEFAULT_VISUAL_CALL_TIMEOUT_MS);
-      let response: Response;
+      // The planner may stream for as long as the budget allows; up to one vision
+      // reserve is kept back so a slow plan never starves the relevance check.
+      // `timeoutMs` is an IDLE cap (no bytes at all), not a total-time cap, so a
+      // slow-but-working connection finishes instead of being cut at 10-15s.
+      const remaining = budget.deadline - Date.now();
+      // Keep room for vision, but never starve a small explicit budget.
+      const reserve = options.task === 'planner' ? Math.min(VISION_RESERVE_MS, Math.max(0, Math.floor(remaining / 2))) : 0;
+      if (remaining <= reserve + 500) throw new Error('Visual prefetch deadline exceeded; unresolved beats skipped');
+      const idleCapMs = Math.max(1000, Math.min(
+        options.timeoutMs ?? (options.task === 'planner' ? DEFAULT_VISUAL_CALL_TIMEOUT_MS : DEFAULT_VISION_CALL_TIMEOUT_MS),
+        remaining - reserve));
+      const controller = new AbortController();
+      let timedOut = false;
+      let idleTimer: ReturnType<typeof setTimeout> | undefined;
+      const armIdle = () => {
+        clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => {
+          timedOut = true;
+          controller.abort(new DOMException(`no data for ${Math.round(idleCapMs / 1000)}s`, 'TimeoutError'));
+        }, idleCapMs);
+      };
+      armIdle();
+      // Stop at the budget minus the vision reserve so a long plan cannot
+      // starve the relevance check.
+      const hardTimer = setTimeout(() => {
+        timedOut = true;
+        controller.abort(new DOMException('visual prefetch deadline reached', 'TimeoutError'));
+      }, Math.max(1, remaining - reserve - 250));
+      let status = 0; let text: string | undefined;
       try {
-        response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`, {
           method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
-          body: JSON.stringify({ ...options.body, generationConfig: config }), signal: AbortSignal.timeout(capMs),
+          body: JSON.stringify({ ...options.body, generationConfig: config }), signal: controller.signal,
         });
+        armIdle();
+        if (response.ok) {
+          // Streaming lets a slow model finish; a proxy that buffers SSE still
+          // returns application/json, which the non-streaming reader handles.
+          text = /text\/event-stream/i.test(response.headers.get('content-type') ?? '')
+            ? await readGeminiStream(response, armIdle)
+            : await readGeminiJson(response);
+        } else {
+          status = response.status;
+          await response.body?.cancel().catch(() => undefined);
+        }
       } catch (error) {
+        if (error instanceof GeminiPayloadError) throw error;
         // A network failure/timeout is a routing failure: nothing was billed
         // upstream, so refund the charged attempt and give the next model a
-        // chance while the shared wall deadline allows it. Previously one slow
-        // model aborted the whole chain and every clip showed 0 resolved images.
-        const detail = describeGeminiFetchFailure(error, capMs);
-        budget.lastFailure = `Gemini network unavailable or request timed out (${detail}; ${model}); photo skipped`;
+        // chance while the shared wall deadline allows it.
+        const detail = timedOut
+          ? `no response for ${Math.round(idleCapMs / 1000)}s`
+          : describeGeminiFetchFailure(error, idleCapMs);
+        budget.lastFailure = `Gemini network unavailable or request timed out (${options.task}; ${detail}; ${model}); photo skipped`;
         budget.chargedAttempts--;
         const hasNextModel = models.slice(models.indexOf(model) + 1).some((next) => !missingModels.has(next));
         const delay = Math.round(150 + Math.random() * 200);
-        if (!hasNextModel || Date.now() + delay >= budget.deadline) throw new Error(budget.lastFailure);
+        if (!hasNextModel || Date.now() + delay >= budget.deadline - reserve) throw new Error(budget.lastFailure);
         await new Promise((resolve) => setTimeout(resolve, delay));
         continue;
+      } finally {
+        clearTimeout(idleTimer);
+        clearTimeout(hardTimer);
       }
-      if (response.ok) {
-        const payload = await response.json() as { candidates?: Array<{ finishReason?: string; content?: { parts?: Array<{ text?: string; thought?: boolean }> } }> };
-        const answer = payload.candidates?.[0];
-        if (answer?.finishReason && answer.finishReason !== 'STOP') throw new Error(`Gemini incomplete output: ${answer.finishReason}`);
-        const text = answer?.content?.parts?.filter((part) => !part.thought).map((part) => part.text ?? '').join('') ?? '';
-        if (!text) throw new Error('Gemini returned no verdict/output');
-        outcome = 'ok'; return text;
-      }
-      const status = response.status;
+      if (text !== undefined) { outcome = 'ok'; return text; }
       const fallback = status === 404 || status === 429 || status >= 500;
       budget.lastFailure = `Gemini ${status === 404 ? 'model unavailable' : status === 429 ? 'quota/rate limit exhausted' : status >= 500 ? 'service unavailable' : 'key invalid or request rejected'} (HTTP ${status})`;
-      await response.body?.cancel().catch(() => undefined);
       if (status === 404 && !missingModels.has(model)) { missingModels.add(model); log.warn(`Gemini model ${model} returned 404; disabled for this process`); }
       if (!fallback) throw new Error(budget.lastFailure);
       // Refund only routing failures. Physical attempts are still logged, RPM still applies,

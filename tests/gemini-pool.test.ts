@@ -96,6 +96,51 @@ test('a hard network failure reports its real cause and how many models were tri
   } finally { globalThis.fetch = original; }
 });
 
+test('a slow-but-streaming model finishes instead of being cut off, and no-progress streams still time out', async () => {
+  const original = globalThis.fetch;
+  const urls: string[] = [];
+  globalThis.fetch = async (input, init) => {
+    urls.push(String(input));
+    assert.equal(new Headers(init?.headers).get('content-type'), 'application/json');
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        for (const text of ['{"beats":', '[{"id":1}]', '}']) {
+          await new Promise((resolve) => setTimeout(resolve, 60));
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text }] } }] })}\r\n\r\n`));
+        }
+        controller.enqueue(encoder.encode('data: {"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":""}]}}]}\r\n\r\n'));
+        controller.close();
+      },
+    });
+    return new Response(body, { headers: { 'content-type': 'text/event-stream' } });
+  };
+  try {
+    const budget = createVisualApiBudget(30_000);
+    // 150ms idle cap: every chunk resets it, so the 3 x 60ms stream succeeds.
+    const text = await requestGeminiJson({ keys: ['stream-key'], models: ['stream-fixture'], rpm: 1000, task: 'planner', timeoutMs: 150, body: {}, budget });
+    assert.equal(text, '{"beats":[{"id":1}]}');
+    assert.match(urls[0], /:streamGenerateContent\?alt=sse/);
+  } finally { globalThis.fetch = original; }
+
+  globalThis.fetch = async (_input, init) => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        init?.signal?.addEventListener('abort', () => controller.error(init.signal?.reason), { once: true });
+      },
+    });
+    return new Response(body, { headers: { 'content-type': 'text/event-stream' } });
+  };
+  try {
+    const budget = createVisualApiBudget(30_000);
+    await assert.rejects(
+      requestGeminiJson({ keys: ['stream-key'], models: ['idle-fixture'], rpm: 1000, task: 'vision', timeoutMs: 1200, body: {}, budget }),
+      /network unavailable or request timed out \(vision; no response for 1s; idle-fixture\)/,
+    );
+    assert.equal(budget.chargedAttempts, 0);
+  } finally { globalThis.fetch = original; }
+});
+
 test('model discovery uses paginated names and supportedGenerationMethods, not a memorized model', async () => {
   const { probeVisualGeminiModels } = await import('../lib/gemini-pool');
   const original = globalThis.fetch; const urls: string[] = [];

@@ -199,18 +199,20 @@ choice. A configured name is not proof your key/project has access. Completion u
 
 An uncached clip has one logical planner and up to three vision batches. The
 per-clip attempt budget is four charged attempts; 404/429/5xx and network
-failures are refunded so trying the next model does not exhaust that cap. The
-planner may use up to 15 seconds of the shared budget in one attempt (a long
-clip returns a large JSON plan); vision calls keep a 7-second cap. The network
-deadline is 25 seconds; local decode/face inference/frame preparation and disk
-writes can add time. **20–25 seconds is a target, not a measured Windows SLA.**
-Up to two persisted prefetch jobs run independently; render does not wait for all
-siblings.
+failures are refunded so trying the next model does not exhaust that cap.
+Responses are read as a stream, and the per-call timeout is an **idle cap**, not
+a total-time cap: the planner is cut off only when it sends nothing for 20
+seconds and vision after 10 seconds, while a slow-but-working connection may keep
+streaming. The whole prefetch has a 60-second budget with 15 seconds reserved for
+the vision relevance check after the plan arrives; local decode/face
+inference/frame preparation and disk writes can add time. Up to two persisted
+prefetch jobs run independently; render does not wait for all siblings.
 
-If the tile says `Visual prefetch unavailable`, the parenthetical now names the
-real cause, and the next chain model is still tried: `request timed out` means the
-model was too slow for the cap, `DNS lookup failed` means this machine cannot
-resolve `generativelanguage.googleapis.com`, `connection failed (ECONNRESET /
+If the tile says `Visual prefetch unavailable`, the parenthetical names the task
+and the real cause, and the next chain model is still tried: `no response for
+20s` means the planner went silent for longer than the idle cap (a very slow,
+throttled or blocked link), `DNS lookup failed` means this machine cannot resolve
+`generativelanguage.googleapis.com`, `connection failed (ECONNRESET /
 ECONNREFUSED)` means a firewall/ISP blocks it, and `TLS handshake failed` means a
 proxy or VPN is intercepting HTTPS. For the last two, fix the network/VPN first;
 when an HTTP(S) proxy is required, start Node with `--use-env-proxy` (or set
@@ -271,7 +273,7 @@ not proof of full uploaded-video transcription/AI behavior or live identity accu
 **Still requires the target Windows PC and real credentials:** whisper executable
 and VC++ runtime, QSV/NVENC driver/encoder smoke tests, a full upload→transcribe→AI
 selection→prefetch→render, real named-person/coreference review, actual model
-entitlement/quota recovery, long-clip fill rates, the 20–25-second prefetch target,
+entitlement/quota recovery, long-clip fill rates, the 60-second prefetch budget,
 and cancellation/restart while real native jobs run. Test those before production.
 
 If text is hidden, compare the pre-caption debug encode and check stacking, not card

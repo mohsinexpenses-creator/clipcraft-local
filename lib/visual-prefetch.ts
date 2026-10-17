@@ -5,7 +5,7 @@ import path from 'node:path';
 import { getClip, getClipRecordSync, getDatabase, getVideo, updateClipRecordSync } from './db';
 import { resolveVisualProviderSettings } from './app-settings';
 import { completeVisualJson } from './llm';
-import { createVisualApiBudget, type VisualApiBudget } from './gemini-pool';
+import { createVisualApiBudget, DEFAULT_VISUAL_BUDGET_MS, type VisualApiBudget } from './gemini-pool';
 import { planSentenceVisuals } from './visual-planner';
 import { mapVisualMomentToOutputTimeline, isNamedPersonKeywordPop } from './contextual-visuals';
 import { pruneVisualCacheDirectory, resolveVisualOverlaysForClip } from './visual-providers';
@@ -44,7 +44,7 @@ function safeWrite(file: string, data: unknown) {
 /** Called only by a per-clip queue job. No whole-video await, no render-time network. */
 export async function runVisualPrefetch(clipId: string, options: { cacheDir?: string; timeoutMs?: number } = {}): Promise<{ cancelled: boolean; stats: VisualPrefetchStats }> {
   const started = performance.now();
-  const budget: VisualApiBudget = createVisualApiBudget(options.timeoutMs ?? 25000);
+  const budget: VisualApiBudget = createVisualApiBudget(options.timeoutMs ?? DEFAULT_VISUAL_BUDGET_MS);
   const clip = await getClip(clipId);
   const stats = (): VisualPrefetchStats => ({ geminiCalls: [...budget.geminiCalls], plannerCalls: budget.plannerCalls, visionCalls: budget.visionCalls, attempts: budget.attempts, geminiMs: Math.round(budget.geminiMs), cacheHits: budget.cacheHits, prefetchMs: Math.round(performance.now() - started) });
   if (!clip || clip.cancelling || clip.error === 'Cancelled by user.') return { cancelled: true, stats: stats() };
