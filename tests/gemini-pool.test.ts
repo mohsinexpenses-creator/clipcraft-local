@@ -31,13 +31,17 @@ test('429/5xx retry uses backoff, rotates keys, and fallback routing is refunded
     assert.deepEqual(budget.geminiCalls.map(({ task, attempts, outcome }) => ({ task, attempts, outcome })), [{ task: 'planner', attempts: 3, outcome: 'ok' }]);
     assert.equal(budget.chargedAttempts, 1);
     assert.notEqual(seen[0], seen[1]);
+    // One corrective planner retry after an invalid plan is allowed, then capped.
+    assert.equal(await requestGeminiJson(options), '{}');
+    assert.equal(budget.attempts, 4);
+    assert.equal(budget.chargedAttempts, 2);
     await assert.rejects(requestGeminiJson(options), /planner call cap/);
     await requestGeminiJson({ ...options, task: 'vision' });
-    assert.equal(budget.attempts, 4);
-    await requestGeminiJson({ ...options, task: 'vision' });
+    assert.equal(budget.attempts, 5);
     await requestGeminiJson({ ...options, task: 'vision' });
     assert.equal(budget.chargedAttempts, 4);
     assert.equal(budget.attempts, 6);
+    await assert.rejects(requestGeminiJson({ ...options, task: 'vision' }), /charged attempt cap/);
     await assert.rejects(requestGeminiJson({ ...options, task: 'vision' }), /vision call cap/);
   } finally { globalThis.fetch = original; }
 });

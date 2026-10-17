@@ -61,6 +61,49 @@ test('cancelled/deleted prefetch cannot resurrect a render handoff', async (t) =
   assert.equal(getJob('clip:cancel-clip'), null);
 });
 
+test('an invalid planner answer is retried once and never cached, so a restart asks Gemini again', async (t) => {
+  createTemporaryDatabase(t);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'prefetch-invalid-'));
+  const original = globalThis.fetch;
+  const id = randomUUID();
+  await saveVideo(video(id));
+  const record = { ...clip(`invalid-${id}`, id), autoVisuals: true };
+  await saveClip(record);
+  await saveSettingsSection('ai', { geminiApiKeys: [`gemini-invalid-${id}`], geminiRequestsPerMinute: 1000 });
+  let plannerCalls = 0;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (!url.includes('generativelanguage.googleapis.com')) throw new Error(`Unexpected request ${url}`);
+    plannerCalls += 1;
+    assert.ok(JSON.parse(String(init?.body)).systemInstruction, 'only the planner should run');
+    return Response.json({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: JSON.stringify({ beats: [{
+      entities: [], primary_entity: null, segmentIds: [99], start: 0, end: 4,
+      sentence_meaning_en: 'Unmatched beat', visual_subject_en: 'Rooftop solar panels',
+      queries_en: ['rooftop solar installation', 'sunlight energy', 'renewable energy panels'],
+      negative_cues: [], kind: 'literal', visualizable_score: 9,
+    }] }) }] } }] });
+  };
+  const debugFile = path.resolve('data/visual-debug', `${path.basename(record._id)}.json`);
+  try {
+    const first = await runVisualPrefetch(record._id, { cacheDir: dir });
+    assert.equal(plannerCalls, 2, 'one initial call plus one bounded retry');
+    const saved = (await getClip(record._id))!;
+    assert.match(saved.visualsSkippedReason ?? '', /Invalid visual plan/);
+    assert.equal(first.cancelled, false);
+    assert.deepEqual(fs.readdirSync(dir).filter((name) => name.endsWith('.json')), [], 'a failed parse is not cached');
+    const debug = JSON.parse(fs.readFileSync(debugFile, 'utf8')) as { planner?: { raw?: string; droppedBeats?: unknown[] } };
+    assert.ok(debug.planner?.raw?.includes('segmentIds'), 'the raw model answer is written to the debug file');
+    assert.equal(debug.planner?.droppedBeats?.length, 1);
+
+    await runVisualPrefetch(record._id, { cacheDir: dir });
+    assert.equal(plannerCalls, 4, 'the second run must not replay a cached failure');
+  } finally {
+    globalThis.fetch = original;
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(debugFile, { force: true });
+  }
+});
+
 test('a transient network failure keeps already-resolved frames instead of downgrading the clip to zero', async (t) => {
   createTemporaryDatabase(t);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'prefetch-preserve-'));
@@ -105,7 +148,7 @@ test('uncached Roman Urdu clip makes one planner + one vision call, fills all th
   setVisualCacheDirForTests(path.join(dir, 'images')); resetVisualProviderStateForTests();
   let planner = 0; let vision = 0;
   const queries = ['rooftop solar panels', 'dry farmland soil', 'children reading books'];
-  const subjects = ['Workers installing rooftop solar panels', 'Dry farmland with cracked soil', 'Children reading books in school'];
+  const subjects = ['Workers installing solar panels', 'Dry farmland cracked soil', 'Children reading books'];
   globalThis.fetch = async (input, init) => {
     const url = String(input);
     if (url.includes('generativelanguage.googleapis.com')) {

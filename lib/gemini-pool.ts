@@ -24,6 +24,12 @@ export const VISION_RESERVE_MS = 20_000;
 /** Idle caps: abort only when the model sends NOTHING for this long. */
 export const DEFAULT_VISUAL_CALL_TIMEOUT_MS = 20_000;
 export const DEFAULT_VISION_CALL_TIMEOUT_MS = 10_000;
+/**
+ * One planning call plus at most one corrective retry when the answer was
+ * invalid or mostly dropped. Still bounded by the charged-attempt cap (4) and
+ * the wall deadline below.
+ */
+export const MAX_PLANNER_CALLS = 2;
 
 export function createVisualApiBudget(timeoutMs = DEFAULT_VISUAL_BUDGET_MS): VisualApiBudget {
   return { deadline: Date.now() + timeoutMs, plannerCalls: 0, visionCalls: 0, attempts: 0, chargedAttempts: 0, geminiMs: 0, cacheHits: 0, geminiCalls: [] };
@@ -197,7 +203,7 @@ export async function requestGeminiJson(options: {
 }): Promise<string> {
   const budget = options.budget ?? createVisualApiBudget();
   const field = options.task === 'planner' ? 'plannerCalls' : 'visionCalls';
-  if (budget[field] >= (field === 'plannerCalls' ? 1 : 3)) throw new Error(`Gemini ${options.task} call cap reached`);
+  if (budget[field] >= (field === 'plannerCalls' ? MAX_PLANNER_CALLS : 3)) throw new Error(`Gemini ${options.task} call cap reached`);
   budget[field]++;
   const pool = options.pool ?? sharedPool;
   const started = Date.now();

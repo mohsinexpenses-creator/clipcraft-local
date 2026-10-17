@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createTemporaryDatabase } from './sqlite-test-helpers';
 import { chooseEntity, resolvePublicEntity, inspectVisualFaces, passesVisualFacePolicy } from '../lib/entity-visuals';
-import { planSentenceVisuals, selectVisualBeats, parseVisualBeats, type VisualBeat } from '../lib/visual-planner';
+import { planSentenceVisuals, selectVisualBeats, parseVisualBeats, parseVisualBeatsDetailed, normalizeVisualEntity, type VisualBeat, type VisualPlanValidation } from '../lib/visual-planner';
 import { scoreVisualCandidate, resolveVisualOverlaysForClip } from '../lib/visual-providers';
 import { makeSamplePngBuffer } from './visual-fixtures';
 import type { VisualEntity } from '../lib/types';
@@ -92,9 +92,104 @@ test('pipeline retains generic numbers/words but defers ALL photos to the sole s
 });
 
 
-test('planner cannot inject a QID or non-English identity description as trusted evidence', () => {
+test('planner cannot inject a QID or trusted identity fields through extra entity keys', () => {
+  const inferred = normalizeVisualEntity({ ...kaia, qid: 'Q22673974', commonsCategory: 'Kaia Gerber' });
+  assert.ok(inferred.entity);
+  assert.equal(inferred.entity.qid, undefined, 'a model-supplied QID is ignored, never trusted');
+  assert.equal(inferred.entity.commonsCategory, undefined);
+  // Unicode descriptions are accepted; only empty/whitespace is rejected.
+  assert.equal(normalizeVisualEntity({ ...kaia, description_en: 'actrice française' }).entity?.description_en, 'actrice française');
+  assert.match(normalizeVisualEntity({ ...kaia, description_en: '   ' }).entity?.description_en ?? 'missing', /^$/);
+});
+
+test('Beyoncé, curly quotes and em/en dashes pass entity and plan validation', () => {
+  const segments = [{ id: 1, start: 0, end: 4, text: 'Beyoncé discusses her album.' }];
+  const entity = { name: 'Beyoncé', type: 'person', description_en: 'Beyoncé\u2019s album \u2014 Renaissance', public_figure: true };
+  const parsed = parseVisualBeats(JSON.stringify({ beats: [{
+    ...beat(0), entities: [entity], primary_entity: 'Beyoncé',
+    sentence_meaning_en: 'Beyoncé discusses her album \u2014 Renaissance.',
+    visual_subject_en: 'Beyoncé portrait', queries_en: ['Beyoncé album cover', 'stage lights concert', 'pop superstar portrait'],
+  }] }), segments);
+  assert.equal(parsed.length, 1);
+  assert.equal(parsed[0].entities[0].name, 'Beyoncé');
+  assert.equal(parsed[0].entities[0].description_en, "Beyoncé's album - Renaissance");
+  assert.equal(parsed[0].primary_entity, 'Beyoncé');
+  assert.equal(parsed[0].sentence_meaning_en, 'Beyoncé discusses her album - Renaissance.');
+  assert.deepEqual(parsed[0].queries_en, ['Beyoncé album cover', 'stage lights concert', 'pop superstar portrait']);
+});
+
+test('one malformed beat is dropped with its reason while valid beats survive', () => {
+  const segments = [{ id: 1, start: 0, end: 4, text: 'Kaia Gerber discusses her book club.' }, { id: 2, start: 6, end: 10, text: 'She reads a lot.' }];
+  const result = parseVisualBeatsDetailed(JSON.stringify({ beats: [beat(0), { ...beat(1), segmentIds: [99] }, { ...beat(1), start: 99 }] }), segments);
+  assert.equal(result.total, 3);
+  assert.equal(result.beats.length, 1);
+  assert.equal(result.dropped.length, 2);
+  assert.match(result.dropped[0].reasons.join(' '), /Unknown visual segment ID/);
+  assert.match(result.dropped[1].reasons.join(' '), /Visual times do not match segment IDs/);
+});
+
+test('a plan with no valid beat still throws', () => {
   const segments = [{ id: 1, start: 0, end: 4, text: 'Kaia Gerber discusses her book club.' }];
-  for (const entity of [{ ...kaia, qid: 'Q22673974' }, { ...kaia, description_en: 'actrice française' }]) {
-    assert.throws(() => parseVisualBeats(JSON.stringify({ beats: [{ ...beat(0), entities: [entity] }] }), segments), /Invalid visual entities/);
-  }
+  assert.throws(() => parseVisualBeats(JSON.stringify({ beats: [{ ...beat(0), segmentIds: [99] }] }), segments), /no valid beats/);
+  assert.throws(() => parseVisualBeats('not json', segments), /Invalid visual plan/);
+});
+
+test('missing description_en/public_figure default instead of dropping the entity', () => {
+  const segments = [{ id: 1, start: 0, end: 4, text: 'Kaia Gerber discusses her book club.' }];
+  const [parsed] = parseVisualBeats(JSON.stringify({ beats: [{
+    ...beat(0), entities: [{ name: 'Kaia Gerber', type: 'person' }, { name: '', type: 'person' }, { name: 'Bad', type: 'alien' }],
+    primary_entity: 'Kaia Gerber',
+  }] }), segments);
+  assert.deepEqual(parsed.entities, [{ name: 'Kaia Gerber', type: 'person', description_en: '', public_figure: false }]);
+  assert.equal(parsed.primary_entity, 'Kaia Gerber');
+});
+
+test('a dropped primary entity becomes null without losing the beat', () => {
+  const segments = [{ id: 1, start: 0, end: 4, text: 'Kaia Gerber discusses her book club.' }];
+  const [parsed] = parseVisualBeats(JSON.stringify({ beats: [{
+    ...beat(0), entities: [{ name: '', type: 'person', description_en: '', public_figure: true }], primary_entity: 'Ghost Person',
+  }] }), segments);
+  assert.equal(parsed.primary_entity, null);
+  assert.deepEqual(parsed.entities, []);
+});
+
+test('invalid plans are retried once with the validation errors, and only a valid plan is cached', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'visual-retry-'));
+  const segments = [{ id: 1, start: 0, end: 4, text: 'Kaia Gerber discusses her book club.' }];
+  const invalid = JSON.stringify({ beats: [{ ...beat(0), segmentIds: [99] }] });
+  let calls = 0; const validations: VisualPlanValidation[] = [];
+  try {
+    const result = await planSentenceVisuals({ transcript: { text: '', words: [], segments }, clipStart: 0, clipEnd: 6, maxVisualMoments: 12, cacheDir: dir,
+      onPlanValidation: (validation) => { validations.push(validation); },
+      complete: async (request) => {
+        calls += 1;
+        if (calls === 1) return { text: invalid };
+        assert.match(request.prompt, /previous_validation_errors/);
+        assert.match(request.prompt, /Unknown visual segment ID/);
+        return { text: JSON.stringify({ beats: [beat(0)] }) };
+      } });
+    assert.equal(calls, 2);
+    assert.equal(result.length, 1);
+    assert.equal(validations.at(-1)?.attempts, 2);
+    assert.equal(validations.at(-1)?.retried, true);
+    assert.equal(validations.at(-1)?.parsed, 1);
+    assert.ok(fs.readdirSync(dir).some((name) => name.endsWith('.json')), 'a valid retried plan is cached');
+    // The cached plan replays without another model call.
+    await planSentenceVisuals({ transcript: { text: '', words: [], segments }, clipStart: 0, clipEnd: 6, maxVisualMoments: 12, cacheDir: dir,
+      complete: async () => { throw new Error('cache replay must not call the model'); } });
+    assert.equal(calls, 2);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a plan that stays invalid after the retry throws and is never cached', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'visual-invalid-'));
+  const segments = [{ id: 1, start: 0, end: 4, text: 'Kaia Gerber discusses her book club.' }];
+  let calls = 0;
+  try {
+    await assert.rejects(planSentenceVisuals({ transcript: { text: '', words: [], segments }, clipStart: 0, clipEnd: 6, maxVisualMoments: 12, cacheDir: dir,
+      complete: async () => { calls += 1; return { text: JSON.stringify({ beats: [{ ...beat(0), segmentIds: [99] }] }) }; },
+    }), /no valid beats/);
+    assert.equal(calls, 2, 'one initial call plus one bounded retry');
+    assert.equal(fs.readdirSync(dir).filter((name) => name.endsWith('.json')).length, 0, 'failed parses are not cached');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

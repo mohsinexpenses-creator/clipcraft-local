@@ -6,7 +6,7 @@ import { getClip, getClipRecordSync, getDatabase, getVideo, updateClipRecordSync
 import { resolveVisualProviderSettings } from './app-settings';
 import { completeVisualJson } from './llm';
 import { createVisualApiBudget, DEFAULT_VISUAL_BUDGET_MS, type VisualApiBudget } from './gemini-pool';
-import { planSentenceVisuals } from './visual-planner';
+import { planSentenceVisuals, type VisualPlanValidation } from './visual-planner';
 import { mapVisualMomentToOutputTimeline, isNamedPersonKeywordPop } from './contextual-visuals';
 import { pruneVisualCacheDirectory, resolveVisualOverlaysForClip } from './visual-providers';
 import { resolveHookTiming } from '../worker/hook-timing';
@@ -18,7 +18,7 @@ export { hashVisualTranscript } from './visual-transcript';
 
  function visualPrefetchFingerprint(clip: ClipRecord, transcript: TranscriptData, settings: Partial<RenderDefaults>): string {
   return crypto.createHash('sha256').update(JSON.stringify({
-    version: 6, transcript: hashVisualTranscript(transcript, clip.start, clip.end), start: clip.start, end: clip.end,
+    version: 7, transcript: hashVisualTranscript(transcript, clip.start, clip.end), start: clip.start, end: clip.end,
     max: settings.maxVisualMoments, score: settings.visualizableScoreThreshold ?? 6, vision: settings.visualVisionScoreThreshold ?? 7,
     strictness: settings.visualRelevanceStrictness ?? 'strict', providers: settings.visualProviders, priority: settings.visualProviderPriority,
     entities: clip.aiAnalysis?.visualMoments?.filter((ov) => ['person', 'place', 'named_event'].includes(ov.category)),
@@ -35,6 +35,8 @@ function remap(overlays: ClipVisualOverlay[], clip: ClipRecord): ClipVisualOverl
 }
 
 interface PrefetchCache { overlays: ClipVisualOverlay[]; reason?: string; debug?: unknown }
+/** Old cached plans with an unrecoverable parse result must never replay. */
+const isInvalidPlanReason = (reason?: string): boolean => Boolean(reason && /invalid visual plan|no valid beats/i.test(reason));
 function safeWrite(file: string, data: unknown) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temp = `${file}.${crypto.randomUUID()}.tmp`;
@@ -59,6 +61,8 @@ export async function runVisualPrefetch(clipId: string, options: { cacheDir?: st
   let cacheFile: string | undefined;
   let debug: unknown;
   let wholeCacheHit = false;
+  let plannerValidation: VisualPlanValidation | undefined;
+  let planFailed = false;
   const debugFile = path.resolve('data/visual-debug', `${path.basename(clipId)}.json`);
   try {
     if (clip.autoVisuals === false || !render.autoVisuals) {
@@ -71,7 +75,7 @@ export async function runVisualPrefetch(clipId: string, options: { cacheDir?: st
       cacheFile = path.join(options.cacheDir ?? path.resolve('data/visual-prefetch'), `${crypto.createHash('sha256').update(JSON.stringify([fingerprint, providers.geminiApiKeys, providers.pexelsApiKey, providers.pixabayApiKey, providers.unsplashAccessKey, providers.geminiRequestsPerMinute])).digest('hex')}.json`);
       let cached: PrefetchCache | undefined;
       try { cached = JSON.parse(fs.readFileSync(cacheFile, 'utf8')) as PrefetchCache; } catch { /* first attempt */ }
-      if (cached && !cached.reason?.startsWith('Visual prefetch unavailable') && !cached.overlays?.some((ov) => ov.status === 'skipped' && /unavailable|quota|network|deadline|key|HTTP/i.test(ov.skipReason ?? '')) && Array.isArray(cached.overlays)) {
+      if (cached && !cached.reason?.startsWith('Visual prefetch unavailable') && !isInvalidPlanReason(cached.reason) && !cached.overlays?.some((ov) => ov.status === 'skipped' && /unavailable|quota|network|deadline|key|HTTP/i.test(ov.skipReason ?? '')) && Array.isArray(cached.overlays)) {
         budget.cacheHits++;
         wholeCacheHit = true;
         overlays = cached.overlays.map((ov) => ov.status === 'resolved' && ov.kind !== 'keyword-pop' && ov.kind !== 'zoom-beat' && (!ov.localFilePath || !fs.existsSync(ov.localFilePath))
@@ -84,6 +88,11 @@ export async function runVisualPrefetch(clipId: string, options: { cacheDir?: st
             cacheDir: options.cacheDir ? path.join(options.cacheDir, 'plans') : undefined,
             maxVisualMoments: render.maxVisualMoments, threshold: render.visualizableScoreThreshold ?? 6, animation: render.visualAnimation,
             complete: (request) => completeVisualJson(request, { keys: providers.geminiApiKeys, rpm: providers.geminiRequestsPerMinute, budget }),
+            onPlanValidation: (validation) => {
+              plannerValidation = validation;
+              // "N beats parsed, M dropped (reasons)" makes the failing field visible.
+              log.detail(`${clipId}: ${validation.reason}${validation.retried ? ` (after ${validation.attempts} attempt(s))` : ''}`);
+            },
             hookTiming: resolveHookTiming({ enabled: clip.hookDuration > 0, clipStart: clip.start, clipEnd: clip.end, fallbackDuration: clip.hookDuration,
               hookTimestampStart: clip.aiAnalysis?.hook_line_analysis.hook_timestamp.start, hookTimestampEnd: clip.aiAnalysis?.hook_line_analysis.hook_timestamp.end }),
           });
@@ -96,12 +105,14 @@ export async function runVisualPrefetch(clipId: string, options: { cacheDir?: st
         overlays = await resolveVisualOverlaysForClip(overlays, { ...providers, renderSettings: render, clipId, videoId: clip.videoId,
           budget, cacheNamespace: fingerprint });
         if (!overlays.some((ov) => ov.kind !== 'keyword-pop' && ov.kind !== 'zoom-beat')) reason = 'No sufficiently photographable sentence beats above the score threshold';
+        if (plannerValidation?.failed) planFailed = true;
         try { debug = JSON.parse(fs.readFileSync(debugFile, 'utf8')); } catch { /* empty planner */ }
       }
       overlays = remap(overlays, clip);
     }
   } catch (error) {
     reason = `Visual prefetch unavailable: ${error instanceof Error ? error.message : 'unknown network/API error'}`;
+    if (isInvalidPlanReason(reason)) planFailed = true;
     log.warn(`${clipId}: ${reason}`);
     // A transient API/network failure must not erase frames that are already
     // verified on disk: render revalidates transcript/settings hashes before
@@ -119,11 +130,15 @@ export async function runVisualPrefetch(clipId: string, options: { cacheDir?: st
   reason = [...new Set([reason, ...reasons].filter(Boolean))].join('; ') || undefined;
   const timing = stats();
   if (!debug) debug = { clipId, videoId: clip.videoId, beats: [], reason };
-  safeWrite(debugFile, { ...(debug as object), reason, stats: timing });
+  // The raw model answer and drop reasons land here for every parse failure or
+  // partial drop, next to the beat-level vision decisions.
+  safeWrite(debugFile, { ...(debug as object), ...(plannerValidation ? { planner: plannerValidation } : {}), reason, stats: timing });
   // One line per clip so the worker log shows where the budget went instead of
   // only the final fail-closed reason.
   log.detail(`${clipId}: ${resolvedCount}/${overlays.filter((ov) => ov.kind !== 'keyword-pop' && ov.kind !== 'zoom-beat' && ov.status !== 'removed').length} visual(s) resolved in ${timing.prefetchMs}ms (gemini ${timing.geminiMs}ms, ${timing.attempts} attempt(s))${reason ? ` · ${reason.split('; ')[0].slice(0, 140)}` : ''}`);
-  if (cacheFile && !wholeCacheHit && !reason?.startsWith('Visual prefetch unavailable') && !overlays.some((ov) => ov.status === 'skipped' && /unavailable|quota|network|deadline|key|HTTP/i.test(ov.skipReason ?? ''))) safeWrite(cacheFile, { overlays, reason, debug } satisfies PrefetchCache);
+  // A parse failure that resolved nothing must not be cached, or a restart would
+  // replay the same empty result instead of asking Gemini again.
+  if (cacheFile && !wholeCacheHit && !planFailed && !reason?.startsWith('Visual prefetch unavailable') && !overlays.some((ov) => ov.status === 'skipped' && /unavailable|quota|network|deadline|key|HTTP/i.test(ov.skipReason ?? ''))) safeWrite(cacheFile, { overlays, reason, debug } satisfies PrefetchCache);
   // Never resurrect a deleted/cancelled clip or overwrite edits/a manual render.
   let cancelled = false;
   const db = getDatabase();

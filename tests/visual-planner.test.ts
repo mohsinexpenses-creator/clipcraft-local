@@ -12,9 +12,9 @@ const transcript: TranscriptData = { text: '', words: [], segments: [
   { id: 9, start: 110.8, end: 114, text: 'खेतों में पानी की कमी है।' },
 ] };
 const beats: VisualBeat[] = [
-  { entities: [], primary_entity: null, segmentIds: [1], start: 100, end: 104, sentence_meaning_en: 'Power is unavailable, so we are installing rooftop solar panels.', visual_subject_en: 'Workers installing rooftop solar panels', queries_en: ['rooftop solar installation', 'sunlight energy independence', 'renewable energy panels'], negative_cues: ['nighttime', 'power station fire'], kind: 'literal', visualizable_score: 9 },
+  { entities: [], primary_entity: null, segmentIds: [1], start: 100, end: 104, sentence_meaning_en: 'Power is unavailable, so we are installing rooftop solar panels.', visual_subject_en: 'Workers installing solar panels', queries_en: ['rooftop solar installation', 'sunlight energy independence', 'renewable energy panels'], negative_cues: ['nighttime', 'power station fire'], kind: 'literal', visualizable_score: 9 },
   { entities: [], primary_entity: null, segmentIds: [2], start: 105.4, end: 109, sentence_meaning_en: 'This is difficult to understand.', visual_subject_en: 'Abstract understanding', queries_en: ['puzzled person thinking', 'complex tangled thread', 'deep thoughtful reflection'], negative_cues: [], kind: 'metaphor', visualizable_score: 3 },
-  { entities: [], primary_entity: null, segmentIds: [3], start: 110.8, end: 114, sentence_meaning_en: 'The fields are short of water.', visual_subject_en: 'Dry fields with cracked soil', queries_en: ['dry farmland soil', 'empty water bucket', 'agricultural drought field'], negative_cues: ['lush green crops', 'flooding'], kind: 'literal', visualizable_score: 9 },
+  { entities: [], primary_entity: null, segmentIds: [3], start: 110.8, end: 114, sentence_meaning_en: 'The fields are short of water.', visual_subject_en: 'Dry cracked soil', queries_en: ['dry farmland soil', 'empty water bucket', 'agricultural drought field'], negative_cues: ['lush green crops', 'flooding'], kind: 'literal', visualizable_score: 9 },
 ];
 
 test('Roman Urdu, Urdu and Hindi keep segment IDs/times without quote-string matching; English queries and cache contract', async () => {
