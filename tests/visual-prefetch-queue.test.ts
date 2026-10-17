@@ -12,7 +12,7 @@ import { processVisualPrefetchJob } from '../lib/pipeline';
 import { runVisualPrefetch } from '../lib/visual-prefetch';
 import { setVisualCacheDirForTests, resetVisualProviderStateForTests } from '../lib/visual-providers';
 import { makeSamplePngBuffer } from './visual-fixtures';
-import type { ClipRecord, VideoRecord, VisualPrefetchJobData } from '../lib/types';
+import type { ClipRecord, ClipVisualOverlay, VideoRecord, VisualPrefetchJobData } from '../lib/types';
 
 function video(id: string, createdAt = '2026-10-16T00:00:00.000Z'): VideoRecord {
   return { _id: id, fileName: 'source.mp4', originalName: 'source.mp4', filePath: '/source.mp4', width: 1920, height: 1080, duration: 30, fileSize: 1,
@@ -59,6 +59,37 @@ test('cancelled/deleted prefetch cannot resurrect a render handoff', async (t) =
   current.cancelling = true; current.status = 'failed'; current.error = 'Cancelled by user.'; await updateClip(current);
   await processVisualPrefetchJob(job.payload as VisualPrefetchJobData);
   assert.equal(getJob('clip:cancel-clip'), null);
+});
+
+test('a transient network failure keeps already-resolved frames instead of downgrading the clip to zero', async (t) => {
+  createTemporaryDatabase(t);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'prefetch-preserve-'));
+  const original = globalThis.fetch;
+  const frame = path.join(dir, 'verified.fullscreen-v1.jpg');
+  fs.writeFileSync(frame, makeSamplePngBuffer());
+  const resolved: ClipVisualOverlay = {
+    id: 'sentence-1-kept', quote: 'Bijli nahi aa rahi', sourceStart: 1, sourceEnd: 4,
+    clipRelativeStart: 1, clipRelativeEnd: 4, displayDuration: 3,
+    outputWindows: [{ segment: 'main', start: 1, end: 4 }], category: 'situation',
+    entityName: '', visualIntent: 'Rooftop solar panels', emotionalPolarity: 'neutral',
+    searchQueries: ['rooftop solar panels'], negativeCues: [], confidence: 0.9,
+    animation: 'subtle-zoom', placement: 'main', framing: 'illustrative', kind: 'photo-card',
+    status: 'resolved', localFilePath: frame, mediaUrl: '/api/media/visual-cache/verified.fullscreen-v1.jpg',
+  };
+  const id = randomUUID();
+  await saveVideo(video(id));
+  const record = { ...clip(`preserve-${id}`, id), autoVisuals: true, visualOverlays: [resolved] };
+  await saveClip(record);
+  await saveSettingsSection('ai', { geminiApiKeys: [`gemini-preserve-${id}`], geminiRequestsPerMinute: 1000 });
+  globalThis.fetch = async () => { throw new TypeError('fetch failed'); };
+  try {
+    await runVisualPrefetch(record._id, { cacheDir: path.join(dir, 'plans') });
+    const saved = (await getClip(record._id))!;
+    assert.equal(saved.visualOverlays?.[0]?.status, 'resolved', 'verified frame survives a failed refresh');
+    assert.equal(saved.visualOverlays?.[0]?.localFilePath, frame);
+    assert.match(saved.visualsSkippedReason ?? '', /Visual prefetch unavailable/);
+    assert.doesNotMatch(saved.visualOverlays?.[0]?.skipReason ?? '', /Visual prefetch unavailable/);
+  } finally { globalThis.fetch = original; fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('uncached Roman Urdu clip makes one planner + one vision call, fills all three synthetic buckets; replay uses zero API requests', async (t) => {

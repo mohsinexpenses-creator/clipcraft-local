@@ -58,6 +58,44 @@ test('404 falls through without charging budget and a missing model is not reque
   } finally { globalThis.fetch = original; }
 });
 
+test('a timed-out model falls through to the next chain model instead of aborting every visual', async () => {
+  const original = globalThis.fetch;
+  const urls: string[] = [];
+  globalThis.fetch = async (input) => {
+    urls.push(String(input));
+    if (urls.length === 1) throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+    return Response.json({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: '{}' }] } }] });
+  };
+  try {
+    const budget = createVisualApiBudget(30_000);
+    const options = { keys: ['network-test-key'], models: ['slow-fixture', 'working-fixture'], rpm: 1000, task: 'planner' as const, body: {}, budget };
+    assert.equal(await requestGeminiJson(options), '{}');
+    assert.equal(budget.attempts, 2);
+    assert.equal(budget.chargedAttempts, 1, 'a network failure is refunded like other routing failures');
+    assert.match(urls[0], /slow-fixture/);
+    assert.match(urls[1], /working-fixture/);
+    assert.deepEqual(budget.geminiCalls.map(({ task, attempts, outcome }) => ({ task, attempts, outcome })), [{ task: 'planner', attempts: 2, outcome: 'ok' }]);
+  } finally { globalThis.fetch = original; }
+});
+
+test('a hard network failure reports its real cause and how many models were tried', async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => {
+    const cause = Object.assign(new Error('getaddrinfo ENOTFOUND generativelanguage.googleapis.com'), { code: 'ENOTFOUND' });
+    throw Object.assign(new TypeError('fetch failed'), { cause });
+  };
+  try {
+    const budget = createVisualApiBudget(30_000);
+    await assert.rejects(
+      requestGeminiJson({ keys: ['network-test-key'], models: ['offline-a', 'offline-b'], rpm: 1000, task: 'planner', body: {}, budget }),
+      (error: Error) => /network unavailable/i.test(error.message) && /ENOTFOUND/.test(error.message)
+        && /offline-b/.test(error.message) && /internet\/VPN\/DNS/.test(error.message),
+    );
+    assert.equal(budget.attempts, 2, 'the whole chain is tried before giving up');
+    assert.equal(budget.chargedAttempts, 0);
+  } finally { globalThis.fetch = original; }
+});
+
 test('model discovery uses paginated names and supportedGenerationMethods, not a memorized model', async () => {
   const { probeVisualGeminiModels } = await import('../lib/gemini-pool');
   const original = globalThis.fetch; const urls: string[] = [];

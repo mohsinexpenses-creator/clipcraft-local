@@ -198,11 +198,26 @@ choice. A configured name is not proof your key/project has access. Completion u
   in logs/issues. Startup cannot certify account entitlement without a live key.
 
 An uncached clip has one logical planner and up to three vision batches. The
-per-clip attempt budget is four charged attempts; 404/429/5xx fallback attempts are
-refunded so trying the next model does not exhaust that cap. The network deadline
-is 25 seconds; local decode/face inference/frame preparation and disk writes can
-add time. **20–25 seconds is a target, not a measured Windows SLA.** Up to two
-persisted prefetch jobs run independently; render does not wait for all siblings.
+per-clip attempt budget is four charged attempts; 404/429/5xx and network
+failures are refunded so trying the next model does not exhaust that cap. The
+planner may use up to 15 seconds of the shared budget in one attempt (a long
+clip returns a large JSON plan); vision calls keep a 7-second cap. The network
+deadline is 25 seconds; local decode/face inference/frame preparation and disk
+writes can add time. **20–25 seconds is a target, not a measured Windows SLA.**
+Up to two persisted prefetch jobs run independently; render does not wait for all
+siblings.
+
+If the tile says `Visual prefetch unavailable`, the parenthetical now names the
+real cause, and the next chain model is still tried: `request timed out` means the
+model was too slow for the cap, `DNS lookup failed` means this machine cannot
+resolve `generativelanguage.googleapis.com`, `connection failed (ECONNRESET /
+ECONNREFUSED)` means a firewall/ISP blocks it, and `TLS handshake failed` means a
+proxy or VPN is intercepting HTTPS. For the last two, fix the network/VPN first;
+when an HTTP(S) proxy is required, start Node with `--use-env-proxy` (or set
+`NODE_OPTIONS=--use-env-proxy`) so Node's `fetch` honours `HTTPS_PROXY` /
+`NO_PROXY`, and import the proxy's CA with `NODE_EXTRA_CA_CERTS` if TLS is
+intercepted. Use **Settings → AI providers → Test** to confirm the key and host
+from this machine before re-queuing visuals.
 
 Failed prefetches are not cached. Legacy cached reasons starting “Visual prefetch
 unavailable” are ignored. Timed-transcript/settings hashes key whole-clip caches;

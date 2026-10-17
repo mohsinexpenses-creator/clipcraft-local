@@ -539,7 +539,10 @@ export async function completeVisualJson(
     keys: options?.keys ?? settings!.ai.geminiApiKeys,
     rpm: options?.rpm ?? settings?.ai.geminiRequestsPerMinute ?? 10,
     budget: options?.budget,
-    task: 'planner', timeoutMs: 7000,
+    // The planner returns one large JSON plan for the whole clip. 7s was not
+    // enough for long clips on real connections, so every prefetch aborted and
+    // reported "network unavailable"; the per-clip budget (25s) still bounds it.
+    task: 'planner', timeoutMs: 15_000,
     body: {
       systemInstruction: { parts: [{ text: request.system ?? '' }] },
       contents: [{ role: 'user', parts: [{ text: request.prompt }] }],

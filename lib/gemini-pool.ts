@@ -23,6 +23,32 @@ export function remainingVisualMs(budget?: VisualApiBudget, cap = 7000): number 
   return Math.max(1, Math.min(cap, remaining));
 }
 
+/** Per-attempt cap for visual planning/vision calls that do not pass their own. */
+export const DEFAULT_VISUAL_CALL_TIMEOUT_MS = 7000;
+
+/**
+ * Turn a rejected `fetch` into one short, actionable cause.
+ *
+ * The old code collapsed every network failure into "network unavailable or
+ * request timed out", which hides the difference between a slow model (raise the
+ * cap), a dead DNS/offline machine (fix the network) and a TLS-intercepting
+ * proxy/VPN (trust or bypass it). The cause chain is preserved by Node's fetch
+ * (`TypeError: fetch failed` with `cause.code`), so report it.
+ */
+export function describeGeminiFetchFailure(error: unknown, capMs: number): string {
+  const seconds = Math.max(1, Math.round(capMs / 1000));
+  const name = typeof error === 'object' && error !== null && 'name' in error ? String((error as { name: unknown }).name) : '';
+  if (name === 'TimeoutError' || name === 'AbortError') return `request timed out after ${seconds}s`;
+  const cause = error instanceof Error ? (error as Error & { cause?: unknown }).cause : undefined;
+  const code = typeof cause === 'object' && cause !== null && 'code' in cause ? String((cause as { code: unknown }).code) : '';
+  const causeMessage = cause instanceof Error ? cause.message : typeof cause === 'string' ? cause : '';
+  if (/ENOTFOUND|EAI_AGAIN/.test(code)) return `DNS lookup failed (${code}) for generativelanguage.googleapis.com - check internet/VPN/DNS`;
+  if (/CERT|SELF_SIGNED|UNABLE_TO_VERIFY|EPROTO/i.test(code)) return `TLS handshake failed (${code}) - a proxy/VPN is intercepting HTTPS`;
+  if (/ECONNREFUSED|ECONNRESET|ENETUNREACH|EHOSTUNREACH|ETIMEDOUT/i.test(code)) return `connection failed (${code}) - network or firewall blocked generativelanguage.googleapis.com`;
+  const detail = causeMessage || (error instanceof Error ? error.message : String(error));
+  return `network unavailable${detail ? ` (${detail.slice(0, 160)})` : ''}`;
+}
+
 interface KeyState { timestamps: number[]; blockedUntil: number }
 /** One worker per DB. Pool is shared by planner/vision and uses hashed key identities. */
 export class GeminiKeyPool {
@@ -109,13 +135,30 @@ export async function requestGeminiJson(options: {
       if (/^gemini-3/.test(model)) config.thinkingConfig = { thinkingLevel: 'low' };
       else if (/^gemini-2\.5/.test(model)) config.thinkingConfig = { thinkingBudget: 0 };
       else delete config.thinkingConfig;
+      // The cap is resolved once so the abort signal and the reported cause are
+      // the same number. `remainingVisualMs` may throw (deadline) and that must
+      // never be reported as a network failure.
+      const capMs = remainingVisualMs(budget, options.timeoutMs ?? DEFAULT_VISUAL_CALL_TIMEOUT_MS);
       let response: Response;
       try {
         response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
           method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
-          body: JSON.stringify({ ...options.body, generationConfig: config }), signal: AbortSignal.timeout(remainingVisualMs(budget, options.timeoutMs ?? 7000)),
+          body: JSON.stringify({ ...options.body, generationConfig: config }), signal: AbortSignal.timeout(capMs),
         });
-      } catch { throw new Error('Gemini network unavailable or request timed out; photo skipped'); }
+      } catch (error) {
+        // A network failure/timeout is a routing failure: nothing was billed
+        // upstream, so refund the charged attempt and give the next model a
+        // chance while the shared wall deadline allows it. Previously one slow
+        // model aborted the whole chain and every clip showed 0 resolved images.
+        const detail = describeGeminiFetchFailure(error, capMs);
+        budget.lastFailure = `Gemini network unavailable or request timed out (${detail}; ${model}); photo skipped`;
+        budget.chargedAttempts--;
+        const hasNextModel = models.slice(models.indexOf(model) + 1).some((next) => !missingModels.has(next));
+        const delay = Math.round(150 + Math.random() * 200);
+        if (!hasNextModel || Date.now() + delay >= budget.deadline) throw new Error(budget.lastFailure);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        continue;
+      }
       if (response.ok) {
         const payload = await response.json() as { candidates?: Array<{ finishReason?: string; content?: { parts?: Array<{ text?: string; thought?: boolean }> } }> };
         const answer = payload.candidates?.[0];

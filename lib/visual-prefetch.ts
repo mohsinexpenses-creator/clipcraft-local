@@ -103,7 +103,13 @@ export async function runVisualPrefetch(clipId: string, options: { cacheDir?: st
   } catch (error) {
     reason = `Visual prefetch unavailable: ${error instanceof Error ? error.message : 'unknown network/API error'}`;
     log.warn(`${clipId}: ${reason}`);
-    overlays = overlays.map((ov) => ov.status === 'removed' || ov.kind === 'keyword-pop' || ov.kind === 'zoom-beat' ? ov : { ...ov, status: 'skipped', localFilePath: undefined, skipReason: reason });
+    // A transient API/network failure must not erase frames that are already
+    // verified on disk: render revalidates transcript/settings hashes before
+    // using them. Only planned or unresolved beats are downgraded.
+    overlays = overlays.map((ov) => ov.status === 'removed' || ov.kind === 'keyword-pop' || ov.kind === 'zoom-beat'
+      || (ov.status === 'resolved' && ov.localFilePath && fs.existsSync(ov.localFilePath))
+      ? ov
+      : { ...ov, status: 'skipped', localFilePath: undefined, skipReason: reason });
   }
   overlays = overlays.filter((ov) => !isNamedPersonKeywordPop(ov, [...overlays, ...(clip.visualOverlays ?? [])]));
   const floor = Math.ceil((clip.end - clip.start) * 7 / 60);
