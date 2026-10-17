@@ -1,4 +1,12 @@
+import dns from 'node:dns';
+
 import { LLM_PROVIDER_CHAIN } from './llm';
+
+// These probes run inside the Next.js server process (not the worker, which sets
+// the same order in worker/index.ts). On machines with a broken or absent IPv6
+// route, Node resolves the IPv6 address first and the probe fails with the opaque
+// "fetch failed" before any HTTPS is spoken. Safe and idempotent everywhere.
+dns.setDefaultResultOrder('ipv4first');
 
 /**
  * "Verify" on the Settings page: one real request per provider, no guesses.
@@ -310,6 +318,36 @@ async function probeProjects(apiKey: string): Promise<{ ok: boolean; projects: n
 /** Scopes Deepgram accepts on /v1/listen; `admin:all` covers everything. */
 const TRANSCRIPTION_SCOPES = new Set(['admin:all', 'usage:write', 'scopes:member']);
 
+/**
+ * `fetch failed` is undici's opaque wrapper; the real fault lives on the error's
+ * `cause` chain (`code` like ENOTFOUND / ECONNRESET / a TLS cert failure). Say one
+ * actionable sentence instead of "fetch failed", which hides the difference between
+ * a dead DNS, a broken IPv6 route, a firewall and a TLS-intercepting proxy/VPN.
+ */
+export function describeNetworkFailure(error: unknown, host: string): string {
+  const cause = error instanceof Error ? (error as Error & { cause?: unknown }).cause : undefined;
+  const code =
+    typeof cause === 'object' && cause !== null && 'code' in cause
+      ? String((cause as { code: unknown }).code)
+      : '';
+  const causeMessage = cause instanceof Error ? cause.message : typeof cause === 'string' ? cause : '';
+  const detail = causeMessage || (error instanceof Error ? error.message : String(error));
+  const hostname = host.replace(/^https?:\/\//, '').split('/')[0];
+  const fault = `${code} ${detail}`;
+  if (/ENOTFOUND|EAI_AGAIN/.test(fault)) {
+    return `DNS lookup failed (${code || 'ENOTFOUND'}) for ${hostname} - check internet/VPN/DNS settings`;
+  }
+  if (/CERT|SELF_SIGNED|UNABLE_TO_VERIFY|EPROTO/i.test(fault)) {
+    return `TLS handshake failed (${code || 'certificate error'}) - a proxy/VPN is intercepting HTTPS for ${hostname}`;
+  }
+  if (/ECONNREFUSED|ECONNRESET|ENETUNREACH|EHOSTUNREACH|ETIMEDOUT/i.test(fault)) {
+    return /secure TLS|TLS hand/i.test(detail)
+      ? `connection was cut during the TLS handshake (${code || 'ECONNRESET'}) - a firewall, proxy or VPN is blocking ${hostname}`
+      : `connection failed (${code || 'network error'}) - network or firewall blocked ${hostname}`;
+  }
+  return `network error${detail ? ` (${detail.slice(0, 160)})` : ''}`;
+}
+
 function unreachable(
   target: VerifyTarget,
   label: string,
@@ -324,7 +362,7 @@ function unreachable(
     label,
     message: timeout
       ? `The request to ${host} timed out after ${Math.round(VERIFY_TIMEOUT_MS / 1000)}s.`
-      : `Could not reach ${host}: ${message}`,
+      : `Could not reach ${host}: ${describeNetworkFailure(error, host)}`,
   };
 }
 

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { verifyDeepgramKey } from '../lib/settings-verify';
+import { describeNetworkFailure, verifyDeepgramKey, verifyWikimediaAccess } from '../lib/settings-verify';
 
 /**
  * The Deepgram probe is the one place Settings makes a real outbound call, and the whole
@@ -106,6 +106,40 @@ test('a network failure stays a network failure', async () => {
       assert.match(result.message, /api\.deepgram\.com/);
     }
   );
+});
+
+test('a wikimedia probe that dies before TLS reports the real cause, not "fetch failed"', async () => {
+  // The exact failure Node produces when a firewall/proxy cuts the connection
+  // mid-handshake: TypeError: fetch failed, cause.code ECONNRESET.
+  const failure = Object.assign(new TypeError('fetch failed'), {
+    cause: Object.assign(
+      new Error('Client network socket disconnected before secure TLS connection was established'),
+      { code: 'ECONNRESET' }
+    ),
+  });
+  await withFetch(
+    () => failure,
+    async () => {
+      const result = await verifyWikimediaAccess('ClipCraftLocal/1.0 (https://github.com/mohsinexpenses-creator/clipcraft-local; mohsinexpenses@gmail.com)');
+      assert.equal(result.status, 'unreachable');
+      assert.match(result.message, /Could not reach https:\/\/commons\.wikimedia\.org/);
+      assert.match(result.message, /cut during the TLS handshake \(ECONNRESET\)/);
+      assert.match(result.message, /firewall, proxy or VPN/);
+      assert.doesNotMatch(result.message, /: fetch failed$/, 'the opaque wrapper is never the whole story');
+    }
+  );
+});
+
+test('network failure decoding separates DNS, TLS and blocked connections', async () => {
+  const wrapped = (code: string, message: string) =>
+    Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error(message), { code }) });
+
+  assert.match(describeNetworkFailure(wrapped('ENOTFOUND', 'getaddrinfo ENOTFOUND api.pexels.com'), 'https://api.pexels.com'), /DNS lookup failed \(ENOTFOUND\) for api\.pexels\.com/);
+  assert.match(describeNetworkFailure(wrapped('UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'unable to verify the first certificate'), 'https://api.openverse.org'), /TLS handshake failed .*proxy\/VPN is intercepting/);
+  assert.match(describeNetworkFailure(wrapped('ECONNRESET', 'read ECONNRESET'), 'https://commons.wikimedia.org'), /connection failed \(ECONNRESET\) - network or firewall blocked commons\.wikimedia\.org/);
+  // A bare error without a cause chain still names the host and the detail.
+  assert.match(describeNetworkFailure(new Error('getaddrinfo ENOTFOUND api.deepgram.com'), 'https://api.deepgram.com'), /DNS lookup failed .*api\.deepgram\.com/);
+  assert.match(describeNetworkFailure(new Error('boom'), 'https://example.com'), /network error \(boom\)/);
 });
 
 test('an unrecognised model id is a note, never a failure', async () => {
