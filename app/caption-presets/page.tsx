@@ -1,12 +1,6 @@
 "use client";
 
-import React, {
-  useState,
-  useEffect,
-  useCallback,
-  useMemo,
-  useRef,
-} from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   CaptionLineStyle,
   CaptionPreset,
@@ -214,19 +208,23 @@ export default function CaptionPresetsPage() {
   };
 
   const handleCreateNewPreset = () => {
+    const theme =
+      getCaptionThemeDefinition("kinetic-01") ?? CAPTION_THEME_CATALOG[0];
     const newPreset: CaptionPreset = {
       _id: `preset_${Date.now()}_${Math.random().toString(36).substring(7)}`,
       name: "Custom preset",
-      fontFamily: "Inter, sans-serif",
+      fontFamily: theme?.captionFontFamily ?? "Inter, sans-serif",
       fontSize: 50,
       fontWeight: "bold",
-      textColor: "#FFFFFF",
-      highlightColor: "#FFE600",
+      textColor: theme?.captionPrimaryColor ?? "#FFFFFF",
+      highlightColor: theme?.captionAccentColor ?? "#FFE600",
       strokeColor: "#000000",
       strokeWidth: 3,
       positionY: 28,
       animationStyle: "karaoke",
       uppercase: true,
+      captionTheme: theme?.id,
+      matchOverlayTheme: true,
       isDefault: false,
     };
 
@@ -341,39 +339,6 @@ export default function CaptionPresetsPage() {
         err instanceof Error ? err.message : "Failed to delete caption preset.",
       );
     }
-  };
-
-  const toggleRichStyles = (enabled: boolean) => {
-    if (!enabled) {
-      setActivePreset({
-        ...activePreset,
-        lineStyles: [],
-        lineGap: undefined,
-        lineAlignment: undefined,
-      });
-      return;
-    }
-    const makeLine = (index: number, maxWords: number): CaptionLineStyle => ({
-      maxWords,
-      fontFamily: activePreset.fontFamily,
-      fontSize: Math.max(12, activePreset.fontSize + (index === 0 ? 6 : -4)),
-      fontWeight: activePreset.fontWeight,
-      textColor: activePreset.textColor,
-      highlightColor: activePreset.highlightColor,
-      strokeColor: activePreset.strokeColor,
-      strokeWidth: activePreset.strokeWidth,
-      uppercase: activePreset.uppercase ?? true,
-      animationStyle: activePreset.animationStyle,
-      lineHeight: 1.12,
-    });
-    setActivePreset({
-      ...activePreset,
-      lineStyles: activePreset.lineStyles?.length
-        ? activePreset.lineStyles
-        : [makeLine(0, 2), makeLine(1, 3)],
-      lineGap: activePreset.lineGap ?? 5,
-      lineAlignment: activePreset.lineAlignment ?? "center",
-    });
   };
 
   const patchLineStyle = (index: number, patch: Partial<CaptionLineStyle>) => {
@@ -540,7 +505,7 @@ export default function CaptionPresetsPage() {
             <TabsContent value="captions" className="space-y-4">
               {/* Style gallery: searchable, scrolls inside a fixed-height panel so a
               growing catalogue never pushes the editor (or the preview) away. */}
-              <div className="rounded-xl border bg-card/70 p-3 shadow-[var(--shadow-card)]">
+              <div className="rounded-xl border bg-card/70 p-3 shadow-card">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <h2 className="flex items-center gap-1.5 text-[13px] font-semibold tracking-tight">
                     <Layers className="size-3.5 text-muted-foreground" />
@@ -561,7 +526,7 @@ export default function CaptionPresetsPage() {
                   </div>
                 </div>
 
-                <div className="subtle-scroll mt-2.5 grid max-h-[300px] grid-cols-1 gap-1.5 overflow-y-auto pr-1 sm:grid-cols-2">
+                <div className="subtle-scroll mt-2.5 grid max-h-75 grid-cols-1 gap-1.5 overflow-y-auto pr-1 sm:grid-cols-2">
                   {filteredPresets.length === 0 ? (
                     <p className="col-span-full rounded-lg border border-dashed px-4 py-6 text-center text-[12px] text-muted-foreground">
                       No style matches “{presetQuery}”.
@@ -709,16 +674,12 @@ export default function CaptionPresetsPage() {
                       <div className="space-y-2">
                         <Label id="caption-theme-label">Caption theme</Label>
                         <Select
-                          value={activePreset.captionTheme ?? "classic"}
+                          value={
+                            activePreset.captionTheme ??
+                            CAPTION_THEME_CATALOG[0]?.id ??
+                            "kinetic-01"
+                          }
                           onValueChange={(value) => {
-                            if (value === "classic") {
-                              setActivePreset({
-                                ...activePreset,
-                                captionTheme: undefined,
-                                matchOverlayTheme: false,
-                              });
-                              return;
-                            }
                             const theme = getCaptionThemeDefinition(
                               value as CaptionThemeName,
                             );
@@ -736,9 +697,6 @@ export default function CaptionPresetsPage() {
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="classic">
-                              ClipCraft classic
-                            </SelectItem>
                             {CAPTION_THEME_CATALOG.map((theme) => (
                               <SelectItem key={theme.id} value={theme.id}>
                                 {theme.label}
@@ -746,74 +704,46 @@ export default function CaptionPresetsPage() {
                             ))}
                           </SelectContent>
                         </Select>
-                        {activePreset.captionTheme ? (
-                          <p className="text-xs text-muted-foreground">
-                            {
-                              getCaptionThemeDefinition(
-                                activePreset.captionTheme,
-                              )?.description
-                            }{" "}
-                            Theme font:{" "}
-                            {
-                              getCaptionThemeDefinition(
-                                activePreset.captionTheme,
-                              )?.captionFontFamily.split(",")[0]
-                            }
-                            . Theme typography and motion replace the classic
-                            line/stroke controls; size, placement and caption
-                            colors remain adjustable.
-                          </p>
-                        ) : (
-                          <p className="text-xs text-muted-foreground">
-                            Use ClipCraft’s existing customizable caption
-                            renderer.
-                          </p>
-                        )}
+                        <p className="text-xs text-muted-foreground">
+                          {
+                            getCaptionThemeDefinition(activePreset.captionTheme)
+                              ?.description
+                          }{" "}
+                          Theme font:{" "}
+                          {
+                            getCaptionThemeDefinition(
+                              activePreset.captionTheme,
+                            )?.captionFontFamily.split(",")[0]
+                          }
+                          . Size, placement and caption colors remain
+                          adjustable.
+                        </p>
                         <p className="text-xs text-muted-foreground">
                           The 13 theme animations are rendered by Remotion in
                           headless Chrome.
                         </p>
                       </div>
 
-                      {activePreset.captionTheme ? (
-                        <div className="flex items-center justify-between gap-4 rounded-md border bg-muted/30 p-3">
-                          <div className="space-y-0.5">
-                            <Label htmlFor="match-overlay-theme">
-                              Match Hook + CTA to theme
-                            </Label>
-                            <p className="text-xs text-muted-foreground">
-                              Applies the theme font, palette, card shape and
-                              motion; saved overlay sizes, badge text and
-                              placement remain.
-                            </p>
-                          </div>
-                          <Switch
-                            id="match-overlay-theme"
-                            checked={activePreset.matchOverlayTheme !== false}
-                            onCheckedChange={(matchOverlayTheme) =>
-                              setActivePreset({
-                                ...activePreset,
-                                matchOverlayTheme,
-                              })
-                            }
-                          />
-                        </div>
-                      ) : null}
-
-                      <div className="flex items-center justify-between gap-4 border-t pt-4">
+                      <div className="flex items-center justify-between gap-4 rounded-md border bg-muted/30 p-3">
                         <div className="space-y-0.5">
-                          <Label htmlFor="rich-line-toggle">
-                            Rich multi-line styling
+                          <Label htmlFor="match-overlay-theme">
+                            Match Hook + CTA to theme
                           </Label>
                           <p className="text-xs text-muted-foreground">
-                            Split each timed transcript chunk into styled visual
-                            lines for the classic caption renderer.
+                            Applies the theme font, palette, card shape and
+                            motion; saved overlay sizes, badge text and
+                            placement remain.
                           </p>
                         </div>
                         <Switch
-                          id="rich-line-toggle"
-                          checked={Boolean(activePreset.lineStyles?.length)}
-                          onCheckedChange={toggleRichStyles}
+                          id="match-overlay-theme"
+                          checked={activePreset.matchOverlayTheme !== false}
+                          onCheckedChange={(matchOverlayTheme) =>
+                            setActivePreset({
+                              ...activePreset,
+                              matchOverlayTheme,
+                            })
+                          }
                         />
                       </div>
 
@@ -1170,37 +1100,6 @@ export default function CaptionPresetsPage() {
                           </Button>
                         </div>
                       ) : null}
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label id="animation-label">
-                        Classic animation
-                      </Label>
-                      <Select
-                        value={activePreset.animationStyle}
-                        onValueChange={(v) =>
-                          setActivePreset({
-                            ...activePreset,
-                            animationStyle:
-                              (v as CaptionPreset["animationStyle"]) ||
-                              "karaoke",
-                          })
-                        }
-                      >
-                        <SelectTrigger aria-labelledby="animation-label">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="karaoke">Karaoke fill</SelectItem>
-                          <SelectItem value="word-pop">Word pop</SelectItem>
-                          <SelectItem value="fade-in">Fade in</SelectItem>
-                          <SelectItem value="static">Static</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <p className="text-xs text-muted-foreground">
-                        Used by ClipCraft classic captions (when no caption
-                        theme is selected).
-                      </p>
                     </div>
 
                     <div className="space-y-2">

@@ -8,8 +8,8 @@
  *   2. rows the user created are not touched - not even their default flag,
  *   3. the result is stable: resetting twice changes nothing more.
  */
-import assert from 'node:assert/strict';
-import test from 'node:test';
+import assert from "node:assert/strict";
+import test from "node:test";
 import {
   getDefaultCaptionPreset,
   getCaptionPreset,
@@ -18,105 +18,132 @@ import {
   resetOverlayStylePresets,
   saveCaptionPreset,
   setDefaultCaptionPreset,
-} from '../lib/db';
-import { DEFAULT_CAPTION_PRESETS, DEFAULT_OVERLAY_STYLE_PRESETS } from '../lib/presets';
-import { CAPTION_THEME_NAMES } from '../lib/types';
-import type { CaptionPreset } from '../lib/types';
-import { createTemporaryDatabase } from './sqlite-test-helpers';
+} from "../lib/db";
+import {
+  DEFAULT_CAPTION_PRESETS,
+  DEFAULT_OVERLAY_STYLE_PRESETS,
+} from "../lib/presets";
+import { CAPTION_THEME_NAMES } from "../lib/types";
+import type { CaptionPreset } from "../lib/types";
+import { createTemporaryDatabase } from "./sqlite-test-helpers";
 
 const firstCaptionId = DEFAULT_CAPTION_PRESETS[0]._id;
-const shippedDefaultId = DEFAULT_CAPTION_PRESETS.find((preset) => preset.isDefault)?._id;
+const shippedDefaultId = DEFAULT_CAPTION_PRESETS.find(
+  (preset) => preset.isDefault,
+)?._id;
 
 function captionFrom(id: string): CaptionPreset {
-  const preset = DEFAULT_CAPTION_PRESETS.find((candidate) => candidate._id === id);
+  const preset = DEFAULT_CAPTION_PRESETS.find(
+    (candidate) => candidate._id === id,
+  );
   if (!preset) throw new Error(`no shipped preset ${id}`);
   return preset;
 }
 
-test('database startup seeds each separate theme card into a pre-existing database', async (t) => {
+test("database startup seeds each separate theme card into a pre-existing database", async (t) => {
   const { db, openConnection } = createTemporaryDatabase(t);
-  const addedThemeIds = DEFAULT_CAPTION_PRESETS
-    .filter((preset) => preset._id.startsWith('caption-theme-'))
-    .map((preset) => preset._id);
-  assert.equal(addedThemeIds.length, 12);
+  const addedThemeIds = DEFAULT_CAPTION_PRESETS.filter((preset) =>
+    preset._id.startsWith("caption-theme-"),
+  ).map((preset) => preset._id);
+  assert.equal(addedThemeIds.length, 13);
 
-  // Simulate the old catalogue in an existing database, then open it as the updated app does.
-  const removeOldBuildTheme = db.prepare('DELETE FROM caption_presets WHERE id = ?');
-  for (const id of addedThemeIds) removeOldBuildTheme.run(id);
+  const removeBuiltInThemes = db.prepare(
+    "DELETE FROM caption_presets WHERE id = ?",
+  );
+  for (const id of addedThemeIds) removeBuiltInThemes.run(id);
   openConnection();
 
   const seeded = await listCaptionPresets();
   const themed = seeded.filter((preset) => preset.captionTheme);
-  assert.equal(seeded.length, 20, 'the eight shipped styles remain alongside twelve additions');
-  assert.equal(themed.length, 13, 'Bold Punch represents Kinetic 01 without a duplicate card');
+  assert.equal(
+    seeded.length,
+    13,
+    "the shipped catalogue has only the 13 theme presets",
+  );
+  assert.equal(themed.length, 13, "each uploaded theme is represented once");
   assert.deepEqual(
     themed.map((preset) => preset.captionTheme).sort(),
     [...CAPTION_THEME_NAMES].sort(),
   );
 });
 
-test('reset restores an edited built-in and leaves custom rows alone', async (t) => {
+test("reset restores an edited built-in and leaves custom rows alone", async (t) => {
   createTemporaryDatabase(t);
 
   const builtIn = captionFrom(firstCaptionId);
   const drifted: CaptionPreset = {
     ...builtIn,
-    name: 'My old take on the bold one',
+    name: "My old take on the bold one",
     fontSize: 20,
-    textColor: '#123456',
-    highlightColor: '#654321',
+    textColor: "#123456",
+    highlightColor: "#654321",
   };
   await saveCaptionPreset(drifted);
 
   const custom: CaptionPreset = {
-    _id: 'user-custom-style',
-    name: 'Mine',
-    fontFamily: 'Georgia, serif',
+    _id: "user-custom-style",
+    name: "Mine",
+    fontFamily: "Georgia, serif",
     fontSize: 44,
-    fontWeight: 'normal',
-    textColor: '#EEEEEE',
-    highlightColor: '#00FF00',
-    strokeColor: '#000000',
+    fontWeight: "normal",
+    textColor: "#EEEEEE",
+    highlightColor: "#00FF00",
+    strokeColor: "#000000",
     strokeWidth: 1,
     positionY: 33,
-    animationStyle: 'static',
+    animationStyle: "static",
     uppercase: false,
   };
   await saveCaptionPreset(custom);
   await setDefaultCaptionPreset(custom._id);
 
   const driftedBefore = await getCaptionPreset(builtIn._id);
-  assert.equal(driftedBefore?.fontSize, 20, 'the drift the test is about to repair');
+  assert.equal(
+    driftedBefore?.fontSize,
+    20,
+    "the drift the test is about to repair",
+  );
 
   const presets = await resetCaptionPresets();
 
   const restored = presets.find((preset) => preset._id === builtIn._id);
-  assert.ok(restored, 'the built-in row is still there');
-  assert.equal(restored.name, builtIn.name, 'the shipped name comes back');
+  assert.ok(restored, "the built-in row is still there");
+  assert.equal(restored.name, builtIn.name, "the shipped name comes back");
   assert.equal(restored.fontSize, builtIn.fontSize);
-  assert.equal(restored.captionTheme, builtIn.captionTheme, 'theme id persists in the preset config');
+  assert.equal(
+    restored.captionTheme,
+    builtIn.captionTheme,
+    "theme id persists in the preset config",
+  );
   assert.equal(restored.matchOverlayTheme, builtIn.matchOverlayTheme);
   assert.equal(restored.textColor, builtIn.textColor);
   assert.equal(restored.highlightColor, builtIn.highlightColor);
 
   const untouched = presets.find((preset) => preset._id === custom._id);
-  assert.ok(untouched, 'the custom row is still there');
-  assert.equal(untouched.name, 'Mine');
+  assert.ok(untouched, "the custom row is still there");
+  assert.equal(untouched.name, "Mine");
   assert.equal(untouched.fontSize, 44);
-  assert.equal(untouched.textColor, '#EEEEEE');
-  assert.equal(untouched.animationStyle, 'static');
-  assert.equal(untouched.fontFamily, 'Georgia, serif');
+  assert.equal(untouched.textColor, "#EEEEEE");
+  assert.equal(untouched.animationStyle, "static");
+  assert.equal(untouched.fontFamily, "Georgia, serif");
 
-  assert.equal((await getDefaultCaptionPreset())?._id, custom._id, 'the default the user picked survives a reset');
+  assert.equal(
+    (await getDefaultCaptionPreset())?._id,
+    custom._id,
+    "the default the user picked survives a reset",
+  );
 });
 
-test('reset promotes the shipped default only when nothing is marked default', async (t) => {
-  assert.ok(shippedDefaultId, 'the shipped catalogue marks one preset as default');
+test("reset promotes the shipped default only when nothing is marked default", async (t) => {
+  assert.ok(
+    shippedDefaultId,
+    "the shipped catalogue marks one preset as default",
+  );
   const { db } = createTemporaryDatabase(t);
 
   // A database whose built-ins have lost their default flag - the state a half-finished
   // migration or a hand-edited row can leave behind.
-  db.prepare('UPDATE caption_presets SET is_default = 0').run();
+  db.prepare("UPDATE caption_presets SET is_default = 0").run();
   assert.equal(await getDefaultCaptionPreset(), null);
 
   await resetCaptionPresets();
@@ -127,19 +154,37 @@ test('reset promotes the shipped default only when nothing is marked default', a
   await resetCaptionPresets();
   const after = await listCaptionPresets();
   assert.deepEqual(
-    after.map((preset) => ({ id: preset._id, name: preset.name, isDefault: preset.isDefault, fontSize: preset.fontSize })),
-    before.map((preset) => ({ id: preset._id, name: preset.name, isDefault: preset.isDefault, fontSize: preset.fontSize }))
+    after.map((preset) => ({
+      id: preset._id,
+      name: preset.name,
+      isDefault: preset.isDefault,
+      fontSize: preset.fontSize,
+    })),
+    before.map((preset) => ({
+      id: preset._id,
+      name: preset.name,
+      isDefault: preset.isDefault,
+      fontSize: preset.fontSize,
+    })),
   );
 });
 
-test('reset re-syncs the built-in hook and CTA overlay styles too', async (t) => {
+test("reset re-syncs the built-in hook and CTA overlay styles too", async (t) => {
   const { db } = createTemporaryDatabase(t);
 
   const builtIn = DEFAULT_OVERLAY_STYLE_PRESETS[0];
-  db.prepare('UPDATE overlay_style_presets SET name = ?, config_json = ? WHERE id = ?').run(
-    'Edited hook style',
-    JSON.stringify({ ...builtIn, _id: undefined, kind: undefined, name: undefined, isDefault: undefined }),
-    builtIn._id
+  db.prepare(
+    "UPDATE overlay_style_presets SET name = ?, config_json = ? WHERE id = ?",
+  ).run(
+    "Edited hook style",
+    JSON.stringify({
+      ...builtIn,
+      _id: undefined,
+      kind: undefined,
+      name: undefined,
+      isDefault: undefined,
+    }),
+    builtIn._id,
   );
 
   const presets = await resetOverlayStylePresets();
@@ -147,8 +192,9 @@ test('reset re-syncs the built-in hook and CTA overlay styles too', async (t) =>
   assert.equal(restored?.name, builtIn.name);
   assert.equal(restored?.fontSize, builtIn.fontSize);
   assert.equal(
-    presets.filter((preset) => preset.kind === builtIn.kind && preset.isDefault).length,
+    presets.filter((preset) => preset.kind === builtIn.kind && preset.isDefault)
+      .length,
     1,
-    'exactly one default per kind, no matter how often things are reset'
+    "exactly one default per kind, no matter how often things are reset",
   );
 });

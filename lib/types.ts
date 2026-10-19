@@ -1,7 +1,7 @@
 export interface WordTimestamp {
   word: string;
   start: number; // in seconds
-  end: number;   // in seconds
+  end: number; // in seconds
   confidence?: number;
 }
 
@@ -51,9 +51,9 @@ export interface VideoRecord {
   width: number;
   height: number;
   fileSize: number;
-  status: 'uploaded' | 'transcribing' | 'transcribed' | 'failed';
+  status: "uploaded" | "transcribing" | "transcribed" | "failed";
   transcript?: TranscriptData;
-  transcriptionProvider?: 'deepgram' | 'whisper.cpp';
+  transcriptionProvider?: "deepgram" | "whisper.cpp";
   transcriptionModel?: string;
   /** Automatic chain configured for this video (see `PipelineOptions`). */
   pipeline?: PipelineOptions;
@@ -66,7 +66,7 @@ export interface VideoRecord {
  * A video as the dashboard list needs it: everything except the (potentially
  * megabyte-sized) transcript JSON, plus the derived facts the library rows show.
  */
-export interface VideoSummary extends Omit<VideoRecord, 'transcript'> {
+export interface VideoSummary extends Omit<VideoRecord, "transcript"> {
   transcriptReady: boolean;
   transcriptSegmentCount: number;
 }
@@ -135,8 +135,8 @@ export const DEFAULT_PIPELINE_OPTIONS: PipelineOptions = {
  * database (their configured defaults) - these are the non-preset knobs.
  */
 export const DEFAULT_RENDER_OPTIONS = {
-  filterPreset: 'vibrant',
-  layout: 'speaker-focus',
+  filterPreset: "vibrant",
+  layout: "speaker-focus",
 } as const;
 
 /* ==========================================================================
@@ -149,7 +149,14 @@ export const DEFAULT_RENDER_OPTIONS = {
  * ========================================================================== */
 
 /** One row of `app_settings`; the key is the section name. */
-export const APP_SETTINGS_SECTIONS = ['pipeline', 'render', 'ai', 'worker', 'profanity', 'paths'] as const;
+export const APP_SETTINGS_SECTIONS = [
+  "pipeline",
+  "render",
+  "ai",
+  "worker",
+  "profanity",
+  "paths",
+] as const;
 export type AppSettingsSection = (typeof APP_SETTINGS_SECTIONS)[number];
 
 /**
@@ -157,7 +164,7 @@ export type AppSettingsSection = (typeof APP_SETTINGS_SECTIONS)[number];
  * one you saved, or the built-in default - `.env.local` is not consulted for these
  * sections, so the page can never show one thing while the app does another.
  */
-export type SettingsSource = 'app' | 'default';
+export type SettingsSource = "app" | "default";
 
 export interface RenderDefaults {
   layout: ClipLayout;
@@ -186,7 +193,7 @@ export const DEFAULT_RENDER_SETTINGS: RenderDefaults = {
   ctaDuration: 2.5,
 };
 
-export type TranscriptionProviderChoice = 'auto' | 'deepgram' | 'whisper';
+export type TranscriptionProviderChoice = "auto" | "deepgram" | "whisper";
 
 export interface AiProviderSettings {
   /**
@@ -210,12 +217,16 @@ export interface AiProviderSettings {
 
 export const DEFAULT_AI_SETTINGS: AiProviderSettings = {
   geminiApiKeys: [],
-  deepgramApiKey: '',
-  deepgramModel: '',
-  transcriptionProvider: 'auto',
+  deepgramApiKey: "",
+  deepgramModel: "",
+  transcriptionProvider: "auto",
 };
 
-export const CONCURRENCY_LIMITS = { clip: { min: 1, max: 8 }, viral: { min: 1, max: 8 }, remotion: { min: 1, max: 32 } } as const;
+export const CONCURRENCY_LIMITS = {
+  clip: { min: 1, max: 8 },
+  viral: { min: 1, max: 8 },
+  remotion: { min: 1, max: 32 },
+} as const;
 
 export interface WorkerSettings {
   /** Simultaneous clip renders. Each one runs FFmpeg + headless Chrome. */
@@ -239,10 +250,12 @@ export const DEFAULT_WORKER_SETTINGS: WorkerSettings = {
 
 export interface ProfanitySettings {
   /** What happens to the AUDIO of a profane word; on-screen text is always masked. */
-  audioMode: 'mute' | 'beep' | 'off';
+  audioMode: "mute" | "beep" | "off";
 }
 
-export const DEFAULT_PROFANITY_SETTINGS: ProfanitySettings = { audioMode: 'mute' };
+export const DEFAULT_PROFANITY_SETTINGS: ProfanitySettings = {
+  audioMode: "mute",
+};
 
 /**
  * Filesystem locations and binaries the worker uses. An empty string means
@@ -263,10 +276,10 @@ export interface PathSettings {
 }
 
 export const DEFAULT_PATH_SETTINGS: PathSettings = {
-  uploadDir: '',
-  clipsDir: '',
-  ffmpegPath: '',
-  whisperCliPath: '',
+  uploadDir: "",
+  clipsDir: "",
+  ffmpegPath: "",
+  whisperCliPath: "",
 };
 
 export interface AppSettings {
@@ -340,25 +353,35 @@ export interface AppSettingsSnapshot {
  * Allowed values of the AI's enum fields, exactly as the viral_detection prompt
  * schema lists them. lib/viral-response.ts rejects any other value.
  */
-export const RETENTION_STRENGTHS = ['Weak', 'Medium', 'Strong', 'Extreme'] as const;
+export const RETENTION_STRENGTHS = [
+  "Weak",
+  "Medium",
+  "Strong",
+  "Extreme",
+] as const;
 export type RetentionStrength = (typeof RETENTION_STRENGTHS)[number];
 
-export const SAFETY_RISKS = ['Low', 'Medium', 'High'] as const;
+export const SAFETY_RISKS = ["Low", "Medium", "High"] as const;
 export type SafetyRisk = (typeof SAFETY_RISKS)[number];
 
 export const PSYCHOLOGICAL_TRIGGERS = [
-  'Curiosity',
-  'Anger',
-  'Inspiration',
-  'Shock',
-  'Validation',
-  'Fear',
-  'Controversy',
-  'Humor',
+  "Curiosity",
+  "Anger",
+  "Inspiration",
+  "Shock",
+  "Validation",
+  "Fear",
+  "Controversy",
+  "Humor",
 ] as const;
 export type PsychologicalTrigger = (typeof PSYCHOLOGICAL_TRIGGERS)[number];
 
-export const RISKY_WORD_ACTIONS = ['censor', 'replace', 'mute', 'remove'] as const;
+export const RISKY_WORD_ACTIONS = [
+  "censor",
+  "replace",
+  "mute",
+  "remove",
+] as const;
 export type RiskyWordAction = (typeof RISKY_WORD_ACTIONS)[number];
 
 /**
@@ -389,14 +412,21 @@ export interface ViralClip {
     likely_to_watch_till_end: boolean;
     predicted_retention: RetentionStrength;
   };
-  psychological_trigger: { dominant_trigger: PsychologicalTrigger; explanation: string };
+  psychological_trigger: {
+    dominant_trigger: PsychologicalTrigger;
+    explanation: string;
+  };
   safety_analysis: {
     risk_level: SafetyRisk;
     monetization_risk: string;
     reused_content_risk: string;
     algorithm_suppression_risk: string;
     ineligible_for_fyf_risk: string;
-    risky_words: { word_or_phrase: string; action: RiskyWordAction; safer_replacement: string }[];
+    risky_words: {
+      word_or_phrase: string;
+      action: RiskyWordAction;
+      safer_replacement: string;
+    }[];
   };
   viral_packaging: {
     hook_text_on_video: string;
@@ -435,28 +465,28 @@ export interface CropWindow {
  * - `speaker-focus`: a single window that smoothly pans to whoever is talking.
  * - `split-screen`: an adaptive 2/3/4-person grid that keeps everyone visible.
  */
-export type ClipLayout = 'speaker-focus' | 'split-screen';
+export type ClipLayout = "speaker-focus" | "split-screen";
 
 /** Visual styling for the hook intro overlay and the end-of-clip CTA overlay. */
 export interface OverlayStylePreset {
   _id: string;
-  kind: 'hook' | 'cta';
+  kind: "hook" | "cta";
   name: string;
   description?: string;
   fontFamily: string;
   /** Overlay text size in composition pixels (1080x1920 canvas). */
   fontSize: number;
-  fontWeight: 'normal' | 'bold' | 'extra-bold' | 'black';
+  fontWeight: "normal" | "bold" | "extra-bold" | "black";
   textColor: string;
   /** Card background behind the text (any CSS color, rgba or gradient). */
   backgroundColor: string;
   borderColor: string;
   borderWidth: number;
   borderRadius: number;
-  textTransform: 'uppercase' | 'none';
+  textTransform: "uppercase" | "none";
   /** Vertical position of the card, % from the TOP of the frame. */
   positionY: number;
-  animationStyle: 'pop' | 'fade' | 'slide-up' | 'none';
+  animationStyle: "pop" | "fade" | "slide-up" | "none";
   /** Hook only: small chip shown above the text ("Hook Intro"). */
   showBadge?: boolean;
   badgeText?: string;
@@ -475,24 +505,28 @@ export interface FilterPreset {
   ffmpegFilter: string; // e.g. "eq=saturation=1.3:contrast=1.1"
 }
 
-export type CaptionFontWeight = 'normal' | 'bold' | 'extra-bold' | 'black';
-export type CaptionAnimationStyle = 'karaoke' | 'word-pop' | 'fade-in' | 'static';
+export type CaptionFontWeight = "normal" | "bold" | "extra-bold" | "black";
+export type CaptionAnimationStyle =
+  | "karaoke"
+  | "word-pop"
+  | "fade-in"
+  | "static";
 
 /** Theme-library caption animations available to presets (rendered by Remotion). */
 export const CAPTION_THEME_NAMES = [
-  'pop',
-  'karaoke',
-  'kinetic-01',
-  'kinetic-02',
-  'hustle',
-  'grape',
-  'beast',
-  'poppin',
-  'aarit',
-  'soft-ai',
-  'gaming-stream',
-  'simple-one-word',
-  'podcast',
+  "pop",
+  "karaoke",
+  "kinetic-01",
+  "kinetic-02",
+  "hustle",
+  "grape",
+  "beast",
+  "poppin",
+  "aarit",
+  "soft-ai",
+  "gaming-stream",
+  "simple-one-word",
+  "podcast",
 ] as const;
 
 export type CaptionThemeName = (typeof CAPTION_THEME_NAMES)[number];
@@ -534,8 +568,8 @@ export interface CaptionPreset {
   /** Gap between rich visual lines in composition pixels. */
   lineGap?: number;
   /** Horizontal alignment for rich line blocks. */
-  lineAlignment?: 'left' | 'center' | 'right';
-  /** One of the 13 Remotion caption-themes; omitted uses ClipCraft's classic renderer. */
+  lineAlignment?: "left" | "center" | "right";
+  /** One of the 13 Remotion caption themes; theme selection is the only shipped preset mode. */
   captionTheme?: CaptionThemeName;
   /** When true, Hook and CTA cards inherit the selected theme's font, palette, card and motion. */
   matchOverlayTheme?: boolean;
@@ -546,7 +580,7 @@ export interface CaptionPreset {
 
 export interface PromptTemplate {
   _id: string;
-  type: 'viral_detection' | 'hook_generation' | 'cta_generation';
+  type: "viral_detection" | "hook_generation" | "cta_generation";
   name: string;
   description: string;
   systemPrompt: string;
@@ -561,7 +595,7 @@ export interface PromptTemplate {
  */
 export interface TextPreset {
   _id: string;
-  kind: 'hook' | 'cta';
+  kind: "hook" | "cta";
   text: string;
   createdAt: string;
   updatedAt: string;
@@ -572,7 +606,7 @@ export interface ClipRecord {
   videoId: string;
   videoTitle?: string;
   start: number; // start time in original video
-  end: number;   // end time in original video
+  end: number; // end time in original video
   /** 0 disables the hook intro; positive enables it. A valid AI hook timestamp supplies its exact duration. */
   hookDuration: number;
   hookText: string; // short punchy text overlay during hook intro
@@ -608,7 +642,7 @@ export interface ClipRecord {
   outputPath?: string;
   outputFileSize?: number; // bytes, 0/undefined means the render did not produce a usable file
   outputFps?: number; // fps actually used for the render
-  status: 'pending' | 'processing' | 'done' | 'failed';
+  status: "pending" | "processing" | "done" | "failed";
   progress?: number; // 0-100
   error?: string;
   /** True once the user asked to stop a running render; the worker honours it. */

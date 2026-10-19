@@ -3,40 +3,24 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { resolveCaptionFontFile } from "../lib/caption-fonts";
-import {
-  DEFAULT_CAPTION_PRESETS,
-  RETIRED_CAPTION_PRESET_IDS,
-} from "../lib/presets";
+import { DEFAULT_CAPTION_PRESETS } from "../lib/presets";
 import { splitCaptionWordsIntoLines } from "../lib/caption-layout";
 import { CAPTION_THEME_NAMES } from "../lib/types";
 
-const LEGACY_IDS = [
-  "cc-bold-punch",
-  "cc-spotlight",
-  "cc-storyteller",
-  "cc-authority",
-  "cc-composite",
-  "cc-minimalist",
-  "cc-kinetic",
-  "cc-cinematic",
-];
-const EXPECTED_IDS = [
-  ...LEGACY_IDS,
-  ...CAPTION_THEME_NAMES.filter((theme) => theme !== "kinetic-01").map(
-    (theme) => `caption-theme-${theme}`,
-  ),
-];
-
-test("the built-in caption catalogue keeps the eight original styles and adds all themes", () => {
+test("the built-in caption catalogue only ships the 13 theme presets", () => {
   assert.deepEqual(
     DEFAULT_CAPTION_PRESETS.map((preset) => preset._id),
-    EXPECTED_IDS,
+    [
+      "caption-theme-kinetic-01",
+      ...CAPTION_THEME_NAMES.filter((theme) => theme !== "kinetic-01").map(
+        (theme) => `caption-theme-${theme}`,
+      ),
+    ],
   );
-  assert.equal(DEFAULT_CAPTION_PRESETS.length, 20);
+  assert.equal(DEFAULT_CAPTION_PRESETS.length, 13);
   assert.equal(
     DEFAULT_CAPTION_PRESETS.filter((preset) => preset.captionTheme).length,
     13,
-    "Kinetic 01 stays represented by Bold Punch, with one separate card for each other theme",
   );
   assert.equal(
     DEFAULT_CAPTION_PRESETS.filter((preset) => preset.isDefault).length,
@@ -44,18 +28,9 @@ test("the built-in caption catalogue keeps the eight original styles and adds al
   );
   assert.equal(
     DEFAULT_CAPTION_PRESETS.find((preset) => preset.isDefault)?._id,
-    "cc-bold-punch",
+    "caption-theme-kinetic-01",
   );
-  // tests/overlay-layout.test.ts relies on the first preset sitting at positionY 28.
   assert.equal(DEFAULT_CAPTION_PRESETS[0].positionY, 28);
-});
-
-test("no retired preset id is reused by the new catalogue", () => {
-  const retired = new Set(RETIRED_CAPTION_PRESET_IDS);
-  assert.equal(retired.size, 26);
-  assert.ok(
-    DEFAULT_CAPTION_PRESETS.every((preset) => !retired.has(preset._id)),
-  );
 });
 
 test("every font used by every preset line is a bundled font whose file exists in public/fonts", () => {
@@ -78,7 +53,7 @@ test("every font used by every preset line is a bundled font whose file exists i
   }
 });
 
-test("each style groups words into the line capacities it was designed for", () => {
+test("each theme preset uses the default three-word line capacity unless it has a specific override", () => {
   const words = Array.from({ length: 12 }, (_, i) => ({
     word: `w${i}`,
     start: i,
@@ -89,8 +64,9 @@ test("each style groups words into the line capacities it was designed for", () 
       words,
       DEFAULT_CAPTION_PRESETS.find((preset) => preset._id === id)!,
     )[0].words.length;
-  assert.equal(firstLineWords("cc-bold-punch"), 3);
-  assert.equal(firstLineWords("cc-kinetic"), 2);
-  assert.equal(firstLineWords("cc-minimalist"), 6);
-  assert.equal(firstLineWords("cc-composite"), 2);
+
+  assert.equal(firstLineWords("caption-theme-kinetic-01"), 3);
+  assert.equal(firstLineWords("caption-theme-kinetic-02"), 3);
+  assert.equal(firstLineWords("caption-theme-podcast"), 3);
+  assert.equal(firstLineWords("caption-theme-simple-one-word"), 3);
 });

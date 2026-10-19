@@ -19,7 +19,6 @@ import {
   DEFAULT_CAPTION_PRESETS,
   DEFAULT_OVERLAY_STYLE_PRESETS,
   DEFAULT_PROMPT_TEMPLATES,
-  RETIRED_CAPTION_PRESET_IDS,
 } from "./presets";
 import { AppError } from "./errors";
 
@@ -620,53 +619,6 @@ export function saveAppSettingsSection(
   return updatedAt;
 }
 
-/**
- * One-way cleanup for the caption redesign: deletes the retired built-in caption presets
- * (RETIRED_CAPTION_PRESET_IDS) from an existing database and re-points everything that
- * still referenced them at the new default. Idempotent - a database without retired rows
- * is untouched. User-created presets (any other id) are never touched.
- */
-function retireOldCaptionPresets(db: SqliteDatabase): void {
-  const retired = [...RETIRED_CAPTION_PRESET_IDS];
-  const marks = retired.map(() => "?").join(", ");
-  const present = db
-    .prepare(`SELECT id FROM caption_presets WHERE id IN (${marks})`)
-    .all(...retired) as Array<{ id: string }>;
-  const newDefaultId = DEFAULT_CAPTION_PRESETS.find(
-    (preset) => preset.isDefault === true,
-  )?._id;
-  if (!newDefaultId) return;
-
-  // 1. The default must never be a retired row (clear first: the unique index allows one default).
-  const currentDefault = db
-    .prepare("SELECT id FROM caption_presets WHERE is_default = 1 LIMIT 1")
-    .get() as { id: string } | undefined;
-  if (!currentDefault || retired.includes(currentDefault.id)) {
-    db.prepare(
-      "UPDATE caption_presets SET is_default = 0 WHERE is_default = 1",
-    ).run();
-    db.prepare("UPDATE caption_presets SET is_default = 1 WHERE id = ?").run(
-      newDefaultId,
-    );
-  }
-  if (present.length === 0) return;
-
-  // 2. Clips and the saved render settings that pointed at a retired preset.
-  db.prepare(
-    `UPDATE clips SET record_json = json_set(record_json, '$.captionPresetId', ?)
-       WHERE json_extract(record_json, '$.captionPresetId') IN (${marks})`,
-  ).run(newDefaultId, ...retired);
-  db.prepare(
-    `UPDATE app_settings SET value_json = json_set(value_json, '$.captionPresetId', ?)
-       WHERE key = 'render' AND json_extract(value_json, '$.captionPresetId') IN (${marks})`,
-  ).run(newDefaultId, ...retired);
-
-  // 3. Finally the retired rows themselves.
-  db.prepare(`DELETE FROM caption_presets WHERE id IN (${marks})`).run(
-    ...retired,
-  );
-}
-
 function seedDefaults(db: SqliteDatabase): void {
   const insertCaption = db.prepare(`
     INSERT OR IGNORE INTO caption_presets
@@ -726,8 +678,6 @@ function seedDefaults(db: SqliteDatabase): void {
         if (promoted.changes > 0) captionDefaultExists = true;
       }
     }
-
-    retireOldCaptionPresets(db);
 
     for (const preset of DEFAULT_OVERLAY_STYLE_PRESETS) {
       const { _id, kind, name, isDefault, createdAt, updatedAt, ...config } =
