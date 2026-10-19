@@ -24,24 +24,24 @@ function chunk(id: string, start: number, text: string): CaptionChunk {
   };
 }
 
-test("all 13 upstream themes are present in the typed catalog and vendor registry", () => {
+test("all caption themes are present in the typed catalog and vendor registry", () => {
   assert.deepEqual(
     CAPTION_THEME_CATALOG.map((theme) => theme.id),
     CAPTION_THEME_NAMES,
   );
   assert.deepEqual(Object.keys(themeRegistry), CAPTION_THEME_NAMES);
-  assert.equal(CAPTION_THEME_CATALOG.length, 13);
+  assert.equal(CAPTION_THEME_CATALOG.length, 20);
   assert.ok(isCaptionThemeName("kinetic-01"));
   assert.ok(!isCaptionThemeName("unknown-theme"));
 
   assert.equal(
     DEFAULT_CAPTION_PRESETS.length,
-    13,
+    20,
     "the application keeps only the shipped theme captions",
   );
   assert.equal(
     DEFAULT_CAPTION_PRESETS.filter((preset) => preset.captionTheme).length,
-    13,
+    20,
     "each upstream theme has one caption preset",
   );
   assert.deepEqual(
@@ -50,7 +50,7 @@ test("all 13 upstream themes are present in the typed catalog and vendor registr
   );
   assert.equal(
     new Set(DEFAULT_CAPTION_PRESETS.map((preset) => preset.captionTheme)).size,
-    13,
+    20,
   );
   assert.equal(DEFAULT_CAPTION_PRESETS[0].captionTheme, "kinetic-01");
   assert.equal(DEFAULT_CAPTION_PRESETS[0].name, "Kinetic 01");
@@ -63,41 +63,52 @@ test("all 13 upstream themes are present in the typed catalog and vendor registr
 
 test("ClipCraft caption words adapt to the theme data contract without changing masked text or timing", () => {
   const source = [chunk("a", 0.5, "W***"), chunk("b", 1.2, "next")];
-  const selected = selectThemeCaptionData(source, "pop", 0.6);
+  const selected = selectThemeCaptionData(source, "kinetic-01", 0.6);
   assert.deepEqual(selected?.data, {
     lines: [{ words: [{ text: "W***", start: 0.5, end: 0.9 }] }],
   });
 
   // The previous line is held briefly, then the next line appears and eventually clears.
   assert.equal(
-    selectThemeCaptionData(source, "pop", 1.24)?.activeChunk.id,
+    selectThemeCaptionData(source, "kinetic-01", 1.24)?.activeChunk.id,
     "a",
   );
   assert.equal(
-    selectThemeCaptionData(source, "pop", 1.26)?.activeChunk.id,
+    selectThemeCaptionData(source, "kinetic-01", 1.26)?.activeChunk.id,
     "b",
   );
-  assert.equal(selectThemeCaptionData(source, "pop", 2.0), null);
+  assert.equal(selectThemeCaptionData(source, "kinetic-01", 2.0), null);
 });
 
-test("Podcast receives its matching two-line pair; other themes receive one active line", () => {
+test("all remaining themes receive one active caption line", () => {
   const source = [
     chunk("a", 0.1, "first"),
     chunk("b", 0.7, "second"),
     chunk("c", 1.3, "third"),
     chunk("d", 1.9, "fourth"),
   ];
-  const podcast = selectThemeCaptionData(source, "podcast", 1.46);
-  assert.deepEqual(
-    podcast?.data.lines.map((line) => line.words[0].text),
-    ["third", "fourth"],
-  );
-
   const kinetic = selectThemeCaptionData(source, "kinetic-01", 1.46);
   assert.deepEqual(
     kinetic?.data.lines.map((line) => line.words[0].text),
     ["third"],
   );
+});
+
+test("retired caption themes are absent from the catalog and registry", () => {
+  const retired = [
+    "pop", "kinetic-02", "hustle", "beast", "simple-one-word", "podcast",
+    "flush-poster", "left-ladder", "right-ladder", "step-column", "arc-title",
+    "wave-arc", "crescent-type", "tilted-run", "offset-columns", "duplex-type",
+    "numbered-ledger", "index-list", "manifesto-list", "mosaic-grid",
+    "mosaic-editorial", "mosaic-cutout", "mosaic-diagonal", "ribbon-sweep",
+    "ribbon-offset", "ribbon-double", "ribbon-signal", "orbit-tilt", "orbit-index",
+    "orbit-counter", "orbit-words", "corner-bracket", "open-frame", "caption-frame",
+    "stencil-block", "stencil-outline", "stencil-stripe", "stencil-invert",
+  ];
+  for (const theme of retired) {
+    assert.ok(!isCaptionThemeName(theme), `${theme} is no longer a caption theme`);
+    assert.ok(!(theme in themeRegistry), `${theme} has no Remotion component`);
+  }
 });
 
 test("theme Hook/CTA styling follows the caption accent and preserves saved overlay geometry", () => {

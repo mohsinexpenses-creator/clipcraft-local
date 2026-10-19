@@ -1509,48 +1509,28 @@ export async function saveCaptionPreset(
   return (await getCaptionPreset(_id)) ?? preset;
 }
 
-/**
- * Restore the shipped caption presets. Rows are identified by id, so a built-in the user
- * edited is written back to the values in `lib/presets.ts`; presets the user created are
- * untouched, and the row marked default stays default (a deliberate choice is not a
- * stale value to sync). This is the fix for "the database still has last month's copy of
- * a built-in preset", which `INSERT OR IGNORE` seeding can never repair on its own.
- */
+/** Replace every stored caption preset with the current shipped code defaults. */
 export async function resetCaptionPresets(): Promise<CaptionPreset[]> {
   const db = getDatabase();
   const now = new Date().toISOString();
-  const upsert = db.prepare(`
+  const insert = db.prepare(`
     INSERT INTO caption_presets (id, name, is_default, created_at, updated_at, config_json)
     VALUES (?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET
-      name = excluded.name,
-      updated_at = excluded.updated_at,
-      config_json = excluded.config_json
   `);
 
   db.transaction(() => {
-    for (const preset of DEFAULT_CAPTION_PRESETS) {
-      // Destructuring is how the column fields stay out of `config_json`, which is
-      // everything left over. `is_default` is deliberately NOT part of the conflict update
-      // either: a default the user picked on another row must survive, and setting it here
-      // could put two rows at 1 against the unique index.
-      const { _id, name, isDefault, createdAt, updatedAt, ...config } = preset;
-      void isDefault;
-      void updatedAt;
-      upsert.run(_id, name, 0, createdAt ?? now, now, serializeJson(config));
-    }
+    db.prepare("DELETE FROM caption_presets").run();
 
-    // A database with no default at all (a half-finished migration, or a hand-edited row)
-    // is repaired, because every render needs one; a deliberate choice is left alone.
-    const hasDefault = db
-      .prepare("SELECT 1 FROM caption_presets WHERE is_default = 1 LIMIT 1")
-      .get();
-    const shippedDefault = DEFAULT_CAPTION_PRESETS.find(
-      (preset) => preset.isDefault === true,
-    );
-    if (!hasDefault && shippedDefault) {
-      db.prepare("UPDATE caption_presets SET is_default = 1 WHERE id = ?").run(
-        shippedDefault._id,
+    for (const preset of DEFAULT_CAPTION_PRESETS) {
+      const { _id, name, isDefault, createdAt, updatedAt, ...config } = preset;
+      void updatedAt;
+      insert.run(
+        _id,
+        name,
+        isDefault === true ? 1 : 0,
+        createdAt ?? now,
+        now,
+        serializeJson(config),
       );
     }
   }).immediate();

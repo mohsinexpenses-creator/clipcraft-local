@@ -6,6 +6,19 @@ import {
 } from "./types";
 import { CAPTION_THEME_CATALOG } from "./caption-theme-styles";
 
+const SIX_WORD_CAPTION_THEMES = [
+  "pull-quote",
+  "waveform",
+  "focus-dial",
+  "poster-stack",
+  "news-poster",
+  "cut-poster",
+  "split-column",
+  "editorial-columns",
+  "timestamp-ledger",
+  "split-bracket",
+] as const;
+
 export const DEFAULT_FILTER_PRESETS: FilterPreset[] = [
   {
     id: "none",
@@ -65,7 +78,15 @@ const THEME_CAPTION_PRESETS: CaptionPreset[] = CAPTION_THEME_CATALOG.filter(
   uppercase: true,
   lineStyles: [
     {
-      maxWords: 3,
+      maxWords: SIX_WORD_CAPTION_THEMES.includes(
+        theme.id as (typeof SIX_WORD_CAPTION_THEMES)[number],
+      )
+        ? 6
+        : theme.id === "staggered-stack" ||
+          theme.id === "vertical-ticker" ||
+          theme.id === "staircase"
+          ? 5
+          : 3,
       fontFamily: "Poppins, Arial, sans-serif",
       fontSize: 64,
       fontWeight: "black",
@@ -87,7 +108,7 @@ const THEME_CAPTION_PRESETS: CaptionPreset[] = CAPTION_THEME_CATALOG.filter(
 
 /**
  * The shipped catalogue is theme-only: every built-in caption is one of the
- * 13 Remotion caption themes, with Kinetic 01 as the default entry.
+ * Remotion caption themes, with Kinetic 01 as the default entry.
  */
 export const DEFAULT_CAPTION_PRESETS: CaptionPreset[] = [
   {

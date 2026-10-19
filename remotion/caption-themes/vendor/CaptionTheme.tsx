@@ -7,11 +7,11 @@ export const CaptionTheme: React.FC<CaptionThemeProps> = ({
   primaryColor,
   secondaryColor,
   data,
-  theme = "pop",
+  theme = "kinetic-01",
   fontSize,
 }) => {
   const colors = resolveColors(primaryColor, secondaryColor);
-  const ThemeComponent = themeRegistry[theme] || themeRegistry.pop;
+  const ThemeComponent = themeRegistry[theme] || themeRegistry["kinetic-01"];
 
   return (
     <ThemeComponent

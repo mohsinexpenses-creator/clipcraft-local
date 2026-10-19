@@ -9,7 +9,6 @@ const THEME_FONT_FILES = [
   { family: 'Montserrat', file: 'Montserrat-Variable.ttf', weight: '100 900' },
   { family: 'Dancing Script', file: 'DancingScript-Variable.ttf', weight: '100 900' },
   { family: 'Rajdhani', file: 'Rajdhani-Bold.ttf', weight: '700' },
-  { family: 'Bangers', file: 'Bangers-Regular.ttf', weight: '400' },
 ];
 
 const FONT_FACE_FILES = [

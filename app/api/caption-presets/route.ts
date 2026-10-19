@@ -143,9 +143,8 @@ export async function POST(request: Request) {
   try {
     const body = await request.json() as Record<string, unknown>;
 
-    // `{ "action": "reset" }` re-syncs the built-in presets from `lib/presets.ts` over
-    // whatever the database currently holds. Seeding is `INSERT OR IGNORE`, so without
-    // this a row created by an older build would keep the old style forever.
+    // `{ "action": "reset" }` replaces every database row with the current shipped
+    // defaults from `lib/presets.ts`, including restoring the shipped default preset.
     if (body.action === 'reset') {
       const presets = await resetCaptionPresets();
       return NextResponse.json({ success: true, presets });

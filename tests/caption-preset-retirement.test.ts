@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DEFAULT_CAPTION_PRESETS } from "../lib/presets";
+import { CAPTION_THEME_NAMES } from "../lib/types";
 import { createTemporaryDatabase } from "./sqlite-test-helpers";
 
-test("theme-only seed keeps the 13 shipped caption themes and preserves custom rows", (t) => {
+test("theme-only seed keeps the shipped caption themes and preserves custom rows", (t) => {
   const { db, openConnection } = createTemporaryDatabase(t);
 
   db.prepare("UPDATE caption_presets SET is_default = 0").run();
@@ -20,7 +21,7 @@ test("theme-only seed keeps the 13 shipped caption themes and preserves custom r
     .all() as Array<{ id: string; is_default: number | null }>;
   const ids = rows.map((row) => row.id);
 
-  assert.equal(DEFAULT_CAPTION_PRESETS.length, 13);
+  assert.equal(DEFAULT_CAPTION_PRESETS.length, CAPTION_THEME_NAMES.length);
   assert.ok(
     DEFAULT_CAPTION_PRESETS.every((preset) =>
       preset._id.startsWith("caption-theme-"),

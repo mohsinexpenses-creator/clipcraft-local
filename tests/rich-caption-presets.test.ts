@@ -7,7 +7,7 @@ import { DEFAULT_CAPTION_PRESETS } from "../lib/presets";
 import { splitCaptionWordsIntoLines } from "../lib/caption-layout";
 import { CAPTION_THEME_NAMES } from "../lib/types";
 
-test("the built-in caption catalogue only ships the 13 theme presets", () => {
+test("the built-in caption catalogue only ships current theme presets", () => {
   assert.deepEqual(
     DEFAULT_CAPTION_PRESETS.map((preset) => preset._id),
     [
@@ -17,10 +17,10 @@ test("the built-in caption catalogue only ships the 13 theme presets", () => {
       ),
     ],
   );
-  assert.equal(DEFAULT_CAPTION_PRESETS.length, 13);
+  assert.equal(DEFAULT_CAPTION_PRESETS.length, CAPTION_THEME_NAMES.length);
   assert.equal(
     DEFAULT_CAPTION_PRESETS.filter((preset) => preset.captionTheme).length,
-    13,
+    CAPTION_THEME_NAMES.length,
   );
   assert.equal(
     DEFAULT_CAPTION_PRESETS.filter((preset) => preset.isDefault).length,
@@ -66,7 +66,14 @@ test("each theme preset uses the default three-word line capacity unless it has 
     )[0].words.length;
 
   assert.equal(firstLineWords("caption-theme-kinetic-01"), 3);
-  assert.equal(firstLineWords("caption-theme-kinetic-02"), 3);
-  assert.equal(firstLineWords("caption-theme-podcast"), 3);
-  assert.equal(firstLineWords("caption-theme-simple-one-word"), 3);
+  assert.equal(firstLineWords("caption-theme-karaoke"), 3);
+  assert.equal(firstLineWords("caption-theme-grape"), 3);
+  assert.equal(firstLineWords("caption-theme-pull-quote"), 6);
+  assert.equal(firstLineWords("caption-theme-waveform"), 6);
+  assert.equal(firstLineWords("caption-theme-staggered-stack"), 5);
+  assert.equal(firstLineWords("caption-theme-focus-dial"), 6);
+  assert.equal(firstLineWords("caption-theme-vertical-ticker"), 5);
+  assert.equal(firstLineWords("caption-theme-staircase"), 5);
+  assert.equal(firstLineWords("caption-theme-poster-stack"), 6);
+  assert.equal(firstLineWords("caption-theme-split-column"), 6);
 });

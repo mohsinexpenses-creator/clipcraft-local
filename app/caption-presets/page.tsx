@@ -392,8 +392,8 @@ export default function CaptionPresetsPage() {
    */
   const handleResetBuiltIns = async () => {
     const ok = window.confirm(
-      "Restore the built-in caption, hook and CTA styles from the shipped presets?\n\n" +
-        "Anything you created yourself stays, and so does the preset marked as default.",
+      "Reset all caption presets to the shipped code defaults?\n\n" +
+        "Every saved caption preset, including custom ones, will be deleted. The shipped default caption will be restored. Hook and CTA presets will also be re-synced.",
     );
     if (!ok) return;
 
@@ -429,7 +429,7 @@ export default function CaptionPresetsPage() {
       if (restored) setActivePreset(restored);
       setOverlayRevision((value) => value + 1);
       setNotice(
-        "Built-in caption and overlay styles re-synced with the shipped presets.",
+        "All caption presets were replaced with shipped defaults. Hook and CTA styles were re-synced.",
       );
       setTimeout(() => setNotice(null), 8000);
     } catch (err) {
@@ -719,7 +719,7 @@ export default function CaptionPresetsPage() {
                           adjustable.
                         </p>
                         <p className="text-xs text-muted-foreground">
-                          The 13 theme animations are rendered by Remotion in
+                          The {CAPTION_THEME_CATALOG.length} theme animations are rendered by Remotion in
                           headless Chrome.
                         </p>
                       </div>

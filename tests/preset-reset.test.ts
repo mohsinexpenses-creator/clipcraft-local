@@ -45,7 +45,7 @@ test("database startup seeds each separate theme card into a pre-existing databa
   const addedThemeIds = DEFAULT_CAPTION_PRESETS.filter((preset) =>
     preset._id.startsWith("caption-theme-"),
   ).map((preset) => preset._id);
-  assert.equal(addedThemeIds.length, 13);
+  assert.equal(addedThemeIds.length, CAPTION_THEME_NAMES.length);
 
   const removeBuiltInThemes = db.prepare(
     "DELETE FROM caption_presets WHERE id = ?",
@@ -57,17 +57,17 @@ test("database startup seeds each separate theme card into a pre-existing databa
   const themed = seeded.filter((preset) => preset.captionTheme);
   assert.equal(
     seeded.length,
-    13,
-    "the shipped catalogue has only the 13 theme presets",
+    CAPTION_THEME_NAMES.length,
+    "the shipped catalogue contains the current code themes",
   );
-  assert.equal(themed.length, 13, "each uploaded theme is represented once");
+  assert.equal(themed.length, CAPTION_THEME_NAMES.length, "each theme is represented once");
   assert.deepEqual(
     themed.map((preset) => preset.captionTheme).sort(),
     [...CAPTION_THEME_NAMES].sort(),
   );
 });
 
-test("reset restores an edited built-in and leaves custom rows alone", async (t) => {
+test("reset replaces all caption rows with shipped defaults and restores the shipped default", async (t) => {
   createTemporaryDatabase(t);
 
   const builtIn = captionFrom(firstCaptionId);
@@ -119,19 +119,41 @@ test("reset restores an edited built-in and leaves custom rows alone", async (t)
   assert.equal(restored.textColor, builtIn.textColor);
   assert.equal(restored.highlightColor, builtIn.highlightColor);
 
-  const untouched = presets.find((preset) => preset._id === custom._id);
-  assert.ok(untouched, "the custom row is still there");
-  assert.equal(untouched.name, "Mine");
-  assert.equal(untouched.fontSize, 44);
-  assert.equal(untouched.textColor, "#EEEEEE");
-  assert.equal(untouched.animationStyle, "static");
-  assert.equal(untouched.fontFamily, "Georgia, serif");
-
+  assert.equal(presets.length, DEFAULT_CAPTION_PRESETS.length);
+  assert.ok(!presets.some((preset) => preset._id === custom._id), "custom row is removed");
   assert.equal(
     (await getDefaultCaptionPreset())?._id,
-    custom._id,
-    "the default the user picked survives a reset",
+    shippedDefaultId,
+    "the shipped code default is restored",
   );
+});
+
+test("reset does not resurrect retired caption themes from an older database", async (t) => {
+  const { db } = createTemporaryDatabase(t);
+  const retiredIds = [
+    "kinetic-02", "hustle", "beast", "simple-one-word", "podcast", "flush-poster",
+    "left-ladder", "right-ladder", "step-column", "arc-title", "wave-arc",
+    "crescent-type", "tilted-run", "offset-columns", "duplex-type", "numbered-ledger",
+    "index-list", "manifesto-list", "mosaic-grid", "mosaic-editorial", "mosaic-cutout",
+    "mosaic-diagonal", "ribbon-sweep", "ribbon-offset", "ribbon-double", "ribbon-signal",
+    "orbit-tilt", "orbit-index", "orbit-counter", "orbit-words", "corner-bracket",
+    "open-frame", "caption-frame", "stencil-block", "stencil-outline", "stencil-stripe",
+    "stencil-invert",
+  ];
+  const insertLegacy = db.prepare(
+    `INSERT INTO caption_presets (id, name, is_default, created_at, updated_at, config_json)
+     VALUES (?, ?, 0, 'legacy', 'legacy', ?)`
+  );
+  for (const theme of retiredIds) {
+    insertLegacy.run(`caption-theme-${theme}`, theme, JSON.stringify({ captionTheme: theme }));
+  }
+
+  const result = await resetCaptionPresets();
+  assert.equal(result.length, DEFAULT_CAPTION_PRESETS.length);
+  assert.ok(
+    result.every((preset) => !retiredIds.includes(preset.captionTheme ?? "")),
+  );
+  assert.equal((await getDefaultCaptionPreset())?._id, shippedDefaultId);
 });
 
 test("reset promotes the shipped default only when nothing is marked default", async (t) => {

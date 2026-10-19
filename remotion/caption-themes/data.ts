@@ -30,7 +30,7 @@ function toThemeWord(word: WordTimestamp): ThemeCaptionWord {
 /**
  * Adapt ClipCraft's final, already-shifted/masked caption chunks to the upstream
  * theme contract (`lines[].words[].text`). Exactly one active chunk is supplied
- * for regular themes; Podcast receives the matching two-line pair it expects.
+ * to each theme composition.
  */
 export function selectThemeCaptionData(
   chunks: CaptionChunk[],
@@ -57,10 +57,7 @@ export function selectThemeCaptionData(
   if (selectedIndex < 0) return null;
 
   const activeChunk = chunks[selectedIndex];
-  const lineStart = theme === 'podcast' ? Math.floor(selectedIndex / 2) * 2 : selectedIndex;
-  const lineCount = theme === 'podcast' ? 2 : 1;
-  const lines = chunks
-    .slice(lineStart, lineStart + lineCount)
+  const lines = [chunks[selectedIndex]]
     .map((chunk) => ({ words: chunk.words.map(toThemeWord) }))
     .filter((line) => line.words.length > 0);
 

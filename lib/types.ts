@@ -514,19 +514,26 @@ export type CaptionAnimationStyle =
 
 /** Theme-library caption animations available to presets (rendered by Remotion). */
 export const CAPTION_THEME_NAMES = [
-  "pop",
   "karaoke",
   "kinetic-01",
-  "kinetic-02",
-  "hustle",
   "grape",
-  "beast",
   "poppin",
   "aarit",
   "soft-ai",
   "gaming-stream",
-  "simple-one-word",
-  "podcast",
+  "pull-quote",
+  "waveform",
+  "staggered-stack",
+  "focus-dial",
+  "vertical-ticker",
+  "poster-stack",
+  "news-poster",
+  "cut-poster",
+  "staircase",
+  "split-column",
+  "editorial-columns",
+  "timestamp-ledger",
+  "split-bracket",
 ] as const;
 
 export type CaptionThemeName = (typeof CAPTION_THEME_NAMES)[number];
@@ -569,7 +576,7 @@ export interface CaptionPreset {
   lineGap?: number;
   /** Horizontal alignment for rich line blocks. */
   lineAlignment?: "left" | "center" | "right";
-  /** One of the 13 Remotion caption themes; theme selection is the only shipped preset mode. */
+  /** One of the Remotion caption themes; theme selection is the only shipped preset mode. */
   captionTheme?: CaptionThemeName;
   /** When true, Hook and CTA cards inherit the selected theme's font, palette, card and motion. */
   matchOverlayTheme?: boolean;
