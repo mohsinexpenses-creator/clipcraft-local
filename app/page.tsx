@@ -31,7 +31,12 @@ import type {
   SettingsLimits,
 } from "@/lib/types";
 import { isPipelineOptionsEqual } from "@/lib/pipeline-defaults";
-import { clipScore, formatClock, formatDuration, stageMeta } from "@/lib/pipeline-ui";
+import {
+  clipScore,
+  formatClock,
+  formatDuration,
+  stageMeta,
+} from "@/lib/pipeline-ui";
 import type { VideoListItem } from "@/lib/pipeline-ui";
 import { usePipeline } from "@/hooks/use-pipeline";
 import { sortClipsForGrid } from "@/lib/pipeline-ui";
@@ -48,7 +53,11 @@ import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useToast } from "@/components/ui/toaster";
 import {
   Dialog,
@@ -76,7 +85,10 @@ function formatTime(seconds: number) {
   return `${m}:${s < 10 ? "0" : ""}${s}`;
 }
 
-function formatTranscriptionEngine(video: { transcriptionProvider?: string; transcriptionModel?: string }) {
+function formatTranscriptionEngine(video: {
+  transcriptionProvider?: string;
+  transcriptionModel?: string;
+}) {
   if (!video.transcriptionProvider) return "engine pending";
   if (video.transcriptionProvider === "deepgram") {
     return `Deepgram · ${video.transcriptionModel || "nova-2"}`;
@@ -115,7 +127,7 @@ function VideoRow({
         "focus-visible:ring-2 focus-visible:ring-ring/40",
         selected
           ? "border-primary/35 bg-accent/70 shadow-[var(--shadow-card)]"
-          : "border-transparent hover:border-border hover:bg-muted/70"
+          : "border-transparent hover:border-border hover:bg-muted/70",
       )}
     >
       <div className="flex items-start justify-between gap-2">
@@ -143,7 +155,9 @@ function VideoRow({
         {video.counts.done > 0 && (
           <>
             <span className="text-muted-foreground/50">·</span>
-            <span className="tabular text-emerald-600 dark:text-emerald-400">{video.counts.done} ready</span>
+            <span className="tabular text-emerald-600 dark:text-emerald-400">
+              {video.counts.done} ready
+            </span>
           </>
         )}
       </div>
@@ -152,15 +166,25 @@ function VideoRow({
         <span
           className={cn(
             "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium ring-1 ring-inset",
-            meta.chip
+            meta.chip,
           )}
         >
-          <span className={cn("size-1 rounded-full", meta.bar, active && "animate-pulse")} />
+          <span
+            className={cn(
+              "size-1 rounded-full",
+              meta.bar,
+              active && "animate-pulse",
+            )}
+          />
           {meta.label}
         </span>
         <span className="h-1 flex-1 overflow-hidden rounded-full bg-muted">
           <span
-            className={cn("block h-full rounded-full transition-[width] duration-700", meta.bar, active && "progress-live")}
+            className={cn(
+              "block h-full rounded-full transition-[width] duration-700",
+              meta.bar,
+              active && "progress-live",
+            )}
             style={{ width: `${Math.max(3, video.pipelineStatus.progress)}%` }}
           />
         </span>
@@ -186,12 +210,14 @@ function StatChip({
         {icon}
       </span>
       <div className="min-w-0">
-        <p className="text-[10px] leading-none tracking-wide text-muted-foreground uppercase">{label}</p>
+        <p className="text-[10px] leading-none tracking-wide text-muted-foreground uppercase">
+          {label}
+        </p>
         <p
           className={cn(
             "mt-0.5 text-[13px] leading-none font-semibold tabular",
             tone === "success" && "text-emerald-600 dark:text-emerald-400",
-            tone === "warn" && "text-amber-600 dark:text-amber-400"
+            tone === "warn" && "text-amber-600 dark:text-amber-400",
           )}
         >
           {value}
@@ -225,16 +251,24 @@ function DashboardContent() {
   const [editingClip, setEditingClip] = useState<ClipRecord | null>(null);
   const [transcriptOpen, setTranscriptOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [automationDraft, setAutomationDraft] = useState<PipelineOptions | null>(null);
+  const [automationDraft, setAutomationDraft] =
+    useState<PipelineOptions | null>(null);
 
-  const selectedVideo = videoId ? videos.find((video) => video._id === videoId) ?? null : null;
+  const selectedVideo = videoId
+    ? (videos.find((video) => video._id === videoId) ?? null)
+    : null;
   const video = detail?.video;
 
   // Defaults for the settings dialog come from the video, then from the
   // browser's "next upload" defaults.
-  const effectivePipeline = automationDraft ?? detail?.status.pipeline ?? video?.pipeline ?? null;
+  const effectivePipeline =
+    automationDraft ?? detail?.status.pipeline ?? video?.pipeline ?? null;
   const settingsDirty =
-    automationDraft !== null && !isPipelineOptionsEqual(automationDraft, detail?.status.pipeline ?? video?.pipeline);
+    automationDraft !== null &&
+    !isPipelineOptionsEqual(
+      automationDraft,
+      detail?.status.pipeline ?? video?.pipeline,
+    );
 
   const stage = status?.stage ?? selectedVideo?.pipelineStatus.stage;
   const stageMeta = stage ? stageMetaOf(stage) : null;
@@ -242,7 +276,8 @@ function DashboardContent() {
   const filteredClips = useMemo(() => {
     const sorted = sortClipsForGrid(clips, sort);
     const byFilter = sorted.filter((clip) => {
-      if (filter === "live") return clip.status === "processing" || clip.status === "pending";
+      if (filter === "live")
+        return clip.status === "processing" || clip.status === "pending";
       if (filter === "ready") return clip.status === "done";
       if (filter === "failed") return clip.status === "failed";
       return true;
@@ -250,15 +285,29 @@ function DashboardContent() {
     const needle = query.trim().toLowerCase();
     if (!needle) return byFilter;
     return byFilter.filter((clip) =>
-      [clip.aiAnalysis?.viral_packaging.video_title, clip.hookText, clip.ctaText, clip.aiAnalysis?.why_this_will_go_viral]
+      [
+        clip.aiAnalysis?.viral_packaging.video_title,
+        clip.hookText,
+        clip.ctaText,
+        clip.aiAnalysis?.why_this_will_go_viral,
+      ]
         .filter(Boolean)
-        .some((field) => String(field).toLowerCase().includes(needle))
+        .some((field) => String(field).toLowerCase().includes(needle)),
     );
   }, [clips, filter, query, sort]);
 
-  const counts = status?.counts ?? { clips: 0, done: 0, active: 0, queued: 0, failed: 0, progress: 0 };
+  const counts = status?.counts ?? {
+    clips: 0,
+    done: 0,
+    active: 0,
+    queued: 0,
+    failed: 0,
+    progress: 0,
+  };
   const bestScore = useMemo(() => {
-    const scores = clips.map((clip) => clipScore(clip)).filter((score): score is number => score !== null);
+    const scores = clips
+      .map((clip) => clipScore(clip))
+      .filter((score): score is number => score !== null);
     return scores.length ? Math.max(...scores) : null;
   }, [clips]);
 
@@ -266,7 +315,9 @@ function DashboardContent() {
     const needle = query.trim().toLowerCase();
     // The search box filters the library only while no clip search is active.
     if (!needle) return videos;
-    return videos.filter((entry) => entry.originalName.toLowerCase().includes(needle));
+    return videos.filter((entry) =>
+      entry.originalName.toLowerCase().includes(needle),
+    );
   }, [query, videos]);
 
   const openSettings = () => {
@@ -276,7 +327,11 @@ function DashboardContent() {
 
   const confirmDeleteVideo = () => {
     if (!videoId) return;
-    if (window.confirm("Delete this video, its transcript and every clip? Rendered files are removed too.")) {
+    if (
+      window.confirm(
+        "Delete this video, its transcript and every clip? Rendered files are removed too.",
+      )
+    ) {
       void pipeline.deleteVideo(videoId);
     }
   };
@@ -286,10 +341,12 @@ function DashboardContent() {
       {/* ---------- page header ---------- */}
       <div className="flex animate-fade-up flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
-          <h1 className="text-[22px] leading-tight font-semibold tracking-tight">Studio</h1>
+          <h1 className="text-[22px] leading-tight font-semibold tracking-tight">
+            Studio
+          </h1>
           <p className="mt-1 text-[13px] text-muted-foreground">
-            Upload a landscape video and the pipeline transcribes it, finds the viral moments and renders
-            9:16 clips - no buttons in between.
+            Upload a landscape video and the pipeline transcribes it, finds the
+            viral moments and renders 9:16 clips - no hassle in between.
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -308,7 +365,11 @@ function DashboardContent() {
             </TooltipTrigger>
             <TooltipContent>Refresh</TooltipContent>
           </Tooltip>
-          <Button size="lg" nativeButton={false} render={<Link href="/upload" />}>
+          <Button
+            size="lg"
+            nativeButton={false}
+            render={<Link href="/upload" />}
+          >
             <Upload />
             Upload video
           </Button>
@@ -352,7 +413,12 @@ function DashboardContent() {
 
             <div className="subtle-scroll mt-2.5 max-h-[min(58vh,560px)] space-y-1 overflow-y-auto pr-0.5">
               {isLoading ? (
-                [0, 1, 2].map((index) => <Skeleton key={index} className="skeleton-sheen h-[86px] rounded-xl" />)
+                [0, 1, 2].map((index) => (
+                  <Skeleton
+                    key={index}
+                    className="skeleton-sheen h-[86px] rounded-xl"
+                  />
+                ))
               ) : filteredVideos.length === 0 ? (
                 <div className="rounded-xl border border-dashed px-4 py-8 text-center">
                   <p className="text-[12.5px] font-medium">
@@ -364,7 +430,13 @@ function DashboardContent() {
                       : "Upload a long-form landscape video to start the pipeline."}
                   </p>
                   {!videos.length && (
-                    <Button size="sm" variant="outline" className="mt-3" nativeButton={false} render={<Link href="/upload" />}>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="mt-3"
+                      nativeButton={false}
+                      render={<Link href="/upload" />}
+                    >
                       <Upload />
                       Upload video
                     </Button>
@@ -378,7 +450,11 @@ function DashboardContent() {
                     selected={entry._id === videoId}
                     onSelect={() => pipeline.selectVideo(entry._id)}
                     onDelete={() => {
-                      if (window.confirm(`Delete "${entry.originalName}" and its clips?`)) {
+                      if (
+                        window.confirm(
+                          `Delete "${entry.originalName}" and its clips?`,
+                        )
+                      ) {
                         void pipeline.deleteVideo(entry._id);
                       }
                     }}
@@ -390,26 +466,40 @@ function DashboardContent() {
         </aside>
 
         {/* ---------- main column ---------- */}
-        <div className="animate-fade-up min-w-0 space-y-4" style={{ animationDelay: "80ms" }}>
+        <div
+          className="animate-fade-up min-w-0 space-y-4"
+          style={{ animationDelay: "80ms" }}
+        >
           {!videoId ? (
             <div className="flex flex-col items-center gap-4 rounded-2xl border border-dashed bg-card/50 px-6 py-16 text-center">
               <span className="flex size-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
                 <Clapperboard className="size-7" />
               </span>
               <div className="max-w-md space-y-1.5">
-                <h2 className="text-lg font-semibold tracking-tight">Pick a video, or start a new one</h2>
+                <h2 className="text-lg font-semibold tracking-tight">
+                  Pick a video, or start a new one
+                </h2>
                 <p className="text-[13px] text-muted-foreground">
-                  Every video shows its live pipeline state here: transcript, viral detection, then the clip
-                  grid with scores and AI analytics.
+                  Every video shows its live pipeline state here: transcript,
+                  viral detection, then the clip grid with scores and AI
+                  analytics.
                 </p>
               </div>
               <div className="flex items-center gap-2">
-                <Button size="lg" nativeButton={false} render={<Link href="/upload" />}>
+                <Button
+                  size="lg"
+                  nativeButton={false}
+                  render={<Link href="/upload" />}
+                >
                   <Upload />
                   Upload video
                 </Button>
                 {videos.length > 0 && (
-                  <Button size="lg" variant="outline" onClick={() => pipeline.selectVideo(videos[0]._id)}>
+                  <Button
+                    size="lg"
+                    variant="outline"
+                    onClick={() => pipeline.selectVideo(videos[0]._id)}
+                  >
                     Open latest
                   </Button>
                 )}
@@ -426,11 +516,16 @@ function DashboardContent() {
               <section className="rounded-2xl border bg-card p-4 shadow-[var(--shadow-card)]">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
-                    <h2 className="truncate text-[15px] font-semibold tracking-tight" title={video.originalName}>
+                    <h2
+                      className="truncate text-[15px] font-semibold tracking-tight"
+                      title={video.originalName}
+                    >
                       {video.originalName}
                     </h2>
                     <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11.5px] text-muted-foreground">
-                      <span className="tabular">{formatClock(video.duration || 0)}</span>
+                      <span className="tabular">
+                        {formatClock(video.duration || 0)}
+                      </span>
                       <span className="text-muted-foreground/40">·</span>
                       <span className="tabular">
                         {video.width}×{video.height}
@@ -438,7 +533,10 @@ function DashboardContent() {
                       <span className="text-muted-foreground/40">·</span>
                       <span>{formatTranscriptionEngine(video)}</span>
                       <span className="text-muted-foreground/40">·</span>
-                      <span>uploaded {new Date(video.createdAt).toLocaleDateString()}</span>
+                      <span>
+                        uploaded{" "}
+                        {new Date(video.createdAt).toLocaleDateString()}
+                      </span>
                     </p>
                   </div>
 
@@ -453,7 +551,7 @@ function DashboardContent() {
                         onClick={() => {
                           if (
                             window.confirm(
-                              "Cancel the whole pipeline for this video?\n\nRendering clips stop, queued work is dropped, and automatic steps are switched off for this video."
+                              "Cancel the whole pipeline for this video?\n\nRendering clips stop, queued work is dropped, and automatic steps are switched off for this video.",
                             )
                           ) {
                             void pipeline.cancelPipeline(video._id);
@@ -474,11 +572,20 @@ function DashboardContent() {
                       size="sm"
                       variant="soft"
                       onClick={() =>
-                        effectivePipeline && void pipeline.detect(video._id, effectivePipeline.viral, false)
+                        effectivePipeline &&
+                        void pipeline.detect(
+                          video._id,
+                          effectivePipeline.viral,
+                          false,
+                        )
                       }
                       disabled={busy === "detect" || !detail.transcriptReady}
                     >
-                      {busy === "detect" ? <Loader2 className="animate-spin" /> : <Sparkles />}
+                      {busy === "detect" ? (
+                        <Loader2 className="animate-spin" />
+                      ) : (
+                        <Sparkles />
+                      )}
                       Detect again
                     </Button>
                     <Button
@@ -492,14 +599,29 @@ function DashboardContent() {
                           : "Run viral detection first"
                       }
                     >
-                      {busy === "renderAll" ? <Loader2 className="animate-spin" /> : <Clapperboard />}
+                      {busy === "renderAll" ? (
+                        <Loader2 className="animate-spin" />
+                      ) : (
+                        <Clapperboard />
+                      )}
                       Render pending
                       {counts.queued + counts.active > 0 && (
-                        <span className="ml-1 tabular opacity-70">{counts.queued + counts.active}</span>
+                        <span className="ml-1 tabular opacity-70">
+                          {counts.queued + counts.active}
+                        </span>
                       )}
                     </Button>
                     <Tooltip>
-                      <TooltipTrigger render={<Button size="icon-sm" variant="ghost" aria-label="Pipeline settings" onClick={openSettings} />}>
+                      <TooltipTrigger
+                        render={
+                          <Button
+                            size="icon-sm"
+                            variant="ghost"
+                            aria-label="Pipeline settings"
+                            onClick={openSettings}
+                          />
+                        }
+                      >
                         <Settings2 />
                       </TooltipTrigger>
                       <TooltipContent>Pipeline settings</TooltipContent>
@@ -518,7 +640,9 @@ function DashboardContent() {
                       >
                         <Captions />
                       </TooltipTrigger>
-                      <TooltipContent>Re-transcribe (re-detects and re-renders)</TooltipContent>
+                      <TooltipContent>
+                        Re-transcribe (re-detects and re-renders)
+                      </TooltipContent>
                     </Tooltip>
                     <Tooltip>
                       <TooltipTrigger
@@ -546,25 +670,53 @@ function DashboardContent() {
                       busy={Boolean(busy)}
                       onResume={() => void pipeline.resume(video._id)}
                       onRetryStep={(step) => {
-                        if (step.key === "transcript") void pipeline.transcribe(video._id);
+                        if (step.key === "transcript")
+                          void pipeline.transcribe(video._id);
                         else if (step.key === "analyze")
-                          void pipeline.detect(video._id, effectivePipeline?.viral ?? { clipCount: 10, minClipDuration: 60, maxClipDuration: 90, includeHookText: true, includeCta: true }, true);
-                        else void pipeline.renderAll(video._id, { clipIds: clips.filter((clip) => clip.status === "failed").map((clip) => clip._id) });
+                          void pipeline.detect(
+                            video._id,
+                            effectivePipeline?.viral ?? {
+                              clipCount: 10,
+                              minClipDuration: 60,
+                              maxClipDuration: 90,
+                              includeHookText: true,
+                              includeCta: true,
+                            },
+                            true,
+                          );
+                        else
+                          void pipeline.renderAll(video._id, {
+                            clipIds: clips
+                              .filter((clip) => clip.status === "failed")
+                              .map((clip) => clip._id),
+                          });
                       }}
                     />
                   </div>
                 )}
 
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <StatChip icon={<Clapperboard />} label="Clips" value={String(counts.clips)} />
+                  <StatChip
+                    icon={<Clapperboard />}
+                    label="Clips"
+                    value={String(counts.clips)}
+                  />
                   <StatChip
                     icon={<CheckCircle2 />}
                     label="Ready"
                     value={`${counts.done}/${counts.clips || 0}`}
-                    tone={counts.done && counts.done === counts.clips ? "success" : undefined}
+                    tone={
+                      counts.done && counts.done === counts.clips
+                        ? "success"
+                        : undefined
+                    }
                   />
                   <StatChip
-                    icon={<Loader2 className={counts.active ? "animate-spin" : undefined} />}
+                    icon={
+                      <Loader2
+                        className={counts.active ? "animate-spin" : undefined}
+                      />
+                    }
                     label="Rendering"
                     value={String(counts.active + counts.queued)}
                     tone={counts.active ? "warn" : undefined}
@@ -593,7 +745,9 @@ function DashboardContent() {
                 {detail.video.error && (
                   <Alert variant="destructive" className="mt-3">
                     <AlertCircle className="mt-0.5" />
-                    <AlertDescription className="text-[12px]">{detail.video.error}</AlertDescription>
+                    <AlertDescription className="text-[12px]">
+                      {detail.video.error}
+                    </AlertDescription>
                   </Alert>
                 )}
               </section>
@@ -606,7 +760,9 @@ function DashboardContent() {
                       Clips
                       <span className="rounded-md bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground tabular">
                         {filteredClips.length}
-                        {filteredClips.length !== counts.clips ? ` / ${counts.clips}` : ""}
+                        {filteredClips.length !== counts.clips
+                          ? ` / ${counts.clips}`
+                          : ""}
                       </span>
                     </h3>
                     <div className="flex items-center gap-0.5 rounded-lg border bg-card p-0.5">
@@ -624,7 +780,9 @@ function DashboardContent() {
                           onClick={() => setFilter(key)}
                           className={cn(
                             "rounded-md px-2 py-1 text-[11px] font-medium transition-colors",
-                            filter === key ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-muted"
+                            filter === key
+                              ? "bg-accent text-accent-foreground"
+                              : "text-muted-foreground hover:bg-muted",
                           )}
                         >
                           {label}
@@ -646,13 +804,29 @@ function DashboardContent() {
                     <Button
                       size="sm"
                       variant="ghost"
-                      onClick={() => setSort(sort === "run" ? "score" : sort === "score" ? "status" : "run")}
+                      onClick={() =>
+                        setSort(
+                          sort === "run"
+                            ? "score"
+                            : sort === "score"
+                              ? "status"
+                              : "run",
+                        )
+                      }
                       title="Change clip order"
                     >
                       <ArrowUpDown />
-                      {sort === "run" ? "Latest run" : sort === "score" ? "Top score" : "Status"}
+                      {sort === "run"
+                        ? "Latest run"
+                        : sort === "score"
+                          ? "Top score"
+                          : "Status"}
                     </Button>
-                    <Button size="sm" variant="ghost" onClick={() => setTranscriptOpen((open) => !open)}>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setTranscriptOpen((open) => !open)}
+                    >
                       <FileText />
                       Transcript
                     </Button>
@@ -675,14 +849,20 @@ function DashboardContent() {
                         <span className="mx-auto flex size-11 items-center justify-center rounded-full bg-primary/10 text-primary">
                           <Loader2 className="size-5 animate-spin" />
                         </span>
-                        <p className="mt-3 text-[13px] font-medium">{stageMeta.hint}</p>
+                        <p className="mt-3 text-[13px] font-medium">
+                          {stageMeta.hint}
+                        </p>
                         <p className="mx-auto mt-1 max-w-sm text-[11.5px] text-muted-foreground">
-                          Clips appear in this grid as soon as the AI finishes scoring the transcript - the
-                          renders queue themselves right after.
+                          Clips appear in this grid as soon as the AI finishes
+                          scoring the transcript - the renders queue themselves
+                          right after.
                         </p>
                         <div className="mx-auto mt-5 grid max-w-2xl grid-cols-1 gap-3 sm:grid-cols-3">
                           {[0, 1, 2].map((index) => (
-                            <Skeleton key={index} className="skeleton-sheen aspect-9/16 rounded-2xl" />
+                            <Skeleton
+                              key={index}
+                              className="skeleton-sheen aspect-9/16 rounded-2xl"
+                            />
                           ))}
                         </div>
                       </>
@@ -691,7 +871,9 @@ function DashboardContent() {
                         <span className="mx-auto flex size-11 items-center justify-center rounded-full bg-muted text-muted-foreground">
                           <Sparkles className="size-5" />
                         </span>
-                        <p className="mt-3 text-[13px] font-medium">No clips yet</p>
+                        <p className="mt-3 text-[13px] font-medium">
+                          No clips yet
+                        </p>
                         <p className="mx-auto mt-1 max-w-sm text-[11.5px] text-muted-foreground">
                           {detail.transcriptReady
                             ? "The transcript is ready - detection was skipped or paused. Start it, or turn the automation back on in Pipeline settings."
@@ -702,7 +884,12 @@ function DashboardContent() {
                             size="sm"
                             className="mt-4"
                             onClick={() =>
-                              effectivePipeline && void pipeline.detect(video._id, effectivePipeline.viral, true)
+                              effectivePipeline &&
+                              void pipeline.detect(
+                                video._id,
+                                effectivePipeline.viral,
+                                true,
+                              )
                             }
                           >
                             <Sparkles />
@@ -722,16 +909,27 @@ function DashboardContent() {
                       <div
                         key={clip._id}
                         className="animate-fade-up"
-                        style={{ animationDelay: `${Math.min(index, 8) * 35}ms` }}
+                        style={{
+                          animationDelay: `${Math.min(index, 8) * 35}ms`,
+                        }}
                       >
                         <ClipTile
                           clip={clip}
                           captionPresets={captionPresets}
-                          busy={busy === `render:${clip._id}` || busy === `save:${clip._id}`}
+                          busy={
+                            busy === `render:${clip._id}` ||
+                            busy === `save:${clip._id}`
+                          }
                           onEdit={setEditingClip}
-                          onRender={(target) => void pipeline.renderClip(target)}
-                          onCancel={(target) => void pipeline.cancelClip(target)}
-                          onDelete={(target) => void pipeline.deleteClip(target)}
+                          onRender={(target) =>
+                            void pipeline.renderClip(target)
+                          }
+                          onCancel={(target) =>
+                            void pipeline.cancelClip(target)
+                          }
+                          onDelete={(target) =>
+                            void pipeline.deleteClip(target)
+                          }
                         />
                       </div>
                     ))}
@@ -750,7 +948,11 @@ function DashboardContent() {
         onOpenChange={(open) => !open && setEditingClip(null)}
         captionPresets={captionPresets}
         overlayPresets={overlayPresets}
-        sourceUrl={video?.fileName ? `/api/media/uploads/${encodeURIComponent(video.fileName)}` : null}
+        sourceUrl={
+          video?.fileName
+            ? `/api/media/uploads/${encodeURIComponent(video.fileName)}`
+            : null
+        }
         videoDuration={video?.duration}
         busy={editingClip ? busy === `save:${editingClip._id}` : false}
         onSave={pipeline.saveClip}
@@ -768,8 +970,8 @@ function DashboardContent() {
           <DialogHeader>
             <DialogTitle>Pipeline & render settings</DialogTitle>
             <DialogDescription className="text-[12px]">
-              Both panels read from and save to the database, so what you see here is
-              exactly what the worker uses.
+              Both panels read from and save to the database, so what you see
+              here is exactly what the worker uses.
             </DialogDescription>
           </DialogHeader>
           <DialogBody>
@@ -786,19 +988,23 @@ function DashboardContent() {
                     onChange={setAutomationDraft}
                     onSave={() => {
                       if (!videoId || !automationDraft) return;
-                      void pipeline.saveAutomation(videoId, automationDraft).then((result) => {
-                        if (result) setAutomationDraft(null);
-                      });
+                      void pipeline
+                        .saveAutomation(videoId, automationDraft)
+                        .then((result) => {
+                          if (result) setAutomationDraft(null);
+                        });
                     }}
                     dirty={settingsDirty}
                     busy={busy === `automation:${videoId}`}
                   />
                 ) : (
-                  <p className="text-[12.5px] text-muted-foreground">Loading…</p>
+                  <p className="text-[12.5px] text-muted-foreground">
+                    Loading…
+                  </p>
                 )}
                 <p className="mt-3 text-[11px] leading-snug text-muted-foreground">
-                  Stored on this video (videos.pipeline_json) - it decides what the next
-                  automatic step does.
+                  Stored on this video (videos.pipeline_json) - it decides what
+                  the next automatic step does.
                 </p>
               </TabsContent>
 
@@ -815,13 +1021,19 @@ function DashboardContent() {
                       });
                       const data = await response.json().catch(() => ({}));
                       if (!response.ok) {
-                        throw new Error(String(data.error ?? "Could not save render settings."));
+                        throw new Error(
+                          String(
+                            data.error ?? "Could not save render settings.",
+                          ),
+                        );
                       }
                     }}
                     applyRenderDefaults={pipeline.applyRenderDefaults}
                   />
                 ) : (
-                  <p className="text-[12.5px] text-muted-foreground">Loading…</p>
+                  <p className="text-[12.5px] text-muted-foreground">
+                    Loading…
+                  </p>
                 )}
               </TabsContent>
             </Tabs>
@@ -852,14 +1064,22 @@ function RenderSettingsTab({
 }: {
   clips: ClipRecord[];
   onSaveDefaults: (value: RenderDefaults) => Promise<void>;
-  applyRenderDefaults: (targets: ClipRecord[], edits: Record<string, unknown>) => Promise<unknown>;
+  applyRenderDefaults: (
+    targets: ClipRecord[],
+    edits: Record<string, unknown>,
+  ) => Promise<unknown>;
 }) {
   const { toast } = useToast();
   const [snapshot, setSnapshot] = React.useState<{
     render: RenderDefaults;
     limits?: SettingsLimits;
     captionPresets: Array<{ id: string; name: string; isDefault: boolean }>;
-    overlayPresets: Array<{ id: string; kind: "hook" | "cta"; name: string; isDefault: boolean }>;
+    overlayPresets: Array<{
+      id: string;
+      kind: "hook" | "cta";
+      name: string;
+      isDefault: boolean;
+    }>;
   } | null>(null);
   const [loadError, setLoadError] = React.useState<string | null>(null);
   const [draft, setDraft] = React.useState<RenderDefaults | null>(null);
@@ -874,7 +1094,9 @@ function RenderSettingsTab({
         .then((data) => {
           if (ignore) return;
           if (!data?.effective?.render) {
-            setLoadError(String(data?.error ?? "Could not load the render defaults."));
+            setLoadError(
+              String(data?.error ?? "Could not load the render defaults."),
+            );
             return;
           }
           setSnapshot({
@@ -895,7 +1117,12 @@ function RenderSettingsTab({
           setLoadError(null);
         })
         .catch((error) => {
-          if (!ignore) setLoadError(error instanceof Error ? error.message : "Could not load the render defaults.");
+          if (!ignore)
+            setLoadError(
+              error instanceof Error
+                ? error.message
+                : "Could not load the render defaults.",
+            );
         });
     });
     return () => {
@@ -903,7 +1130,9 @@ function RenderSettingsTab({
     };
   }, []);
 
-  const unrendered = clips.filter((clip) => clip.status === "pending" || clip.status === "failed");
+  const unrendered = clips.filter(
+    (clip) => clip.status === "pending" || clip.status === "failed",
+  );
 
   const save = async () => {
     if (!draft || !snapshot) return;
@@ -915,13 +1144,16 @@ function RenderSettingsTab({
       const data = await response.json().catch(() => ({}));
       if (data?.effective?.render) {
         setSnapshot((current) =>
-          current ? { ...current, render: data.effective.render as RenderDefaults } : current
+          current
+            ? { ...current, render: data.effective.render as RenderDefaults }
+            : current,
         );
       }
       setDraft(null);
       toast({
         title: "Render settings saved",
-        description: "Stored in the database - the Settings page shows the same values.",
+        description:
+          "Stored in the database - the Settings page shows the same values.",
         tone: "success",
       });
       if (applyToClips && unrendered.length > 0) {
@@ -938,7 +1170,10 @@ function RenderSettingsTab({
     } catch (error) {
       toast({
         title: "Could not save render settings",
-        description: error instanceof Error ? error.message : "The server refused these settings.",
+        description:
+          error instanceof Error
+            ? error.message
+            : "The server refused these settings.",
         tone: "error",
       });
     } finally {
@@ -973,12 +1208,16 @@ function RenderSettingsTab({
       <div className="space-y-2.5 rounded-xl border bg-muted/30 p-3">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
-            <Label htmlFor="apply-to-clips" className="cursor-pointer text-[12px] font-medium">
-              Also update this video&apos;s unrendered clips ({unrendered.length})
+            <Label
+              htmlFor="apply-to-clips"
+              className="cursor-pointer text-[12px] font-medium"
+            >
+              Also update this video&apos;s unrendered clips (
+              {unrendered.length})
             </Label>
             <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
-              Clips keep the settings they were detected with; this writes the fresh
-              defaults onto every clip that is not rendered yet.
+              Clips keep the settings they were detected with; this writes the
+              fresh defaults onto every clip that is not rendered yet.
             </p>
           </div>
           <Switch
@@ -993,7 +1232,11 @@ function RenderSettingsTab({
           <p className="mr-auto text-[11px] text-muted-foreground">
             {draft ? "Not saved yet." : "In sync with the database."}
           </p>
-          <Button size="sm" onClick={() => void save()} disabled={!draft || saving}>
+          <Button
+            size="sm"
+            onClick={() => void save()}
+            disabled={!draft || saving}
+          >
             {saving ? <Loader2 className="animate-spin" /> : <CheckCircle2 />}
             Save render settings
           </Button>
@@ -1013,7 +1256,9 @@ function TranscriptPanel({
   videoId: string;
   onLoad: (id: string) => Promise<void>;
   isLoading: boolean;
-  transcript: { segments: { start: number; end: number; text: string }[] } | null;
+  transcript: {
+    segments: { start: number; end: number; text: string }[];
+  } | null;
 }) {
   // Fetching is delegated to the hook, which caches per video, so opening this
   // panel again - or switching back to a video - costs nothing.
@@ -1025,7 +1270,9 @@ function TranscriptPanel({
     <div className="animate-fade-in space-y-2 rounded-2xl border bg-card/60 p-3">
       <div className="flex items-center justify-between gap-2">
         <p className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
-          {transcript ? `${transcript.segments.length} segments` : "Loading transcript…"}
+          {transcript
+            ? `${transcript.segments.length} segments`
+            : "Loading transcript…"}
         </p>
         {transcript && (
           <Button
@@ -1033,7 +1280,10 @@ function TranscriptPanel({
             variant="outline"
             onClick={() => {
               const full = transcript.segments
-                .map((segment) => `[${formatTime(segment.start)} – ${formatTime(segment.end)}] ${segment.text}`)
+                .map(
+                  (segment) =>
+                    `[${formatTime(segment.start)} – ${formatTime(segment.end)}] ${segment.text}`,
+                )
                 .join("\n");
               void navigator.clipboard?.writeText(full).catch(() => undefined);
             }}
@@ -1050,7 +1300,10 @@ function TranscriptPanel({
           aria-label="Full transcript with timestamps"
           className="subtle-scroll h-40 w-full resize-y rounded-lg border border-border bg-background p-2.5 font-mono text-[11px] leading-relaxed shadow-inner focus:ring-1 focus:ring-ring focus:outline-none"
           value={(transcript?.segments ?? [])
-            .map((segment) => `[${formatTime(segment.start)} – ${formatTime(segment.end)}] ${segment.text}`)
+            .map(
+              (segment) =>
+                `[${formatTime(segment.start)} – ${formatTime(segment.end)}] ${segment.text}`,
+            )
             .join("\n")}
         />
       )}
@@ -1058,7 +1311,9 @@ function TranscriptPanel({
   );
 }
 
-function stageMetaOf(stage: NonNullable<VideoListItem["pipelineStatus"]["stage"]>) {
+function stageMetaOf(
+  stage: NonNullable<VideoListItem["pipelineStatus"]["stage"]>,
+) {
   return stageMeta(stage);
 }
 
