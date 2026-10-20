@@ -59,6 +59,7 @@ export const RESTART_REQUIRED_PATHS = ['worker.clipConcurrency', 'worker.viralCo
 
 const FILTER_IDS = new Set(DEFAULT_FILTER_PRESETS.map((preset) => preset.id));
 const LAYOUTS = new Set(['speaker-focus', 'split-screen']);
+const VIDEO_ENCODERS = new Set(['auto', 'cpu', 'gpu']);
 const PROVIDER_CHOICES = new Set(['auto', 'deepgram', 'whisper']);
 const AUDIO_MODES = new Set(['mute', 'beep', 'off']);
 
@@ -308,6 +309,9 @@ export function sanitizeSettingsSection(
       const input = record(value, 'Render defaults');
       const out: Record<string, unknown> = {};
       if (input.layout !== undefined) out.layout = enumOf(input.layout, LAYOUTS, 'Layout');
+      if (input.videoEncoder !== undefined) {
+        out.videoEncoder = enumOf(input.videoEncoder, VIDEO_ENCODERS, 'Video encoder');
+      }
       if (input.filterPreset !== undefined) {
         const filter = enumOf(input.filterPreset, FILTER_IDS, 'Filter preset');
         out.filterPreset = filter;
@@ -511,10 +515,14 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
   const filterPreset = FILTER_IDS.has(stringValue(renderStored.filterPreset) ?? '')
     ? (stringValue(renderStored.filterPreset) as RenderDefaults['filterPreset'])
     : DEFAULT_RENDER_SETTINGS.filterPreset;
+  const videoEncoder = VIDEO_ENCODERS.has(stringValue(renderStored.videoEncoder) ?? '')
+    ? (stringValue(renderStored.videoEncoder) as RenderDefaults['videoEncoder'])
+    : DEFAULT_RENDER_SETTINGS.videoEncoder;
 
   sources.render = {
     layout: stringValue(renderStored.layout) ? 'app' : 'default',
     filterPreset: stringValue(renderStored.filterPreset) ? 'app' : 'default',
+    videoEncoder: stringValue(renderStored.videoEncoder) ? 'app' : 'default',
     captionPresetId: renderStored.captionPresetId !== undefined ? 'app' : 'default',
     hookStylePresetId: renderStored.hookStylePresetId !== undefined ? 'app' : 'default',
     ctaStylePresetId: renderStored.ctaStylePresetId !== undefined ? 'app' : 'default',
@@ -526,6 +534,7 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
   const render: RenderDefaults = {
     layout,
     filterPreset,
+    videoEncoder,
     captionPresetId: idValue(renderStored.captionPresetId) ?? null,
     hookStylePresetId: idValue(renderStored.hookStylePresetId) ?? null,
     ctaStylePresetId: idValue(renderStored.ctaStylePresetId) ?? null,

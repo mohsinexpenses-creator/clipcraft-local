@@ -47,6 +47,7 @@ test('with nothing stored, the built-in defaults win and nothing is marked as ap
 
     assert.equal(effective.render.layout, 'speaker-focus');
     assert.equal(effective.render.filterPreset, 'vibrant');
+    assert.equal(effective.render.videoEncoder, 'auto');
     // The trap: an unset hook duration must NOT become 0, which would delete the hook.
     assert.equal(effective.render.hookDuration, 3);
     assert.equal(effective.render.ctaDuration, 2.5);
@@ -158,6 +159,7 @@ test('stored values are clamped on the way in, not silently fixed on read', () =
   assert.throws(() => sanitizeSettingsSection('worker', { clipConcurrency: 99 }), /must be a number|between 1 and 8/);
   assert.throws(() => sanitizeSettingsSection('render', { layout: 'triptych' }), /Unknown Layout/);
   assert.throws(() => sanitizeSettingsSection('render', { filterPreset: 'not-a-filter' }), /Unknown Filter preset/);
+  assert.throws(() => sanitizeSettingsSection('render', { videoEncoder: 'tpu' }), /Unknown Video encoder/);
   assert.throws(() => sanitizeSettingsSection('profanity', { audioMode: 'silence-please' }), /Unknown Profanity audio mode/);
   assert.throws(() => sanitizeSettingsSection('ai', { transcriptionProvider: 'elevenlabs' }), /Unknown Transcription provider/);
   assert.throws(() => sanitizeSettingsSection('nope' as never, {}), /Unknown settings section/);
@@ -180,6 +182,7 @@ test('stored values are clamped on the way in, not silently fixed on read', () =
   const render = sanitizeSettingsSection('render', { hookDuration: 2.34, captionPresetId: '  ' });
   assert.equal(render.hookDuration, 2.3, 'durations are kept to one decimal');
   assert.equal(render.captionPresetId, null, 'blank means the preset table default');
+  assert.equal(sanitizeSettingsSection('render', { videoEncoder: 'gpu' }).videoEncoder, 'gpu');
   // Out of range is refused on the way in rather than quietly rewritten - the number
   // fields clamp while editing, so a 40 here is a hand-made request, not a typo.
   assert.throws(() => sanitizeSettingsSection('render', { ctaDuration: 40 }), /between 0 and 30/);

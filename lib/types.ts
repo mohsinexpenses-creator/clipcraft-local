@@ -168,6 +168,8 @@ export type SettingsSource = "app" | "default";
 
 export interface RenderDefaults {
   layout: ClipLayout;
+  /** Final H.264 encoder selection; GPU uses NVIDIA NVENC. */
+  videoEncoder: "auto" | "cpu" | "gpu";
   /** Id from `DEFAULT_FILTER_PRESETS`. */
   filterPreset: string;
   /** null = whatever the caption-preset table marks as its default. */
@@ -187,6 +189,7 @@ export interface RenderDefaults {
 
 export const DEFAULT_RENDER_SETTINGS: RenderDefaults = {
   layout: DEFAULT_RENDER_OPTIONS.layout,
+  videoEncoder: "auto",
   filterPreset: DEFAULT_RENDER_OPTIONS.filterPreset,
   captionPresetId: null,
   hookStylePresetId: null,

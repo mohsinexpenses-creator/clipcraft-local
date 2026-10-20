@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { spawnSync } from "child_process";
 import { AppError, toErrorMessage } from "../lib/errors";
 import { DEFAULT_FILTER_PRESETS } from "../lib/presets";
 import {
@@ -7,7 +8,7 @@ import {
   buildProfanityWindows,
   getProfanityAudioMode,
 } from "../lib/profanity";
-import { getVideoMetadata, runFfmpeg } from "../lib/ffmpeg";
+import { getFfmpegPath, getVideoMetadata, runFfmpeg } from "../lib/ffmpeg";
 import { log } from "../lib/logger";
 import {
   LayoutPlan,
@@ -50,6 +51,7 @@ export interface ProcessSegmentOptions {
   /** Start of that range relative to the selected clip start. */
   hookStart: number;
   filterPresetId: string;
+  videoEncoder?: "auto" | "cpu" | "gpu";
   /**
    * The rendering plan built from the ASD result: either a single time-varying
    * 9:16 window following the active speaker, or an adaptive 2/3/4-person
@@ -166,6 +168,37 @@ export function getVideoEncodeSettings(
   const rawPreset = env.VIDEO_PRESET?.trim().toLowerCase();
   const preset = rawPreset && VIDEO_PRESETS.has(rawPreset) ? rawPreset : "slow";
   return { crf, preset };
+}
+
+let nvencAvailable: boolean | null = null;
+
+function probeNvenc(): boolean {
+  if (nvencAvailable !== null) return nvencAvailable;
+  const result = spawnSync(
+    getFfmpegPath(),
+    [
+      "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+      "color=c=black:s=64x64:d=0.1", "-frames:v", "1", "-an", "-c:v",
+      "h264_nvenc", "-f", "null", "-",
+    ],
+    { encoding: "utf8", timeout: 15_000, windowsHide: true },
+  );
+  nvencAvailable = result.status === 0;
+  return nvencAvailable;
+}
+
+export function selectVideoEncoder(
+  mode: "auto" | "cpu" | "gpu",
+  supportsNvenc: boolean,
+): "libx264" | "h264_nvenc" {
+  if (mode === "cpu") return "libx264";
+  if (supportsNvenc) return "h264_nvenc";
+  if (mode === "gpu") {
+    throw new AppError("GPU rendering was selected, but NVIDIA NVENC is unavailable.", {
+      resolution: "Install a compatible NVIDIA driver and FFmpeg build with h264_nvenc, or select Auto or CPU in Settings -> Render defaults.",
+    });
+  }
+  return "libx264";
 }
 
 /** Pure overlay filter builder shared by the pipeline and unit tests. */
@@ -398,6 +431,7 @@ export async function processVideoSegment(
     hookDuration,
     hookStart,
     filterPresetId,
+    videoEncoder = "auto",
     plan,
     sourceWidth,
     sourceHeight,
@@ -483,13 +517,14 @@ export async function processVideoSegment(
   // source frames. Defaults target high quality without forcing placebo-speed
   // encoding; VIDEO_CRF (16-18) and VIDEO_PRESET can be tuned in .env.local.
   const encodeSettings = getVideoEncodeSettings();
+  const selectedEncoder = selectVideoEncoder(videoEncoder, videoEncoder === "cpu" ? false : probeNvenc());
+  log.detail(`Final video encoder: ${selectedEncoder}${videoEncoder === "auto" && selectedEncoder === "libx264" ? " (NVENC unavailable; Auto fallback)" : ""}`);
   const videoArgs = [
     "-c:v",
-    "libx264",
-    "-preset",
-    encodeSettings.preset,
-    "-crf",
-    String(encodeSettings.crf),
+    selectedEncoder,
+    ...(selectedEncoder === "h264_nvenc"
+      ? ["-preset", "p5", "-rc", "vbr", "-cq", String(encodeSettings.crf), "-b:v", "0"]
+      : ["-preset", encodeSettings.preset, "-crf", String(encodeSettings.crf)]),
     "-pix_fmt",
     "yuv420p",
     "-profile:v",

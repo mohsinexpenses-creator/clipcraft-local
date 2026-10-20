@@ -491,6 +491,35 @@ function RenderCard({
         overlayPresets={settings.options.overlayPresets}
         disabled={settings.busy === "save:render"}
       />
+      <div className="space-y-1.5">
+        <Label className="text-[12px] font-medium text-muted-foreground">Render device</Label>
+        <div role="group" aria-label="Render device" className="flex rounded-lg border bg-muted/40 p-0.5">
+          {([
+            ["auto", "Auto"],
+            ["cpu", "CPU"],
+            ["gpu", "GPU"],
+          ] as const).map(([encoder, label]) => (
+            <button
+              key={encoder}
+              type="button"
+              disabled={settings.busy === "save:render"}
+              aria-pressed={value.videoEncoder === encoder}
+              onClick={() => setDraft({ ...value, videoEncoder: encoder })}
+              className={cn(
+                "flex-1 rounded-md px-2 py-1 text-[11.5px] font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
+                value.videoEncoder === encoder
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <p className="text-[10.5px] leading-snug text-muted-foreground">
+          Auto uses NVIDIA NVENC when available; GPU requires a compatible NVIDIA driver and FFmpeg.
+        </p>
+      </div>
     </SettingsCard>
   );
 }

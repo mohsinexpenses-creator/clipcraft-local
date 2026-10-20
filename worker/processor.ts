@@ -11,6 +11,7 @@ import {
 } from '../lib/db';
 import { AppError, RenderCancelledError, toErrorMessage } from '../lib/errors';
 import { resolveClipsDir } from '../lib/paths';
+import { loadEffectiveSettings } from '../lib/app-settings';
 import { resolveCaptionThemeOverlayStyle } from '../lib/caption-theme-styles';
 
 import { resolveBrollForClip } from '../lib/broll';
@@ -94,6 +95,7 @@ export async function processClipJob(
     `Render ${color.bold(clipId)}` +
       color.gray(`  ·  video ${videoId}  ·  ${start}s → ${end}s`)
   );
+  const videoEncoder = (await loadEffectiveSettings()).render.videoEncoder;
 
   const reportProgress = async (value: number): Promise<void> => {
     const clamped = Math.max(0, Math.min(100, Math.round(value)));
@@ -514,6 +516,7 @@ export async function processClipJob(
         hookDuration: safeHookDuration,
         hookStart,
         filterPresetId: filterPreset,
+        videoEncoder,
         plan,
         sourceWidth: sourceMeta.width,
         sourceHeight: sourceMeta.height,

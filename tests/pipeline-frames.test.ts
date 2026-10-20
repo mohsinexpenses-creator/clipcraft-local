@@ -20,6 +20,7 @@ import {
   buildOverlayFilterStatements,
   ffmpegFpsArg,
   getVideoEncodeSettings,
+  selectVideoEncoder,
   normalizeFps,
   processVideoSegment,
 } from '../worker/ffmpeg-pipeline';
@@ -154,6 +155,14 @@ test('final H.264 settings default to quality-first and accept safe env override
     crf: 17,
     preset: 'slow',
   });
+});
+
+test('render device selection honors CPU, prefers NVENC in Auto, and requires NVENC for GPU', () => {
+  assert.equal(selectVideoEncoder('cpu', true), 'libx264');
+  assert.equal(selectVideoEncoder('auto', true), 'h264_nvenc');
+  assert.equal(selectVideoEncoder('auto', false), 'libx264');
+  assert.throws(() => selectVideoEncoder('gpu', false), /NVIDIA NVENC is unavailable/);
+  assert.equal(selectVideoEncoder('gpu', true), 'h264_nvenc');
 });
 
 test('transparent overlays are composited into the base filter graph before the only final encode', () => {
