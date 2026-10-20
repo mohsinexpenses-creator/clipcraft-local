@@ -15,6 +15,7 @@ import {
   VideoListEntry,
   VideoRecord,
 } from "./types";
+import type { BrollAssetRecord, BrollSearchCandidate } from "./broll/types";
 import {
   DEFAULT_CAPTION_PRESETS,
   DEFAULT_OVERLAY_STYLE_PRESETS,
@@ -153,7 +154,7 @@ const VIDEO_SUMMARY_SELECT = `
      FROM clips c WHERE c.video_id = v.id) AS clip_progress
 `;
 
-const CURRENT_SCHEMA_VERSION = 5;
+const CURRENT_SCHEMA_VERSION = 6;
 
 /** Absolute path used by the web process and the worker. */
 export function getDatabasePath(): string {
@@ -477,12 +478,55 @@ function migrateSchemaV5(db: SqliteDatabase): void {
   `);
 }
 
+/**
+ * Schema v6: persistent metadata index for free B-roll discovery and local file caching.
+ * Binary image bytes stay strictly on disk inside the B-roll cache directory.
+ */
+function migrateSchemaV6(db: SqliteDatabase): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS broll_assets (
+      id TEXT PRIMARY KEY,
+      normalized_url TEXT NOT NULL UNIQUE,
+      source_url TEXT NOT NULL,
+      page_url TEXT,
+      title TEXT,
+      content_hash TEXT NOT NULL,
+      local_path TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      width INTEGER NOT NULL,
+      height INTEGER NOT NULL,
+      file_size INTEGER NOT NULL,
+      focal_x REAL NOT NULL DEFAULT 0.5,
+      focal_y REAL NOT NULL DEFAULT 0.35,
+      attribution TEXT,
+      license TEXT,
+      description TEXT,
+      search_terms_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      last_used_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS broll_assets_content_hash_idx ON broll_assets(content_hash);
+    CREATE INDEX IF NOT EXISTS broll_assets_last_used_idx ON broll_assets(last_used_at DESC);
+
+    CREATE TABLE IF NOT EXISTS broll_search_cache (
+      normalized_query TEXT PRIMARY KEY,
+      query TEXT NOT NULL,
+      results_json TEXT NOT NULL,
+      fetched_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS broll_search_cache_fetched_idx ON broll_search_cache(fetched_at DESC);
+  `);
+}
+
 const SCHEMA_MIGRATIONS: Record<number, (db: SqliteDatabase) => void> = {
   1: migrateSchemaV1,
   2: migrateSchemaV2,
   3: migrateSchemaV3,
   4: migrateSchemaV4,
   5: migrateSchemaV5,
+  6: migrateSchemaV6,
 };
 
 export function initializeSchema(db: SqliteDatabase): void {
@@ -1605,4 +1649,212 @@ export async function saveTextPreset(preset: TextPreset): Promise<TextPreset> {
 export async function deleteTextPreset(id: string): Promise<boolean> {
   getDatabase().prepare("DELETE FROM text_presets WHERE id = ?").run(id);
   return true;
+}
+
+interface BrollAssetRow {
+  id: string;
+  normalized_url: string;
+  source_url: string;
+  page_url: string | null;
+  title: string | null;
+  content_hash: string;
+  local_path: string;
+  mime_type: BrollAssetRecord["mimeType"];
+  width: number;
+  height: number;
+  file_size: number;
+  focal_x: number;
+  focal_y: number;
+  attribution: string | null;
+  license: string | null;
+  description: string | null;
+  search_terms_json: string;
+  created_at: string;
+  last_used_at: string;
+}
+
+interface BrollSearchCacheRow {
+  normalized_query: string;
+  query: string;
+  results_json: string;
+  fetched_at: string;
+}
+
+function mapBrollAsset(row: BrollAssetRow): BrollAssetRecord {
+  let terms: string[] = [];
+  try {
+    const parsed = JSON.parse(row.search_terms_json) as unknown;
+    if (Array.isArray(parsed)) {
+      terms = parsed.filter((entry): entry is string => typeof entry === "string" && Boolean(entry.trim()));
+    }
+  } catch {
+    terms = [];
+  }
+
+  return {
+    id: row.id,
+    normalizedUrl: row.normalized_url,
+    sourceUrl: row.source_url,
+    ...(row.page_url ? { pageUrl: row.page_url } : {}),
+    ...(row.title ? { title: row.title } : {}),
+    contentHash: row.content_hash,
+    localPath: row.local_path,
+    mimeType: row.mime_type,
+    width: row.width,
+    height: row.height,
+    fileSize: row.file_size,
+    focalX: row.focal_x,
+    focalY: row.focal_y,
+    ...(row.attribution ? { attribution: row.attribution } : {}),
+    ...(row.license ? { license: row.license } : {}),
+    ...(row.description ? { description: row.description } : {}),
+    searchTerms: terms,
+    createdAt: row.created_at,
+    lastUsedAt: row.last_used_at,
+  };
+}
+
+function mergeUniqueTerms(existing: string[], incoming: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of [...existing, ...incoming]) {
+    const cleaned = raw.trim().replace(/\s+/g, " ");
+    const key = cleaned.toLowerCase();
+    if (!cleaned || seen.has(key)) continue;
+    seen.add(key);
+    out.push(cleaned);
+    if (out.length >= 32) break;
+  }
+  return out;
+}
+
+export function getBrollAssetByNormalizedUrl(normalizedUrl: string): BrollAssetRecord | null {
+  const row = getDatabase()
+    .prepare("SELECT * FROM broll_assets WHERE normalized_url = ? LIMIT 1")
+    .get(normalizedUrl) as BrollAssetRow | undefined;
+  return row ? mapBrollAsset(row) : null;
+}
+
+export function getBrollAssetByContentHash(contentHash: string): BrollAssetRecord | null {
+  const row = getDatabase()
+    .prepare("SELECT * FROM broll_assets WHERE content_hash = ? LIMIT 1")
+    .get(contentHash) as BrollAssetRow | undefined;
+  return row ? mapBrollAsset(row) : null;
+}
+
+export function saveBrollAsset(asset: BrollAssetRecord): BrollAssetRecord {
+  const db = getDatabase();
+  const now = new Date().toISOString();
+  const existing = getBrollAssetByNormalizedUrl(asset.normalizedUrl);
+  const mergedTerms = mergeUniqueTerms(existing?.searchTerms ?? [], asset.searchTerms);
+  const record: BrollAssetRecord = {
+    ...asset,
+    id: existing?.id ?? (asset.id || randomUUID()),
+    searchTerms: mergedTerms,
+    createdAt: existing?.createdAt ?? (asset.createdAt || now),
+    lastUsedAt: asset.lastUsedAt || now,
+  };
+
+  db.prepare(
+    `
+    INSERT INTO broll_assets (
+      id, normalized_url, source_url, page_url, title, content_hash, local_path,
+      mime_type, width, height, file_size, focal_x, focal_y,
+      attribution, license, description, search_terms_json, created_at, last_used_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(normalized_url) DO UPDATE SET
+      source_url = excluded.source_url,
+      page_url = COALESCE(excluded.page_url, broll_assets.page_url),
+      title = COALESCE(excluded.title, broll_assets.title),
+      content_hash = excluded.content_hash,
+      local_path = excluded.local_path,
+      mime_type = excluded.mime_type,
+      width = excluded.width,
+      height = excluded.height,
+      file_size = excluded.file_size,
+      focal_x = excluded.focal_x,
+      focal_y = excluded.focal_y,
+      attribution = COALESCE(excluded.attribution, broll_assets.attribution),
+      license = COALESCE(excluded.license, broll_assets.license),
+      description = COALESCE(excluded.description, broll_assets.description),
+      search_terms_json = excluded.search_terms_json,
+      last_used_at = excluded.last_used_at
+    `,
+  ).run(
+    record.id,
+    record.normalizedUrl,
+    record.sourceUrl,
+    record.pageUrl ?? null,
+    record.title ?? null,
+    record.contentHash,
+    record.localPath,
+    record.mimeType,
+    record.width,
+    record.height,
+    record.fileSize,
+    record.focalX,
+    record.focalY,
+    record.attribution ?? null,
+    record.license ?? null,
+    record.description ?? null,
+    serializeJson(record.searchTerms),
+    record.createdAt,
+    record.lastUsedAt,
+  );
+
+  return record;
+}
+
+export function deleteBrollAssetByNormalizedUrl(normalizedUrl: string): void {
+  getDatabase().prepare("DELETE FROM broll_assets WHERE normalized_url = ?").run(normalizedUrl);
+}
+
+export function listCachedBrollAssets(limit = 500): BrollAssetRecord[] {
+  const safeLimit = Math.max(1, Math.min(2000, Math.floor(limit)));
+  const rows = getDatabase()
+    .prepare("SELECT * FROM broll_assets ORDER BY last_used_at DESC LIMIT ?")
+    .all(safeLimit) as BrollAssetRow[];
+  return rows.map(mapBrollAsset);
+}
+
+export function getCachedBrollSearch(
+  normalizedQuery: string,
+  maxAgeMs = 30 * 24 * 60 * 60 * 1000,
+): BrollSearchCandidate[] | null {
+  const row = getDatabase()
+    .prepare("SELECT * FROM broll_search_cache WHERE normalized_query = ? LIMIT 1")
+    .get(normalizedQuery) as BrollSearchCacheRow | undefined;
+  if (!row) return null;
+
+  const fetchedMs = Date.parse(row.fetched_at);
+  if (Number.isFinite(fetchedMs) && Date.now() - fetchedMs > maxAgeMs) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(row.results_json) as unknown;
+    return Array.isArray(parsed) ? (parsed as BrollSearchCandidate[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveCachedBrollSearch(
+  normalizedQuery: string,
+  query: string,
+  results: BrollSearchCandidate[],
+): void {
+  const fetchedAt = new Date().toISOString();
+  getDatabase()
+    .prepare(
+      `
+      INSERT INTO broll_search_cache (normalized_query, query, results_json, fetched_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(normalized_query) DO UPDATE SET
+        query = excluded.query,
+        results_json = excluded.results_json,
+        fetched_at = excluded.fetched_at
+      `,
+    )
+    .run(normalizedQuery, query, serializeJson(results), fetchedAt);
 }

@@ -181,6 +181,8 @@ export interface RenderDefaults {
    */
   hookDuration: number;
   ctaDuration: number;
+  /** Automatically insert relevant full-screen B-roll images during spoken segments. */
+  enableBroll: boolean;
 }
 
 export const DEFAULT_RENDER_SETTINGS: RenderDefaults = {
@@ -191,6 +193,7 @@ export const DEFAULT_RENDER_SETTINGS: RenderDefaults = {
   ctaStylePresetId: null,
   hookDuration: 3,
   ctaDuration: 2.5,
+  enableBroll: true,
 };
 
 export type TranscriptionProviderChoice = "auto" | "deepgram" | "whisper";
@@ -637,6 +640,8 @@ export interface ClipRecord {
   /** Overlay STYLE presets (font/colors/animation) chosen per clip. */
   hookStylePresetId?: string;
   ctaStylePresetId?: string;
+  /** Whether automatic full-screen B-roll images are enabled for this clip (default true). */
+  enableBroll?: boolean;
   cropData?: CropWindow;
   /**
    * Everything the AI said about this clip (score, rank, title, hook line,
@@ -675,6 +680,8 @@ export interface JobData {
   /** Overlay STYLE presets (font/colors/animation) chosen per clip. */
   hookStylePresetId?: string;
   ctaStylePresetId?: string;
+  /** Whether automatic full-screen B-roll images are enabled for this render (default true). */
+  enableBroll?: boolean;
 }
 
 /**

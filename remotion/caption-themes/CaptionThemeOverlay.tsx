@@ -49,6 +49,7 @@ export const CaptionThemeOverlay: React.FC<CaptionThemeOverlayProps> = ({
           alignItems: 'center',
           justifyContent: 'center',
           transform: `translateY(${offsetY.toFixed(2)}px)`,
+          filter: 'drop-shadow(0 3px 10px rgba(0, 0, 0, 0.72)) drop-shadow(0 1px 2px rgba(0, 0, 0, 0.85))',
         }}
       >
         <CaptionTheme

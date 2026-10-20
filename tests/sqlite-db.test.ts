@@ -76,7 +76,7 @@ test('SQLite schema is versioned, indexed, WAL-enabled, and has a five-second bu
   const version = db.prepare('SELECT version FROM schema_version WHERE id = 1').get() as
     | { version: number }
     | undefined;
-  assert.deepEqual(version, { version: 5 });
+  assert.deepEqual(version, { version: 6 });
 
   // v3 is the additive pipeline column: the per-video automation settings
   // (auto-detect / auto-render + AI clip options) captured at upload time.
@@ -126,7 +126,7 @@ test('SQLite schema is versioned, indexed, WAL-enabled, and has a five-second bu
     initializeSchema(legacy);
     assert.deepEqual(
       legacy.prepare('SELECT version FROM schema_version WHERE id = 1').get(),
-      { version: 5 }
+      { version: 6 }
     );
     assert.ok(
       legacy.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'app_settings'").get(),

@@ -31,7 +31,9 @@ interface AnimatedWordProps {
 
 /** 8-direction text outline; a real `-webkit-text-stroke` eats the glyph interiors. */
 function buildOutline(color: string, width: number): string {
-  if (!width || width <= 0) return "none";
+  if (!width || width <= 0) {
+    return "0 2px 10px rgba(0,0,0,0.72), 0 0 3px rgba(0,0,0,0.85)";
+  }
 
   const offsets: Array<[number, number]> = [
     [width, 0],

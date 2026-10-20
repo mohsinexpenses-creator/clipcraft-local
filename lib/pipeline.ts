@@ -87,6 +87,7 @@ export async function jobDataFromClip(
     layout: (clip.layout ?? render.layout) as ClipLayout,
     hookStylePresetId: clip.hookStylePresetId,
     ctaStylePresetId: clip.ctaStylePresetId,
+    enableBroll: clip.enableBroll ?? render.enableBroll,
     ...overrides,
   };
 }
@@ -311,6 +312,7 @@ export async function runViralDetection(
       layout: render.layout,
       ...(render.hookStylePresetId ? { hookStylePresetId: render.hookStylePresetId } : {}),
       ...(render.ctaStylePresetId ? { ctaStylePresetId: render.ctaStylePresetId } : {}),
+      enableBroll: render.enableBroll,
       // Everything the AI said about the clip, stored as returned; the card,
       // the analysis panel and the worker read it from here.
       aiAnalysis: segment.clip,

@@ -13,6 +13,7 @@ import { AppError, RenderCancelledError, toErrorMessage } from '../lib/errors';
 import { resolveClipsDir } from '../lib/paths';
 import { resolveCaptionThemeOverlayStyle } from '../lib/caption-theme-styles';
 
+import { resolveBrollForClip } from '../lib/broll';
 import { getVideoMetadata } from '../lib/ffmpeg';
 import { getCaptionOffsetMs, shiftCaptionWords } from './caption-timing';
 import { ClipLayout, ClipRecord, JobData, OverlayStylePreset } from '../lib/types';
@@ -265,6 +266,20 @@ export async function processClipJob(
       );
     }
 
+    const brollEnabled = jobData.enableBroll ?? clip.enableBroll ?? true;
+    clip.enableBroll = brollEnabled;
+    const brollPromise = brollEnabled
+      ? resolveBrollForClip({
+          transcript: video.transcript,
+          clipWords,
+          clipStart: start,
+          clipEnd: end,
+          hookDurationSeconds: safeHookDuration,
+          aiAnalysis: clip.aiAnalysis,
+          isCancelled: () => cancelFlag,
+        })
+      : Promise.resolve([]);
+
     log.step('Step 1/3 · Face tracking + active speaker detection');
     const layout: ClipLayout = jobData.layout === 'split-screen' ? 'split-screen' : 'speaker-focus';
     clip.layout = layout;
@@ -473,10 +488,14 @@ export async function processClipJob(
       fileSizeBytes: number;
     };
     try {
+      const brollPlacements = await brollPromise;
       checkCancelled();
       log.step(
         `Step 3/3 · FFmpeg crop + hook + overlays + one final encode ` +
-        color.gray(`(${preparedOverlays.sequences.length} transparent layer(s))`)
+        color.gray(
+          `(${preparedOverlays.sequences.length} transparent layer(s)` +
+            `${brollPlacements.length > 0 ? `, ${brollPlacements.length} B-roll appearance(s)` : ''})`
+        )
       );
       const progressSink = (progress: number): void => {
         const scaled = 30 + Math.max(0, Math.min(80, progress)) * 0.85;
@@ -498,6 +517,7 @@ export async function processClipJob(
         sourceHeight: sourceMeta.height,
         targetFps: renderFps,
         sourceHasAudio: sourceMeta.hasAudio,
+        brollPlacements,
         overlays: preparedOverlays.sequences,
         words: clipWords,
         debugOutputPath: process.env.SAVE_PRECAPTION_DEBUG?.trim() === '1'

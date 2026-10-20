@@ -321,6 +321,12 @@ export function sanitizeSettingsSection(
       if (input.ctaDuration !== undefined) {
         out.ctaDuration = numberIn(input.ctaDuration, { min: 0, max: 30, precision: 1, label: 'CTA duration' });
       }
+      if (input.enableBroll !== undefined) {
+        if (typeof input.enableBroll !== 'boolean') {
+          throw badRequest('Enable B-roll must be true or false.');
+        }
+        out.enableBroll = input.enableBroll;
+      }
       return out;
     }
 
@@ -514,6 +520,7 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
     ctaStylePresetId: renderStored.ctaStylePresetId !== undefined ? 'app' : 'default',
     hookDuration: numberValue(renderStored.hookDuration) !== undefined ? 'app' : 'default',
     ctaDuration: numberValue(renderStored.ctaDuration) !== undefined ? 'app' : 'default',
+    enableBroll: typeof renderStored.enableBroll === 'boolean' ? 'app' : 'default',
   };
 
   const render: RenderDefaults = {
@@ -524,6 +531,10 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
     ctaStylePresetId: idValue(renderStored.ctaStylePresetId) ?? null,
     hookDuration: clampDuration(renderStored.hookDuration, DEFAULT_RENDER_SETTINGS.hookDuration),
     ctaDuration: clampDuration(renderStored.ctaDuration, DEFAULT_RENDER_SETTINGS.ctaDuration),
+    enableBroll:
+      typeof renderStored.enableBroll === 'boolean'
+        ? renderStored.enableBroll
+        : DEFAULT_RENDER_SETTINGS.enableBroll,
   };
 
   /* ai - keys exist only if they were put here, never inherited from the env file */

@@ -35,7 +35,8 @@ type ClipEditField =
   | 'captionPresetId'
   | 'layout'
   | 'hookStylePresetId'
-  | 'ctaStylePresetId';
+  | 'ctaStylePresetId'
+  | 'enableBroll';
 
 export type ClipEdits = Pick<ClipRecord, ClipEditField>;
 
@@ -144,6 +145,7 @@ export function sanitizeClipEdits(
   if ('layout' in body) edits.layout = readEnum(body.layout, LAYOUTS, 'speaker-focus');
   if (typeof body.hookStylePresetId === 'string') edits.hookStylePresetId = body.hookStylePresetId.trim();
   if (typeof body.ctaStylePresetId === 'string') edits.ctaStylePresetId = body.ctaStylePresetId.trim();
+  if (typeof body.enableBroll === 'boolean') edits.enableBroll = body.enableBroll;
 
   return edits;
 }

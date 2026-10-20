@@ -26,6 +26,19 @@ export interface OverlayFrameSequence {
   startAtSeconds: number;
 }
 
+export interface BrollImageOverlay {
+  /** Local path to the validated raster image file on disk. */
+  imagePath: string;
+  /** Start time in seconds on the final output video timeline. */
+  startTime: number;
+  /** End time in seconds on the final output video timeline. */
+  endTime: number;
+  /** Normalized horizontal focal point in [0, 1] for 9:16 framing (default 0.5). */
+  focalX?: number;
+  /** Normalized vertical focal point in [0, 1] for 9:16 framing (default 0.35). */
+  focalY?: number;
+}
+
 export interface ProcessSegmentOptions {
   sourceVideoPath: string;
   /** Final deliverable path: crop, captions, overlays and audio are encoded in this one pass. */
@@ -56,6 +69,8 @@ export interface ProcessSegmentOptions {
   audioStartOffsetSeconds?: number;
   /** False when the source has no audio stream -> a silent track is muxed in. */
   sourceHasAudio: boolean;
+  /** Full-screen 9:16 B-roll image appearances rendered under captions/Hook/CTA. */
+  brollPlacements?: BrollImageOverlay[];
   /** Transparent PNG overlays composited before the final H.264 encode. */
   overlays?: OverlayFrameSequence[];
   /** Original segment-relative words, used only for render-time profanity audio handling. */
@@ -172,6 +187,65 @@ export function buildAudioTimestampReset(audioStartOffsetSeconds = 0): string {
   // Rebase to the video clock, then let libswresample insert/drop leading
   // samples as needed so every concat segment begins at PTS 0.
   return `asetpts=PTS-STARTPTS${shift},aresample=async=1000:first_pts=0`;
+}
+
+/**
+ * Build single-pass FFmpeg filter statements that scale and smart-crop each
+ * scheduled B-roll image to fill the full `outWidth x outHeight` (1080x1920)
+ * frame with zero black bars and overlay it onto `[baseLabel]` strictly during
+ * `[startTime, endTime]`, producing `[vbroll]` underneath transparent captions,
+ * Hook, and CTA overlays.
+ */
+export function buildBrollFilterStatements(
+  placements: readonly BrollImageOverlay[],
+  inputIndices: readonly number[],
+  fps: number,
+  outWidth = OUTPUT_WIDTH,
+  outHeight = OUTPUT_HEIGHT,
+  baseLabel = "vbase",
+): { statements: string[]; outputLabel: string } {
+  if (placements.length !== inputIndices.length) {
+    throw new Error(
+      `B-roll input mismatch: ${placements.length} placements, ${inputIndices.length} input indices.`,
+    );
+  }
+  if (placements.length === 0) {
+    return { statements: [], outputLabel: baseLabel };
+  }
+
+  let lastVideoLabel = baseLabel;
+  const statements: string[] = [];
+
+  placements.forEach((placement, index) => {
+    const input = inputIndices[index];
+    const brollLabel = `broll${index}`;
+    const outputLabel =
+      index === placements.length - 1 ? "vbroll" : `vbroll${index}`;
+    const focalX = Math.max(
+      0,
+      Math.min(1, Number.isFinite(placement.focalX) ? (placement.focalX as number) : 0.5),
+    );
+    const focalY = Math.max(
+      0,
+      Math.min(1, Number.isFinite(placement.focalY) ? (placement.focalY as number) : 0.35),
+    );
+    const startFrame = Math.max(0, Math.round(placement.startTime * fps));
+    const endFrame = Math.max(startFrame, Math.round(placement.endTime * fps) - 1);
+    const extraFrames = Math.max(1, endFrame - startFrame + 2);
+
+    statements.push(
+      `[${input}:v]scale='max(${outWidth}\\,ceil(iw*max(${outWidth}/iw\\,${outHeight}/ih)))':'max(${outHeight}\\,ceil(ih*max(${outWidth}/iw\\,${outHeight}/ih)))':flags=lanczos,` +
+        `crop=${outWidth}:${outHeight}:'(iw-${outWidth})*${focalX.toFixed(4)}':'(ih-${outHeight})*${focalY.toFixed(4)}',` +
+        `setsar=1,format=yuv420p,loop=loop=${extraFrames}:size=1:start=0,setpts=N+${startFrame}[${brollLabel}]`,
+    );
+    statements.push(
+      `[${lastVideoLabel}][${brollLabel}]overlay=0:0:eof_action=pass:repeatlast=0:shortest=0:` +
+        `enable='between(t\\,${placement.startTime.toFixed(4)}\\,${placement.endTime.toFixed(4)})'[${outputLabel}]`,
+    );
+    lastVideoLabel = outputLabel;
+  });
+
+  return { statements, outputLabel: lastVideoLabel };
 }
 
 export function buildOverlayFilterStatements(
@@ -332,6 +406,7 @@ export async function processVideoSegment(
     videoStartTimeSeconds = 0,
     audioStartOffsetSeconds = 0,
     sourceHasAudio,
+    brollPlacements = [],
     overlays = [],
     words = [],
     debugOutputPath,
@@ -475,6 +550,32 @@ export async function processVideoSegment(
     "-i",
     sourceVideoPath,
   );
+
+  const activeBroll: BrollImageOverlay[] = [];
+  for (const placement of brollPlacements) {
+    if (!placement?.imagePath) continue;
+    const clampedStart = Math.max(0, placement.startTime);
+    const clampedEnd = Math.min(totalDuration, placement.endTime);
+    if (clampedEnd - clampedStart < 0.05) continue;
+    try {
+      const st = fs.statSync(placement.imagePath);
+      if (!st.isFile() || st.size === 0) continue;
+    } catch {
+      log.warn(`Skipping missing B-roll image at render time: ${placement.imagePath}`);
+      continue;
+    }
+    activeBroll.push({
+      ...placement,
+      startTime: clampedStart,
+      endTime: clampedEnd,
+    });
+  }
+
+  const brollInputIndices: number[] = [];
+  for (const placement of activeBroll) {
+    brollInputIndices.push(nextInput++);
+    inputArgs.push("-framerate", ffmpegFpsArg(fps), "-i", placement.imagePath);
+  }
 
   const overlayInputIndices: number[] = [];
   for (const overlay of overlays) {
@@ -640,11 +741,20 @@ export async function processVideoSegment(
     const debugVideoLabel = debugOutputPath ? "[vprecap]" : "";
     if (debugOutputPath)
       statements.push("[vbase]split=2[vprecap][vforoverlay]");
+    const brollGraph = buildBrollFilterStatements(
+      activeBroll,
+      brollInputIndices,
+      fps,
+      outWidth,
+      outHeight,
+      overlayBaseLabel,
+    );
+    statements.push(...brollGraph.statements);
     statements.push(
       ...buildOverlayFilterStatements(
         overlays,
         overlayInputIndices,
-        overlayBaseLabel,
+        brollGraph.outputLabel,
       ),
     );
 

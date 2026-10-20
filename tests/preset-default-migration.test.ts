@@ -77,7 +77,7 @@ test('schema v2 keeps user presets and migrates duplicate legacy defaults to one
     // Every pending migration runs on open, including the additive v3 pipeline column,
     // the v4 settings table and the v5 settings-table rebuild (paths section) - which
     // must tolerate this fixture having no `videos` table at all.
-    assert.equal(version.version, 5);
+    assert.equal(version.version, 6);
     assert.equal((await getDefaultCaptionPreset(migrated))?._id, 'user-caption');
     assert.equal((await getDefaultOverlayStylePreset('hook', migrated))?._id, 'user-hook');
     assert.equal((await getDefaultOverlayStylePreset('cta', migrated))?._id, 'user-cta');
