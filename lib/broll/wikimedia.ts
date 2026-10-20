@@ -1,9 +1,19 @@
+import { log } from '../logger';
+import { toErrorMessage } from '../errors';
 import type { BrollSearchCandidate, BrollSubjectKind } from './types';
 
 export const WIKIMEDIA_COMMONS_API_URL = 'https://commons.wikimedia.org/w/api.php';
+export const WIKIPEDIA_ENGLISH_API_URL = 'https://en.wikipedia.org/w/api.php';
+
+/**
+ * Official Wikimedia Foundation standard pre-cached thumbnail step (`T360589`):
+ * valid steps are `20, 40, 60, 120, 250, 330, 500, 960, 1280, 1920, 3840`.
+ * Non-standard widths like `1440` trigger deterministic HTTP 429 on `upload.wikimedia.org`.
+ */
+export const WMF_STANDARD_THUMB_WIDTH = 960;
 
 export const WIKIMEDIA_USER_AGENT =
-  'ClipCraftLocal/0.1 (https://github.com/mohsinexpenses-creator/clipcraft-local; local-broll-cache)';
+  'ClipCraftLocal/1.0 (https://github.com/mohsinexpenses-creator/clipcraft-local; local-broll-cache) node-fetch';
 
 /** Supported raster image formats suitable for fast local FFmpeg rendering. */
 export const ALLOWED_BROLL_MIME_TYPES = new Set([
@@ -35,7 +45,13 @@ const BLOCKED_TITLE_PATTERNS = [
   /\bflowchart\b/i,
   /\bblank[\s_-]+map\b/i,
   /\blocator[\s_-]+map\b/i,
+  /\borthographic\b/i,
   /\bplaceholder\b/i,
+  /\bno[\s_-]+image\b/i,
+  /\bquestion[\s_-]+book\b/i,
+  /\bcommons[\s_-]+emblem\b/i,
+  /\bwikimedia[\s_-]+logo\b/i,
+  /\bdisambig/i,
   /\bbarcode\b/i,
   /\bqr[\s_-]*code\b/i,
   /\.(svg|pdf|djvu|tif|tiff|gif|ogg|ogv|webm|mp3|wav|flac|xcf)$/i,
@@ -46,10 +62,10 @@ const QUERY_STOPWORDS = new Set([
   'from', 'portrait', 'photo', 'photograph', 'image', 'picture',
 ]);
 
-export const MIN_IMAGE_WIDTH = 360;
-export const MIN_IMAGE_HEIGHT = 360;
-export const MIN_RELEVANCE_SCORE = 18;
-export const DEFAULT_MAX_IMAGE_BYTES = 12 * 1024 * 1024; // 12 MB ceiling
+export const MIN_IMAGE_WIDTH = 320;
+export const MIN_IMAGE_HEIGHT = 320;
+export const MIN_RELEVANCE_SCORE = 16;
+export const DEFAULT_MAX_IMAGE_BYTES = 30 * 1024 * 1024; // 30 MB stream safety ceiling
 
 export type FetchLike = typeof fetch;
 
@@ -93,6 +109,43 @@ export function normalizeImageUrl(rawUrl: string): string | null {
   }
   parsed.searchParams.sort();
   return parsed.toString();
+}
+
+/**
+ * Convert any Wikimedia Commons original or `/thumb/` image URL to a canonical
+ * standard-step thumbnail URL (`960` or `1280`) on `upload.wikimedia.org`.
+ */
+export function buildStandardWikimediaThumbUrl(
+  rawUrl: string,
+  stepWidth: 500 | 960 | 1280 = 960,
+): string | null {
+  const normalized = normalizeImageUrl(rawUrl);
+  if (!normalized) return null;
+
+  try {
+    const parsed = new URL(normalized);
+    if (parsed.hostname.toLowerCase() !== 'upload.wikimedia.org') {
+      return null;
+    }
+
+    // Case 1: Already a `/thumb/.../<N>px-<filename>` URL -> rewrite step prefix directly
+    const thumbMatch = parsed.pathname.match(/^(.*\/thumb\/.+)\/\d+px-([^/]+)$/);
+    if (thumbMatch) {
+      parsed.pathname = `${thumbMatch[1]}/${stepWidth}px-${thumbMatch[2]}`;
+      return parsed.toString();
+    }
+
+    // Case 2: Original `/wikipedia/commons/<a/ab/Filename.ext>` -> construct `/thumb/...`
+    const origMatch = parsed.pathname.match(/^\/wikipedia\/(commons|en)\/([0-9a-f]\/[0-9a-f]{2}\/([^/]+))$/i);
+    if (origMatch) {
+      const [, wiki, restPath, fileName] = origMatch;
+      parsed.pathname = `/wikipedia/${wiki}/thumb/${restPath}/${stepWidth}px-${fileName}`;
+      return parsed.toString();
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 /**
@@ -141,7 +194,7 @@ function significantQueryTokens(text: string): string[] {
     .filter((tok) => tok.length >= 2 && !QUERY_STOPWORDS.has(tok));
 }
 
-function titleexplicitlyRequestsBlockedTerm(query: string, title: string): boolean {
+function titleExplicitlyRequestsBlockedTerm(query: string, title: string): boolean {
   const qLower = query.toLowerCase();
   if (qLower.includes('logo') && /\blogo\b/i.test(title)) return true;
   if (qLower.includes('map') && /\bmap\b/i.test(title)) return true;
@@ -149,9 +202,20 @@ function titleexplicitlyRequestsBlockedTerm(query: string, title: string): boole
   return false;
 }
 
+function inferMimeFromUrlOrName(urlOrName: string): BrollSearchCandidate['mimeType'] | null {
+  const clean = urlOrName.split('?')[0].toLowerCase();
+  if (/\.(svg|pdf|djvu|tif|tiff|gif|ogg|ogv|webm|xcf)(\b|$)/i.test(clean)) {
+    return null;
+  }
+  if (/\.(jpe?g)$/i.test(clean)) return 'image/jpeg';
+  if (/\.png$/i.test(clean)) return 'image/png';
+  if (/\.webp$/i.test(clean)) return 'image/webp';
+  return null;
+}
+
 /**
  * Score a candidate's contextual relevance + portrait/social-video suitability.
- * Returns `0` when the candidate has no meaningful lexical relevance to `query`.
+ * Returns `0` when the candidate has no meaningful relevance to `query`.
  */
 export function scoreCandidateRelevance(options: {
   title: string;
@@ -161,8 +225,9 @@ export function scoreCandidateRelevance(options: {
   height: number;
   query: string;
   subjectKind?: BrollSubjectKind;
+  wikipediaRank?: number;
 }): number {
-  const { title, description, mimeType, width, height, query, subjectKind } = options;
+  const { title, description, mimeType, width, height, query, subjectKind, wikipediaRank } = options;
   const queryTokens = significantQueryTokens(query);
   if (queryTokens.length === 0) return 0;
 
@@ -170,7 +235,6 @@ export function scoreCandidateRelevance(options: {
   const descLower = (description ?? '').replace(/[_-]+/g, ' ').toLowerCase();
   const combined = `${titleLower} ${descLower}`;
 
-  // Exact core phrase check
   const corePhrase = queryTokens.join(' ');
   const normalizedHaystack = combined.replace(/[^\p{L}\p{N}]+/gu, ' ');
   const exactInTitle = titleLower.replace(/[^\p{L}\p{N}]+/gu, ' ').includes(corePhrase);
@@ -179,36 +243,47 @@ export function scoreCandidateRelevance(options: {
   let matchedTokens = 0;
   let titleMatchedTokens = 0;
   for (const tok of queryTokens) {
-    const wordBoundary = new RegExp(`\\b${tok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'i');
-    const inTitle = wordBoundary.test(titleLower);
-    const inDesc = wordBoundary.test(descLower);
+    const escaped = tok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // Support singular/plural stem match (e.g. "rockets" <-> "rocket", "smartphones" <-> "smartphone")
+    const stem = tok.length >= 5 && tok.endsWith('s') ? escaped.slice(0, -1) : escaped;
+    const prefixRegex = new RegExp(`\\b${stem}`, 'i');
+    const inTitle = prefixRegex.test(titleLower);
+    const inDesc = prefixRegex.test(descLower);
     if (inTitle || inDesc) matchedTokens += 1;
     if (inTitle) titleMatchedTokens += 1;
   }
 
-  // Strict relevance gate: never return unrelated images just to fill slots.
-  if (matchedTokens === 0) return 0;
+  // Top-ranked Wikipedia search redirects/synonyms (rank 1..2) are encyclopedia topic matches
+  // even when redirected (e.g. "AI" -> "Artificial intelligence", "NYC" -> "New York City")
+  const isTopWikipediaRedirect = typeof wikipediaRank === 'number' && wikipediaRank <= 2;
+
+  if (matchedTokens === 0 && !isTopWikipediaRedirect) return 0;
   const tokenCoverage = matchedTokens / queryTokens.length;
-  if (queryTokens.length >= 2 && tokenCoverage < 0.5) return 0;
-
-  let score = tokenCoverage * 40 + (titleMatchedTokens / queryTokens.length) * 18;
-  if (exactInTitle) score += 26;
-  else if (exactInDesc) score += 14;
-
-  // Portrait orientation bonus (9:16 social video target), calibrated so portrait wins
-  // among comparably relevant candidates while a much more relevant landscape photo wins!
-  const aspect = width / Math.max(1, height);
-  if (aspect <= 0.85 && aspect >= 0.42) {
-    score += 12; // Natural portrait (e.g. 9:16, 2:3, 3:4)
-  } else if (aspect > 0.85 && aspect <= 1.12) {
-    score += 7; // Square / 4:5 vertical social frame
-  } else if (aspect > 1.12 && aspect <= 1.85) {
-    score += 3; // Standard 3:2 / 16:9 event or landmark photograph
-  } else {
-    score -= 6; // Very wide panorama crops poorly to 9:16
+  if (!isTopWikipediaRedirect && queryTokens.length >= 2 && tokenCoverage < 0.45) {
+    return 0;
   }
 
-  // Photographic format & resolution signals
+  let score = isTopWikipediaRedirect && matchedTokens === 0
+    ? 44
+    : tokenCoverage * 40 + (titleMatchedTokens / queryTokens.length) * 18;
+  if (exactInTitle) score += 26;
+  else if (exactInDesc) score += 14;
+  if (typeof wikipediaRank === 'number') {
+    score += Math.max(0, 14 - (wikipediaRank - 1) * 3);
+  }
+
+  // Portrait orientation bonus (9:16 social video target)
+  const aspect = width / Math.max(1, height);
+  if (aspect <= 0.85 && aspect >= 0.42) {
+    score += 12;
+  } else if (aspect > 0.85 && aspect <= 1.12) {
+    score += 7;
+  } else if (aspect > 1.12 && aspect <= 1.85) {
+    score += 3;
+  } else {
+    score -= 6;
+  }
+
   if (mimeType === 'image/jpeg') score += 5;
   else if (mimeType === 'image/webp') score += 3;
 
@@ -216,7 +291,6 @@ export function scoreCandidateRelevance(options: {
   if (minSide >= 900) score += 6;
   else if (minSide >= 640) score += 3;
 
-  // Mildly penalize non-scene words unless queried (e.g. "plaque", "document", "letter", "grave")
   if (!/plaque|grave|tomb|document|letter|newspaper|map/i.test(query)) {
     if (/\b(plaque|tombstone|gravestone|document|manuscript|page\s+\d+|table|chart|map)\b/i.test(combined)) {
       score -= 18;
@@ -246,10 +320,20 @@ interface RawImageInfo {
   extmetadata?: Record<string, RawExtMetadataEntry | undefined>;
 }
 
+interface RawPageImageSide {
+  source?: unknown;
+  width?: unknown;
+  height?: unknown;
+}
+
 interface RawWikimediaPage {
   pageid?: number;
   title?: string;
   index?: number;
+  description?: string;
+  pageimage?: string;
+  thumbnail?: RawPageImageSide;
+  original?: RawPageImageSide;
   imageinfo?: RawImageInfo[];
 }
 
@@ -260,8 +344,9 @@ interface RawWikimediaResponse {
 }
 
 /**
- * Parse, validate, score, and deduplicate raw Wikimedia Commons API `imageinfo` results.
- * Pure function — directly testable with fixture payloads and used identically in production.
+ * Parse, validate, score, and deduplicate raw responses from EITHER:
+ * - Wikimedia Commons `prop=imageinfo` API (`page.imageinfo[...]`), OR
+ * - English Wikipedia `prop=pageimages` API (`page.thumbnail` / `page.original`).
  */
 export function parseAndValidateWikimediaResults(
   payload: unknown,
@@ -286,104 +371,176 @@ export function parseAndValidateWikimediaResults(
 
   for (const page of pageList) {
     const rawTitle = typeof page?.title === 'string' ? page.title.trim() : '';
-    const info = Array.isArray(page?.imageinfo) ? page.imageinfo[0] : undefined;
-    if (!rawTitle || !info) continue;
+    if (!rawTitle) continue;
 
-    const normalizedTitleForFilter = rawTitle.replace(/[_-]+/g, ' ');
+    // Branch A: Standard Wikimedia Commons `imageinfo` payload
+    const info = Array.isArray(page?.imageinfo) ? page.imageinfo[0] : undefined;
+    if (info) {
+      const normalizedTitleForFilter = rawTitle.replace(/[_-]+/g, ' ');
+      if (
+        BLOCKED_TITLE_PATTERNS.some((pattern) => pattern.test(normalizedTitleForFilter)) &&
+        !titleExplicitlyRequestsBlockedTerm(query, normalizedTitleForFilter)
+      ) {
+        continue;
+      }
+
+      const mime = typeof info.mime === 'string' ? info.mime.trim().toLowerCase() : '';
+      if (!ALLOWED_BROLL_MIME_TYPES.has(mime)) continue;
+
+      const width = Number(info.width);
+      const height = Number(info.height);
+      if (!Number.isFinite(width) || !Number.isFinite(height)) continue;
+      if (width < MIN_IMAGE_WIDTH || height < MIN_IMAGE_HEIGHT) continue;
+
+      const aspect = width / height;
+      if (aspect < 0.2 || aspect > 3.2) continue;
+
+      const originalUrlRaw = typeof info.url === 'string' ? info.url.trim() : '';
+      const thumbUrlRaw = typeof info.thumburl === 'string' ? info.thumburl.trim() : '';
+      const originalByteSize = Number(info.size);
+
+      // Prefer pre-scaled thumbnail whenever original exceeds 1080px or maxBytes
+      const preferThumb =
+        Boolean(thumbUrlRaw) &&
+        (width > 1080 || (Number.isFinite(originalByteSize) && originalByteSize > maxBytes));
+      const chosenRawUrl = preferThumb ? thumbUrlRaw : originalUrlRaw || thumbUrlRaw;
+
+      if (
+        !preferThumb &&
+        Number.isFinite(originalByteSize) &&
+        originalByteSize > maxBytes
+      ) {
+        continue;
+      }
+
+      const normalizedUrl = normalizeImageUrl(chosenRawUrl);
+      const normalizedOriginal = normalizeImageUrl(originalUrlRaw || chosenRawUrl);
+      if (!normalizedUrl || !normalizedOriginal) continue;
+
+      const pageUrl =
+        typeof info.descriptionurl === 'string'
+          ? normalizeImageUrl(info.descriptionurl) ?? undefined
+          : undefined;
+
+      const cleanTitle = rawTitle
+        .replace(/^File:/i, '')
+        .replace(/\.[a-z0-9]{2,5}$/i, '')
+        .replace(/_/g, ' ')
+        .trim();
+
+      const ext = info.extmetadata ?? {};
+      const artist = cleanCommonsMetadataText(ext.Artist?.value, 160);
+      const credit = cleanCommonsMetadataText(ext.Credit?.value, 160);
+      const attribution = artist || credit;
+      const licenseShort = cleanCommonsMetadataText(ext.LicenseShortName?.value, 80);
+      const usageTerms = cleanCommonsMetadataText(ext.UsageTerms?.value, 80);
+      const license = licenseShort || usageTerms;
+      const description =
+        cleanCommonsMetadataText(ext.ImageDescription?.value, 240) ||
+        cleanCommonsMetadataText(ext.ObjectName?.value, 240);
+
+      const relevanceScore = scoreCandidateRelevance({
+        title: cleanTitle,
+        description,
+        mimeType: mime,
+        width,
+        height,
+        query,
+        subjectKind: options.subjectKind,
+      });
+      if (relevanceScore < minScore) continue;
+
+      const sha1 =
+        typeof info.sha1 === 'string' && /^[a-f0-9]{20,64}$/i.test(info.sha1.trim())
+          ? info.sha1.trim().toLowerCase()
+          : undefined;
+
+      candidates.push({
+        normalizedUrl,
+        sourceUrl: normalizedUrl,
+        originalUrl: normalizedOriginal,
+        ...(pageUrl ? { pageUrl } : {}),
+        title: cleanTitle,
+        canonicalStem: canonicalizeMediaStem(rawTitle),
+        mimeType: mime as BrollSearchCandidate['mimeType'],
+        width: Math.round(width),
+        height: Math.round(height),
+        ...(Number.isFinite(originalByteSize) && originalByteSize > 0
+          ? { byteSize: Math.round(originalByteSize) }
+          : {}),
+        ...(sha1 ? { sha1 } : {}),
+        ...(attribution ? { attribution } : {}),
+        ...(license ? { license } : {}),
+        ...(description ? { description } : {}),
+        relevanceScore,
+      });
+      continue;
+    }
+
+    // Branch B: English Wikipedia `pageimages` payload (human-curated lead encyclopedia photo)
+    const origSide = page.original;
+    const thumbSide = page.thumbnail;
+    if (!origSide && !thumbSide) continue;
+
+    const pageImageName = typeof page.pageimage === 'string' ? page.pageimage.trim() : '';
+    const origSrc = typeof origSide?.source === 'string' ? origSide.source.trim() : '';
+    const thumbSrc = typeof thumbSide?.source === 'string' ? thumbSide.source.trim() : '';
+
+    const combinedNameCheck = `${rawTitle} ${pageImageName}`.replace(/[_-]+/g, ' ');
     if (
-      BLOCKED_TITLE_PATTERNS.some((pattern) => pattern.test(normalizedTitleForFilter)) &&
-      !titleexplicitlyRequestsBlockedTerm(query, normalizedTitleForFilter)
+      BLOCKED_TITLE_PATTERNS.some((pattern) => pattern.test(combinedNameCheck)) &&
+      !titleExplicitlyRequestsBlockedTerm(query, combinedNameCheck)
     ) {
       continue;
     }
 
-    const mime = typeof info.mime === 'string' ? info.mime.trim().toLowerCase() : '';
-    if (!ALLOWED_BROLL_MIME_TYPES.has(mime)) continue;
+    const mime =
+      inferMimeFromUrlOrName(origSrc) ||
+      inferMimeFromUrlOrName(pageImageName) ||
+      inferMimeFromUrlOrName(thumbSrc);
+    if (!mime || !ALLOWED_BROLL_MIME_TYPES.has(mime)) continue;
 
-    const width = Number(info.width);
-    const height = Number(info.height);
+    const width = Number(origSide?.width) || Number(thumbSide?.width);
+    const height = Number(origSide?.height) || Number(thumbSide?.height);
     if (!Number.isFinite(width) || !Number.isFinite(height)) continue;
     if (width < MIN_IMAGE_WIDTH || height < MIN_IMAGE_HEIGHT) continue;
 
     const aspect = width / height;
     if (aspect < 0.2 || aspect > 3.2) continue;
 
-    const originalUrlRaw = typeof info.url === 'string' ? info.url.trim() : '';
-    const thumbUrlRaw = typeof info.thumburl === 'string' ? info.thumburl.trim() : '';
-    const originalByteSize = Number(info.size);
+    const chosenUrl = normalizeImageUrl(thumbSrc || origSrc);
+    const fullOriginalUrl = normalizeImageUrl(origSrc || thumbSrc);
+    if (!chosenUrl || !fullOriginalUrl) continue;
 
-    // Prefer CDN-scaled thumbnail when the original DSLR upload is huge (> 1440px or > maxBytes)
-    const preferThumb =
-      Boolean(thumbUrlRaw) &&
-      (width > 1440 || (Number.isFinite(originalByteSize) && originalByteSize > maxBytes));
-    const chosenRawUrl = preferThumb ? thumbUrlRaw : originalUrlRaw || thumbUrlRaw;
-
-    if (
-      !preferThumb &&
-      Number.isFinite(originalByteSize) &&
-      originalByteSize > maxBytes
-    ) {
-      continue;
-    }
-
-    const normalizedUrl = normalizeImageUrl(chosenRawUrl);
-    const normalizedOriginal = normalizeImageUrl(originalUrlRaw || chosenRawUrl);
-    if (!normalizedUrl || !normalizedOriginal) continue;
-
-    const pageUrl =
-      typeof info.descriptionurl === 'string'
-        ? normalizeImageUrl(info.descriptionurl) ?? undefined
-        : undefined;
-
-    const cleanTitle = rawTitle
-      .replace(/^File:/i, '')
-      .replace(/\.[a-z0-9]{2,5}$/i, '')
-      .replace(/_/g, ' ')
-      .trim();
-
-    const ext = info.extmetadata ?? {};
-    const artist = cleanCommonsMetadataText(ext.Artist?.value, 160);
-    const credit = cleanCommonsMetadataText(ext.Credit?.value, 160);
-    const attribution = artist || credit;
-    const licenseShort = cleanCommonsMetadataText(ext.LicenseShortName?.value, 80);
-    const usageTerms = cleanCommonsMetadataText(ext.UsageTerms?.value, 80);
-    const license = licenseShort || usageTerms;
-    const description =
-      cleanCommonsMetadataText(ext.ImageDescription?.value, 240) ||
-      cleanCommonsMetadataText(ext.ObjectName?.value, 240);
+    const description = cleanCommonsMetadataText(page.description, 240);
+    const combinedTitle = pageImageName
+      ? `${rawTitle} (${pageImageName.replace(/\.[a-z0-9]{2,5}$/i, '').replace(/_/g, ' ')})`
+      : rawTitle;
 
     const relevanceScore = scoreCandidateRelevance({
-      title: cleanTitle,
+      title: combinedTitle,
       description,
       mimeType: mime,
       width,
       height,
       query,
       subjectKind: options.subjectKind,
+      wikipediaRank: typeof page.index === 'number' ? page.index : undefined,
     });
     if (relevanceScore < minScore) continue;
 
-    const sha1 =
-      typeof info.sha1 === 'string' && /^[a-f0-9]{20,64}$/i.test(info.sha1.trim())
-        ? info.sha1.trim().toLowerCase()
-        : undefined;
-
     candidates.push({
-      normalizedUrl,
-      sourceUrl: normalizedUrl,
-      originalUrl: normalizedOriginal,
-      ...(pageUrl ? { pageUrl } : {}),
-      title: cleanTitle,
-      canonicalStem: canonicalizeMediaStem(rawTitle),
-      mimeType: mime as BrollSearchCandidate['mimeType'],
+      normalizedUrl: chosenUrl,
+      sourceUrl: chosenUrl,
+      originalUrl: fullOriginalUrl,
+      pageUrl: `https://en.wikipedia.org/wiki/${encodeURIComponent(rawTitle.replace(/\s+/g, '_'))}`,
+      title: rawTitle,
+      canonicalStem: canonicalizeMediaStem(pageImageName || chosenUrl),
+      mimeType: mime,
       width: Math.round(width),
       height: Math.round(height),
-      ...(Number.isFinite(originalByteSize) && originalByteSize > 0
-        ? { byteSize: Math.round(originalByteSize) }
-        : {}),
-      ...(sha1 ? { sha1 } : {}),
-      ...(attribution ? { attribution } : {}),
-      ...(license ? { license } : {}),
+      attribution: 'Wikimedia Commons / Wikipedia',
+      license: 'Free media (Wikimedia Commons)',
       ...(description ? { description } : {}),
       relevanceScore,
     });
@@ -430,13 +587,82 @@ export function buildWikimediaSearchUrl(query: string, limit = 12): string {
     gsrlimit: String(Math.max(1, Math.min(25, Math.floor(limit)))),
     prop: 'imageinfo',
     iiprop: 'url|size|mime|extmetadata|sha1',
-    iiurlwidth: '1440',
+    iiurlwidth: String(WMF_STANDARD_THUMB_WIDTH),
   });
   return `${WIKIMEDIA_COMMONS_API_URL}?${params.toString()}`;
 }
 
+export function buildWikipediaPageImagesUrl(query: string, limit = 8): string {
+  const params = new URLSearchParams({
+    action: 'query',
+    format: 'json',
+    formatversion: '2',
+    redirects: '1',
+    generator: 'search',
+    gsrnamespace: '0',
+    gsrsearch: query.trim(),
+    gsrlimit: String(Math.max(1, Math.min(20, Math.floor(limit)))),
+    prop: 'pageimages|description',
+    piprop: 'thumbnail|original|name',
+    pilicense: 'free',
+    pithumbsize: String(WMF_STANDARD_THUMB_WIDTH),
+  });
+  return `${WIKIPEDIA_ENGLISH_API_URL}?${params.toString()}`;
+}
+
+async function fetchMediaWikiJson(
+  url: string,
+  fetchFn: FetchLike,
+  timeoutMs: number,
+  externalSignal?: AbortSignal,
+): Promise<unknown | null> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (externalSignal?.aborted) return null;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const onExternalAbort = () => controller.abort();
+    externalSignal?.addEventListener('abort', onExternalAbort, { once: true });
+
+    try {
+      const response = await fetchFn(url, {
+        method: 'GET',
+        headers: {
+          'user-agent': WIKIMEDIA_USER_AGENT,
+          'api-user-agent': WIKIMEDIA_USER_AGENT,
+          accept: 'application/json',
+        },
+        signal: controller.signal,
+      });
+
+      if ((response.status === 429 || response.status === 503) && attempt === 0) {
+        await new Promise((r) => setTimeout(r, 450));
+        continue;
+      }
+
+      if (!response.ok) {
+        log.warn(`B-roll API HTTP ${response.status} on ${new URL(url).hostname}`);
+        return null;
+      }
+
+      return await response.json();
+    } catch (error) {
+      if (attempt === 0 && !externalSignal?.aborted) {
+        await new Promise((r) => setTimeout(r, 350));
+        continue;
+      }
+      log.warn(`B-roll API request failed (${new URL(url).hostname}): ${toErrorMessage(error)}`);
+      return null;
+    } finally {
+      clearTimeout(timer);
+      externalSignal?.removeEventListener('abort', onExternalAbort);
+    }
+  }
+  return null;
+}
+
 /**
- * Query the free, keyless Wikimedia Commons API for relevant photographic images.
+ * Query free, keyless Wikimedia Commons (`imageinfo`) + English Wikipedia (`pageimages`)
+ * APIs for relevant free photographic images using standard pre-cached `960px` steps.
  */
 export async function searchWikimediaCommons(
   query: string,
@@ -454,30 +680,41 @@ export async function searchWikimediaCommons(
 
   const fetchFn = options.fetchImpl ?? fetch;
   const timeoutMs = options.timeoutMs ?? 8_000;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const onExternalAbort = () => controller.abort();
-  options.signal?.addEventListener('abort', onExternalAbort, { once: true });
 
-  try {
-    const response = await fetchFn(buildWikimediaSearchUrl(trimmed, options.limit ?? 12), {
-      method: 'GET',
-      headers: {
-        'user-agent': WIKIMEDIA_USER_AGENT,
-        accept: 'application/json',
-      },
-      signal: controller.signal,
-    });
-    if (!response.ok) return [];
-    const data = (await response.json()) as unknown;
-    return parseAndValidateWikimediaResults(data, trimmed, {
-      subjectKind: options.subjectKind,
-      maxImageBytes: options.maxImageBytes,
-    });
-  } catch {
-    return [];
-  } finally {
-    clearTimeout(timer);
-    options.signal?.removeEventListener('abort', onExternalAbort);
+  // Stage 1: Wikimedia Commons direct photographic file search (`iiurlwidth=960`)
+  const commonsJson = await fetchMediaWikiJson(
+    buildWikimediaSearchUrl(trimmed, options.limit ?? 12),
+    fetchFn,
+    timeoutMs,
+    options.signal,
+  );
+  const commonsCandidates = commonsJson
+    ? parseAndValidateWikimediaResults(commonsJson, trimmed, {
+        subjectKind: options.subjectKind,
+        maxImageBytes: options.maxImageBytes,
+      })
+    : [];
+
+  // Fast exit when Commons already returned strong direct photographic matches
+  const topCommonsScore = commonsCandidates[0]?.relevanceScore ?? 0;
+  if (commonsCandidates.length >= 1 && topCommonsScore >= 52) {
+    return commonsCandidates;
   }
+
+  // Stage 2: English Wikipedia `pageimages` search (`pilicense=free`, `pithumbsize=960`)
+  // Handles everyday concepts, redirects, nicknames, brands, and topics cleanly!
+  const wikiJson = await fetchMediaWikiJson(
+    buildWikipediaPageImagesUrl(trimmed, 8),
+    fetchFn,
+    timeoutMs,
+    options.signal,
+  );
+  const wikiCandidates = wikiJson
+    ? parseAndValidateWikimediaResults(wikiJson, trimmed, {
+        subjectKind: options.subjectKind,
+        maxImageBytes: options.maxImageBytes,
+      })
+    : [];
+
+  return deduplicateSearchCandidates([...wikiCandidates, ...commonsCandidates]);
 }

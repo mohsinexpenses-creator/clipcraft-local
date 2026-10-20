@@ -264,7 +264,7 @@ export function RenderSettingsPanel({
         </Field>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid gap-3 sm:grid-cols-3">
         <Field
           label="Hook intro fallback (s)"
           hint="Only used when a clip has no usable hook interval from the AI - that interval normally decides the length. 0 turns the hook intro and hook text off."
@@ -289,6 +289,22 @@ export function RenderSettingsPanel({
             step={0.5}
             onCommit={(ctaDuration) => patch({ ctaDuration })}
             disabled={disabled}
+          />
+        </Field>
+
+        <Field
+          label="Auto B-roll images"
+          hint="Automatically discovers, caches, and inserts relevant full-screen 9:16 images (~1 every 6–8s) aligned to spoken segments."
+        >
+          <Segmented
+            ariaLabel="Automatic B-roll images"
+            value={value.enableBroll === false ? "off" : "on"}
+            disabled={disabled}
+            onChange={(next) => patch({ enableBroll: next === "on" })}
+            options={[
+              { value: "on", label: "On" },
+              { value: "off", label: "Off" },
+            ]}
           />
         </Field>
       </div>

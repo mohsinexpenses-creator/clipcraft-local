@@ -642,6 +642,8 @@ export interface ClipRecord {
   ctaStylePresetId?: string;
   /** Whether automatic full-screen B-roll images are enabled for this clip (default true). */
   enableBroll?: boolean;
+  /** Planned B-roll image count before render, and exact composited B-roll image count once rendered. */
+  brollCount?: number;
   cropData?: CropWindow;
   /**
    * Everything the AI said about this clip (score, rank, title, hook line,

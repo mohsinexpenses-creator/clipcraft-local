@@ -6,23 +6,30 @@ import test from 'node:test';
 import { Jimp } from 'jimp';
 
 import {
+  WMF_STANDARD_THUMB_WIDTH,
+  buildStandardWikimediaThumbUrl,
   buildWikimediaSearchUrl,
+  buildWikipediaPageImagesUrl,
   canonicalizeMediaStem,
   ensureCachedBrollAsset,
   extractBrollMomentsFromTranscript,
   findRelevantCachedAssetsForQuery,
   inspectAndValidateImageBuffer,
+  maybeEnrichMomentsWithFreeLlm,
   normalizeImageUrl,
   parseAndValidateWikimediaResults,
+  planClipBrollCount,
   resolveBrollForClip,
   resolveSafeCachedImagePath,
   scheduleBrollPlacements,
   scoreCandidateRelevance,
+  searchWikimediaCommons,
   searchWithPersistentCache,
   targetBrollCountForDuration,
   type BrollSearchCandidate,
 } from '../lib/broll';
-import { resolveSettings, sanitizeSettingsSection } from '../lib/app-settings';
+import { getClipBrollSummary } from '../lib/broll-count';
+import { resolveSettings, sanitizeSettingsSection, saveSettingsSection } from '../lib/app-settings';
 import { sanitizeClipEdits } from '../lib/clip-edits';
 import { getVideoMetadata, runFfmpeg } from '../lib/ffmpeg';
 import { getBrollCacheDirValue, getClipsDirValue, resolveBrollCacheDir } from '../lib/paths';
@@ -1117,3 +1124,270 @@ test('scheduleBrollPlacements cleanly supports hookless clips and strict per-cli
   assert.ok(scheduled[0].startTime >= 0.8 && scheduled[0].startTime <= 1.2);
   assert.ok(scheduled[1].startTime >= 15.8 && scheduled[1].startTime <= 16.2);
 });
+
+test('WMF standard 960px thumbnail step, Wikipedia pageimages fallback, HTTP 429 fallback, and DSLR Jimp downscaling work reliably', async (t) => {
+  createTemporaryDatabase(t);
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'broll-wmf-cache-'));
+  t.after(() => {
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  });
+
+  // 1. Standard 960px step in Wikimedia Commons search URL (never non-stepped 1440px!)
+  const commonsUrl = new URL(buildWikimediaSearchUrl('Elon Musk'));
+  assert.equal(commonsUrl.searchParams.get('iiurlwidth'), String(WMF_STANDARD_THUMB_WIDTH));
+  assert.equal(commonsUrl.searchParams.get('iiurlwidth'), '960');
+  assert.equal(
+    buildStandardWikimediaThumbUrl(
+      'https://upload.wikimedia.org/wikipedia/commons/5/55/HighRes_DSLR_Photo.jpg',
+      960,
+    ),
+    'https://upload.wikimedia.org/wikipedia/commons/thumb/5/55/HighRes_DSLR_Photo.jpg/960px-HighRes_DSLR_Photo.jpg',
+  );
+
+  const wikiUrl = new URL(buildWikipediaPageImagesUrl('Smartphone'));
+  assert.equal(wikiUrl.origin, 'https://en.wikipedia.org');
+  assert.equal(wikiUrl.searchParams.get('pilicense'), 'free');
+  assert.equal(wikiUrl.searchParams.get('pithumbsize'), '960');
+
+  // 2. Commons 0 results automatically cascades to English Wikipedia pageimages!
+  let wikiCalled = false;
+  const cascadeResults = await searchWikimediaCommons('Smartphones', {
+    fetchImpl: async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes('commons.wikimedia.org')) {
+        return new Response(JSON.stringify({ query: { pages: [] } }), { status: 200 });
+      }
+      wikiCalled = true;
+      return new Response(
+        JSON.stringify({
+          query: {
+            pages: [
+              {
+                pageid: 99,
+                title: 'Smartphone',
+                pageimage: 'Modern_smartphone_on_desk.jpg',
+                thumbnail: {
+                  source: 'https://upload.wikimedia.org/wikipedia/commons/thumb/1/12/Modern_smartphone_on_desk.jpg/960px-Modern_smartphone_on_desk.jpg',
+                  width: 960,
+                  height: 1280,
+                },
+                original: {
+                  source: 'https://upload.wikimedia.org/wikipedia/commons/1/12/Modern_smartphone_on_desk.jpg',
+                  width: 3000,
+                  height: 4000,
+                },
+              },
+            ],
+          },
+        }),
+        { status: 200 },
+      );
+    },
+  });
+  assert.equal(wikiCalled, true);
+  assert.equal(cascadeResults.length, 1);
+  assert.equal(cascadeResults[0].width, 3000);
+  assert.equal(cascadeResults[0].height, 4000);
+
+  // 3. Large 2400x1600 DSLR image on original fallback URL succeeds when thumburl returns HTTP 429,
+  //    and is automatically downscaled on disk while preserving original metadata dimensions!
+  const dslrBuffer = await makeSolidJpegBuffer(2400, 1600, 0x2288ddff);
+  const requestedUrls: string[] = [];
+  const resilientAsset = await ensureCachedBrollAsset(
+    {
+      normalizedUrl: 'https://upload.wikimedia.org/wikipedia/commons/5/55/HighRes_DSLR_Photo.jpg',
+      sourceUrl:
+        'https://upload.wikimedia.org/wikipedia/commons/thumb/5/55/HighRes_DSLR_Photo.jpg/1440px-HighRes_DSLR_Photo.jpg',
+      originalUrl: 'https://upload.wikimedia.org/wikipedia/commons/5/55/HighRes_DSLR_Photo.jpg',
+      title: 'File:HighRes_DSLR_Photo.jpg',
+      attribution: 'Jane Photographer',
+      license: 'CC BY-SA 4.0',
+      width: 2400,
+      height: 1600,
+      mimeType: 'image/jpeg',
+      relevanceScore: 88,
+      canonicalStem: 'highres dslr photo',
+    },
+    {
+      cacheDir,
+      searchTerms: ['DSLR photo'],
+      detectFaces: false,
+      fetchImpl: async (input: string | URL | Request) => {
+        const url = String(input);
+        requestedUrls.push(url);
+        if (url.includes('1440px-')) {
+          return new Response('Too Many Requests', { status: 429 });
+        }
+        return new Response(new Uint8Array(dslrBuffer), {
+          status: 200,
+          headers: { 'content-type': 'image/jpeg' },
+        });
+      },
+    },
+  );
+  assert.ok(resilientAsset, 'Expected automatic fallback to 960px standard thumb / original URL on 429');
+  assert.ok(requestedUrls.some((u) => u.includes('/960px-HighRes_DSLR_Photo.jpg')));
+  // Metadata preserves original 2400x1600 while on-disk JPEG is downscaled to <=1440px wide!
+  assert.equal(resilientAsset.width, 2400);
+  assert.equal(resilientAsset.height, 1600);
+  const onDiskDecoded = await Jimp.read(fs.readFileSync(resilientAsset.absolutePath));
+  assert.equal(onDiskDecoded.width, 1440);
+  assert.equal(onDiskDecoded.height, 960);
+});
+
+test('1-word whisper.cpp segments (-ml 1), conversational speech, and clip card B-roll counts work end-to-end', async (t) => {
+  createTemporaryDatabase(t);
+  // Build a realistic 64-second conversational podcast transcript where EVERY segment in
+  // transcript.segments has ONLY ONE lowercase word — matching `whisper-cli -ml 1 -sow -ojf`!
+  const spokenText =
+    'most founders spend years chasing venture capital in silicon valley while ignoring real customers ' +
+    'at first their startup burns cash on a fancy office and hiring engineers too early ' +
+    'then one founder takes a laptop into coffee shops in austin and interviews fifty doctors ' +
+    'within months hospital clinics sign contracts worth millions of dollars in revenue ' +
+    'meanwhile competitors pitch slide decks on stages and podcasts without shipping software ' +
+    'even wall street investors notice when a small team builds profitable cloud servers ' +
+    'eventually the company launches mobile apps across europe and tokyo airports ' +
+    'that simple discipline turns a tiny garage experiment into an enduring global business';
+
+  const rawWords = spokenText.split(/\s+/);
+  const step = 62 / rawWords.length;
+  const whisperWords: WordTimestamp[] = rawWords.map((word, idx) => ({
+    word,
+    start: Number((1 + idx * step).toFixed(2)),
+    end: Number((1 + (idx + 0.85) * step).toFixed(2)),
+  }));
+  // Exact 1-word segments just like `lib/whisper.ts` produces!
+  const oneWordSegments = whisperWords.map((w, id) => ({
+    id,
+    start: w.start,
+    end: w.end,
+    text: w.word,
+    words: [w],
+  }));
+
+  const whisperTranscript: TranscriptData = {
+    text: spokenText,
+    segments: oneWordSegments,
+    words: whisperWords,
+  };
+
+  // Offline extraction (zero LLM key) still reconstructs full multi-word clauses and finds >= 8 distinct moments!
+  const offlineMoments = extractBrollMomentsFromTranscript({
+    transcript: whisperTranscript,
+    clipWords: whisperWords,
+    clipStart: 0,
+    clipEnd: 64,
+  });
+  assert.ok(
+    offlineMoments.length >= 8,
+    `Expected >= 8 moments from 1-word Whisper segments, got ${offlineMoments.length}`,
+  );
+  // Clauses must be reconstructed (never 1-word segmentText!)
+  assert.ok(offlineMoments.every((m) => m.segmentText.split(/\s+/).length >= 4));
+
+  // Verify LLM enrichment path passes maxOutputTokens >= 8192 (so Gemini 3.x thinking never truncates!)
+  await saveSettingsSection('ai', {
+    geminiApiKeys: ['AIzaSyTestKey12345678901234567890'],
+  });
+  const originalFetch = globalThis.fetch;
+  let capturedMaxOutputTokens = 0;
+  try {
+    globalThis.fetch = async (_url: string | URL | Request, init?: RequestInit) => {
+      const parsed = JSON.parse(String(init?.body ?? '{}'));
+      capturedMaxOutputTokens = Number(parsed?.generationConfig?.maxOutputTokens ?? 0);
+      return new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              content: {
+                parts: [
+                  {
+                    text: JSON.stringify({
+                      cues: [
+                        { timeSeconds: 3, query: 'Wall Street', fallbackQuery: 'Stock exchange', kind: 'place' },
+                        { timeSeconds: 11, query: 'Federal Reserve', fallbackQuery: 'Bank', kind: 'landmark' },
+                        { timeSeconds: 19, query: 'Silicon Valley', fallbackQuery: 'Office', kind: 'place' },
+                        { timeSeconds: 27, query: 'Data center', fallbackQuery: 'Server', kind: 'object' },
+                        { timeSeconds: 35, query: 'Container ship', fallbackQuery: 'Port', kind: 'object' },
+                        { timeSeconds: 43, query: 'Tokyo', fallbackQuery: 'City skyline', kind: 'landmark' },
+                        { timeSeconds: 51, query: 'SpaceX Falcon 9', fallbackQuery: 'Rocket', kind: 'event' },
+                        { timeSeconds: 57, query: 'Microphone', fallbackQuery: 'Studio', kind: 'object' },
+                      ],
+                    }),
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    };
+
+    const conversationalWords: WordTimestamp[] = Array.from({ length: 60 }, (_, idx) => ({
+      word: idx % 2 === 0 ? 'people' : 'think',
+      start: idx,
+      end: idx + 0.8,
+    }));
+
+    const enrichedMoments = await maybeEnrichMomentsWithFreeLlm({
+      existingMoments: [],
+      clipWords: conversationalWords,
+      clipStart: 0,
+      clipEnd: 60,
+      targetCount: 8,
+    });
+    assert.ok(
+      capturedMaxOutputTokens >= 8192,
+      `Expected maxOutputTokens >= 8192 for Gemini 3.x thinking headroom, got ${capturedMaxOutputTokens}`,
+    );
+    assert.equal(enrichedMoments.length, 8);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  // Verify synchronous clip-card planning count + rendered vs unrendered vs disabled card labels!
+  const plannedCount = planClipBrollCount({
+    transcript: whisperTranscript,
+    clipStart: 0,
+    clipEnd: 64,
+    enableBroll: true,
+  });
+  assert.ok(plannedCount >= 9 && plannedCount <= 11);
+
+  const pendingSummary = getClipBrollSummary({
+    start: 0,
+    end: 60,
+    status: 'pending',
+    enableBroll: true,
+    brollCount: 8,
+  });
+  assert.equal(pendingSummary.count, 8);
+  assert.equal(pendingSummary.isActualRendered, false);
+  assert.equal(pendingSummary.shortLabel, '8 images');
+  assert.equal(pendingSummary.label, '8 B-roll images');
+
+  const doneSummary = getClipBrollSummary({
+    start: 0,
+    end: 60,
+    status: 'done',
+    enableBroll: true,
+    brollCount: 7,
+  });
+  assert.equal(doneSummary.count, 7);
+  assert.equal(doneSummary.isActualRendered, true);
+  assert.equal(doneSummary.shortLabel, '7 images');
+  assert.equal(doneSummary.label, '7 B-roll images');
+
+  const disabledSummary = getClipBrollSummary({
+    start: 0,
+    end: 60,
+    status: 'pending',
+    enableBroll: false,
+    brollCount: 0,
+  });
+  assert.equal(disabledSummary.enabled, false);
+  assert.equal(disabledSummary.count, 0);
+  assert.equal(disabledSummary.shortLabel, 'B-roll off');
+});
+

@@ -1,8 +1,9 @@
 import fs from 'fs';
 import path from 'path';
 import { NextResponse } from 'next/server';
-import { deleteClip, getClip, updateClip } from '@/lib/db';
+import { deleteClip, getClip, getVideo, updateClip } from '@/lib/db';
 import { toErrorMessage, toErrorStatus } from '@/lib/errors';
+import { planClipBrollCount } from '@/lib/broll/query-extractor';
 import { sanitizeClipEdits } from '@/lib/clip-edits';
 
 export async function GET(
@@ -47,6 +48,16 @@ export async function PATCH(
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
     const edits = sanitizeClipEdits(body);
     const merged = { ...clip, ...edits };
+    if ('start' in edits || 'end' in edits || 'enableBroll' in edits) {
+      const video = await getVideo(merged.videoId);
+      merged.brollCount = planClipBrollCount({
+        transcript: video?.transcript,
+        clipStart: merged.start,
+        clipEnd: merged.end,
+        aiAnalysis: merged.aiAnalysis,
+        enableBroll: merged.enableBroll,
+      });
+    }
 
     if (!(await updateClip(merged))) {
       return NextResponse.json({ error: 'Clip not found' }, { status: 404 });

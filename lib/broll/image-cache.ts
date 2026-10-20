@@ -11,6 +11,8 @@ import {
   saveBrollAsset,
   saveCachedBrollSearch,
 } from '../db';
+import { toErrorMessage } from '../errors';
+import { log } from '../logger';
 import { resolveBrollCacheDir } from '../paths';
 import {
   ALLOWED_BROLL_MIME_TYPES,
@@ -19,6 +21,7 @@ import {
   MIN_IMAGE_WIDTH,
   MIN_RELEVANCE_SCORE,
   WIKIMEDIA_USER_AGENT,
+  buildStandardWikimediaThumbUrl,
   canonicalizeMediaStem,
   normalizeImageUrl,
   scoreCandidateRelevance,
@@ -43,6 +46,8 @@ export interface ValidatedImageBuffer {
   contentHash: string;
   focalX: number;
   focalY: number;
+  /** Compact binary buffer to persist on disk (resized cleanly if huge original). */
+  diskBuffer: Buffer;
 }
 
 function parseWebpDimensions(buf: Buffer): { width: number; height: number } | null {
@@ -54,7 +59,6 @@ function parseWebpDimensions(buf: Buffer): { width: number; height: number } | n
     return null;
   }
   const riffSize = buf.readUInt32LE(4);
-  // Reject truncated WebP containers where the declared RIFF payload exceeds actual bytes
   if (riffSize + 8 > buf.length) return null;
 
   const chunkType = buf.toString('ascii', 12, 16);
@@ -183,10 +187,10 @@ export async function inspectAndValidateImageBuffer(
       contentHash,
       focalX: DEFAULT_FOCAL_X,
       focalY: DEFAULT_FOCAL_Y,
+      diskBuffer: buffer,
     };
   }
 
-  // Full decode validation via Jimp for JPEG/PNG rejects truncated/corrupted payloads
   try {
     const decoded = await Jimp.fromBuffer(buffer);
     const width = decoded.bitmap.width;
@@ -199,13 +203,32 @@ export async function inspectAndValidateImageBuffer(
 
     let focal = { focalX: DEFAULT_FOCAL_X, focalY: DEFAULT_FOCAL_Y };
     if (options.detectFaces !== false) {
-      // Resize copy if large so face detection never buffers multi-megapixel RGB frames
       const sample = width > 640 ? decoded.clone().resize({ w: 640 }) : decoded;
       focal = await computeSmartFocalPoint(
         sample.bitmap.data as Buffer,
         sample.bitmap.width,
         sample.bitmap.height,
       );
+    }
+
+    // Downscale huge DSLR images (> 1800px) so cached disk files stay small & fast on 8 GB RAM
+    let diskBuffer = buffer;
+    if (Math.max(width, height) > 1800) {
+      const resized =
+        width >= height
+          ? decoded.clone().resize({ w: 1440 })
+          : decoded.clone().resize({ h: 1920 });
+      diskBuffer = await resized.getBuffer('image/jpeg');
+      return {
+        mimeType: 'image/jpeg',
+        extension: 'jpg',
+        width,
+        height,
+        contentHash,
+        focalX: focal.focalX,
+        focalY: focal.focalY,
+        diskBuffer,
+      };
     }
 
     return {
@@ -216,6 +239,7 @@ export async function inspectAndValidateImageBuffer(
       contentHash,
       focalX: focal.focalX,
       focalY: focal.focalY,
+      diskBuffer,
     };
   } catch {
     return null;
@@ -223,8 +247,7 @@ export async function inspectAndValidateImageBuffer(
 }
 
 /**
- * Safely resolve `<cacheDir>/images/<localPath>` while strictly blocking path traversal
- * (`..`, absolute paths, drive letters, or backslashes).
+ * Safely resolve `<cacheDir>/images/<localPath>` while strictly blocking path traversal.
  */
 export function resolveSafeCachedImagePath(cacheDir: string, localFileName: string): string {
   const safeBase = path.basename(localFileName);
@@ -285,7 +308,6 @@ async function readResponseWithSizeCap(
   return Buffer.concat(chunks, total);
 }
 
-/** In-flight download deduplication map so concurrent clips requesting the same URL share one fetch. */
 const inFlightDownloads = new Map<string, Promise<ResolvedBrollAsset | null>>();
 
 export interface EnsureCachedAssetOptions {
@@ -298,6 +320,21 @@ export interface EnsureCachedAssetOptions {
   minHeight?: number;
   detectFaces?: boolean;
   signal?: AbortSignal;
+}
+
+function buildOrderedCandidateUrls(candidate: BrollSearchCandidate): string[] {
+  const ordered: string[] = [];
+  const pushUnique = (raw: string | null | undefined) => {
+    const norm = raw ? normalizeImageUrl(raw) : null;
+    if (norm && !ordered.includes(norm)) ordered.push(norm);
+  };
+
+  pushUnique(candidate.sourceUrl);
+  // Official WMF Varnish-cached steps (`960px` & `1280px`) avoid dynamic scaler 429s
+  pushUnique(buildStandardWikimediaThumbUrl(candidate.originalUrl || candidate.sourceUrl, 960));
+  pushUnique(buildStandardWikimediaThumbUrl(candidate.originalUrl || candidate.sourceUrl, 1280));
+  pushUnique(candidate.originalUrl);
+  return ordered;
 }
 
 /**
@@ -342,7 +379,6 @@ export async function ensureCachedBrollAsset(
     deleteBrollAssetByNormalizedUrl(normalizedUrl);
   }
 
-  // Deduplicate simultaneous downloads of the exact same normalized URL across parallel tasks
   const inflightKey = `${cacheDir}::${normalizedUrl}`;
   const pending = inFlightDownloads.get(inflightKey);
   if (pending) {
@@ -353,119 +389,130 @@ export async function ensureCachedBrollAsset(
   const task = (async (): Promise<ResolvedBrollAsset | null> => {
     const fetchFn = options.fetchImpl ?? fetch;
     const maxBytes = options.maxImageBytes ?? DEFAULT_MAX_IMAGE_BYTES;
-    const timeoutMs = options.timeoutMs ?? 10_000;
-
-    // Try primary URL (`sourceUrl`), falling back to `originalUrl` only if distinct & needed
-    const urlsToTry = [normalizedUrl];
-    const fallbackOriginal = normalizeImageUrl(candidate.originalUrl);
-    if (fallbackOriginal && fallbackOriginal !== normalizedUrl) {
-      urlsToTry.push(fallbackOriginal);
-    }
+    const timeoutMs = options.timeoutMs ?? 12_000;
+    const urlsToTry = buildOrderedCandidateUrls(candidate);
 
     for (const targetUrl of urlsToTry) {
-      if (options.signal?.aborted) return null;
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
-      const onAbort = () => controller.abort();
-      options.signal?.addEventListener('abort', onAbort, { once: true });
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        if (options.signal?.aborted) return null;
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        const onAbort = () => controller.abort();
+        options.signal?.addEventListener('abort', onAbort, { once: true });
 
-      try {
-        const response = await fetchFn(targetUrl, {
-          method: 'GET',
-          headers: {
-            'user-agent': WIKIMEDIA_USER_AGENT,
-            accept: 'image/jpeg,image/png,image/webp;q=0.9,*/*;q=0.1',
-          },
-          redirect: 'follow',
-          signal: controller.signal,
-        });
+        try {
+          const response = await fetchFn(targetUrl, {
+            method: 'GET',
+            headers: {
+              'user-agent': WIKIMEDIA_USER_AGENT,
+              'api-user-agent': WIKIMEDIA_USER_AGENT,
+              accept: 'image/jpeg,image/png,image/webp;q=0.9,*/*;q=0.1',
+            },
+            redirect: 'follow',
+            signal: controller.signal,
+          });
 
-        if (!response.ok) continue;
-
-        const headerMime = (response.headers.get('content-type') ?? '')
-          .split(';')[0]
-          .trim()
-          .toLowerCase();
-        // Reject explicit non-image error responses before buffering
-        if (headerMime && !ALLOWED_BROLL_MIME_TYPES.has(headerMime) && !headerMime.startsWith('application/octet-stream')) {
-          continue;
-        }
-
-        const buffer = await readResponseWithSizeCap(response, maxBytes, controller);
-        if (!buffer) continue;
-
-        const validated = await inspectAndValidateImageBuffer(buffer, {
-          minWidth: options.minWidth,
-          minHeight: options.minHeight,
-          detectFaces: options.detectFaces,
-        });
-        if (!validated) continue;
-
-        // 2) Content-hash deduplication: if another URL already cached identical bytes, reuse the file!
-        const existingByHash = getBrollAssetByContentHash(validated.contentHash);
-        const localFileName = `${validated.contentHash}.${validated.extension}`;
-        const finalFilePath = resolveSafeCachedImagePath(cacheDir, localFileName);
-
-        let reusedExistingDiskBytes = false;
-        if (existingByHash) {
-          try {
-            const hashPath = resolveSafeCachedImagePath(cacheDir, existingByHash.localPath);
-            if (fs.existsSync(hashPath) && fs.statSync(hashPath).size > 0) {
-              reusedExistingDiskBytes = true;
-            }
-          } catch {
-            reusedExistingDiskBytes = false;
+          if ((response.status === 429 || response.status === 503) && attempt === 0) {
+            await new Promise((r) => setTimeout(r, 550));
+            continue;
           }
+
+          if (!response.ok) {
+            log.warn(`B-roll image HTTP ${response.status} for ${targetUrl.slice(0, 96)}`);
+            break;
+          }
+
+          const headerMime = (response.headers.get('content-type') ?? '')
+            .split(';')[0]
+            .trim()
+            .toLowerCase();
+          if (
+            headerMime &&
+            !ALLOWED_BROLL_MIME_TYPES.has(headerMime) &&
+            !headerMime.startsWith('application/octet-stream')
+          ) {
+            break;
+          }
+
+          const buffer = await readResponseWithSizeCap(response, maxBytes, controller);
+          if (!buffer) break;
+
+          const validated = await inspectAndValidateImageBuffer(buffer, {
+            minWidth: options.minWidth,
+            minHeight: options.minHeight,
+            detectFaces: options.detectFaces,
+          });
+          if (!validated) break;
+
+          const existingByHash = getBrollAssetByContentHash(validated.contentHash);
+          const localFileName = `${validated.contentHash}.${validated.extension}`;
+          const finalFilePath = resolveSafeCachedImagePath(cacheDir, localFileName);
+
+          let reusedExistingDiskBytes = false;
+          if (existingByHash) {
+            try {
+              const hashPath = resolveSafeCachedImagePath(cacheDir, existingByHash.localPath);
+              if (fs.existsSync(hashPath) && fs.statSync(hashPath).size > 0) {
+                reusedExistingDiskBytes = true;
+              }
+            } catch {
+              reusedExistingDiskBytes = false;
+            }
+          }
+
+          if (!reusedExistingDiskBytes && !fs.existsSync(finalFilePath)) {
+            const tempPath = path.join(
+              path.dirname(finalFilePath),
+              `.tmp_${validated.contentHash}_${randomUUID()}`,
+            );
+            fs.writeFileSync(tempPath, validated.diskBuffer);
+            fs.renameSync(tempPath, finalFilePath);
+          }
+
+          const activeLocalName =
+            reusedExistingDiskBytes && existingByHash ? existingByHash.localPath : localFileName;
+          const activeDiskPath = resolveSafeCachedImagePath(cacheDir, activeLocalName);
+          const diskSize = fs.statSync(activeDiskPath).size;
+          const now = new Date().toISOString();
+
+          const saved = saveBrollAsset({
+            id: randomUUID(),
+            normalizedUrl,
+            sourceUrl: normalizedUrl,
+            pageUrl: candidate.pageUrl,
+            title: candidate.title,
+            contentHash: validated.contentHash,
+            localPath: activeLocalName,
+            mimeType: validated.mimeType,
+            width: candidate.width || validated.width,
+            height: candidate.height || validated.height,
+            fileSize: diskSize,
+            focalX: existingByHash?.focalX ?? validated.focalX,
+            focalY: existingByHash?.focalY ?? validated.focalY,
+            attribution: candidate.attribution,
+            license: candidate.license,
+            description: candidate.description,
+            searchTerms: incomingTerms,
+            createdAt: now,
+            lastUsedAt: now,
+          });
+
+          return {
+            ...saved,
+            absolutePath: activeDiskPath,
+            cacheHit: reusedExistingDiskBytes,
+          };
+        } catch (error) {
+          if (attempt === 0 && !options.signal?.aborted) {
+            await new Promise((r) => setTimeout(r, 350));
+            continue;
+          }
+          log.warn(`B-roll image download failed (${targetUrl.slice(0, 80)}): ${toErrorMessage(error)}`);
+          break;
+        } finally {
+          clearTimeout(timer);
+          options.signal?.removeEventListener('abort', onAbort);
         }
-
-        if (!reusedExistingDiskBytes && !fs.existsSync(finalFilePath)) {
-          const tempPath = path.join(
-            path.dirname(finalFilePath),
-            `.tmp_${validated.contentHash}_${randomUUID()}`,
-          );
-          fs.writeFileSync(tempPath, buffer);
-          fs.renameSync(tempPath, finalFilePath);
-        }
-
-        const activeLocalName =
-          reusedExistingDiskBytes && existingByHash ? existingByHash.localPath : localFileName;
-        const activeDiskPath = resolveSafeCachedImagePath(cacheDir, activeLocalName);
-        const diskSize = fs.statSync(activeDiskPath).size;
-        const now = new Date().toISOString();
-
-        const saved = saveBrollAsset({
-          id: randomUUID(),
-          normalizedUrl,
-          sourceUrl: normalizedUrl,
-          pageUrl: candidate.pageUrl,
-          title: candidate.title,
-          contentHash: validated.contentHash,
-          localPath: activeLocalName,
-          mimeType: validated.mimeType,
-          // Preserve original Commons dimensions when known, falling back to actual decoded dimensions
-          width: candidate.width || validated.width,
-          height: candidate.height || validated.height,
-          fileSize: diskSize,
-          focalX: existingByHash?.focalX ?? validated.focalX,
-          focalY: existingByHash?.focalY ?? validated.focalY,
-          attribution: candidate.attribution,
-          license: candidate.license,
-          description: candidate.description,
-          searchTerms: incomingTerms,
-          createdAt: now,
-          lastUsedAt: now,
-        });
-
-        return {
-          ...saved,
-          absolutePath: activeDiskPath,
-          cacheHit: reusedExistingDiskBytes,
-        };
-      } catch {
-        continue;
-      } finally {
-        clearTimeout(timer);
-        options.signal?.removeEventListener('abort', onAbort);
       }
     }
 
@@ -481,7 +528,7 @@ export async function ensureCachedBrollAsset(
 }
 
 /**
- * Search Wikimedia Commons with persistent SQLite query caching (`broll_search_cache`).
+ * Search Wikimedia Commons / Wikipedia with persistent SQLite query caching (`broll_search_cache`).
  */
 export async function searchWithPersistentCache(
   query: string,
@@ -504,7 +551,6 @@ export async function searchWithPersistentCache(
   }
 
   const candidates = await searchWikimediaCommons(query, options);
-  // Only persist non-empty results so transient network outages never poison future clips!
   if (candidates.length > 0) {
     try {
       saveCachedBrollSearch(normalizedQuery, query.trim(), candidates);

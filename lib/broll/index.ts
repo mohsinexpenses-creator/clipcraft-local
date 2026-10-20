@@ -1,6 +1,7 @@
 import fs from 'fs';
 import { log } from '../logger';
 import { toErrorMessage } from '../errors';
+import { resolveBrollCacheDir } from '../paths';
 import type { TranscriptData, ViralClip, WordTimestamp } from '../types';
 import {
   ensureCachedBrollAsset,
@@ -23,6 +24,8 @@ import type { BrollPlacement, BrollSearchCandidate } from './types';
 export * from './types';
 export {
   WIKIMEDIA_COMMONS_API_URL,
+  WIKIPEDIA_ENGLISH_API_URL,
+  WMF_STANDARD_THUMB_WIDTH,
   WIKIMEDIA_USER_AGENT,
   ALLOWED_BROLL_MIME_TYPES,
   MIN_IMAGE_WIDTH,
@@ -30,12 +33,14 @@ export {
   MIN_RELEVANCE_SCORE,
   DEFAULT_MAX_IMAGE_BYTES,
   normalizeImageUrl,
+  buildStandardWikimediaThumbUrl,
   canonicalizeMediaStem,
   cleanCommonsMetadataText,
   scoreCandidateRelevance,
   parseAndValidateWikimediaResults,
   deduplicateSearchCandidates,
   buildWikimediaSearchUrl,
+  buildWikipediaPageImagesUrl,
   searchWikimediaCommons,
 } from './wikimedia';
 export {
@@ -48,7 +53,9 @@ export {
   findRelevantCachedAssetsForQuery,
 } from './image-cache';
 export {
+  extractClipWordsForWindow,
   extractBrollMomentsFromTranscript,
+  planClipBrollCount,
   maybeEnrichMomentsWithFreeLlm,
 } from './query-extractor';
 export {
@@ -57,7 +64,7 @@ export {
   scheduleBrollPlacements,
 } from './scheduler';
 
-/** Bounded parallel executor tuned for an 8 GB RAM local machine (default concurrency 3). */
+/** Bounded parallel executor tuned for Wikimedia CDN limits & 8 GB RAM (default concurrency 2). */
 async function mapWithConcurrency<T, R>(
   items: readonly T[],
   concurrency: number,
@@ -90,7 +97,7 @@ export interface ResolveClipBrollOptions {
   aiAnalysis?: ViralClip;
   cacheDir?: string;
   fetchImpl?: FetchLike;
-  /** Max concurrent search/download requests (default 3 for low RAM & CPU usage). */
+  /** Max concurrent search/download requests (default 2, honoring WMF per-IP connection limits). */
   concurrency?: number;
   requestTimeoutMs?: number;
   maxImageBytes?: number;
@@ -120,9 +127,10 @@ export async function resolveBrollForClip(
   try {
     if (abortIfCancelled()) return [];
 
+    const activeCacheDir = resolveBrollCacheDir(options.cacheDir);
     const clipDuration = Math.max(0.5, options.clipEnd - options.clipStart);
     const targetCount = targetBrollCountForDuration(clipDuration);
-    const concurrency = options.concurrency ?? 3;
+    const concurrency = options.concurrency ?? 2;
 
     // 1) Fast local phrase & entity extraction from timestamped speech + existing AI analysis
     let moments = extractBrollMomentsFromTranscript({
@@ -133,7 +141,7 @@ export async function resolveBrollForClip(
       aiAnalysis: options.aiAnalysis,
     });
 
-    // Optional single-pass free LLM cue enrichment ONLY when needed & free key configured
+    // Single-pass free Gemini cue enrichment when configured & bucket coverage < targetCount
     if (options.enableLlmFallback !== false) {
       moments = await maybeEnrichMomentsWithFreeLlm({
         transcript: options.transcript,
@@ -146,13 +154,22 @@ export async function resolveBrollForClip(
     }
 
     if (moments.length === 0 || abortIfCancelled()) {
+      log.detail(`B-roll discovery found 0 visual subjects in ${clipDuration.toFixed(1)}s transcript`);
       return [];
     }
 
     const discoveryMoments = selectMomentsForDiscovery(moments, clipDuration, 4);
+    log.detail(
+      `B-roll searching ${discoveryMoments.length} timestamped subject(s) ` +
+        `(target ${targetCount}, cache=${activeCacheDir}): ` +
+        discoveryMoments.map((m) => `"${m.queries[0]}"@${m.mentionStart.toFixed(1)}s`).join(', '),
+    );
 
-    // 2) Deduplicate identical search strings across moments so each unique query runs AT MOST ONCE!
-    const uniqueQueries = new Map<string, { query: string; subjectKind: typeof discoveryMoments[number]['subjectKind'] }>();
+    // 2) Deduplicate identical search strings across moments so each unique query runs AT MOST ONCE
+    const uniqueQueries = new Map<
+      string,
+      { query: string; subjectKind: (typeof discoveryMoments)[number]['subjectKind'] }
+    >();
     for (const moment of discoveryMoments) {
       for (const query of moment.queries.slice(0, 2)) {
         const norm = query.trim().toLowerCase();
@@ -225,10 +242,10 @@ export async function resolveBrollForClip(
         continue;
       }
 
-      // Offline / network-failure fallback: reuse matching previously-cached local images!
+      // Offline / network-failure fallback: reuse matching previously-cached local images
       for (const query of moment.queries.slice(0, 2)) {
         const localMatches = findRelevantCachedAssetsForQuery(query, {
-          cacheDir: options.cacheDir,
+          cacheDir: activeCacheDir,
           subjectKind: moment.subjectKind,
         });
         const localPick = localMatches.find(
@@ -266,7 +283,6 @@ export async function resolveBrollForClip(
 
       if (!item.candidate) return;
 
-      // Try primary candidate first; if download fails or image bytes are corrupt, try up to 2 backup candidates from same query!
       const queryPool = searchMap.get(item.query.trim().toLowerCase()) ?? [item.candidate];
       const backups = queryPool.filter(
         (c) => c.normalizedUrl === item.candidate!.normalizedUrl || !claimedUrls.has(c.normalizedUrl),
@@ -276,9 +292,9 @@ export async function resolveBrollForClip(
         if (abortIfCancelled()) return;
         const asset = await ensureCachedBrollAsset(candidate, {
           searchTerms: [item.query, item.moment.primarySubject],
-          cacheDir: options.cacheDir,
+          cacheDir: activeCacheDir,
           fetchImpl: options.fetchImpl,
-          timeoutMs: options.requestTimeoutMs ?? 10_000,
+          timeoutMs: options.requestTimeoutMs ?? 12_000,
           maxImageBytes: options.maxImageBytes,
           detectFaces: options.detectFaces,
           signal: abortController.signal,
@@ -300,6 +316,7 @@ export async function resolveBrollForClip(
     });
 
     if (resolvedMatches.length === 0 || abortIfCancelled()) {
+      log.warn(`B-roll resolved 0 usable images across ${plannedDownloads.length} candidate(s)`);
       return [];
     }
 
@@ -309,9 +326,10 @@ export async function resolveBrollForClip(
     });
 
     const cacheHits = resolvedMatches.filter((m) => m.asset.cacheHit).length;
-    log.detail(
-      `B-roll ready: ${scheduled.length} full-screen placement(s) across ${clipDuration.toFixed(1)}s ` +
-        `(${cacheHits}/${resolvedMatches.length} local cache hit(s))`,
+    log.ok(
+      `B-roll ready: ${scheduled.length} full-screen image(s) scheduled across ${clipDuration.toFixed(1)}s ` +
+        `(${cacheHits}/${resolvedMatches.length} local cache hit(s)) -> ` +
+        scheduled.map((p) => `[${p.startTime.toFixed(1)}s-${p.endTime.toFixed(1)}s "${p.query}"]`).join(' '),
     );
     return scheduled;
   } catch (error) {

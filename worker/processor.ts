@@ -489,6 +489,8 @@ export async function processClipJob(
     };
     try {
       const brollPlacements = await brollPromise;
+      clip.brollCount = brollPlacements.length;
+      await updateClip(clip).catch((error) => log.warn('broll count save failed: ' + toErrorMessage(error)));
       checkCancelled();
       log.step(
         `Step 3/3 · FFmpeg crop + hook + overlays + one final encode ` +

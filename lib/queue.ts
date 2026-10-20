@@ -347,6 +347,11 @@ export async function enqueueClipJob(jobData: JobData): Promise<void> {
   if (jobData.hookStylePresetId !== undefined) clip.hookStylePresetId = jobData.hookStylePresetId;
   if (jobData.ctaStylePresetId !== undefined) clip.ctaStylePresetId = jobData.ctaStylePresetId;
   if (jobData.enableBroll !== undefined) clip.enableBroll = jobData.enableBroll;
+  if (clip.enableBroll === false) {
+    clip.brollCount = 0;
+  } else {
+    clip.brollCount = Math.max(1, Math.ceil(Math.max(0.5, clip.end - clip.start) / 7.5));
+  }
   clip.status = 'pending';
   clip.progress = 0;
   clip.error = undefined;

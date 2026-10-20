@@ -8,6 +8,7 @@ import {
   Download,
   EllipsisVertical,
   Film,
+  Images,
   Loader2,
   PencilLine,
   Play,
@@ -17,6 +18,7 @@ import {
 } from "lucide-react"
 import { cn } from "cn"
 import type { CaptionPreset, ClipRecord } from "@/lib/types"
+import { getClipBrollSummary } from "@/lib/broll-count"
 import { clipScore, formatTime, scoreTone } from "@/lib/pipeline-ui"
 import { Button } from "@/components/ui/button"
 import {
@@ -142,6 +144,7 @@ export function ClipTile({ clip, captionPresets, busy, onEdit, onRender, onCance
     captionPresets.find((preset) => preset._id === clip.captionPresetId)?.name ||
     "default captions";
   const rank = clip.aiAnalysis?.rank;
+  const brollSummary = getClipBrollSummary(clip);
 
   // Deliberately NO autoplay: a finished clip shows its first frame and waits.
   // Playback starts only from an explicit click on the play button (which then
@@ -192,7 +195,7 @@ export function ClipTile({ clip, captionPresets, busy, onEdit, onRender, onCance
                   <p className="text-[11px] font-medium text-muted-foreground">
                     {clip.progress && clip.progress > 0 ? `Rendering · ${clip.progress}%` : "Preparing render"}
                   </p>
-                  <p className="text-[10px] text-muted-foreground/70">crop · captions · hook · encode</p>
+                  <p className="text-[10px] text-muted-foreground/70">crop · b-roll · captions · hook · encode</p>
                 </div>
               </>
             ) : isFailed ? (
@@ -225,11 +228,20 @@ export function ClipTile({ clip, captionPresets, busy, onEdit, onRender, onCance
             {formatTime(clip.start)} – {formatTime(clip.end)}
             <span className="ml-1 text-white/60">· {Math.round(clip.end - clip.start)}s</span>
           </span>
-          {clip.layout === "split-screen" && (
-            <span className="rounded bg-white/15 px-1 py-px text-[9.5px] font-medium text-white/90 backdrop-blur-sm">
-              split
+          <div className="flex items-center gap-1">
+            <span
+              className="inline-flex items-center gap-1 rounded bg-white/15 px-1.5 py-px text-[9.5px] font-medium text-white/95 backdrop-blur-sm"
+              title={brollSummary.tooltip}
+            >
+              <Images className="size-2.5" />
+              {brollSummary.shortLabel}
             </span>
-          )}
+            {clip.layout === "split-screen" && (
+              <span className="rounded bg-white/15 px-1 py-px text-[9.5px] font-medium text-white/90 backdrop-blur-sm">
+                split
+              </span>
+            )}
+          </div>
         </div>
 
         <div className="absolute top-2 left-2">
@@ -271,6 +283,24 @@ export function ClipTile({ clip, captionPresets, busy, onEdit, onRender, onCance
         </div>
 
         <div className="flex flex-wrap items-center gap-1">
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <span
+                  className={cn(
+                    "inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium",
+                    brollSummary.enabled && brollSummary.count > 0
+                      ? "bg-primary/10 text-primary ring-1 ring-primary/20"
+                      : "bg-muted text-muted-foreground"
+                  )}
+                />
+              }
+            >
+              <Images className="size-3" />
+              {brollSummary.label}
+            </TooltipTrigger>
+            <TooltipContent>{brollSummary.tooltip}</TooltipContent>
+          </Tooltip>
           <span className="rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
             {captionName}
           </span>

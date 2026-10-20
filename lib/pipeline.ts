@@ -24,6 +24,7 @@ import {
   findActiveJob,
 } from './queue';
 import { sanitizePipelineOptions } from './pipeline-defaults';
+import { planClipBrollCount } from './broll/query-extractor';
 import { loadEffectiveSettings } from './app-settings';
 import {
   ClipLayout,
@@ -313,6 +314,13 @@ export async function runViralDetection(
       ...(render.hookStylePresetId ? { hookStylePresetId: render.hookStylePresetId } : {}),
       ...(render.ctaStylePresetId ? { ctaStylePresetId: render.ctaStylePresetId } : {}),
       enableBroll: render.enableBroll,
+      brollCount: planClipBrollCount({
+        transcript: video.transcript,
+        clipStart: segment.start,
+        clipEnd: segment.end,
+        aiAnalysis: segment.clip,
+        enableBroll: render.enableBroll,
+      }),
       // Everything the AI said about the clip, stored as returned; the card,
       // the analysis panel and the worker read it from here.
       aiAnalysis: segment.clip,

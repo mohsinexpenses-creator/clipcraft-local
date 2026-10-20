@@ -5,6 +5,7 @@ import {
   Captions,
   Clock,
   Crop,
+  Images,
   Info,
   Loader2,
   MoveHorizontal,
@@ -20,12 +21,14 @@ import type {
   ClipRecord,
   OverlayStylePreset,
 } from "@/lib/types"
+import { targetBrollCountForDuration } from "@/lib/broll-count"
 import { DEFAULT_FILTER_PRESETS } from "@/lib/presets"
 import { formatTime } from "@/lib/pipeline-ui"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Switch } from "@/components/ui/switch"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import {
   Dialog,
@@ -59,6 +62,7 @@ interface Draft {
   layout: ClipLayout;
   hookStylePresetId: string;
   ctaStylePresetId: string;
+  enableBroll: boolean;
 }
 
 function draftFrom(clip: ClipRecord, captionPresets: CaptionPreset[]): Draft {
@@ -75,6 +79,7 @@ function draftFrom(clip: ClipRecord, captionPresets: CaptionPreset[]): Draft {
     layout: clip.layout === "split-screen" ? "split-screen" : "speaker-focus",
     hookStylePresetId: clip.hookStylePresetId || "",
     ctaStylePresetId: clip.ctaStylePresetId || "",
+    enableBroll: clip.enableBroll !== false,
   };
 }
 
@@ -178,6 +183,7 @@ function ClipEditForm({
       filterPreset: draft.filterPreset,
       captionPresetId: draft.captionPresetId,
       layout: draft.layout,
+      enableBroll: draft.enableBroll,
       ...(draft.hookStylePresetId ? { hookStylePresetId: draft.hookStylePresetId } : {}),
       ...(draft.ctaStylePresetId ? { ctaStylePresetId: draft.ctaStylePresetId } : {}),
     };
@@ -409,6 +415,27 @@ function ClipEditForm({
                     </Select>
                   </Field>
                 )}
+              </div>
+
+              <div className="flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-muted/30 px-3 py-2.5">
+                <div className="space-y-0.5">
+                  <div className="flex items-center gap-1.5 text-[11.5px] font-medium text-foreground">
+                    <Images className="size-3.5 text-primary" />
+                    <span>Auto B-roll images</span>
+                    <span className="rounded bg-primary/10 px-1.5 py-px text-[10px] font-semibold text-primary">
+                      {draft.enableBroll
+                        ? `~${targetBrollCountForDuration(Math.max(1, length))} images`
+                        : "Off"}
+                    </span>
+                  </div>
+                  <p className="text-[11px] leading-snug text-muted-foreground">
+                    Inserts relevant full-screen 9:16 images (~1 every 6–8s) matched to spoken words while audio &amp; captions continue uninterrupted.
+                  </p>
+                </div>
+                <Switch
+                  checked={draft.enableBroll}
+                  onCheckedChange={(checked) => patch({ enableBroll: Boolean(checked) })}
+                />
               </div>
 
               {clip.aiAnalysis?.safety_analysis.risky_words.length ? (

@@ -1,20 +1,14 @@
+import { targetBrollCountForDuration } from '../broll-count';
 import type {
   BrollPlacement,
   BrollTranscriptMoment,
   ResolvedBrollAsset,
 } from './types';
 
+export { targetBrollCountForDuration };
+
 /** Hook dip-to-black half-width matching `HOOK_TRANSITION_SECONDS` in `worker/ffmpeg-pipeline.ts`. */
 const HOOK_JOIN_HALF_SECONDS = 0.5;
-
-/**
- * Target number of distinct B-roll appearances proportional to clip duration.
- * A 60-second clip targets 8 appearances (~1 every 7.5 seconds, right inside 6–8s).
- */
-export function targetBrollCountForDuration(clipDurationSeconds: number): number {
-  const safeDuration = Math.max(0.5, clipDurationSeconds);
-  return Math.max(1, Math.ceil(safeDuration / 7.5));
-}
 
 /**
  * Select up to `budget` well-distributed, high-priority transcript moments ahead of
@@ -33,8 +27,6 @@ export function selectMomentsForDiscovery(
       ? Math.max(target + 2, Math.floor(clipDurationSeconds / 1.8) + 1)
       : target + Math.max(2, extraBackupSlots);
 
-  // Divide clip into `target` time buckets so every section of the clip gets coverage first,
-  // choosing the highest-priority entity inside each bucket, then filling backup slots by score.
   const bucketWidth = Math.max(1.5, clipDurationSeconds / target);
   const buckets = new Map<number, BrollTranscriptMoment[]>();
   for (const moment of moments) {
@@ -50,7 +42,6 @@ export function selectMomentsForDiscovery(
   const chosen: BrollTranscriptMoment[] = [];
   const chosenIds = new Set<string>();
 
-  // Round-robin pass across buckets so every 6-8s speech interval has a top candidate ready
   let addedInRound = true;
   let round = 0;
   while (addedInRound && chosen.length < maxMoments) {
@@ -103,7 +94,6 @@ export function scheduleBrollPlacements(
   const hookEnabled = hookDuration > 0;
   const fadeDur = hookEnabled ? Math.min(HOOK_JOIN_HALF_SECONDS, hookDuration / 2) : 0;
 
-  // Keep the hook dip-to-black join [hookDuration - fadeDur, hookDuration + fadeDur] completely clear.
   const minOutputTime = hookEnabled ? hookDuration + fadeDur : 0;
   const maxOutputTime = clipDuration + hookDuration;
   if (maxOutputTime - minOutputTime < 0.5 || matches.length === 0) {
@@ -121,36 +111,23 @@ export function scheduleBrollPlacements(
     options.minStartSpacingSeconds ??
     (clipDuration >= 30 ? 4.2 : Math.max(1.2, clipDuration / Math.max(2, maxAppearances + 1)));
 
-  // Deduplicate strictly per asset identity (URL + contentHash + canonicalStem) within one clip,
-  // selecting evenly distributed high-confidence speech matches first.
   const usedUrls = new Set<string>();
   const usedHashes = new Set<string>();
   const usedStems = new Set<string>();
 
   const selected: MatchedMomentCandidate[] = [];
 
-  // Two-pass greedy selection:
-  // Pass 1 enforces clean spacing (~6-8s cadence) across buckets for smooth pacing;
-  // Pass 2 relaxes spacing down to 2.6s if needed so dense 60s clips easily hit >= 8 distinct appearances!
   const spacingPasses =
     clipDuration >= 30
       ? [defaultSpacing, Math.min(defaultSpacing, 2.6)]
       : [defaultSpacing];
 
-  // Rank candidates by combined priority + image relevance within time buckets
   const bucketCount = Math.max(1, targetCount);
   const bucketSpan = clipDuration / bucketCount;
-  const ranked = [...matches].sort((a, b) => {
-    const ba = Math.floor(a.moment.mentionStart / bucketSpan);
-    const bb = Math.floor(b.moment.mentionStart / bucketSpan);
-    if (ba !== bb) {
-      // Interleave buckets later; inside sort keep quality order
-      return (b.moment.priority + b.relevanceScore) - (a.moment.priority + a.relevanceScore);
-    }
-    return (b.moment.priority + b.relevanceScore) - (a.moment.priority + a.relevanceScore);
-  });
+  const ranked = [...matches].sort(
+    (a, b) => (b.moment.priority + b.relevanceScore) - (a.moment.priority + a.relevanceScore),
+  );
 
-  // Order bucket winners first so coverage spans the whole clip timeline evenly
   const orderedCandidates: MatchedMomentCandidate[] = [];
   const seenBucketWinner = new Set<number>();
   for (const item of ranked) {
@@ -196,10 +173,8 @@ export function scheduleBrollPlacements(
 
   if (selected.length === 0) return [];
 
-  // Sort chronologically by spoken timestamp
   selected.sort((a, b) => a.moment.mentionStart - b.moment.mentionStart);
 
-  // Convert each selected speech interval into concrete output-video [startTime, endTime] windows
   const idealDisplaySeconds =
     clipDuration >= 20
       ? Math.min(4.5, Math.max(3.0, (clipDuration / Math.max(selected.length, targetCount)) * 0.58))
@@ -214,7 +189,6 @@ export function scheduleBrollPlacements(
     const rawStart = hookDuration + Math.max(0, current.moment.mentionStart - 0.1);
     const startTime = Math.max(minOutputTime, rawStart);
 
-    // Anchor end to cover the spoken phrase/segment naturally while bounded cleanly before the next mention
     const naturalEnd = hookDuration + Math.max(current.moment.mentionEnd + 0.35, current.moment.segmentEnd);
     const desiredEnd = Math.max(
       startTime + idealDisplaySeconds,
