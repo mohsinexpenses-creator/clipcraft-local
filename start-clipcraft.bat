@@ -2,35 +2,28 @@
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
-rem Only build when app source files changed since the last successful build.
-git rev-parse --is-inside-work-tree >nul 2>&1
-if not errorlevel 1 (
-  git diff --quiet -- app components lib public next.config.ts package.json tsconfig.json postcss.config.mjs eslint.config.mjs components.json
-  if not errorlevel 1 if exist ".next\build-stamp.txt" (
-    echo No source changes detected. Skipping build.
-    goto start_app
-  )
+rem Compare source changes with the last successful build.
+powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\build-check.ps1" -Mode check
+if errorlevel 1 goto build_app
+echo No source changes detected. Skipping build.
+goto start_app
+
+:build_app
+echo Building ClipCraft production app...
+call npm run build
+if errorlevel 1 (
+  echo Build failed. Exiting.
+  exit /b 1
 )
 
-rem Fallback: if the repo is not a git checkout, only build when the source tree is newer than the saved stamp.
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$root=(Get-Location).Path; $marker=Join-Path $root '.next\build-stamp.txt'; $watch=@('app','components','lib','public','next.config.ts','package.json','tsconfig.json','postcss.config.mjs','eslint.config.mjs','components.json'); $latest=$null; foreach ($p in $watch) { $full=Join-Path $root $p; if (-not (Test-Path $full)) { continue }; foreach ($item in Get-ChildItem -Path $full -Recurse -File -Force -ErrorAction SilentlyContinue) { $path=$item.FullName; if ($path -match '\\node_modules\\|\\.next\\|\\.git\\|\\uploads\\|\\generated-clips\\|\\data\\') { continue }; if ($null -eq $latest -or $item.LastWriteTimeUtc -gt $latest.LastWriteTimeUtc) { $latest=$item } } }; if (-not (Test-Path $marker)) { exit 1 }; if ($null -eq $latest) { exit 0 }; if ($latest.LastWriteTimeUtc -gt (Get-Item $marker).LastWriteTimeUtc) { exit 1 } else { exit 0 }"
+powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\build-check.ps1" -Mode stamp
 if errorlevel 1 (
-  echo Building ClipCraft production app...
-  call npm run build
-  if errorlevel 1 (
-    echo Build failed. Exiting.
-    exit /b 1
-  )
-
-  if not exist ".next" mkdir ".next"
-  powershell -NoProfile -ExecutionPolicy Bypass -Command "$root=(Get-Location).Path; $marker=Join-Path $root '.next\build-stamp.txt'; New-Item -ItemType Directory -Force -Path (Split-Path $marker) | Out-Null; (Get-Date).ToString('s') | Out-File -FilePath $marker -Encoding ascii"
-) else (
-  echo No source changes detected. Skipping build.
+  echo Failed to save build stamp. Exiting.
+  exit /b 1
 )
 
 :start_app
 start "ClipCraft Worker" cmd /k "npm run worker"
-timeout /t 3 /nobreak >nul
 start "ClipCraft Web" cmd /k "npm run start"
-timeout /t 10 /nobreak >nul
-start http://localhost:3000
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ready=$false; for ($i=0; $i -lt 120; $i++) { $client=[System.Net.Sockets.TcpClient]::new(); try { $client.Connect('localhost',3000); $ready=$client.Connected; if ($ready) { break } } catch {} finally { $client.Dispose() }; Start-Sleep -Milliseconds 250 }; if ($ready) { Start-Process 'http://localhost:3000'; exit 0 } else { Write-Host 'ClipCraft Web did not become ready on port 3000 within 30 seconds.'; exit 1 }"
+if errorlevel 1 exit /b 1
