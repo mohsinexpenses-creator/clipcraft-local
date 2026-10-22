@@ -49,17 +49,28 @@ pauses the chain: it recovers at the step where it stopped.
      hook text and the CTA card are placed so they never cover a face.
      There is **no fallback detector**: if no face can be found, the render fails
      with a clear explanation instead of guessing.
-6. **Render** — Remotion paints the animated caption + hook + CTA overlay frames
+6. **Plan B-roll (optional)** — after detection, each clip gets a B-roll plan: named
+   people/places/events from **Wikimedia Commons** (full screen, and only when
+   **Gemini Vision** confirms the photo shows that exact thing) plus keyword photos
+   from **Pexels / Pixabay / Unsplash** (landscape cards beside the captions). A
+   60 s clip targets 10–15 images, never inside the hook replay, never overlapping
+   each other. **No image is ever AI-generated**; every one records its provider,
+   source URL, author and licence. The plan is stored on the clip and shown on its
+   tile with per-image **swap** / **remove** and a per-clip **re-run**. It is on by
+   default and can be switched off per video. See [docs/BROLL.md](./docs/BROLL.md).
+7. **Render** — Remotion paints the animated caption + hook + CTA overlay frames
    in headless Chrome, then one FFmpeg filter graph performs the mirror/crop/colour
-   work, hook intro, caption + card compositing, and the single final H.264 encode.
+   work, hook intro, B-roll images (painted BEFORE the captions, so text is always
+   on top), caption + card compositing, and the single final H.264 encode. A soft
+   whoosh/pop marks each B-roll image in and out, mixed under the voice.
    The result is a 1080×1920 output with no lossy intermediate video.
    On-screen hook/CTA text comes from user-editable **style presets** (font,
    colours, position, animation, solid or **gradient** card background).
-7. **Mask profanity** — captions and overlay text are always masked on screen
+8. **Mask profanity** — captions and overlay text are always masked on screen
    (`fuck` → `f**k`, while `class`/`pass`/`glass` stay untouched); the **audio** of
    a profane word is muted, beeped, or left alone (`PROFANITY_AUDIO_MODE`) — all at
    render time, so re-rendering after a settings change never re-transcribes.
-8. **Store** — output lands in `generated-clips/001_my_recording/<clip title>.mp4`
+9. **Store** — output lands in `generated-clips/001_my_recording/<clip title>.mp4`
    with a SQLite record (status, score, layout, engines, presets). The dashboard
    streams it back over a Range-enabled HTTP endpoint for preview/download.
 
@@ -220,12 +231,17 @@ docs/                   feature guides (layouts, overlays, viral prompt)
   no cloud media services. The only paid-capable dependency is the Gemini key,
   which is free-tier.
 - **No `fluent-ffmpeg`.** `ffmpeg-static` + `child_process.spawn` directly.
+- **No generated imagery.** B-roll photos come from Wikimedia Commons and stock
+  providers, always with attribution; a full-screen image needs a passed Gemini
+  Vision verdict, and a rejected mention is skipped rather than filled with stock.
 - **9:16 output, always** (1080×1920).
 - **Not for Vercel** — heavy processing needs a long-running local worker.
 
 ## Documentation
 
 - **[SETUP.md](./SETUP.md)** — install, env vars, running, troubleshooting
+- **[docs/BROLL.md](./docs/BROLL.md)** — auto B-roll: providers, the Gemini Vision
+  gate, the scheduler, rendering order, sound effects and caching
 - **[docs/LAYOUTS.md](./docs/LAYOUTS.md)** — speaker focus vs split screen + how
   active-speaker tracking works
 - **[docs/OVERLAYS.md](./docs/OVERLAYS.md)** — hook/CTA text, style presets, the

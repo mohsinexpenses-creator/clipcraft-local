@@ -13,6 +13,7 @@ import {
   Cpu,
   FolderCog,
   Gauge,
+  ImageIcon,
   InfoIcon,
   KeyRound,
   Loader2,
@@ -518,6 +519,10 @@ function ProvidersCard({
   const pool = staged ?? storedKeys;
   const [candidate, setCandidate] = React.useState("");
   const [deepgramKey, setDeepgramKey] = React.useState("");
+  // Stock keys are edited independently of the Gemini pool and of Deepgram: each
+  // field saves only itself, so a pasted-but-unsaved Pexels key never blocks a
+  // Deepgram change.
+  const [stockDrafts, setStockDrafts] = React.useState<Record<string, string>>({});
   const storedDeepgramMasked = String(
     (settings.stored.ai as { deepgramApiKey?: string } | undefined)
       ?.deepgramApiKey ?? "",
@@ -592,15 +597,16 @@ function ProvidersCard({
             <p className="mt-1 text-[12px] leading-snug text-muted-foreground">
               Viral detection runs on Google AI Studio. Keys are tried in order
               and rotate on a 429, so a second free key is real redundancy.
-              Deepgram is optional: set a key only to transcribe in the cloud
-              instead of with local whisper.cpp.
+              Gemini Vision checks every full-screen B-roll image; Deepgram is
+              optional: set a key only to transcribe in the cloud instead of with
+              local whisper.cpp.
             </p>
           </div>
         </div>
         <Button
           size="sm"
           variant="outline"
-          onClick={() => void settings.verify({ target: "all" })}
+          onClick={() => void settings.verify({ target: "all", withVision: true })}
           disabled={settings.busy !== null}
         >
           {settings.busy === "verify:all" ? (
@@ -944,12 +950,186 @@ function ProvidersCard({
         </div>
       </div>
 
+      <StockProviderCards
+        settings={settings}
+        effective={effective}
+        drafts={stockDrafts}
+        setDrafts={setStockDrafts}
+      />
+
       <VerifyResults
         results={settings.results}
         onClear={settings.clearResults}
         busy={settings.busy}
       />
     </section>
+  );
+}
+
+/** The three stock-photo providers, one card each: masked field, Test, Save. */
+const STOCK_PROVIDERS = [
+  {
+    id: "pexels" as const,
+    field: "pexelsApiKey" as const,
+    label: "Pexels",
+    host: "pexels.com/api",
+    hint: "Free tier: 200 requests/hour. Landscape cards default to Pexels first.",
+  },
+  {
+    id: "pixabay" as const,
+    field: "pixabayApiKey" as const,
+    label: "Pixabay",
+    host: "pixabay.com/api/docs",
+    hint: "Free tier: 100 requests/minute. Its photos are cached locally before use.",
+  },
+  {
+    id: "unsplash" as const,
+    field: "unsplashApiKey" as const,
+    label: "Unsplash",
+    host: "unsplash.com/developers",
+    hint: "Demo apps are limited to 50 requests/hour. Photographer credit is stored with every photo.",
+  },
+];
+
+function StockProviderCards({
+  settings,
+  effective,
+  drafts,
+  setDrafts,
+}: {
+  settings: SettingsController;
+  effective: NonNullable<SettingsController["effective"]>;
+  drafts: Record<string, string>;
+  setDrafts: React.Dispatch<React.SetStateAction<Record<string, string>>>;
+}) {
+  return (
+    <div className="mt-5 border-t pt-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="flex items-center gap-1.5 text-[12.5px] font-semibold">
+          <ImageIcon className="size-3.5 text-muted-foreground" />
+          B-roll image providers
+        </h3>
+        <p className="text-[11px] text-muted-foreground">
+          Landscape cards only. Entity images come from Wikimedia Commons, which needs no key.
+        </p>
+      </div>
+
+      <div className="mt-3 grid gap-3 lg:grid-cols-3">
+        {STOCK_PROVIDERS.map((provider) => {
+          const stored = String(effective.ai[provider.field] ?? "");
+          const draft = drafts[provider.field] ?? "";
+          const result = settings.results.find((entry) => entry.target === provider.id);
+          const busyKey = `save:ai` as const;
+          const saving = settings.busy === busyKey && draft.trim().length > 0;
+          const testing = settings.busy === `verify:${provider.id}`;
+
+          return (
+            <div key={provider.id} className="space-y-2 rounded-xl border bg-muted/20 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <h4 className="flex items-center gap-1.5 text-[12px] font-semibold">
+                  {provider.label}
+                  <LeftoverEnvBadge
+                    hint={settings.env[`${provider.id.toUpperCase()}_API_KEY`]}
+                  />
+                </h4>
+                <span className="flex items-center gap-1 text-[10.5px] text-muted-foreground">
+                  <SourceChip source={settings.sources.ai?.[provider.field]} />
+                  {result ? <ResultDot result={result} /> : null}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                <Input
+                  value={draft}
+                  onChange={(event) =>
+                    setDrafts((current) => ({ ...current, [provider.field]: event.target.value }))
+                  }
+                  placeholder={stored || `Paste a ${provider.label} key`}
+                  spellCheck={false}
+                  autoComplete="off"
+                  type="password"
+                  className="font-mono text-[12px]"
+                  aria-label={`${provider.label} API key`}
+                />
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!draft.trim() || settings.busy !== null}
+                  onClick={() =>
+                    void settings.verify({
+                      target: provider.id,
+                      candidates: { [provider.field]: draft.trim() },
+                    })
+                  }
+                >
+                  {testing ? <Loader2 className="animate-spin" /> : <ShieldCheck />}
+                  Test
+                </Button>
+                <Button
+                  size="sm"
+                  variant="soft"
+                  disabled={!draft.trim() || settings.busy !== null}
+                  onClick={async () => {
+                    const ok = await settings.save("ai", { [provider.field]: draft.trim() });
+                    if (ok) setDrafts((current) => ({ ...current, [provider.field]: "" }));
+                  }}
+                >
+                  {saving ? <Loader2 className="animate-spin" /> : <Save />}
+                  Save
+                </Button>
+              </div>
+
+              <div className="flex items-start justify-between gap-2 text-[10.5px] leading-snug text-muted-foreground">
+                <p className="min-w-0">
+                  {stored ? (
+                    <>
+                      Saved as <code className="font-mono text-foreground">{stored}</code>.{" "}
+                    </>
+                  ) : null}
+                  {provider.hint}
+                </p>
+                {stored ? (
+                  <div className="flex shrink-0 items-center gap-1">
+                    <Button
+                      size="xs"
+                      variant="ghost"
+                      disabled={settings.busy !== null}
+                      onClick={() => void settings.verify({ target: provider.id })}
+                    >
+                      Test saved
+                    </Button>
+                    <Button
+                      size="xs"
+                      variant="ghost"
+                      disabled={settings.busy !== null}
+                      onClick={() => void settings.save("ai", { [provider.field]: "" })}
+                    >
+                      Remove
+                    </Button>
+                  </div>
+                ) : null}
+              </div>
+
+              {result ? (
+                <p
+                  className={cn(
+                    "rounded-md px-2 py-1 text-[10.5px] leading-snug",
+                    result.status === "ok"
+                      ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                      : result.status === "limited"
+                        ? "bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                        : "bg-destructive/10 text-destructive",
+                  )}
+                >
+                  {result.message}
+                  {result.latencyMs ? ` (${result.latencyMs} ms)` : ""}
+                </p>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 

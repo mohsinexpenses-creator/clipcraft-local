@@ -195,3 +195,141 @@ export async function prepareRemotionCaptionOverlays(
     });
   }
 }
+
+/* -------------------------------------------------------------------------- *
+ * B-roll overlays
+ * -------------------------------------------------------------------------- */
+
+export interface PrepareBrollOverlaysOptions {
+  fps: number;
+  /** Items to paint, already scheduled on the FINAL (hook-inclusive) timeline. */
+  items: Array<{
+    id: string;
+    kind: 'fullscreen' | 'landscape';
+    start: number;
+    end: number;
+    imageUrl: string;
+    card?: { x: number; y: number; width: number; height: number };
+  }>;
+  captionTextColor?: string;
+  captionBand?: { top: number; bottom: number };
+  onProgress?: (progress: number) => void;
+  isCancelled?: () => boolean;
+}
+
+export interface PreparedBrollOverlays {
+  workDir: string;
+  sequences: OverlayFrameSequence[];
+}
+
+/**
+ * Paint every B-roll item as its OWN short transparent PNG sequence.
+ *
+ * One sequence per item (instead of one clip-length layer) means 3 s of B-roll
+ * costs 3 s of frames, and FFmpeg can place each sequence at its own start time -
+ * which is also what keeps the overlay chain ordered: B-roll first, captions on
+ * top. A single Chromium instance is reused for all items, because launching one
+ * per item would dominate the render time.
+ */
+export async function prepareRemotionBrollOverlays(
+  options: PrepareBrollOverlaysOptions
+): Promise<PreparedBrollOverlays> {
+  const fps = normalizeFps(options.fps);
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clipcraft-broll-'));
+  let browser: Awaited<ReturnType<typeof import('@remotion/renderer').openBrowser>> | null = null;
+
+  try {
+    const { renderFrames, selectComposition, openBrowser } = await import('@remotion/renderer');
+    const bundleDir = await withTimeout(getRemotionBundle(), getRenderTimeoutMs());
+    browser = await openBrowser('chrome', {});
+
+    const sequences: OverlayFrameSequence[] = [];
+    const total = Math.max(1, options.items.length);
+    const totalFrames = options.items.reduce(
+      (sum, item) => sum + Math.max(1, Math.round((item.end - item.start) * fps)),
+      0
+    );
+    let renderedFrames = 0;
+
+    for (const [index, item] of options.items.entries()) {
+      checkCancelled(options.isCancelled);
+      const durationSeconds = Math.max(0.1, item.end - item.start);
+      const durationInFrames = Math.max(1, Math.round(durationSeconds * fps));
+      const outputDir = path.join(workDir, `item-${String(index).padStart(2, '0')}`);
+      fs.mkdirSync(outputDir, { recursive: true });
+
+      const inputProps = {
+        kind: item.kind,
+        imageUrl: item.imageUrl,
+        card: item.card,
+        durationSeconds,
+        captionTextColor: options.captionTextColor,
+        captionBand: options.captionBand,
+      };
+
+      const composition = await withTimeout(
+        selectComposition({
+          serveUrl: bundleDir,
+          id: 'BrollOverlayComposition',
+          inputProps,
+          logLevel: 'error',
+        }),
+        getRenderTimeoutMs()
+      );
+      checkCancelled(options.isCancelled);
+
+      await withTimeout(
+        renderFrames({
+          composition: { ...composition, width: 1080, height: 1920, fps, durationInFrames },
+          serveUrl: bundleDir,
+          inputProps,
+          outputDir,
+          imageFormat: 'png',
+          puppeteerInstance: browser,
+          concurrency: Number(process.env.REMOTION_CONCURRENCY?.trim()) || undefined,
+          onStart: () => undefined,
+          onFrameUpdate: (framesRendered) => {
+            renderedFrames += 1;
+            if (options.onProgress && totalFrames > 0) {
+              options.onProgress(Math.round((renderedFrames / totalFrames) * 100));
+            }
+            void framesRendered;
+          },
+          logLevel: (process.env.REMOTION_LOG_LEVEL?.trim() as 'info' | 'verbose' | 'warn' | 'error') || 'info',
+        }),
+        getRenderTimeoutMs()
+      );
+      checkCancelled(options.isCancelled);
+
+      const inputPattern = normalizePngSequence(outputDir);
+      sequences.push({
+        name: `b-roll ${item.kind} #${index + 1}`,
+        inputPattern,
+        startAtSeconds: Math.max(0, item.start),
+      });
+      options.onProgress?.(Math.round(((index + 1) / total) * 100));
+    }
+
+    log.ok(`Remotion B-roll ready: ${sequences.length} sequence(s)`);
+    return { workDir, sequences };
+  } catch (error) {
+    try {
+      fs.rmSync(workDir, { recursive: true, force: true });
+    } catch {
+      /* best-effort */
+    }
+    if (error instanceof RenderCancelledError || error instanceof AppError) throw error;
+    throw new AppError('Remotion B-roll rendering failed.', {
+      details: toErrorMessage(error),
+      resolution: 'Inspect the Remotion log, confirm Chromium is available, and retry the render.',
+    });
+  } finally {
+    if (browser) {
+      try {
+        await browser.close({ silent: true });
+      } catch {
+        /* the render already finished or failed */
+      }
+    }
+  }
+}

@@ -5,6 +5,7 @@ import Database from "better-sqlite3";
 import {
   APP_SETTINGS_SECTIONS,
   AppSettingsSection,
+  BrollPlan,
   CaptionPreset,
   ClipRecord,
   OverlayStylePreset,
@@ -89,6 +90,8 @@ interface ClipRow {
   status: ClipRecord["status"];
   progress: number | null;
   record_json: string;
+  /** Additive column (schema v6); NULL until the B-roll job has run. */
+  broll_json: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -129,7 +132,8 @@ const VIDEO_COLUMNS = `
 `;
 
 const CLIP_COLUMNS = `
-  id, video_id, start, end, output_path, status, progress, record_json, created_at, updated_at
+  id, video_id, start, end, output_path, status, progress, record_json, broll_json,
+  created_at, updated_at
 `;
 
 /** Everything the dashboard list needs, minus the transcript blob (it can be MBs). */
@@ -153,7 +157,7 @@ const VIDEO_SUMMARY_SELECT = `
      FROM clips c WHERE c.video_id = v.id) AS clip_progress
 `;
 
-const CURRENT_SCHEMA_VERSION = 5;
+const CURRENT_SCHEMA_VERSION = 6;
 
 /** Absolute path used by the web process and the worker. */
 export function getDatabasePath(): string {
@@ -477,12 +481,39 @@ function migrateSchemaV5(db: SqliteDatabase): void {
   `);
 }
 
+/**
+ * Schema v6 - automatic B-roll.
+ *
+ * One additive JSON column on `clips`: the plan the `broll` job produced (images,
+ * their time ranges, attribution and the crop that was applied). It lives on the
+ * clip row because a clip is the review surface and the render's only input; the
+ * transcript and the queue stay exactly as they were. A NULL column means "no
+ * B-roll for this clip", which is what every pre-existing clip gets - their
+ * rendering is unchanged.
+ */
+function migrateSchemaV6(db: SqliteDatabase): void {
+  const hasClips = db
+    .prepare(
+      `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'clips'`,
+    )
+    .get();
+  if (!hasClips) return;
+
+  const columns = db.prepare(`PRAGMA table_info(clips)`).all() as Array<{
+    name: string;
+  }>;
+  if (!columns.some((column) => column.name === "broll_json")) {
+    db.exec(`ALTER TABLE clips ADD COLUMN broll_json TEXT`);
+  }
+}
+
 const SCHEMA_MIGRATIONS: Record<number, (db: SqliteDatabase) => void> = {
   1: migrateSchemaV1,
   2: migrateSchemaV2,
   3: migrateSchemaV3,
   4: migrateSchemaV4,
   5: migrateSchemaV5,
+  6: migrateSchemaV6,
 };
 
 export function initializeSchema(db: SqliteDatabase): void {
@@ -813,6 +844,11 @@ function mapClip(row: ClipRow): ClipRecord {
     ...(row.output_path !== null ? { outputPath: row.output_path } : {}),
     status: row.status,
     ...(row.progress !== null ? { progress: row.progress } : {}),
+    // The plan lives in its own column, never in record_json: it is written by a
+    // different job than the render, and a render must not be able to drop it.
+    ...(row.broll_json
+      ? { broll: parseJson<BrollPlan>(row.broll_json, "clip broll plan") }
+      : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   } as ClipRecord;
@@ -878,6 +914,8 @@ function mapPromptTemplate(row: PromptTemplateRow): PromptTemplate {
 
 function serializeClipRecord(clip: ClipRecord): string {
   const record = { ...clip } as Partial<ClipRecord>;
+  // Stored in the dedicated `broll_json` column (see saveClipBrollPlan).
+  delete record.broll;
   delete record._id;
   delete record.videoId;
   delete record.start;
@@ -1272,7 +1310,7 @@ export async function saveClip(clip: ClipRecord): Promise<ClipRecord> {
     db.prepare(
       `
       INSERT INTO clips (${CLIP_COLUMNS})
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         video_id = excluded.video_id,
         start = excluded.start,
@@ -1281,6 +1319,8 @@ export async function saveClip(clip: ClipRecord): Promise<ClipRecord> {
         status = excluded.status,
         progress = excluded.progress,
         record_json = excluded.record_json,
+        -- Re-saving a clip must never delete a plan the broll job already wrote.
+        broll_json = COALESCE(excluded.broll_json, clips.broll_json),
         created_at = clips.created_at,
         updated_at = excluded.updated_at
     `,
@@ -1293,6 +1333,7 @@ export async function saveClip(clip: ClipRecord): Promise<ClipRecord> {
       clip.status,
       clip.progress ?? null,
       serializeClipRecord(clip),
+      clip.broll ? serializeJson(clip.broll) : null,
       clip.createdAt,
       clip.updatedAt,
     );
@@ -1312,7 +1353,9 @@ export function updateClipRecordSync(
       `
     UPDATE clips SET
       video_id = ?, start = ?, end = ?, output_path = ?, status = ?, progress = ?,
-      record_json = ?, updated_at = ?
+      record_json = ?,
+      broll_json = COALESCE(?, broll_json),
+      updated_at = ?
     WHERE id = ?
   `,
     )
@@ -1324,6 +1367,7 @@ export function updateClipRecordSync(
       clip.status,
       clip.progress ?? null,
       serializeClipRecord(clip),
+      clip.broll ? serializeJson(clip.broll) : null,
       clip.updatedAt,
       clip._id,
     );
@@ -1362,6 +1406,60 @@ export async function deleteClip(id: string): Promise<boolean> {
     db.prepare("DELETE FROM clips WHERE id = ?").run(id);
   })();
   return true;
+}
+
+/**
+ * Write (or clear) the B-roll plan of one clip. Separate from `updateClip` so the
+ * broll job and a concurrent render can never overwrite each other's fields: the
+ * plan column is touched by exactly one writer.
+ */
+export function saveClipBrollPlanSync(
+  db: SqliteDatabase,
+  clipId: string,
+  plan: BrollPlan | null,
+  status: ClipRecord["brollStatus"] = plan ? "done" : "pending",
+  error?: string,
+): boolean {
+  const result = db
+    .prepare(
+      `UPDATE clips SET broll_json = ?, updated_at = ? WHERE id = ?`,
+    )
+    .run(plan ? serializeJson(plan) : null, new Date().toISOString(), clipId);
+  if (result.changes === 0) return false;
+
+  // `brollStatus` / `brollError` are presentation fields on the clip record; keep
+  // them in record_json so the grid does not need a second query per tile.
+  const row = db
+    .prepare(`SELECT record_json FROM clips WHERE id = ?`)
+    .get(clipId) as { record_json: string } | undefined;
+  if (!row) return true;
+  const record = parseJson<Partial<ClipRecord>>(row.record_json, "clip record");
+  record.brollStatus = status;
+  if (error) record.brollError = error;
+  else delete record.brollError;
+  db.prepare(`UPDATE clips SET record_json = ? WHERE id = ?`).run(
+    serializeJson(record),
+    clipId,
+  );
+  return true;
+}
+
+export async function saveClipBrollPlan(
+  clipId: string,
+  plan: BrollPlan | null,
+  status: ClipRecord["brollStatus"] = plan ? "done" : "pending",
+  error?: string,
+): Promise<boolean> {
+  return saveClipBrollPlanSync(getDatabase(), clipId, plan, status, error);
+}
+
+/** The stored plan for one clip, without loading the whole record. */
+export async function getClipBrollPlan(clipId: string): Promise<BrollPlan | null> {
+  const row = getDatabase()
+    .prepare(`SELECT broll_json FROM clips WHERE id = ?`)
+    .get(clipId) as { broll_json: string | null } | undefined;
+  if (!row?.broll_json) return null;
+  return parseJson<BrollPlan>(row.broll_json, "clip broll plan");
 }
 
 export async function listPromptTemplates(): Promise<PromptTemplate[]> {

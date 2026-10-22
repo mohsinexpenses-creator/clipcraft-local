@@ -66,7 +66,25 @@ const AUDIO_MODES = new Set(['mute', 'beep', 'off']);
 const MIN_SECRET_LENGTH = 20;
 const MAX_KEY_POOL = 8;
 
-export type SecretKind = 'gemini' | 'deepgram';
+export type SecretKind = 'gemini' | 'deepgram' | 'pexels' | 'pixabay' | 'unsplash';
+
+/**
+ * The single-key provider fields in the `ai` section. Each one follows the same
+ * rule as the Deepgram key: masked on the way out, and a masked value on save
+ * means "keep the stored key".
+ */
+export const AI_KEY_FIELDS = [
+  { field: 'deepgramApiKey', label: 'Deepgram API key', host: 'Deepgram' },
+  { field: 'pexelsApiKey', label: 'Pexels API key', host: 'Pexels' },
+  { field: 'pixabayApiKey', label: 'Pixabay API key', host: 'Pixabay' },
+  { field: 'unsplashApiKey', label: 'Unsplash access key', host: 'Unsplash' },
+] as const satisfies ReadonlyArray<{
+  field: 'deepgramApiKey' | 'pexelsApiKey' | 'pixabayApiKey' | 'unsplashApiKey';
+  label: string;
+  host: string;
+}>;
+
+type AiKeyField = (typeof AI_KEY_FIELDS)[number]['field'];
 
 /* ------------------------------------------------------------------ *
  * Env access
@@ -127,7 +145,10 @@ export function maskAiSecrets(values: Record<string, unknown>): Record<string, u
   if (Array.isArray(out.geminiApiKeys)) {
     out.geminiApiKeys = (out.geminiApiKeys as unknown[]).map((key) => maskSecret(String(key)));
   }
-  if (typeof out.deepgramApiKey === 'string') out.deepgramApiKey = maskSecret(out.deepgramApiKey);
+  // Every single-key provider field, whether it is configured or not.
+  for (const { field } of AI_KEY_FIELDS) {
+    if (typeof out[field] === 'string') out[field] = maskSecret(out[field] as string);
+  }
   return out;
 }
 
@@ -143,6 +164,9 @@ export function envHints(): Record<string, EnvHint> {
     'GEMINI_API_KEY',
     'DEEPGRAM_API_KEY',
     'DEEPGRAM_MODEL',
+    'PEXELS_API_KEY',
+    'PIXABAY_API_KEY',
+    'UNSPLASH_API_KEY',
     'WORKER_CONCURRENCY',
     'VIRAL_CONCURRENCY',
     'REMOTION_CONCURRENCY',
@@ -330,13 +354,16 @@ export function sanitizeSettingsSection(
       if ('geminiApiKeys' in input) {
         out.geminiApiKeys = mergeKeyPool(input.geminiApiKeys, context.storedAi?.geminiApiKeys ?? []);
       }
-      if ('deepgramApiKey' in input) {
-        const carried = context.storedAi?.deepgramApiKey ?? '';
-        const raw = isMaskedPlaceholder(input.deepgramApiKey) ? carried : textOf(input.deepgramApiKey, 300, 'Deepgram API key');
+      for (const { field, label } of AI_KEY_FIELDS) {
+        if (!(field in input)) continue;
+        const carried = context.storedAi?.[field as AiKeyField] ?? '';
+        const raw = isMaskedPlaceholder(input[field])
+          ? carried
+          : textOf(input[field], 300, label);
         if (raw && !isUsableSecret(raw)) {
-          throw badRequest('That does not look like a Deepgram API key.', `Keys are at least ${MIN_SECRET_LENGTH} characters with no spaces. Submit an empty value to remove the stored key.`);
+          throw badRequest(`That does not look like a ${label}.`, `Keys are at least ${MIN_SECRET_LENGTH} characters with no spaces. Submit an empty value to remove the stored key.`);
         }
-        out.deepgramApiKey = raw;
+        out[field] = raw;
       }
       if ('deepgramModel' in input) out.deepgramModel = textOf(input.deepgramModel, 64, 'Deepgram model');
       if (input.transcriptionProvider !== undefined) {
@@ -531,6 +558,16 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
   const geminiApiKeys = Array.isArray(aiStored.geminiApiKeys)
     ? aiStored.geminiApiKeys.filter((key): key is string => typeof key === 'string' && isUsableSecret(key))
     : [];
+  // Stock-provider keys exist only when saved here, exactly like the Gemini pool.
+  const pexelsApiKey = isUsableSecret(stringValue(aiStored.pexelsApiKey) ?? '')
+    ? (stringValue(aiStored.pexelsApiKey) as string)
+    : '';
+  const pixabayApiKey = isUsableSecret(stringValue(aiStored.pixabayApiKey) ?? '')
+    ? (stringValue(aiStored.pixabayApiKey) as string)
+    : '';
+  const unsplashApiKey = isUsableSecret(stringValue(aiStored.unsplashApiKey) ?? '')
+    ? (stringValue(aiStored.unsplashApiKey) as string)
+    : '';
   const deepgramKey = stringValue(aiStored.deepgramApiKey) ?? '';
   const deepgramApiKey = isUsableSecret(deepgramKey) ? deepgramKey : '';
   const deepgramModel = stringValue(aiStored.deepgramModel) ?? '';
@@ -540,6 +577,9 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
 
   sources.ai = {
     geminiApiKeys: geminiApiKeys.length ? 'app' : 'default',
+    pexelsApiKey: pexelsApiKey ? 'app' : 'default',
+    pixabayApiKey: pixabayApiKey ? 'app' : 'default',
+    unsplashApiKey: unsplashApiKey ? 'app' : 'default',
     deepgramApiKey: deepgramApiKey ? 'app' : 'default',
     deepgramModel: deepgramModel ? 'app' : 'default',
     transcriptionProvider: stringValue(aiStored.transcriptionProvider) ? 'app' : 'default',
@@ -547,6 +587,9 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
 
   const ai: AiProviderSettings = {
     geminiApiKeys,
+    pexelsApiKey,
+    pixabayApiKey,
+    unsplashApiKey,
     deepgramApiKey,
     deepgramModel: deepgramModel || 'nova-2',
     transcriptionProvider,
@@ -715,11 +758,9 @@ export async function buildAppSettingsSnapshot(): Promise<AppSettingsSnapshot> {
   if (stored.profanity) storedOut.profanity = stored.profanity;
   if (stored.paths) storedOut.paths = stored.paths;
   if (stored.ai) {
-    storedOut.ai = {
-      ...stored.ai,
-      geminiApiKeys: (stored.ai.geminiApiKeys ?? []).map(maskSecret),
-      deepgramApiKey: maskSecret(stored.ai.deepgramApiKey ?? ''),
-    };
+    // Every key field, not just the two that existed first: a new provider added to
+    // `AI_KEY_FIELDS` must be masked here without anyone remembering to add a line.
+    storedOut.ai = maskAiSecrets(stored.ai as Record<string, unknown>);
   }
 
   return {
@@ -730,11 +771,7 @@ export async function buildAppSettingsSnapshot(): Promise<AppSettingsSnapshot> {
     // keep-this-one placeholder).
     effective: {
       ...effective,
-      ai: {
-        ...effective.ai,
-        geminiApiKeys: effective.ai.geminiApiKeys.map(maskSecret),
-        deepgramApiKey: maskSecret(effective.ai.deepgramApiKey),
-      },
+      ai: maskAiSecrets(effective.ai as unknown as Record<string, unknown>) as unknown as AppSettings['ai'],
     },
     sources,
     configured: APP_SETTINGS_SECTIONS.filter((section) => Object.prototype.hasOwnProperty.call(stored, section)),
@@ -754,6 +791,7 @@ const LIMITS: SettingsLimits = {
   minClipDuration: OPTION_LIMITS.minClipDuration,
   concurrency: CONCURRENCY_LIMITS,
   overlayDuration: { min: 0, max: 30 },
+  brollImages: OPTION_LIMITS.brollImages,
   maxKeyPool: MAX_KEY_POOL,
   filterPresets: DEFAULT_FILTER_PRESETS.map((preset) => ({ id: preset.id, name: preset.name, description: preset.description })),
   layouts: ['speaker-focus', 'split-screen'] as const,
@@ -774,13 +812,29 @@ export async function envAiSectionForImport(): Promise<Record<string, unknown> |
   const deepgramRaw = envText('DEEPGRAM_API_KEY');
   const deepgramApiKey = isUsableSecret(deepgramRaw) ? deepgramRaw : '';
   const deepgramModel = envText('DEEPGRAM_MODEL');
+  const stockKeys = {
+    pexelsApiKey: envText('PEXELS_API_KEY'),
+    pixabayApiKey: envText('PIXABAY_API_KEY'),
+    unsplashApiKey: envText('UNSPLASH_API_KEY'),
+  };
+  const usableStock = Object.fromEntries(
+    Object.entries(stockKeys).filter(([, value]) => isUsableSecret(value))
+  );
 
-  if (!geminiApiKeys.length && !deepgramApiKey && !deepgramModel) return null;
+  if (
+    !geminiApiKeys.length &&
+    !deepgramApiKey &&
+    !deepgramModel &&
+    Object.keys(usableStock).length === 0
+  ) {
+    return null;
+  }
 
   const value: Record<string, unknown> = {
     geminiApiKeys,
     deepgramApiKey,
     transcriptionProvider: DEFAULT_AI_SETTINGS.transcriptionProvider,
+    ...usableStock,
   };
   if (deepgramModel) value.deepgramModel = deepgramModel;
   return value;

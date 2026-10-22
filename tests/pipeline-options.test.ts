@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { sanitizeClipEdits } from '../lib/clip-edits';
-import { sanitizePipelineOptions, sanitizeViralOptions } from '../lib/pipeline-defaults';
-import { DEFAULT_VIRAL_OPTIONS } from '../lib/types';
+import {
+  resolveBrollOptions,
+  sanitizePipelineOptions,
+  sanitizeViralOptions,
+} from '../lib/pipeline-defaults';
+import { DEFAULT_BROLL_OPTIONS, DEFAULT_VIRAL_OPTIONS } from '../lib/types';
 
 /**
  * The automatic pipeline reads its settings from untrusted input in three
@@ -17,7 +21,42 @@ test('empty input still produces a complete, valid pipeline configuration', () =
     autoDetect: true,
     autoRender: true,
     viral: { ...DEFAULT_VIRAL_OPTIONS },
+    broll: { ...DEFAULT_BROLL_OPTIONS },
   });
+});
+
+test('b-roll options are clamped, de-duplicated and provider-filtered', () => {
+  const resolved = resolveBrollOptions({
+    autoBroll: 'false',
+    enableFullscreen: false,
+    enableLandscape: 'true',
+    minImages: 40,
+    maxImages: 2,
+    sfx: 'nope',
+    // Wikimedia is entity-only; duplicates and unknown ids are dropped.
+    providerOrder: ['unsplash', 'wikimedia', 'unsplash', 'bogus'],
+  });
+
+  assert.equal(resolved.autoBroll, false);
+  assert.equal(resolved.enableFullscreen, false);
+  assert.equal(resolved.enableLandscape, true);
+  assert.equal(resolved.minImages, 30, 'the per-60s floor/maximum is clamped');
+  assert.equal(resolved.maxImages, 30, 'max is never below min');
+  assert.equal(resolved.sfx, true, 'unparsable flag keeps the default');
+  assert.deepEqual(resolved.providerOrder, ['unsplash']);
+
+  assert.deepEqual(resolveBrollOptions({ providerOrder: [] }).providerOrder, [
+    'pexels',
+    'pixabay',
+    'unsplash',
+  ]);
+  assert.deepEqual(resolveBrollOptions(null), DEFAULT_BROLL_OPTIONS);
+});
+
+test('a pipeline document from before B-roll existed still gets valid b-roll defaults', () => {
+  const legacy = sanitizePipelineOptions({ autoDetect: false, autoRender: false, viral: { clipCount: 4 } });
+  assert.equal(legacy.autoDetect, false);
+  assert.deepEqual(legacy.broll, DEFAULT_BROLL_OPTIONS);
 });
 
 test('garbage and out-of-range numbers are clamped, never trusted', () => {

@@ -32,6 +32,164 @@ export interface PipelineOptions {
   autoRender: boolean;
   /** Options for the detection run (clip count, clip length, hook/CTA text). */
   viral: Required<ViralDetectionOptions>;
+  /**
+   * Automatic B-roll (images pulled from Wikimedia Commons / stock providers and
+   * composited under the captions). Snapshotted per video at upload, exactly like
+   * the detection options, so a running pipeline is never changed under the worker.
+   */
+  broll: BrollOptions;
+}
+
+/* ==========================================================================
+ * B-roll (images fetched from public providers - never generated)
+ * ========================================================================== */
+
+/** Where a B-roll image came from. `wikimedia` needs no key, the rest do. */
+export type BrollProviderId = "wikimedia" | "pexels" | "pixabay" | "unsplash";
+
+/** Full-screen 9:16 image, or a landscape card inside a rounded frame. */
+export type BrollItemKind = "fullscreen" | "landscape";
+
+export type BrollEntityType = "person" | "place" | "event";
+
+/**
+ * The per-video B-roll automation. Defined here (and sanitized in
+ * `lib/pipeline-defaults.ts`) because both the browser and the worker read it.
+ */
+export interface BrollOptions {
+  /** Run the B-roll step automatically after viral detection. */
+  autoBroll: boolean;
+  /** Whether named entities (people/places/events) may take the full screen. */
+  enableFullscreen: boolean;
+  /** Whether keyword images may be shown as landscape cards. */
+  enableLandscape: boolean;
+  /** Minimum images per 60 s of clip (10 at 60 s by default). */
+  minImages: number;
+  /** Maximum images per 60 s of clip (15 at 60 s by default). */
+  maxImages: number;
+  /** Mix the bundled whoosh/pop sound effects at each item's in/out. */
+  sfx: boolean;
+  /** Stock provider order for landscape cards (Wikimedia is entities only). */
+  providerOrder: BrollProviderId[];
+}
+
+export const DEFAULT_BROLL_OPTIONS: BrollOptions = {
+  autoBroll: true,
+  enableFullscreen: true,
+  enableLandscape: true,
+  minImages: 10,
+  maxImages: 15,
+  sfx: true,
+  providerOrder: ["pexels", "pixabay", "unsplash"],
+};
+
+/** Where an image came from - everything the UI and the licence require. */
+export interface BrollAttribution {
+  provider: BrollProviderId;
+  /** Human page for the image (the attribution link). */
+  sourceUrl: string;
+  /** Direct image URL that was downloaded; also the cache identity. */
+  imageUrl: string;
+  author?: string;
+  license?: string;
+  licenseUrl?: string;
+  title?: string;
+  /** Provider-specific id (Commons pageid, Pexels photo id, ...). */
+  providerId?: string;
+}
+
+/**
+ * How a source image became a 1080x1920 frame. `crop` takes a 9:16 window out of
+ * the image; `blur-fill` keeps the whole picture visible and fills the rest of the
+ * frame with a blurred copy of itself. Never a stretch.
+ */
+export interface BrollCropPlan {
+  mode: "crop" | "blur-fill";
+  sourceWidth: number;
+  sourceHeight: number;
+  /** Crop rectangle in SOURCE pixels (the whole image for blur-fill). */
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** True when the crop was centred on a detected face. */
+  faceCentered: boolean;
+  outputWidth: number;
+  outputHeight: number;
+}
+
+export interface BrollVerificationSummary {
+  confidence: number;
+  reason: string;
+  verifiedAt: string;
+}
+
+/** A landscape card's rectangle on the 1080x1920 canvas. */
+export interface BrollCardRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface BrollItem {
+  id: string;
+  kind: BrollItemKind;
+  /** FINAL render-timeline seconds (hook replay already added). */
+  start: number;
+  end: number;
+  /** Desired mention window in CLIP-relative seconds (review UI / debugging). */
+  desiredStart: number;
+  desiredEnd: number;
+  query: string;
+  entityName?: string;
+  entityType?: BrollEntityType;
+  attribution: BrollAttribution;
+  /** sha256 of the image URL - the cache identity. */
+  cacheKey: string;
+  /** Prepared JPEG in the B-roll cache directory (file name only). */
+  renderFile: string;
+  /** Downloaded original in the cache dir (thumbnail / re-crop). */
+  sourceFile?: string;
+  crop?: BrollCropPlan;
+  verification?: BrollVerificationSummary;
+  /** Landscape only: where the card sits on the canvas. */
+  card?: BrollCardRect;
+  /** Other verified/fetched candidates the review UI can swap to. */
+  alternatives?: BrollAttribution[];
+}
+
+/** One reason something was left out; surfaced in the clip tile and the log. */
+export interface BrollSkip {
+  stage: "analysis" | "search" | "download" | "verify" | "schedule";
+  entity?: string;
+  reason: string;
+}
+
+/**
+ * The stored B-roll plan. The render step only reads this - it never calls Gemini
+ * or a provider - so a re-render is free and cannot change the images.
+ */
+export interface BrollPlan {
+  version: 1;
+  generatedAt: string;
+  trigger: "auto" | "manual" | "recovered";
+  /** Base clip duration (without the hook replay). */
+  clipDuration: number;
+  /** Hook replay length prepended to the clip. */
+  hookDuration: number;
+  /** clipDuration + hookDuration. */
+  totalDuration: number;
+  options: BrollOptions;
+  items: BrollItem[];
+  skipped: BrollSkip[];
+  counts: {
+    targetMin: number;
+    targetMax: number;
+    fullscreen: number;
+    landscape: number;
+  };
+  notes?: string[];
 }
 
 export interface VideoRecord {
@@ -127,6 +285,7 @@ export const DEFAULT_PIPELINE_OPTIONS: PipelineOptions = {
   autoDetect: true,
   autoRender: true,
   viral: { ...DEFAULT_VIRAL_OPTIONS },
+  broll: { ...DEFAULT_BROLL_OPTIONS },
 };
 
 /**
@@ -203,6 +362,12 @@ export interface AiProviderSettings {
    * so instead of quietly using an env value you cannot see.
    */
   geminiApiKeys: string[];
+  /** Pexels stock photos (landscape B-roll cards). Empty = provider unavailable. */
+  pexelsApiKey: string;
+  /** Pixabay stock photos (landscape B-roll cards). Empty = provider unavailable. */
+  pixabayApiKey: string;
+  /** Unsplash stock photos (landscape B-roll cards). Empty = provider unavailable. */
+  unsplashApiKey: string;
   /** Empty means "no cloud transcription"; local whisper.cpp is used. */
   deepgramApiKey: string;
   /** Empty means `nova-2`. */
@@ -217,6 +382,9 @@ export interface AiProviderSettings {
 
 export const DEFAULT_AI_SETTINGS: AiProviderSettings = {
   geminiApiKeys: [],
+  pexelsApiKey: "",
+  pixabayApiKey: "",
+  unsplashApiKey: "",
   deepgramApiKey: "",
   deepgramModel: "",
   transcriptionProvider: "auto",
@@ -325,6 +493,7 @@ export interface SettingsLimits {
   minClipDuration: { min: number; max: number };
   concurrency: typeof CONCURRENCY_LIMITS;
   overlayDuration: { min: number; max: number };
+  brollImages: { min: number; max: number };
   maxKeyPool: number;
   filterPresets: Array<{ id: string; name: string; description: string }>;
   layouts: readonly string[];
@@ -645,6 +814,14 @@ export interface ClipRecord {
    * Absent on clips created before the new AI schema.
    */
   aiAnalysis?: ViralClip;
+  /**
+   * The stored B-roll plan (`clips.broll_json`): images, timing and attribution.
+   * Written only by the `broll` job; the render reads it and never re-fetches.
+   */
+  broll?: BrollPlan;
+  /** Progress of the B-roll step, kept separate from the render status. */
+  brollStatus?: "pending" | "running" | "done" | "failed";
+  brollError?: string;
   // relative path to output mp4, e.g. /generated-clips/001_my_recording/<clip title>.mp4
   outputPath?: string;
   outputFileSize?: number; // bytes, 0/undefined means the render did not produce a usable file
@@ -699,4 +876,17 @@ export interface ViralDetectionJobData {
   autoRender?: boolean;
   /** Set when the user re-ran detection by hand. */
   retry?: boolean;
+}
+
+/**
+ * Queued B-roll planning for ONE clip: entity/keyword extraction, provider fetch,
+ * face-aware crop, Gemini verification and scheduling, written to
+ * `clips.broll_json`. A queue row (not an inline promise) so a worker restart
+ * resumes it, and so a single clip can be re-run without touching the others.
+ */
+export interface BrollJobData {
+  clipId: string;
+  videoId: string;
+  /** Why the job was queued; carried into the stored plan. */
+  trigger?: "auto" | "manual" | "recovered";
 }

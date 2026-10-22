@@ -15,17 +15,21 @@ import {
 import { AppError, toErrorMessage } from './errors';
 import { log } from './logger';
 import {
+  BROLL_QUEUE_NAME,
   CLIP_QUEUE_NAME,
   TRANSCRIPTION_QUEUE_NAME,
   VIRAL_DETECTION_QUEUE_NAME,
+  enqueueBrollJob,
   enqueueClipJob,
   enqueueTranscriptionJob,
   enqueueViralDetectionJob,
   findActiveJob,
+  findLatestJob,
 } from './queue';
-import { sanitizePipelineOptions } from './pipeline-defaults';
+import { resolveBrollOptions, sanitizePipelineOptions } from './pipeline-defaults';
 import { loadEffectiveSettings } from './app-settings';
 import {
+  BrollOptions,
   ClipLayout,
   ClipRecord,
   JobData,
@@ -122,6 +126,71 @@ export async function queueViralDetection(
   return 'queued';
 }
 
+/** B-roll automation for one video (stored pipeline first, defaults underneath). */
+export function brollOptionsFor(video: Pick<VideoRecord, 'pipeline'>): BrollOptions {
+  return resolveBrollOptions(video.pipeline?.broll ?? null);
+}
+
+/**
+ * Queue the B-roll step for clips that do not have a plan yet. Returns the clips
+ * that actually got a job; a clip whose B-roll job is already queued/running is
+ * skipped, which is what keeps a restart from duplicating work.
+ */
+export async function queueBrollForClips(
+  clips: readonly ClipRecord[],
+  trigger: 'auto' | 'manual' | 'recovered' = 'auto',
+  options: { skipWhenFailed?: boolean } = {}
+): Promise<ClipRecord[]> {
+  const queued: ClipRecord[] = [];
+  for (const clip of clips) {
+    if (clip.broll) continue;
+    if (findActiveJob(BROLL_QUEUE_NAME, { clipId: clip._id })) continue;
+    if (options.skipWhenFailed) {
+      // A restart must not retry a plan that already exhausted its attempts. The
+      // clip tile still offers "Re-run B-roll" for that case.
+      const latest = findLatestJob(BROLL_QUEUE_NAME, { clipId: clip._id });
+      if (latest?.status === 'failed') continue;
+    }
+    try {
+      await enqueueBrollJob({ clipId: clip._id, videoId: clip.videoId, trigger });
+      queued.push(clip);
+    } catch (error) {
+      // A 409 (another pass is starting) is not a failure of this clip; anything
+      // else is recorded on the clip without stopping the batch.
+      const message = toErrorMessage(error, 'Could not queue B-roll.');
+      log.warn(`Could not queue B-roll for ${clip._id}: ${message}`);
+    }
+  }
+  return queued;
+}
+
+/**
+ * Hand one clip to the render queue if the video's automation still wants that.
+ * Called by the worker right after the B-roll job wrote its plan.
+ */
+export async function continueAfterBroll(clipId: string): Promise<boolean> {
+  const clip = await getClip(clipId);
+  if (!clip) return false;
+  const video = await getVideo(clip.videoId);
+  if (!video?.pipeline) return false;
+
+  const options = brollOptionsFor(video);
+  // `autoRender` alone decides whether a render follows; B-roll is a step *inside*
+  // the automatic pipeline, never a reason to render something the user paused.
+  if (!video.pipeline.autoRender) {
+    log.detail(`B-roll ready for ${clipId}; autoRender is off, so the render waits for you.`);
+    return false;
+  }
+  if (clip.status === 'processing' || findActiveJob(CLIP_QUEUE_NAME, { clipId })) return false;
+
+  await enqueueClipJob(await jobDataFromClip(clip));
+  log.ok(
+    `B-roll ready (${clip.broll?.items.length ?? 0} image${clip.broll?.items.length === 1 ? '' : 's'}` +
+      `${options.enableFullscreen ? `, ${clip.broll?.counts.fullscreen ?? 0} full-screen` : ''}) - render queued.`
+  );
+  return true;
+}
+
 export interface DetectionRunInput {
   /** Raw request body (or nothing) - see `resolvePipeline`. */
   pipeline?: unknown;
@@ -141,6 +210,8 @@ export interface DetectionRunResult {
   clips: ClipRecord[];
   /** How many of the new clips were handed to the render queue. */
   renderQueued: number;
+  /** How many of the new clips were handed to the B-roll queue instead. */
+  brollQueued: number;
   autoRender: boolean;
   options: Required<ViralDetectionOptions>;
   /** True when an automatic run found existing clips and reused them. */
@@ -194,6 +265,7 @@ export async function runViralDetection(
   const pipeline = resolvePipeline(video, input.pipeline);
   if (input.autoRender !== undefined) pipeline.autoRender = input.autoRender;
   const options = pipeline.viral;
+  const brollOptions = resolveBrollOptions(pipeline.broll);
   const mode = input.mode ?? 'manual';
 
   if (mode === 'auto') {
@@ -201,19 +273,33 @@ export async function runViralDetection(
     if (existing.length) {
       // The video was already analyzed (e.g. the transcript was regenerated).
       // Never stack a second identical batch on top of it - only make sure the
-      // clips that exist are rendered.
+      // clips that exist get their missing B-roll plan and then a render.
+      const missingBroll = brollOptions.autoBroll
+        ? existing.filter((clip) => !clip.broll)
+        : [];
+      const brollQueued = missingBroll.length
+        ? await queueBrollForClips(missingBroll, 'recovered')
+        : [];
       const stranded = pipeline.autoRender
-        ? existing.filter((clip) => clip.status === 'pending' || clip.status === 'failed')
+        ? existing.filter(
+            (clip) =>
+              (clip.status === 'pending' || clip.status === 'failed') &&
+              // A clip still waiting for its B-roll plan is rendered by
+              // continueAfterBroll(), not now: the plan must exist first.
+              (!brollOptions.autoBroll || clip.broll)
+          )
         : [];
       const queued = stranded.length ? await queueRenders(stranded) : { queued: [], failed: [] };
       log.detail(
         `Viral detection skipped - ${existing.length} clip(s) already exist for ${videoId}` +
-          (stranded.length ? `, re-queued ${queued.queued.length} for rendering.` : '.')
+          (brollQueued.length ? `, queued B-roll for ${brollQueued.length}.` : '') +
+          (stranded.length ? ` Re-queued ${queued.queued.length} for rendering.` : '.')
       );
       return {
         video,
         clips: existing,
         renderQueued: queued.queued.length,
+        brollQueued: brollQueued.length,
         autoRender: pipeline.autoRender,
         options,
         reusedExistingClips: true,
@@ -326,13 +412,33 @@ export async function runViralDetection(
   }
 
   let renderQueued = 0;
-  if (pipeline.autoRender) {
-    renderQueued = (await queueRenders(createdClips)).queued.length;
+  let brollQueued = 0;
+
+  // B-roll is planned before the render (and only once per clip): the render step
+  // consumes the stored plan and must never call a provider itself. With
+  // autoBroll off, this block does nothing at all and the pipeline behaves exactly
+  // as it did before the feature existed.
+  if (brollOptions.autoBroll) {
+    const queuedForBroll = await queueBrollForClips(createdClips, 'auto');
+    brollQueued = queuedForBroll.length;
     log.ok(
-      renderQueued
-        ? `Auto-render queued for ${renderQueued}/${createdClips.length} clip(s).`
-        : `No clip could be queued for rendering - see the clip errors.`
+      brollQueued
+        ? `B-roll queued for ${brollQueued}/${createdClips.length} clip(s); each render follows its plan.`
+        : 'B-roll was not queued for any clip - see the clip errors.'
     );
+  }
+
+  if (pipeline.autoRender) {
+    // With B-roll on, the render is handed over by the B-roll job itself
+    // (continueAfterBroll), so a render can never start against a missing plan.
+    if (!brollOptions.autoBroll) {
+      renderQueued = (await queueRenders(createdClips)).queued.length;
+      log.ok(
+        renderQueued
+          ? `Auto-render queued for ${renderQueued}/${createdClips.length} clip(s).`
+          : `No clip could be queued for rendering - see the clip errors.`
+      );
+    }
   }
 
   const refreshed = await getVideo(videoId);
@@ -340,6 +446,7 @@ export async function runViralDetection(
     video: refreshed ?? video,
     clips: createdClips,
     renderQueued,
+    brollQueued,
     autoRender: pipeline.autoRender,
     options,
     reusedExistingClips: false,
@@ -451,14 +558,32 @@ export async function recoverAutoPipelines(): Promise<{ resumed: string[] }> {
       continue;
     }
 
+    const brollOptions = brollOptionsFor(video);
+    const missingPlans = brollOptions.autoBroll ? clips.filter((clip) => !clip.broll) : [];
+
     // Clips exist and renders were automatic: re-queue the ones left pending.
     if (video.pipeline.autoRender) {
       const stranded = clips.filter(
-        (clip) => clip.status === 'pending' && !findActiveJob(CLIP_QUEUE_NAME, { clipId: clip._id })
+        (clip) =>
+          clip.status === 'pending' &&
+          !findActiveJob(CLIP_QUEUE_NAME, { clipId: clip._id }) &&
+          // A clip whose B-roll is still being planned must wait for its plan.
+          (!brollOptions.autoBroll || clip.broll)
       );
       if (stranded.length) {
         await queueRenders(stranded);
         resumed.push(`${video._id}:render x${stranded.length}`);
+      }
+    }
+
+    // A crash between detection and the B-roll step (or between the plan and the
+    // render) resumes HERE: the jobs table is the only state, so nothing is lost.
+    if (missingPlans.length) {
+      const queuedForBroll = await queueBrollForClips(missingPlans, 'recovered', {
+        skipWhenFailed: true,
+      });
+      if (queuedForBroll.length) {
+        resumed.push(`${video._id}:broll x${queuedForBroll.length}`);
       }
     }
   }

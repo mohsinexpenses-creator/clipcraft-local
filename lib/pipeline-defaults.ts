@@ -1,4 +1,7 @@
 import {
+  BrollOptions,
+  BrollProviderId,
+  DEFAULT_BROLL_OPTIONS,
   DEFAULT_PIPELINE_OPTIONS,
   DEFAULT_VIRAL_OPTIONS,
   PipelineOptions,
@@ -24,7 +27,14 @@ import {
 export const OPTION_LIMITS = {
   clipCount: { min: 1, max: 25 },
   minClipDuration: { min: 5, max: 600 },
+  /** Images per 60 s of clip (the UI label; the worker scales them per clip). */
+  brollImages: { min: 1, max: 30 },
 } as const;
+
+/** Stock providers a landscape card may come from, in the default order. */
+export const STOCK_BROLL_PROVIDERS = ['pexels', 'pixabay', 'unsplash'] as const;
+
+const STOCK_PROVIDER_SET = new Set<string>(STOCK_BROLL_PROVIDERS);
 
 function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
   const n = Number(value);
@@ -113,6 +123,54 @@ export function sanitizeViralOptions(input: unknown): Required<ViralDetectionOpt
  * that is the whole point of the upload flow - and either can be turned off to
  * hand that step back to the user.
  */
+/**
+ * B-roll automation for one video. The provider order is filtered to the stock
+ * providers (Wikimedia is entity-only and needs no key), then de-duplicated; an
+ * empty result falls back to the shipped order so a landscape card can still be
+ * fetched when someone saves `[]`.
+ */
+export function resolveBrollOptions(partial?: unknown): BrollOptions {
+  const source = isRecord(partial) ? partial : {};
+  const minImages = Math.round(
+    clampNumber(
+      source.minImages,
+      DEFAULT_BROLL_OPTIONS.minImages,
+      OPTION_LIMITS.brollImages.min,
+      OPTION_LIMITS.brollImages.max
+    )
+  );
+  const maxImages = Math.max(
+    minImages,
+    Math.round(
+      clampNumber(
+        source.maxImages,
+        DEFAULT_BROLL_OPTIONS.maxImages,
+        OPTION_LIMITS.brollImages.min,
+        OPTION_LIMITS.brollImages.max
+      )
+    )
+  );
+  const requestedOrder = Array.isArray(source.providerOrder)
+    ? source.providerOrder.filter(
+        (entry): entry is BrollProviderId =>
+          typeof entry === 'string' && STOCK_PROVIDER_SET.has(entry)
+      )
+    : [];
+  const providerOrder = [...new Set(requestedOrder)];
+
+  return {
+    autoBroll: readFlag(source.autoBroll, DEFAULT_BROLL_OPTIONS.autoBroll),
+    enableFullscreen: readFlag(source.enableFullscreen, DEFAULT_BROLL_OPTIONS.enableFullscreen),
+    enableLandscape: readFlag(source.enableLandscape, DEFAULT_BROLL_OPTIONS.enableLandscape),
+    minImages,
+    maxImages,
+    sfx: readFlag(source.sfx, DEFAULT_BROLL_OPTIONS.sfx),
+    providerOrder: providerOrder.length
+      ? providerOrder
+      : [...DEFAULT_BROLL_OPTIONS.providerOrder],
+  };
+}
+
 export function sanitizePipelineOptions(input: unknown): PipelineOptions {
   const body = isRecord(input) ? input : {};
   const nested = isRecord(body.pipeline) ? body.pipeline : body;
@@ -126,6 +184,9 @@ export function sanitizePipelineOptions(input: unknown): PipelineOptions {
     autoDetect: readFlag(nested.autoDetect, DEFAULT_PIPELINE_OPTIONS.autoDetect),
     autoRender: readFlag(nested.autoRender, DEFAULT_PIPELINE_OPTIONS.autoRender),
     viral: sanitizeViralOptions(viralSource),
+    // A legacy pipeline document (uploaded before B-roll existed) has no
+    // `broll` key and gets the shipped defaults - sane by construction.
+    broll: resolveBrollOptions(isRecord(nested.broll) ? nested.broll : null),
   };
 }
 
@@ -137,6 +198,13 @@ export function isPipelineOptionsEqual(a: PipelineOptions | undefined, b: Pipeli
     a.viral.clipCount === b.viral.clipCount &&
     a.viral.minClipDuration === b.viral.minClipDuration &&
     a.viral.includeHookText === b.viral.includeHookText &&
-    a.viral.includeCta === b.viral.includeCta
+    a.viral.includeCta === b.viral.includeCta &&
+    a.broll.autoBroll === b.broll.autoBroll &&
+    a.broll.enableFullscreen === b.broll.enableFullscreen &&
+    a.broll.enableLandscape === b.broll.enableLandscape &&
+    a.broll.minImages === b.broll.minImages &&
+    a.broll.maxImages === b.broll.maxImages &&
+    a.broll.sfx === b.broll.sfx &&
+    a.broll.providerOrder.join(',') === b.broll.providerOrder.join(',')
   );
 }

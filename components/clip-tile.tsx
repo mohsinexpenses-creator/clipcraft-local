@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { ClipAnalysisPanel } from "@/components/clip-analysis"
+import { BrollPlanPanel } from "@/components/broll-plan"
 
 /**
  * One clip in the results grid.
@@ -118,13 +119,28 @@ export interface ClipTileProps {
   clip: ClipRecord;
   captionPresets: CaptionPreset[];
   busy?: boolean;
+  /** A B-roll job or plan edit is in flight for this clip. */
+  brollBusy?: boolean;
   onEdit: (clip: ClipRecord) => void;
   onRender: (clip: ClipRecord) => void;
   onCancel: (clip: ClipRecord) => void;
   onDelete: (clip: ClipRecord) => void;
+  onRerunBroll: (clip: ClipRecord) => void;
+  onBrollEdit: (clip: ClipRecord, action: "swap" | "remove", itemId: string) => void;
 }
 
-export function ClipTile({ clip, captionPresets, busy, onEdit, onRender, onCancel, onDelete }: ClipTileProps) {
+export function ClipTile({
+  clip,
+  captionPresets,
+  busy,
+  brollBusy,
+  onEdit,
+  onRender,
+  onCancel,
+  onDelete,
+  onRerunBroll,
+  onBrollEdit,
+}: ClipTileProps) {
   const videoRef = React.useRef<HTMLVideoElement | null>(null);
   const [engaged, setEngaged] = React.useState(false);
   const [analysisOpen, setAnalysisOpen] = React.useState(false);
@@ -383,6 +399,16 @@ export function ClipTile({ clip, captionPresets, busy, onEdit, onRender, onCance
           </DropdownMenu>
         </div>
       </div>
+
+      <BrollPlanPanel
+        plan={clip.broll ?? null}
+        status={clip.brollStatus ?? (clip.broll ? "done" : "none")}
+        error={clip.brollError}
+        busy={brollBusy}
+        onRerun={() => onRerunBroll(clip)}
+        onSwap={(itemId) => onBrollEdit(clip, "swap", itemId)}
+        onRemove={(itemId) => onBrollEdit(clip, "remove", itemId)}
+      />
 
       <ClipAnalysisPanel
         analysis={clip.aiAnalysis}

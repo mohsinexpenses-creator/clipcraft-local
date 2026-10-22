@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import Database from 'better-sqlite3';
 import {
+  getClipBrollPlan,
+  saveClipBrollPlan,
   deleteCaptionPreset,
   deleteClip,
   deleteOverlayStylePreset,
@@ -27,7 +29,16 @@ import {
   saveTextPreset,
   saveVideo,
 } from '../lib/db';
-import type { CaptionPreset, ClipRecord, OverlayStylePreset, PromptTemplate, TextPreset, VideoRecord } from '../lib/types';
+import {
+  DEFAULT_BROLL_OPTIONS,
+  type BrollPlan,
+  type CaptionPreset,
+  type ClipRecord,
+  type OverlayStylePreset,
+  type PromptTemplate,
+  type TextPreset,
+  type VideoRecord,
+} from '../lib/types';
 import { createTemporaryDatabase } from './sqlite-test-helpers';
 import { validClip } from './viral-fixtures';
 
@@ -76,7 +87,7 @@ test('SQLite schema is versioned, indexed, WAL-enabled, and has a five-second bu
   const version = db.prepare('SELECT version FROM schema_version WHERE id = 1').get() as
     | { version: number }
     | undefined;
-  assert.deepEqual(version, { version: 5 });
+  assert.deepEqual(version, { version: 6 });
 
   // v3 is the additive pipeline column: the per-video automation settings
   // (auto-detect / auto-render + AI clip options) captured at upload time.
@@ -86,6 +97,13 @@ test('SQLite schema is versioned, indexed, WAL-enabled, and has a five-second bu
     )
   );
   assert.ok(videoColumns.has('pipeline_json'), 'videos.pipeline_json is missing');
+
+  // v6 is the additive B-roll plan column. NULL means "no B-roll for this clip",
+  // which is exactly what every clip created before the feature has.
+  const clipColumns = new Set(
+    (db.prepare('PRAGMA table_info(clips)').all() as Array<{ name: string }>).map((row) => row.name)
+  );
+  assert.ok(clipColumns.has('broll_json'), 'clips.broll_json is missing');
 
   // v4 is the Settings-page table: one JSON document per section, and only for
   // sections the user actually saved - so an empty table means "env + defaults".
@@ -126,7 +144,7 @@ test('SQLite schema is versioned, indexed, WAL-enabled, and has a five-second bu
     initializeSchema(legacy);
     assert.deepEqual(
       legacy.prepare('SELECT version FROM schema_version WHERE id = 1').get(),
-      { version: 5 }
+      { version: 6 }
     );
     assert.ok(
       legacy.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'app_settings'").get(),
@@ -274,4 +292,75 @@ test('seeded caption/overlay presets and prompt templates plus text CRUD stay ed
   };
   await savePromptTemplate(prompt);
   assert.equal((await getPromptTemplate(prompt._id))?.name, prompt.name);
+});
+
+
+function makeBrollPlan(): BrollPlan {
+  const now = new Date().toISOString();
+  return {
+    version: 1,
+    generatedAt: now,
+    trigger: 'auto',
+    clipDuration: 60,
+    hookDuration: 3,
+    totalDuration: 63,
+    options: { ...DEFAULT_BROLL_OPTIONS },
+    items: [
+      {
+        id: 'item-1',
+        kind: 'landscape',
+        start: 8,
+        end: 11,
+        desiredStart: 5,
+        desiredEnd: 8,
+        query: 'city skyline',
+        attribution: {
+          provider: 'pexels',
+          sourceUrl: 'https://www.pexels.com/photo/1/',
+          imageUrl: 'https://images.pexels.com/photos/1/1.jpg',
+          author: 'A Photographer',
+          license: 'Pexels License',
+        },
+        cacheKey: 'abc123',
+        renderFile: 'abc123_card.jpg',
+      },
+    ],
+    skipped: [],
+    counts: { targetMin: 10, targetMax: 15, fullscreen: 0, landscape: 1 },
+  };
+}
+
+test('the B-roll plan lives in its own column and survives unrelated clip updates', async (t) => {
+  createTemporaryDatabase(t);
+  const video = makeVideo('video-broll');
+  await saveVideo(video);
+  const clip = makeClip('clip-broll', video._id);
+  await saveClip(clip);
+
+  assert.equal(await getClipBrollPlan(clip._id), null, 'a new clip has no plan');
+
+  const plan = makeBrollPlan();
+  assert.equal(await saveClipBrollPlan(clip._id, plan), true);
+
+  const stored = await getClip(clip._id);
+  assert.deepEqual(stored?.broll?.items[0].attribution.author, 'A Photographer');
+  assert.equal(stored?.brollStatus, 'done');
+
+  // A render (or an editor save) must not delete the plan...
+  const fresh = (await getClip(clip._id))!;
+  fresh.hookText = 'EDITED';
+  fresh.status = 'done';
+  const { updateClip } = await import('../lib/db');
+  await updateClip({ ...fresh, broll: undefined });
+  assert.ok(await getClipBrollPlan(clip._id), 'a clip update without the plan must keep the stored one');
+
+  // ...and re-saving the whole record must not either.
+  await saveClip({ ...makeClip('clip-broll', video._id), hookText: 'RESAVED' });
+  assert.equal((await getClipBrollPlan(clip._id))?.items.length, 1);
+
+  assert.equal(await saveClipBrollPlan(clip._id, null, 'failed', 'network down'), true);
+  assert.equal(await getClipBrollPlan(clip._id), null);
+  const failed = await getClip(clip._id);
+  assert.equal(failed?.brollStatus, 'failed');
+  assert.equal(failed?.brollError, 'network down');
 });

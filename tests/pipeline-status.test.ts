@@ -5,7 +5,7 @@ import {
   pipelineStatusForVideo,
   countClips,
 } from '../lib/pipeline-status';
-import type { ClipRecord, VideoRecord } from '../lib/types';
+import { DEFAULT_BROLL_OPTIONS, type ClipRecord, type VideoRecord } from '../lib/types';
 
 /**
  * The pipeline stage is derived, never stored - so these tests are the contract
@@ -160,6 +160,7 @@ test('autoRender off leaves detected clips awaiting a manual render', () => {
       includeHookText: true,
       includeCta: true,
     },
+    broll: DEFAULT_BROLL_OPTIONS,
   });
 
   assert.equal(status.stage, 'awaiting-render');
@@ -182,6 +183,7 @@ test('detection paused (autoDetect off) is awaiting-detection, never "ready"', (
         includeHookText: true,
         includeCta: true,
       },
+      broll: DEFAULT_BROLL_OPTIONS,
     },
   });
 

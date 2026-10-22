@@ -14,8 +14,10 @@ const VERIFY_TIMEOUT_MS = 15_000;
 
 export type VerifyStatus = 'ok' | 'rejected' | 'limited' | 'unreachable' | 'error';
 
+export type StockVerifyTarget = 'pexels' | 'pixabay' | 'unsplash';
+
 export interface VerifyProbeResult {
-  target: 'gemini' | 'deepgram';
+  target: 'gemini' | 'deepgram' | StockVerifyTarget;
   status: VerifyStatus;
   label: string;
   message: string;
@@ -47,9 +49,18 @@ function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
 async function readErrorDetail(response: Response): Promise<string> {
   try {
     const text = await response.text();
-    const parsed = JSON.parse(text) as { error?: { message?: string }; message?: string };
+    const parsed = JSON.parse(text) as {
+      error?: string | { message?: string };
+      message?: string;
+    };
     const detail =
-      (typeof parsed.error === 'object' ? parsed.error?.message : undefined) ?? parsed.message ?? '';
+      (typeof parsed.error === 'string'
+        ? parsed.error
+        : typeof parsed.error === 'object'
+          ? parsed.error?.message
+          : undefined) ??
+      parsed.message ??
+      '';
     return detail ? detail.slice(0, 240) : '';
   } catch {
     return '';
@@ -64,7 +75,7 @@ async function readErrorDetail(response: Response): Promise<string> {
  */
 export async function verifyGeminiKey(
   apiKey: string,
-  options: { model?: string; withGeneration?: boolean } = {}
+  options: { model?: string; withGeneration?: boolean; withVision?: boolean } = {}
 ): Promise<VerifyProbeResult> {
   const model = options.model?.trim() || LLM_PROVIDER_CHAIN[0]?.model || 'gemini-3.8-flash';
   const startedAt = Date.now();
@@ -117,14 +128,24 @@ export async function verifyGeminiKey(
       generationMessage = 'a 1-word completion came back';
     }
 
+    // Vision is what B-roll verification needs; a key can answer text prompts and
+    // still be refused for image input, so the two are probed separately.
+    let visionMessage = '';
+    if (options.withVision) {
+      const vision = await pingGeminiVision(apiKey, model);
+      if (vision.status !== 'ok') return { ...vision, latencyMs: Date.now() - startedAt };
+      visionMessage = 'image input works';
+    }
+
     return {
       target: 'gemini',
       status: 'ok',
       label: `Google AI Studio · ${model}`,
       latencyMs,
       httpStatus: response.status,
-      message: generationMessage
-        ? `Key accepted, and ${generationMessage}. Viral detection can use this key.`
+      message: [generationMessage, visionMessage].filter(Boolean).length
+        ? `Key accepted; ${[generationMessage, visionMessage].filter(Boolean).join(', and ')}. ` +
+          (visionMessage ? 'B-roll can verify images with this key.' : 'Viral detection can use this key.')
         : models.includes(model)
           ? `Key accepted and ${model} is available. Viral detection can use this key.`
           : 'Key accepted. The model list could not be read, so availability is unconfirmed.',
@@ -309,7 +330,7 @@ async function probeProjects(apiKey: string): Promise<{ ok: boolean; projects: n
 const TRANSCRIPTION_SCOPES = new Set(['admin:all', 'usage:write', 'scopes:member']);
 
 function unreachable(
-  target: 'gemini' | 'deepgram',
+  target: 'gemini' | 'deepgram' | StockVerifyTarget,
   label: string,
   error: unknown,
   host: string
@@ -324,4 +345,160 @@ function unreachable(
       ? `The request to ${host} timed out after ${Math.round(VERIFY_TIMEOUT_MS / 1000)}s.`
       : `Could not reach ${host}: ${message}`,
   };
+}
+
+
+/**
+ * A real image is sent, because Gemini models are not all multimodal: the text
+ * completion can pass while `inline_data` is refused. A 1x1 white PNG is enough
+ * to prove the path works and costs a handful of tokens.
+ */
+const TINY_PNG_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+async function pingGeminiVision(apiKey: string, model: string): Promise<VerifyProbeResult> {
+  const startedAt = Date.now();
+  const label = `Google AI Studio · ${model} (vision)`;
+  try {
+    const response = await fetchWithTimeout(
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
+        body: JSON.stringify({
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                { text: 'Reply with exactly: OK' },
+                { inline_data: { mime_type: 'image/png', data: TINY_PNG_BASE64 } },
+              ],
+            },
+          ],
+          generationConfig: { temperature: 0, maxOutputTokens: 8 },
+        }),
+      }
+    );
+    const latencyMs = Date.now() - startedAt;
+    if (!response.ok) {
+      const detail = await readErrorDetail(response);
+      return {
+        target: 'gemini',
+        status: classifyStatus(response.status),
+        label,
+        latencyMs,
+        httpStatus: response.status,
+        message:
+          response.status === 404
+            ? `This model does not accept images (${model}). B-roll verification needs a vision model.`
+            : detail || `The vision test failed with HTTP ${response.status}.`,
+      };
+    }
+    return { target: 'gemini', status: 'ok', label, latencyMs, message: 'vision ok' };
+  } catch (error) {
+    return unreachable('gemini', label, error, 'https://generativelanguage.googleapis.com');
+  }
+}
+
+/**
+ * Stock providers. Each probe asks for the smallest possible page of landscape
+ * photos, so it proves three things at once: the key is accepted, the endpoint is
+ * reachable, and the account still has quota for B-roll.
+ */
+export async function verifyStockProvider(
+  target: StockVerifyTarget,
+  apiKey: string
+): Promise<VerifyProbeResult> {
+  const label =
+    target === 'pexels' ? 'Pexels' : target === 'pixabay' ? 'Pixabay' : 'Unsplash';
+  const startedAt = Date.now();
+
+  const url =
+    target === 'pexels'
+      ? 'https://api.pexels.com/v1/search?query=city&per_page=1&orientation=landscape'
+      : target === 'pixabay'
+        ? `https://pixabay.com/api/?key=${encodeURIComponent(apiKey)}&q=city&image_type=photo&orientation=horizontal&per_page=3&safesearch=true`
+        : 'https://api.unsplash.com/photos?per_page=1';
+
+  const headers: Record<string, string> = { accept: 'application/json' };
+  if (target === 'pexels') headers.authorization = apiKey;
+  if (target === 'unsplash') headers.authorization = `Client-ID ${apiKey}`;
+
+  try {
+    const response = await fetchWithTimeout(url, { method: 'GET', headers });
+    const latencyMs = Date.now() - startedAt;
+    const notes: string[] = [];
+
+    // Quota information is the difference between "works" and "works for 3 more
+    // requests", and every provider exposes it differently.
+    const header = (name: string): string | null => response.headers?.get?.(name) ?? null;
+    const rateLimit = target === 'pixabay' ? null : header('x-ratelimit-remaining');
+    const rateLimitTotal = target === 'pixabay' ? null : header('x-ratelimit-limit');
+    if (rateLimit) notes.push(`${label} quota left in this window: ${rateLimit}${rateLimitTotal ? ` / ${rateLimitTotal}` : ''}`);
+
+    if (!response.ok) {
+      const detail = await readErrorDetail(response);
+      const status = classifyStatus(response.status);
+      // Pixabay answers a bad key with 400 + "Invalid or missing API key"; only
+      // 401/403 is ever worded as a rejected key.
+      const rejected =
+        status === 'rejected' ||
+        (target === 'pixabay' && response.status === 400 && /invalid or missing api key/i.test(detail));
+      return {
+        target,
+        status: rejected ? 'rejected' : status === 'limited' ? 'limited' : 'error',
+        label,
+        latencyMs,
+        httpStatus: response.status,
+        message: rejected
+          ? 'The key was rejected. Copy it again from the provider dashboard.'
+          : status === 'limited'
+            ? 'The key works but the account is rate limited right now (429). B-roll falls through to the next provider.'
+            : `${label} answered HTTP ${response.status}. The endpoint is reachable, but the request failed.` +
+              (detail ? ` Provider said: ${detail}` : ''),
+        ...(detail ? { notes } : {}),
+      };
+    }
+
+    const payload = (await response.json()) as { photos?: unknown[]; hits?: unknown[]; errors?: unknown };
+    if (Array.isArray(payload.errors) && payload.errors.length > 0) {
+      return {
+        target,
+        status: 'error',
+        label,
+        latencyMs,
+        httpStatus: response.status,
+        message: `${label} reported an error for this key.`,
+        notes: [JSON.stringify(payload.errors).slice(0, 200)],
+      };
+    }
+    const count = Array.isArray(payload)
+      ? payload.length
+      : Array.isArray(payload.photos)
+        ? payload.photos.length
+        : Array.isArray(payload.hits)
+          ? payload.hits.length
+          : undefined;
+
+    return {
+      target,
+      status: 'ok',
+      label,
+      latencyMs,
+      httpStatus: response.status,
+      message:
+        count === 0
+          ? 'Key accepted, but the test search found no photos.'
+          : `Key accepted; the test search returned ${count ?? 'a'} landscape photo${count === 1 ? '' : 's'}.`,
+      ...(notes.length ? { notes } : {}),
+    };
+  } catch (error) {
+    const host =
+      target === 'pexels' ? 'https://api.pexels.com' : target === 'pixabay' ? 'https://pixabay.com' : 'https://api.unsplash.com';
+    return unreachable(target, label, error, host);
+  }
+}
+
+export function verifyTarget(target: StockVerifyTarget, key: string): Promise<VerifyProbeResult> {
+  return verifyStockProvider(target, key);
 }

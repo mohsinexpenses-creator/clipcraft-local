@@ -1,10 +1,20 @@
 "use client"
 
 import * as React from "react"
-import { Clapperboard, Film, Sparkles, Type, Wand2 } from "lucide-react"
+import {
+  ChevronDown,
+  ChevronUp,
+  Clapperboard,
+  Film,
+  ImagePlay,
+  Images,
+  Sparkles,
+  Type,
+  Wand2,
+} from "lucide-react"
 import { cn } from "cn"
-import type { PipelineOptions } from "@/lib/types"
-import { OPTION_LIMITS } from "@/lib/pipeline-defaults"
+import type { BrollProviderId, PipelineOptions } from "@/lib/types"
+import { OPTION_LIMITS, STOCK_BROLL_PROVIDERS } from "@/lib/pipeline-defaults"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
@@ -156,6 +166,8 @@ export interface AutomationPanelProps {
   /** Compact = only the AI clip options (used inside the upload card). */
   showAutomation?: boolean;
   showAiOptions?: boolean;
+  /** Per-video B-roll automation (entity images + landscape cards). */
+  showBroll?: boolean;
 }
 
 export function AutomationPanel({
@@ -167,9 +179,19 @@ export function AutomationPanel({
   className,
   showAutomation = true,
   showAiOptions = true,
+  showBroll = true,
 }: AutomationPanelProps) {
   const patch = (partial: Partial<PipelineOptions>) =>
     onChange?.({ ...value, ...partial, viral: { ...value.viral, ...(partial.viral ?? {}) } });
+  const patchBroll = (partial: Partial<PipelineOptions["broll"]>) =>
+    patch({ broll: { ...value.broll, ...partial } });
+  const moveProvider = (index: number, delta: number) => {
+    const order = [...value.broll.providerOrder];
+    const target = index + delta;
+    if (target < 0 || target >= order.length) return;
+    [order[index], order[target]] = [order[target]!, order[index]!];
+    patchBroll({ providerOrder: order });
+  };
 
   return (
     <div className={cn("space-y-3", className)}>
@@ -260,6 +282,143 @@ export function AutomationPanel({
             onCheckedChange={(includeCta) => patch({ viral: { ...value.viral, includeCta } })}
             disabled={busy}
           />
+        </div>
+      )}
+
+      {showBroll && (
+        <div className="space-y-2 rounded-xl border border-dashed bg-muted/20 p-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h4 className="flex items-center gap-1.5 text-[12px] font-semibold">
+              <ImagePlay className="size-3.5 text-muted-foreground" />
+              B-roll
+            </h4>
+            <span className="text-[10.5px] text-muted-foreground">
+              Wikimedia Commons + stock photos · never AI-generated
+            </span>
+          </div>
+
+          <div className="grid gap-2 sm:grid-cols-2">
+            <ToggleRow
+              id="auto-broll"
+              icon={<ImagePlay />}
+              title="Add B-roll automatically"
+              description="Plan images after detection, before the render. Off = plain clips, exactly as before."
+              checked={value.broll.autoBroll}
+              onCheckedChange={(autoBroll) => patchBroll({ autoBroll })}
+              disabled={busy || !showAutomation}
+            />
+            <ToggleRow
+              id="broll-fullscreen"
+              icon={<Images />}
+              title="Full-screen entity images"
+              description="A named person, place or event takes the frame — only when Gemini Vision confirms the photo."
+              checked={value.broll.enableFullscreen}
+              onCheckedChange={(enableFullscreen) => patchBroll({ enableFullscreen })}
+              disabled={busy || !value.broll.autoBroll}
+            />
+            <ToggleRow
+              id="broll-landscape"
+              icon={<Film />}
+              title="Landscape cards"
+              description="Stock photos framed beside the captions for the words that have no named entity."
+              checked={value.broll.enableLandscape}
+              onCheckedChange={(enableLandscape) => patchBroll({ enableLandscape })}
+              disabled={busy || !value.broll.autoBroll}
+            />
+            <ToggleRow
+              id="broll-sfx"
+              icon={<Sparkles />}
+              title="Image sound effects"
+              description="A soft whoosh as an image arrives and a pop as it leaves, mixed under the voice."
+              checked={value.broll.sfx}
+              onCheckedChange={(sfx) => patchBroll({ sfx })}
+              disabled={busy || !value.broll.autoBroll}
+            />
+          </div>
+
+          <div className="grid gap-2 sm:grid-cols-2">
+            <div className="flex items-center justify-between gap-3 rounded-xl border bg-background/60 px-3 py-2">
+              <Label htmlFor="broll-min-images" className="flex items-center gap-1.5 text-[12px] font-medium">
+                Min images / 60 s
+                <Tooltip>
+                  <TooltipTrigger render={<span className="cursor-help text-[10px] text-muted-foreground">⌾</span>} />
+                  <TooltipContent>
+                    Scaled to the clip length: a 60 s clip targets 10–15 images. Images are never padded
+                    with irrelevant photos to hit the minimum.
+                  </TooltipContent>
+                </Tooltip>
+              </Label>
+              <div className="w-16">
+                <NumberField
+                  id="broll-min-images"
+                  value={value.broll.minImages}
+                  onCommit={(minImages) => patchBroll({ minImages })}
+                  min={OPTION_LIMITS.brollImages.min}
+                  max={value.broll.maxImages}
+                  disabled={busy || !value.broll.autoBroll}
+                />
+              </div>
+            </div>
+            <div className="flex items-center justify-between gap-3 rounded-xl border bg-background/60 px-3 py-2">
+              <Label htmlFor="broll-max-images" className="flex items-center gap-1.5 text-[12px] font-medium">
+                Max images / 60 s
+                <Tooltip>
+                  <TooltipTrigger render={<span className="cursor-help text-[10px] text-muted-foreground">⌾</span>} />
+                  <TooltipContent>Never more than one image per 4 s, so each stays readable.</TooltipContent>
+                </Tooltip>
+              </Label>
+              <div className="w-16">
+                <NumberField
+                  id="broll-max-images"
+                  value={value.broll.maxImages}
+                  onCommit={(maxImages) => patchBroll({ maxImages })}
+                  min={value.broll.minImages}
+                  max={OPTION_LIMITS.brollImages.max}
+                  disabled={busy || !value.broll.autoBroll}
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <p className="text-[11px] text-muted-foreground">
+              Stock order — first provider with a key and quota wins.
+            </p>
+            <ul className="flex flex-wrap gap-1.5">
+              {value.broll.providerOrder.map((provider, index) => (
+                <li
+                  key={provider}
+                  className="flex items-center gap-0.5 rounded-lg border bg-background px-1.5 py-0.5 text-[11px]"
+                >
+                  <span className="tabular-nums text-muted-foreground">{index + 1}.</span>
+                  <span className="font-medium capitalize">{provider}</span>
+                  <Button
+                    size="icon-xs"
+                    variant="ghost"
+                    aria-label={`Move ${provider} up`}
+                    disabled={busy || index === 0}
+                    onClick={() => moveProvider(index, -1)}
+                  >
+                    <ChevronUp className="size-3" />
+                  </Button>
+                  <Button
+                    size="icon-xs"
+                    variant="ghost"
+                    aria-label={`Move ${provider} down`}
+                    disabled={busy || index === value.broll.providerOrder.length - 1}
+                    onClick={() => moveProvider(index, 1)}
+                  >
+                    <ChevronDown className="size-3" />
+                  </Button>
+                </li>
+              ))}
+            </ul>
+            {STOCK_BROLL_PROVIDERS.some((provider: BrollProviderId) => !value.broll.providerOrder.includes(provider)) ? (
+              <p className="text-[10.5px] text-muted-foreground">
+                A provider removed from the order is never called.
+              </p>
+            ) : null}
+          </div>
         </div>
       )}
 

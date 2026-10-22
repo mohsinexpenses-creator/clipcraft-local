@@ -306,6 +306,43 @@ export function usePipeline(selectedVideoId: string | null) {
     [run]
   );
 
+  /**
+   * B-roll is reviewed on the clip tile, one clip at a time: re-plan it, swap one
+   * image for the next verified candidate, or drop one. Edits re-render the clip.
+   */
+  const rerunBroll = React.useCallback(
+    (clip: ClipRecord) =>
+      run(
+        `broll:${clip._id}`,
+        () =>
+          requestJson(`/api/clips/${clip._id}/broll`, {
+            method: "POST",
+            body: JSON.stringify({ action: "rerun" }),
+          }),
+        { success: "B-roll queued for this clip — images are planned before the render." }
+      ),
+    [run]
+  );
+
+  const editBroll = React.useCallback(
+    (clip: ClipRecord, action: "swap" | "remove", itemId: string) =>
+      run(
+        `broll-edit:${clip._id}`,
+        () =>
+          requestJson<{ renderQueued?: boolean; note?: string }>(`/api/clips/${clip._id}/broll`, {
+            method: "POST",
+            body: JSON.stringify({ action, itemId }),
+          }),
+        {
+          success:
+            action === "swap"
+              ? "Image swapped — re-rendering this clip."
+              : "Image removed — re-rendering this clip.",
+        }
+      ),
+    [run]
+  );
+
   const cancelClip = React.useCallback(
     (clip: ClipRecord) =>
       run(`cancel:${clip._id}`, () => requestJson(`/api/clips/${clip._id}/cancel`, { method: "POST" }), {
@@ -447,6 +484,8 @@ export function usePipeline(selectedVideoId: string | null) {
     renderClip,
     saveClip,
     cancelClip,
+    rerunBroll,
+    editBroll,
     cancelPipeline,
     applyRenderDefaults,
     deleteClip,

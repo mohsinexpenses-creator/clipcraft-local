@@ -218,6 +218,39 @@ tracking design (audio↔motion fusion, hysteresis, the locked split-screen pane
 
 ---
 
+## 6b. B-roll (optional, no setup needed)
+
+Every clip gets a B-roll plan after detection: entity photos from **Wikimedia
+Commons** (which needs no key) and landscape cards from stock providers. It works
+out of the box once a Gemini key is saved, because Gemini Vision verifies every
+full-screen image.
+
+To make landscape cards available, save any of these on **Settings → AI providers**
+(one card per provider, each with **Test** and **Save**):
+
+| Provider | Free tier | Notes |
+| --- | --- | --- |
+| Pexels (default first) | 200 req/hour | <https://www.pexels.com/api/> |
+| Pixabay | 100 req/min | <https://pixabay.com/api/docs/> |
+| Unsplash | 50 req/hour (demo) | <https://unsplash.com/developers> — photographer credit and the download ping are handled for you |
+
+`PEXELS_API_KEY`, `PIXABAY_API_KEY` and `UNSPLASH_API_KEY` in `.env.local` are **not
+read at runtime** — like every other key, they are copied into Settings by the
+"Copy into Settings" action (or just paste them on the page). The worker and the web
+app both read the same SQLite row.
+
+The B-roll cache lives in `data/broll-cache/` (ignored by Git, safe to delete).
+Sound effects are bundled under `public/sfx/` (CC0, regenerated with
+`npm run generate:sfx`).
+
+Manual check for one clip:
+
+```bash
+npm run verify:broll -- <clipId>
+```
+
+Full details: [docs/BROLL.md](./docs/BROLL.md).
+
 ## 7. Run the app (two processes)
 
 ```powershell
@@ -236,6 +269,11 @@ transcription engine (using the *same* discovery logic as the real run), the AI
 provider chain, and the Remotion renderer, and tells you exactly what to fix.
 
 ### What happens after you upload
+
+> B-roll runs between detection and render. Each clip gets its own `broll` job; the
+> render job is queued by that job when the plan is stored, so a restart in the
+> middle resumes without duplicating images or losing the plan.
+
 
 1. The browser uploads through `POST /api/upload/session` +
    `PUT /api/upload/session/{id}` in chunks (8 MB default). **No size limit** — a

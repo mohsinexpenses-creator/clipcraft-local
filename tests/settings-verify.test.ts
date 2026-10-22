@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { verifyDeepgramKey } from '../lib/settings-verify';
+import { verifyDeepgramKey, verifyStockProvider } from '../lib/settings-verify';
 
 /**
  * The Deepgram probe is the one place Settings makes a real outbound call, and the whole
@@ -119,6 +119,97 @@ test('an unrecognised model id is a note, never a failure', async () => {
       const odd = await verifyDeepgramKey('dgkey-aaaaaaaaaaaaaaaaaaaa', 'not-a-model');
       assert.equal(odd.status, 'ok', 'a typo is a note, never a blocked Test');
       assert.ok(odd.notes?.some((note) => note.includes('not-a-model')));
+    }
+  );
+});
+
+/**
+ * Stock-provider probes. The distinction that matters: only 401/403 (and Pixabay's
+ * documented 400 "invalid key" answer) may be worded as a rejected key - a 5xx or a
+ * dead network is an endpoint problem and must never send the user to re-copy a key
+ * that is actually fine.
+ */
+
+test('pexels probe accepts a key and reports the remaining quota', async () => {
+  await withFetch(
+    () => ({ status: 200, body: { photos: [{ id: 1 }] } }),
+    async (urls) => {
+      const result = await verifyStockProvider('pexels', 'pexels-key');
+      assert.equal(result.status, 'ok');
+      assert.equal(result.target, 'pexels');
+      assert.match(urls()[0], /orientation=landscape/);
+      assert.match(urls()[0], /per_page=1/);
+    }
+  );
+});
+
+test('pixabay probe reports its 400 "invalid key" answer as a rejected key', async () => {
+  await withFetch(
+    () => ({ status: 400, body: { error: 'Invalid or missing API key' } }),
+    async () => {
+      const result = await verifyStockProvider('pixabay', 'bad');
+      assert.equal(result.status, 'rejected');
+      assert.match(result.message, /rejected/i);
+    }
+  );
+});
+
+test('unsplash probe uses the Client-ID header and a per_page=1 request', async () => {
+  const headers: Record<string, string>[] = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    headers.push((init?.headers ?? {}) as Record<string, string>);
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      async json() {
+        return [{ id: 'x' }];
+      },
+      async text() {
+        return '';
+      },
+    } as unknown as Response;
+  }) as typeof fetch;
+  try {
+    const result = await verifyStockProvider('unsplash', 'u-key');
+    assert.equal(result.status, 'ok');
+    assert.equal(headers[0].authorization, 'Client-ID u-key');
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test('a 5xx is never worded as a rejected key', async () => {
+  await withFetch(
+    () => ({ status: 503, body: { error: 'maintenance' } }),
+    async () => {
+      const result = await verifyStockProvider('pexels', 'fine-key');
+      assert.equal(result.status, 'error');
+      assert.doesNotMatch(result.message, /rejected/i);
+      assert.match(result.message, /503|endpoint/i);
+    }
+  );
+});
+
+test('a network failure is reported as unreachable, with the host', async () => {
+  await withFetch(
+    () => new Error('getaddrinfo ENOTFOUND api.pexels.com'),
+    async () => {
+      const result = await verifyStockProvider('pexels', 'k');
+      assert.equal(result.status, 'unreachable');
+      assert.match(result.message, /api\.pexels\.com/);
+    }
+  );
+});
+
+test('a rate-limited provider says "limited", not "broken"', async () => {
+  await withFetch(
+    () => ({ status: 429, body: { error: 'too many requests' } }),
+    async () => {
+      const result = await verifyStockProvider('pexels', 'k');
+      assert.equal(result.status, 'limited');
+      assert.match(result.message, /rate limited|429/i);
     }
   );
 });

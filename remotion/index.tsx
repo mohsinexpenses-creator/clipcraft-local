@@ -6,6 +6,11 @@ import {
   CaptionOverlayComposition,
   type CaptionOverlayCompositionProps,
 } from './OverlayCompositions';
+import {
+  BrollOverlayComposition,
+  type BrollOverlayCompositionProps,
+} from './BrollComposition';
+import { DEFAULT_CAPTION_PRESETS as CAPTION_PRESETS_FOR_BROLL } from '../lib/presets';
 
 /**
  * fps / durationInFrames here are STUDIO/PREVIEW defaults only. The worker
@@ -53,6 +58,23 @@ export const RemotionRoot: React.FC = () => {
               { word: 'generator', start: 3.5, end: 4.2 },
             ],
           } satisfies CaptionCompositionProps
+        }
+      />
+      <Composition
+        id="BrollOverlayComposition"
+        component={BrollOverlayComposition as unknown as React.ComponentType<Record<string, unknown>>}
+        durationInFrames={PREVIEW_FPS * 4}
+        fps={PREVIEW_FPS}
+        width={1080}
+        height={1920}
+        defaultProps={
+          {
+            kind: 'fullscreen',
+            imageUrl: '',
+            durationSeconds: 4,
+            captionTextColor: CAPTION_PRESETS_FOR_BROLL[0]?.textColor,
+            captionBand: { top: 1230, bottom: 1440 },
+          } satisfies BrollOverlayCompositionProps
         }
       />
       <Composition

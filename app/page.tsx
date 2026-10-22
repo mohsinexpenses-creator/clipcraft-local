@@ -930,6 +930,11 @@ function DashboardContent() {
                           onDelete={(target) =>
                             void pipeline.deleteClip(target)
                           }
+                          brollBusy={busy === `broll:${clip._id}` || busy === `broll-edit:${clip._id}`}
+                          onRerunBroll={(target) => void pipeline.rerunBroll(target)}
+                          onBrollEdit={(target, action, itemId) =>
+                            void pipeline.editBroll(target, action, itemId)
+                          }
                         />
                       </div>
                     ))}

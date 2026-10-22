@@ -1,13 +1,21 @@
 import { NextResponse } from 'next/server';
 import { loadEffectiveSettings, maskSecret } from '@/lib/app-settings';
-import { verifyDeepgramKey, verifyGeminiKey, type VerifyProbeResult } from '@/lib/settings-verify';
+import {
+  verifyDeepgramKey,
+  verifyGeminiKey,
+  verifyStockProvider,
+  type StockVerifyTarget,
+  type VerifyProbeResult,
+} from '@/lib/settings-verify';
 import { LLM_PROVIDER_CHAIN } from '@/lib/llm';
 import { toErrorMessage, toErrorStatus } from '@/lib/errors';
 
 export const runtime = 'nodejs';
 
 /**
- * POST /api/settings/verify   { target?, candidates?, withGeneration?, keyIndex? }
+ * POST /api/settings/verify   { target?, candidates?, withGeneration?, withVision?, keyIndex? }
+ *
+ * Targets: `gemini`, `deepgram`, `pexels`, `pixabay`, `unsplash`, or `all`.
  *
  * Real requests against the providers, so "verified" means the credential works from
  * this machine right now - not that a string is the right length.
@@ -22,6 +30,7 @@ export async function POST(request: Request) {
     const candidates = (typeof body.candidates === 'object' && body.candidates !== null ? body.candidates : {}) as Record<string, unknown>;
     const target = String(body.target ?? 'all').trim();
     const withGeneration = body.withGeneration === true;
+    const withVision = body.withVision === true;
     const settings = await loadEffectiveSettings();
 
     const results: VerifyProbeResult[] = [];
@@ -51,6 +60,7 @@ export async function POST(request: Request) {
           const result = await verifyGeminiKey(entry.key, {
             ...(typeof candidates.model === 'string' ? { model: candidates.model } : {}),
             withGeneration,
+            withVision,
           });
           results.push({ ...result, label: `${maskSecret(entry.key)} · ${result.label}` });
         }
@@ -78,6 +88,32 @@ export async function POST(request: Request) {
       } else {
         results.push(await verifyDeepgramKey(key, model));
       }
+    }
+
+    // Stock providers: one probe each, only for the requested target (or all of
+    // them, minus the ones with no key - which is reported, not failed).
+    const stockTargets: Array<{ target: StockVerifyTarget; field: 'pexelsApiKey' | 'pixabayApiKey' | 'unsplashApiKey'; label: string }> = [
+      { target: 'pexels', field: 'pexelsApiKey', label: 'Pexels' },
+      { target: 'pixabay', field: 'pixabayApiKey', label: 'Pixabay' },
+      { target: 'unsplash', field: 'unsplashApiKey', label: 'Unsplash' },
+    ];
+    for (const entry of stockTargets) {
+      if (target !== 'all' && target !== entry.target) continue;
+      const candidate =
+        typeof candidates[entry.field] === 'string' ? (candidates[entry.field] as string).trim() : '';
+      const key = candidate || settings.ai[entry.field];
+      if (!key) {
+        results.push({
+          target: entry.target,
+          status: 'error',
+          label: entry.label,
+          message: `No ${entry.label} key to test - landscape B-roll cards skip this provider.`,
+          notes: ['Wikimedia Commons (full-screen entity images) needs no key.'],
+        });
+        continue;
+      }
+      const result = await verifyStockProvider(entry.target, key);
+      results.push(candidate ? { ...result, label: `${maskSecret(candidate)} · ${result.label}` } : result);
     }
 
     const chainModel = LLM_PROVIDER_CHAIN[0]?.model ?? '';

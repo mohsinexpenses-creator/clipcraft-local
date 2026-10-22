@@ -11,6 +11,7 @@ import { toErrorMessage } from '../lib/errors';
 import { loadEffectiveSettings } from '../lib/app-settings';
 import { applyStoredRuntimeSettings } from './runtime-settings';
 import {
+  BROLL_QUEUE_NAME,
   CLIP_QUEUE_NAME,
   QUEUE_POLL_INTERVAL_MS,
   TRANSCRIPTION_QUEUE_NAME,
@@ -22,10 +23,16 @@ import {
   recoverRunningJobs,
   updateJobProgress,
 } from '../lib/queue';
-import { JobData, TranscriptionJobData, ViralDetectionJobData } from '../lib/types';
+import { BrollJobData, JobData, TranscriptionJobData, ViralDetectionJobData } from '../lib/types';
 import { transcribeVideo } from '../lib/whisper';
-import { continueAfterTranscription, recoverAutoPipelines, runViralDetection } from '../lib/pipeline';
+import {
+  continueAfterBroll,
+  continueAfterTranscription,
+  recoverAutoPipelines,
+  runViralDetection,
+} from '../lib/pipeline';
 import { processClipJob } from './processor';
+import { runBrollJob, type BrollJobResult } from './broll-job';
 import { color, log } from '../lib/logger';
 
 // NOTE: .env.local is loaded by lib/errors.ts (loadEnvConfig), which this file imports
@@ -125,6 +132,23 @@ async function viralDetectionJob(
   }
 }
 
+/**
+ * Step 3 of the automatic pipeline: plan B-roll for one clip, then hand the clip
+ * to the render queue. A manual re-run uses the same job, so there is one
+ * implementation of "what a plan is".
+ */
+async function brollJob(
+  data: BrollJobData,
+  progress: (value: number) => void
+): Promise<BrollJobResult> {
+  const result = await runBrollJob(data, progress);
+  if (result.status === 'done') {
+    // The hand-off lives in lib/pipeline.ts, like every other step boundary.
+    await continueAfterBroll(data.clipId);
+  }
+  return result;
+}
+
 interface LoopState {
   stopping: boolean;
 }
@@ -133,7 +157,16 @@ type JobHandler = (job: QueueJob, onProgress: (progress: number) => void) => Pro
 
 async function markRecordRetrying(job: QueueJob): Promise<void> {
   try {
-    if (job.clipId) {
+    if (job.type === BROLL_QUEUE_NAME && job.clipId) {
+      // A retried B-roll pass must not touch the RENDER status of the clip; only
+      // its own progress fields are reset.
+      const clip = await getClip(job.clipId);
+      if (clip) {
+        clip.brollStatus = 'pending';
+        clip.brollError = undefined;
+        await updateClip(clip);
+      }
+    } else if (job.clipId) {
       const clip = await getClip(job.clipId);
       if (clip) {
         clip.status = 'pending';
@@ -228,12 +261,14 @@ async function startWorker(): Promise<void> {
   const clipConcurrency = workerSettings.clipConcurrency;
   const transcriptionConcurrency = 1;
   const detectionConcurrency = workerSettings.viralConcurrency;
+  const BROLL_CONCURRENCY = 1;
 
   log.section('ClipCraft worker starting');
   log.detail(`SQLite: ${getDatabasePath()} (WAL, busy_timeout=5000ms)`);
   log.detail(`Clip concurrency: ${clipConcurrency} (Settings -> Worker & limits; restart the worker to change it)`);
   log.detail(`Transcription concurrency: ${transcriptionConcurrency}`);
   log.detail(`Viral detection concurrency: ${detectionConcurrency}`);
+  log.detail(`B-roll concurrency: ${BROLL_CONCURRENCY} (network-bound)`);
   if (recovered > 0) log.warn(`Recovered ${recovered} job(s) left running by a previous worker process.`);
 
   // A worker that died between two pipeline steps would otherwise leave a video
@@ -271,6 +306,16 @@ async function startWorker(): Promise<void> {
       'viral detection',
       detectionConcurrency,
       async (job) => viralDetectionJob(job.payload as ViralDetectionJobData),
+      state
+    ),
+    // B-roll is network-bound (LLM + image providers), so two jobs at a time is
+    // already plenty on one machine; the render loop stays the CPU-bound one.
+    runQueueLoop(
+      BROLL_QUEUE_NAME,
+      'b-roll',
+      BROLL_CONCURRENCY,
+      async (job, onProgress) =>
+        brollJob(job.payload as BrollJobData, onProgress),
       state
     ),
   ]);

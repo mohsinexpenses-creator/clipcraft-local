@@ -7,6 +7,7 @@ import {
   updateVideoRecordSync,
 } from './db';
 import {
+  BrollJobData,
   JobData,
   TranscriptionJobData,
   VideoRecord,
@@ -23,6 +24,13 @@ export const TRANSCRIPTION_QUEUE_NAME = 'transcription';
  * behaviour transcription and rendering already have.
  */
 export const VIRAL_DETECTION_QUEUE_NAME = 'viral-detection';
+/**
+ * B-roll planning is its own queue job: it calls the LLM, Wikimedia and the stock
+ * providers, downloads and crops images, and can take minutes on a slow network.
+ * Keeping it out of the render means a retry re-fetches only what failed, and the
+ * render itself never talks to a provider (it only reads the stored plan).
+ */
+export const BROLL_QUEUE_NAME = 'broll';
 export const DEFAULT_MAX_ATTEMPTS = 2;
 export const DEFAULT_RETRY_DELAY_MS = 2000;
 export const QUEUE_POLL_INTERVAL_MS = 1000;
@@ -409,6 +417,25 @@ export async function enqueueViralDetectionJob(videoId: string): Promise<string>
       maxAttempts: DEFAULT_MAX_ATTEMPTS,
       retryDelayMs: DEFAULT_RETRY_DELAY_MS,
       videoId,
+    }
+  );
+}
+
+/**
+ * Queue the B-roll step for one clip. Stable id per clip, so pressing "re-run
+ * B-roll" twice replaces the queued job instead of stacking duplicates, and a
+ * running pass is refused with 409 rather than racing the plan write.
+ */
+export async function enqueueBrollJob(data: BrollJobData): Promise<string> {
+  return enqueue(
+    BROLL_QUEUE_NAME,
+    data,
+    {
+      id: `broll:${data.clipId}`,
+      maxAttempts: DEFAULT_MAX_ATTEMPTS,
+      retryDelayMs: DEFAULT_RETRY_DELAY_MS,
+      clipId: data.clipId,
+      videoId: data.videoId,
     }
   );
 }

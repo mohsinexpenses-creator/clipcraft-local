@@ -20,12 +20,23 @@ import { detectSpeakerTimeline } from './asd';
 import { buildLayoutPlan, getSplitFramingSettings } from './layout';
 import { adaptOverlaysToLayout, describePlacements } from './overlay-layout';
 import { color, log } from '../lib/logger';
-import { HOOK_TRANSITION_SECONDS, normalizeFps, processVideoSegment } from './ffmpeg-pipeline';
+import {
+  HOOK_TRANSITION_SECONDS,
+  normalizeFps,
+  processVideoSegment,
+  type OverlayFrameSequence,
+} from './ffmpeg-pipeline';
 import { DEFAULT_HOOK_FALLBACK_SECONDS, resolveHookTiming } from './hook-timing';
 import {
+  prepareRemotionBrollOverlays,
   prepareRemotionCaptionOverlays,
+  type PreparedBrollOverlays,
   type PreparedCaptionOverlays,
 } from './remotion-renderer';
+import { startMediaServer, type ClipMediaServer } from './clip-http-server';
+import { cachedImagePath } from '../lib/broll/cache';
+import { buildBrollSfxCues } from '../lib/broll/sfx';
+import { captionReservedBand } from '../lib/overlay-stack';
 
 /** How far either side of the window we still accept transcript words. */
 const WORD_SLACK_SECONDS = 0.5;
@@ -465,6 +476,82 @@ export async function processClipJob(
       isCancelled: () => cancelFlag,
     });
 
+    /**
+     * B-roll: the plan was made by the `broll` job (before this render) and this is
+     * the ONLY place that consumes it. Images are served over loopback because
+     * Chromium cannot read the filesystem (and must never fetch a remote URL).
+     */
+    let preparedBroll: PreparedBrollOverlays | null = null;
+    let brollSequences: OverlayFrameSequence[] = [];
+    let brollFileCount = 0;
+    let sfx: Array<{ filePath: string; atSeconds: number }> = [];
+    let brollMediaServer: ClipMediaServer | null = null;
+    const brollPlan = clip.broll ?? null;
+    if (brollPlan && brollPlan.items.length > 0) {
+      const usable = brollPlan.items
+        .map((item) => ({ item, filePath: cachedImagePath(item.renderFile) }))
+        .filter(({ filePath }) => {
+          const exists = fs.existsSync(filePath);
+          if (!exists) log.warn(`B-roll image missing from the cache, skipping it: ${path.basename(filePath)}`);
+          return exists;
+        });
+      if (usable.length > 0) {
+        try {
+          brollMediaServer = await startMediaServer(
+            usable.map(({ filePath }, index) => ({
+              route: `broll-${index}${path.extname(filePath) || '.jpg'}`,
+              filePath,
+            }))
+          );
+          const mediaServer = brollMediaServer;
+          const captionBand = captionReservedBand(captionPresetForRender);
+          preparedBroll = await prepareRemotionBrollOverlays({
+            fps: renderFps,
+            items: usable.map(({ item }, index) => ({
+              id: item.id,
+              kind: item.kind,
+              start: item.start,
+              end: item.end,
+              imageUrl: `${mediaServer.baseUrl}/broll-${index}${path.extname(usable[index].filePath) || '.jpg'}`,
+              ...(item.card ? { card: item.card } : {}),
+            })),
+            captionTextColor: captionPresetForRender.textColor,
+            captionBand,
+            onProgress: overlayProgressSink,
+            isCancelled: () => cancelFlag,
+          });
+          brollSequences = preparedBroll.sequences;
+          brollFileCount = usable.length;
+          if (brollPlan.options.sfx) {
+            sfx = buildBrollSfxCues(
+              usable.map(({ item }) => ({ start: item.start, end: item.end })),
+              { totalDuration, enabled: true }
+            ).map((cue) => ({
+              filePath: path.join(process.cwd(), 'public', 'sfx', cue.file),
+              atSeconds: cue.atSeconds,
+            }));
+            sfx = sfx.filter((cue) => fs.existsSync(cue.filePath));
+          }
+        } catch (error) {
+          // B-roll is an enhancement: a failure here must never lose the clip.
+          log.warn(`B-roll rendering skipped: ${toErrorMessage(error)}`);
+          brollSequences = [];
+          sfx = [];
+        } finally {
+          if (brollMediaServer) {
+            await brollMediaServer.close();
+            brollMediaServer = null;
+          }
+        }
+      }
+    }
+    if (brollSequences.length > 0) {
+      log.detail(
+        `B-roll: ${brollSequences.length} sequence(s) from ${brollFileCount} image(s), ` +
+          `${sfx.length} sound effect(s); painted UNDER the captions`
+      );
+    }
+
     let renderResult: {
       fps: number;
       width: number;
@@ -498,7 +585,10 @@ export async function processClipJob(
         sourceHeight: sourceMeta.height,
         targetFps: renderFps,
         sourceHasAudio: sourceMeta.hasAudio,
-        overlays: preparedOverlays.sequences,
+        // ORDER IS THE CONTRACT: B-roll sequences first, so the caption/hook/CTA
+        // layer is composited ON TOP of every image.
+        overlays: [...brollSequences, ...preparedOverlays.sequences],
+        sfx,
         words: clipWords,
         debugOutputPath: process.env.SAVE_PRECAPTION_DEBUG?.trim() === '1'
           ? intermediateVideoPath
@@ -520,6 +610,9 @@ export async function processClipJob(
       };
     } finally {
       try { fs.rmSync(preparedOverlays.workDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+      if (preparedBroll) {
+        try { fs.rmSync(preparedBroll.workDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+      }
     }
 
     clip.status = 'done';

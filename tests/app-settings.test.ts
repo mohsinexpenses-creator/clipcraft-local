@@ -89,7 +89,11 @@ test('a value that only exists in .env.local is NOT a setting - the page is the 
       assert.equal(effective.ai.deepgramApiKey, '');
       assert.deepEqual(effective.ai.geminiApiKeys, []);
       assert.deepEqual(Object.values(sources.worker ?? {}), ['default', 'default', 'default']);
-      assert.deepEqual(Object.values(sources.ai ?? {}), ['default', 'default', 'default', 'default']);
+      assert.deepEqual(
+        Object.values(sources.ai ?? {}),
+        ['default', 'default', 'default', 'default', 'default', 'default', 'default'],
+        'every ai field - Gemini, the three stock providers, Deepgram key/model and the engine - is unconfigured'
+      );
 
       // The empty pool has to be reported as unconfigured rather than as a secret that
       // exists but cannot be shown, or the startup check would be lying about readiness.
@@ -412,6 +416,47 @@ test('paths settings: sanitize trims, clears on empty/null and rejects control c
       /control characters/,
       'a NUL byte in a path is refused'
     );
+  } finally {
+    setSettingsStoreForTests(null);
+  }
+});
+
+test('stock provider keys are masked, validated and stored like every other secret', async () => {
+  const rows = new Map<AppSettingsSection, Record<string, unknown>>();
+  setSettingsStoreForTests({
+    read: () => [...rows].map(([key, value]) => ({ key, value })),
+    write: (section, value) => {
+      if (value === null) rows.delete(section);
+      else rows.set(section, value);
+      return new Date().toISOString();
+    },
+  });
+
+  const pexels = '563492ad6f91700001000001aaaaaaaaaaaa';
+  const pixabay = '12345678-1234abcd-1234abcd-1234abcd';
+  try {
+    const saved = await saveSettingsSection('ai', { pexelsApiKey: pexels, pixabayApiKey: pixabay });
+    assert.equal(JSON.stringify(saved.saved).includes(pexels), false, 'the PUT response must not carry a raw key');
+    assert.equal(rows.get('ai')?.pexelsApiKey, pexels, 'the row keeps the real key');
+    assert.equal(rows.get('ai')?.pixabayApiKey, pixabay);
+
+    const snapshot = await buildAppSettingsSnapshot();
+    const payload = JSON.stringify(snapshot);
+    assert.equal(payload.includes(pexels), false, 'GET /api/settings is read by the browser, so it carries masks');
+    assert.equal(snapshot.effective.ai.pexelsApiKey, maskSecret(pexels));
+    assert.equal(snapshot.sources.ai?.pexelsApiKey, 'app');
+    assert.equal(snapshot.sources.ai?.unsplashApiKey, 'default', 'an unset provider is reported as unconfigured');
+
+    // Resubmitting the mask means "keep the stored key"; a new value replaces it.
+    await saveSettingsSection('ai', { pexelsApiKey: snapshot.effective.ai.pexelsApiKey });
+    assert.equal(rows.get('ai')?.pexelsApiKey, pexels);
+    await saveSettingsSection('ai', { pexelsApiKey: '11111111111111111111111111111111bbbb' });
+    assert.equal(rows.get('ai')?.pexelsApiKey, '11111111111111111111111111111111bbbb');
+
+    // Remove is the same save with an empty value.
+    await saveSettingsSection('ai', { pexelsApiKey: '' });
+    assert.equal(rows.get('ai')?.pexelsApiKey, '');
+    assert.equal((await buildAppSettingsSnapshot()).sources.ai?.pexelsApiKey, 'default');
   } finally {
     setSettingsStoreForTests(null);
   }

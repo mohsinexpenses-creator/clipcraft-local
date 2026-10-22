@@ -6,10 +6,19 @@ import type { AddressInfo } from 'net';
 export interface ClipMediaServer {
   /** Absolute http:// URL (loopback) that headless Chrome can load. */
   url: string;
+  /** Base URL for the other files (`<base>/<route>`). */
+  baseUrl: string;
   /** The port the OS actually assigned (bound on 127.0.0.1:0). */
   port: number;
   /** Stops serving; resolves once the socket is closed (forced after 2 s). */
   close: () => Promise<void>;
+}
+
+/** One file exposed to the renderer under a route segment. */
+export interface MediaServerFile {
+  /** URL segment, e.g. `clip.mp4` or `broll/fs-ab12.jpg`. */
+  route: string;
+  filePath: string;
 }
 
 function contentTypeFor(fileName: string): string {
@@ -27,6 +36,13 @@ function contentTypeFor(fileName: string): string {
       return 'audio/mp4';
     case '.wav':
       return 'audio/wav';
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg';
+    case '.png':
+      return 'image/png';
+    case '.webp':
+      return 'image/webp';
     default:
       return 'application/octet-stream';
   }
@@ -34,21 +50,24 @@ function contentTypeFor(fileName: string): string {
 
 /**
  * Remotion renders compositions inside headless Chrome, which CANNOT read the
- * filesystem. Passing a raw absolute path as a video src reaches Remotion's
- * asset downloader, which only accepts http(s)/data: URLs, and the render dies
- * with `Can only download URLs starting with http:// or https://` (on Windows
- * the path is mangled into a bogus `d:\...` / `file:///...` URL on the way).
+ * filesystem. Passing a raw absolute path as an `Img src` or video src reaches
+ * Remotion's asset downloader, which only accepts http(s)/data: URLs, and the
+ * render dies. This throwaway loopback server is the workaround Remotion's own
+ * docs recommend: it streams exactly the files the current render needs (the
+ * clip, and the B-roll images) and is closed in the renderer's finally-block, so
+ * no port is ever held and nothing is reachable from outside the machine.
  *
- * This is the workaround Remotion's own docs recommend (serve the file over
- * HTTP): a throwaway server on 127.0.0.1 that streams exactly one clip file.
- * It lives only for the duration of a single Remotion render (select +
- * renderMedia) and is closed in the renderer's finally-block, so no port is
- * ever held and nothing is reachable from outside the machine.
+ * B-roll images are served from the same server on purpose: the browser never
+ * resolves a remote URL, which would make the render depend on someone else's
+ * CDN.
  */
-export async function startClipMediaServer(filePath: string): Promise<ClipMediaServer> {
-  const stat = fs.statSync(filePath);
-  const fileSize = stat.size;
-  const contentType = contentTypeFor(filePath);
+export async function startMediaServer(files: MediaServerFile[]): Promise<ClipMediaServer> {
+  const byRoute = new Map<string, { filePath: string; size: number }>();
+  for (const file of files) {
+    const stat = fs.statSync(file.filePath);
+    byRoute.set(`/${file.route.replace(/^\/+/, '')}`, { filePath: file.filePath, size: stat.size });
+  }
+
   const sockets = new Set<import('net').Socket>();
 
   const server = http.createServer((req, res) => {
@@ -73,10 +92,19 @@ export async function startClipMediaServer(filePath: string): Promise<ClipMediaS
       return;
     }
 
+    const pathname = decodeURIComponent((req.url ?? '/').split('?')[0]);
+    const entry = byRoute.get(pathname);
+    if (!entry) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('not found');
+      return;
+    }
+
     // Single-range support, same semantics as the app's /api/media route.
     // (Remotion's own downloader issues a plain GET; Range covers the media
     // element's seeking in case a code path ever uses it.)
     const match = req.headers.range ? /bytes=(\d*)-(\d*)/.exec(req.headers.range) : null;
+    const fileSize = entry.size;
     let start = 0;
     let end = fileSize - 1;
     let status = 200;
@@ -94,9 +122,9 @@ export async function startClipMediaServer(filePath: string): Promise<ClipMediaS
       status = 206;
     }
 
-    const stream = fs.createReadStream(filePath, { start, end });
+    const stream = fs.createReadStream(entry.filePath, { start, end });
     res.writeHead(status, {
-      'Content-Type': contentType,
+      'Content-Type': contentTypeFor(entry.filePath),
       'Content-Length': String(end - start + 1),
       ...(status === 206 ? { 'Content-Range': `bytes ${start}-${end}/${fileSize}` } : {}),
     });
@@ -137,9 +165,11 @@ export async function startClipMediaServer(filePath: string): Promise<ClipMediaS
   });
 
   const port = (server.address() as AddressInfo).port;
+  const baseUrl = `http://127.0.0.1:${port}`;
 
   return {
-    url: `http://127.0.0.1:${port}/clip.mp4`,
+    url: `${baseUrl}/${files[0]?.route ?? 'clip.mp4'}`,
+    baseUrl,
     port,
     close: () =>
       new Promise<void>((resolve) => {
@@ -154,4 +184,9 @@ export async function startClipMediaServer(filePath: string): Promise<ClipMediaS
         });
       }),
   };
+}
+
+/** Convenience wrapper for the common "one video file" case. */
+export async function startClipMediaServer(filePath: string): Promise<ClipMediaServer> {
+  return startMediaServer([{ route: 'clip.mp4', filePath }]);
 }

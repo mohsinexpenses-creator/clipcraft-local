@@ -9,6 +9,7 @@ import {
 } from "../lib/profanity";
 import { getVideoMetadata, runFfmpeg } from "../lib/ffmpeg";
 import { log } from "../lib/logger";
+import { buildSfxMixPlan, BROLL_SFX_VOLUME } from "../lib/broll/sfx";
 import {
   LayoutPlan,
   OUTPUT_HEIGHT,
@@ -58,6 +59,14 @@ export interface ProcessSegmentOptions {
   sourceHasAudio: boolean;
   /** Transparent PNG overlays composited before the final H.264 encode. */
   overlays?: OverlayFrameSequence[];
+  /**
+   * B-roll sound effects (bundled whoosh/pop). Each one is delayed to its own
+   * timeline position and mixed UNDER the voice with `normalize=0`, so the
+   * speaker's level does not change when B-roll appears.
+   */
+  sfx?: Array<{ filePath: string; atSeconds: number }>;
+  /** Effect gain (default 0.28 - audible, never competing with speech). */
+  sfxVolume?: number;
   /** Original segment-relative words, used only for render-time profanity audio handling. */
   words?: Array<{ word: string; start: number; end: number }>;
   /** Keep a pre-caption/pre-overlay debug encode when SAVE_PRECAPTION_DEBUG=1. */
@@ -333,6 +342,8 @@ export async function processVideoSegment(
     audioStartOffsetSeconds = 0,
     sourceHasAudio,
     overlays = [],
+    sfx = [],
+    sfxVolume = BROLL_SFX_VOLUME,
     words = [],
     debugOutputPath,
     onProgress,
@@ -487,6 +498,14 @@ export async function processVideoSegment(
       "-i",
       overlay.inputPattern,
     );
+  }
+
+  // Sound effects are ordinary inputs too; their indices are recorded so the
+  // filter graph can delay each one to its own timestamp.
+  const sfxInputIndices: number[] = [];
+  for (const effect of sfx) {
+    sfxInputIndices.push(nextInput++);
+    inputArgs.push("-i", effect.filePath);
   }
 
   try {
@@ -648,7 +667,18 @@ export async function processVideoSegment(
       ),
     );
 
-    const sourceAudioLabel = audioPlan?.audioLabel ?? "[a]";
+    // B-roll sound effects are mixed AFTER profanity processing: the beeps are
+    // already inside the voice branch, and `normalize=0` keeps speech at its level.
+    const sfxPlan = buildSfxMixPlan({
+      baseLabel: audioPlan?.audioLabel ?? "[a]",
+      cueInputIndices: sfxInputIndices,
+      cues: sfx,
+      totalDuration,
+      volume: sfxVolume,
+    });
+    if (sfxPlan.statements.length > 0) statements.push(...sfxPlan.statements);
+
+    const sourceAudioLabel = sfxPlan.label;
     const debugAudioLabel = debugOutputPath ? "[adebug]" : "";
     const finalAudioLabel = debugOutputPath ? "[afinal]" : sourceAudioLabel;
     if (debugOutputPath)
