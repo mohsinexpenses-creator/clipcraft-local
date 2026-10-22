@@ -36,16 +36,11 @@ const BINARY_CANDIDATES: string[] = [
 ];
 
 const MODEL_CANDIDATES: string[] = [
+  'ggml-large-v3-turbo-q5_0.bin',
+  'ggml-large-v3-turbo-q8_0.bin',
+  'ggml-base.en-q8_0.bin',
   'ggml-large-v3-turbo.bin',
-  'ggml-large-v3.bin',
-  'ggml-medium.en.bin',
-  'ggml-medium.bin',
-  'ggml-small.en.bin',
-  'ggml-small.bin',
-  'ggml-base.en.bin',
   'ggml-base.bin',
-  'ggml-tiny.en.bin',
-  'ggml-tiny.bin',
 ];
 
 function isWindows(): boolean {
