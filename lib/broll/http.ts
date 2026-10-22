@@ -156,7 +156,7 @@ export async function fetchJson(url: string, options: FetchJsonOptions): Promise
     const aborted = controller.signal.aborted;
     throw new BrollHttpError(
       aborted ? `${options.provider} timed out.` : `${options.provider} could not be reached.`,
-      { statusCode: 0, retryable: true, details: message }
+      { statusCode: 0, retryable: true, details: redactUrl(message) }
     );
   } finally {
     clearTimeout(timer);
@@ -190,7 +190,7 @@ export async function fetchBytes(
     const message = error instanceof Error ? error.message : String(error);
     throw new BrollHttpError(
       controller.signal.aborted ? `${options.provider} timed out.` : `${options.provider} could not be reached.`,
-      { statusCode: 0, retryable: true, details: message }
+      { statusCode: 0, retryable: true, details: redactUrl(message) }
     );
   } finally {
     clearTimeout(timer);

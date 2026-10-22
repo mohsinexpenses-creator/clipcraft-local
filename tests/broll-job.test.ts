@@ -79,6 +79,8 @@ test('the automatic chain leaves a clip alone when B-roll is switched off', asyn
 
   const result = await runBrollJob({ clipId: clip._id, videoId: video._id, trigger: 'auto' }, () => undefined);
   assert.equal(result.status, 'skipped');
+  // The tile must not keep saying "planning…" for a clip nothing is planning.
+  assert.equal((await getClip(clip._id))?.brollStatus, undefined);
 
   // A manual re-run still works, because the user explicitly asked for it.
   const manual = await runBrollJob({ clipId: clip._id, videoId: video._id, trigger: 'manual' }, () => undefined);

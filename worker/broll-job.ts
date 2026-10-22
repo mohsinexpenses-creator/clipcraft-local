@@ -122,15 +122,17 @@ export async function runBrollJob(
     (video.pipeline?.broll as unknown) ?? (settings.pipeline?.broll as unknown) ?? DEFAULT_BROLL_OPTIONS
   );
 
-  // The tile shows "planning…" while the job runs; nothing else writes this field.
-  clip.brollStatus = "running";
-  clip.brollError = undefined;
-  await updateClip(clip);
-
   if (!options.autoBroll && trigger === "auto") {
     console.log("[broll] autoBroll is off for this video - nothing to do.");
     return { status: "skipped" };
   }
+
+  // The tile shows "planning…" while the job runs; nothing else writes this field.
+  // Set only once the job will really do work, so a skipped clip is not left
+  // advertising a plan that no job is producing.
+  clip.brollStatus = "running";
+  clip.brollError = undefined;
+  await updateClip(clip);
 
   const jobWords = (video.transcript?.words ?? []) as WordTimestamp[];
   const words = clipWordsFor(jobWords, clipStart, clipEnd);
