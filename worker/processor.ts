@@ -35,6 +35,7 @@ import {
 } from './remotion-renderer';
 import { startMediaServer, type ClipMediaServer } from './clip-http-server';
 import { cachedImagePath } from '../lib/broll/cache';
+import { fitCardRectToBand } from '../lib/broll/card';
 import { buildBrollSfxCues } from '../lib/broll/sfx';
 import { captionReservedBand } from '../lib/overlay-stack';
 
@@ -513,7 +514,9 @@ export async function processClipJob(
               start: item.start,
               end: item.end,
               imageUrl: `${mediaServer.baseUrl}/broll-${index}${path.extname(usable[index].filePath) || '.jpg'}`,
-              ...(item.card ? { card: item.card } : {}),
+              // Re-fit to the caption band in force NOW: the plan may predate a
+              // caption-preset change, and a card must never land on the captions.
+              ...(item.card ? { card: fitCardRectToBand(item.card, captionBand) } : {}),
             })),
             captionTextColor: captionPresetForRender.textColor,
             captionBand,

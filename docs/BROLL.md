@@ -115,6 +115,9 @@ irrelevant just to hit it.
   not the clip length. Each sequence gets its own `startAtSeconds`.
 - In the FFmpeg graph B-roll sequences are added **before** the caption/hook/CTA
   sequence, so captions are always painted on top.
+- Card rects are re-fitted at render time (`fitCardRectToBand()`): if the caption
+  preset changed after the plan was made, the card moves up (or shrinks at 16:9)
+  instead of landing on the captions.
 - When a full-screen image is up, the B-roll layer paints a bottom scrim plus a soft
   pill across the caption band, coloured from the caption text's luminance (dark for
   light text, light for dark text). That is how white-on-white and dark-on-dark

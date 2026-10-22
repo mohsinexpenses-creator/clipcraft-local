@@ -5,6 +5,7 @@ import {
   CARD_WIDTH,
   cardCoversFace,
   mapFaceToCanvas,
+  fitCardRectToBand,
   planCardRect,
 } from '../lib/broll/card';
 import {
@@ -112,4 +113,27 @@ test('a face in a source frame maps onto the 9:16 canvas with head room', () => 
 
 test('a degenerate face box produces no zone', () => {
   assert.equal(mapFaceToCanvas({ x: 0, y: 0, width: 0, height: 0 }, 1920, 1080), null);
+});
+
+test('a planned card is re-fitted when the caption preset moved after planning', () => {
+  // Planned against a low caption band, rendered against a higher one (the user
+  // switched to a higher preset). The card must move up, not sit on the text.
+  const planned = planCardRect({ captionBand: { top: 1600, bottom: 1760 } });
+  const refitted = fitCardRectToBand(planned, { top: 900, bottom: 1060 });
+  assert.ok(refitted.y + refitted.height <= 900, `card bottom ${refitted.y + refitted.height} vs top 900`);
+  assert.equal(refitted.width, planned.width, 'a card that fits is only moved');
+  assert.equal(refitted.height, planned.height);
+});
+
+test('a card is shrunk at 16:9 when the new band leaves no room for it', () => {
+  const planned = planCardRect({ captionBand: { top: 1600, bottom: 1760 } });
+  const refitted = fitCardRectToBand(planned, { top: 330, bottom: 520 });
+  assert.ok(refitted.y + refitted.height <= 330);
+  assert.ok(Math.abs(refitted.width / refitted.height - CARD_WIDTH / CARD_HEIGHT) < 0.05, 'aspect preserved');
+  assert.ok(refitted.y >= 40);
+});
+
+test('a card already clear of the band is returned untouched', () => {
+  const planned = planCardRect({ captionBand: { top: 1300, bottom: 1460 } });
+  assert.deepEqual(fitCardRectToBand(planned, { top: 1300, bottom: 1460 }), planned);
 });

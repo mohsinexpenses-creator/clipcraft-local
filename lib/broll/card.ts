@@ -105,6 +105,43 @@ export function planCardRect(input: CardPlacementInput): BrollCardRect {
   return { ...best.rect, y: Math.round(Math.min(bottom - best.rect.height, Math.max(top, best.rect.y))) };
 }
 
+/**
+ * Re-fit a PLANNED card rect to the caption band in force at RENDER time.
+ *
+ * The plan is made when B-roll is planned; the user may change the caption preset
+ * afterwards. The stored rect was clear of the old band, so it is moved (or, when
+ * there is not enough room, shrunk at a constant 16:9) to stay clear of the new one.
+ * A card is never allowed to sit on the captions: that is the one overlap the
+ * viewer cannot forgive.
+ */
+export function fitCardRectToBand(
+  rect: BrollCardRect,
+  captionBand: { top: number; bottom: number },
+  canvas: { width?: number; height?: number } = {}
+): BrollCardRect {
+  const canvasWidth = canvas.width ?? OVERLAY_CANVAS_WIDTH;
+  const canvasHeight = canvas.height ?? OVERLAY_CANVAS_HEIGHT;
+  const limit = Math.min(canvasHeight, captionBand.top - OVERLAY_STACK_GAP);
+  if (rect.y + rect.height <= limit && rect.y >= OVERLAY_TOP_MARGIN) return rect;
+
+  const available = limit - OVERLAY_TOP_MARGIN;
+  // Below this there is no room for a readable card; keeping the planned rect (and
+  // the image) beats shrinking it into a sliver. captionReservedBand never puts a
+  // band this high - this only guards against a hand-edited preset.
+  if (available < 120) return rect;
+
+  if (rect.height <= available) {
+    const y = Math.max(OVERLAY_TOP_MARGIN, Math.min(limit - rect.height, rect.y));
+    return { ...rect, y };
+  }
+
+  const scale = available / rect.height;
+  const height = Math.max(1, Math.round(rect.height * scale));
+  const width = Math.max(1, Math.round(rect.width * scale));
+  const x = Math.max(0, Math.min(canvasWidth - width, Math.round(rect.x + (rect.width - width) / 2)));
+  return { x, y: OVERLAY_TOP_MARGIN, width, height };
+}
+
 /** True when a planned card (plus gap) touches any face box - used by tests/logs. */
 export function cardCoversFace(card: BrollCardRect, faceZones: FaceZoneRect[]): boolean {
   return faceZones.some((zone) => overlapArea(card, expanded(zone)) > 0);
