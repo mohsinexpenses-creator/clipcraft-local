@@ -45,6 +45,27 @@ export const defaultBrollFetch: BrollFetch = async (url, init) => {
   return response as unknown as BrollHttpResponse;
 };
 
+/**
+ * URLs can carry a credential (Pixabay's API takes `?key=…`), and these URLs end up
+ * in error details, plan notes and the UI. Redact anything that could be a secret
+ * before a URL is ever put in a message.
+ */
+export function redactUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    let changed = false;
+    for (const name of [...parsed.searchParams.keys()]) {
+      if (/key|token|secret|client|auth|sig/i.test(name)) {
+        parsed.searchParams.set(name, 'redacted');
+        changed = true;
+      }
+    }
+    return changed ? parsed.toString() : url;
+  } catch {
+    return url.replace(/([?&](?:key|api_key|token|secret|client_id|signature)=)[^&]*/gi, '$1redacted');
+  }
+}
+
 /** A non-2xx answer from a provider; `retryable` drives the backoff decision. */
 export class BrollHttpError extends AppError {
   readonly statusCode: number;
@@ -117,7 +138,7 @@ export async function fetchJson(url: string, options: FetchJsonOptions): Promise
       throw new BrollHttpError(`${options.provider} answered HTTP ${response.status}.`, {
         statusCode: response.status,
         retryable: response.status >= 500,
-        details: url,
+        details: redactUrl(url),
       });
     }
     try {
@@ -126,7 +147,7 @@ export async function fetchJson(url: string, options: FetchJsonOptions): Promise
       throw new BrollHttpError(`${options.provider} returned invalid JSON.`, {
         statusCode: response.status,
         retryable: false,
-        details: url,
+        details: redactUrl(url),
       });
     }
   } catch (error) {
@@ -160,7 +181,7 @@ export async function fetchBytes(
       throw new BrollHttpError(`${options.provider} answered HTTP ${response.status}.`, {
         statusCode: response.status,
         retryable: response.status >= 500,
-        details: url,
+        details: redactUrl(url),
       });
     }
     return Buffer.from(await response.arrayBuffer());

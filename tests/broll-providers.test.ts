@@ -308,3 +308,22 @@ test('image usability rejects SVG/TIFF and small files', () => {
   assert.equal(cacheKeyFor('https://x.test/a.jpg').length, 24);
   assert.notEqual(cacheKeyFor('https://x.test/a.jpg'), cacheKeyFor('https://x.test/b.jpg'));
 });
+
+test('a provider URL never leaks its key into an error or a plan note', async () => {
+  const { redactUrl } = await import('../lib/broll/http');
+  const pixabayUrl = 'https://pixabay.com/api/?key=SECRET123&q=city';
+  const redacted = redactUrl(pixabayUrl);
+  assert.equal(redacted.includes('SECRET123'), false);
+  assert.match(redacted, /q=city/);
+  assert.equal(redactUrl('https://commons.wikimedia.org/w/api.php?action=query').includes('action=query'), true);
+
+  // A 5xx detail carries the redacted URL, not the raw one.
+  const result = await searchStockAcrossProviders('city', {
+    fetcher: fakeFetch(() => jsonResponse({ error: 'boom' }, 500)),
+    providerOrder: ['pixabay'],
+    keys: { pixabay: 'SECRET123' },
+  });
+  assert.equal(result.candidates.length, 0);
+  const planNotes = JSON.stringify(result.notes);
+  assert.equal(planNotes.includes('SECRET123'), false, `notes leaked the key: ${planNotes}`);
+});

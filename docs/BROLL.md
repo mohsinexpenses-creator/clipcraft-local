@@ -127,6 +127,14 @@ irrelevant just to hit it.
   are already in the voice branch and coexist with them. The effects can be
   switched off per video.
 
+## 6b. Manual renders use the stored plan
+
+"Render now", "Edit & re-render" and the render button in the clip editor render
+the plan that is already stored - they never start a provider search. To plan (or
+re-plan) B-roll for a clip, use **Re-run B-roll** on its tile; that job queues the
+render itself when the video's `autoRender` is on. A clip that has never been
+planned simply renders without B-roll, exactly like before the feature existed.
+
 ## 7. Configuration
 
 | Where | What |

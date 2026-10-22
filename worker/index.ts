@@ -4,6 +4,7 @@ import {
   getDatabase,
   getDatabasePath,
   getVideo,
+  saveClipBrollPlan,
   updateClip,
   updateVideo,
 } from '../lib/db';
@@ -141,12 +142,20 @@ async function brollJob(
   data: BrollJobData,
   progress: (value: number) => void
 ): Promise<BrollJobResult> {
-  const result = await runBrollJob(data, progress);
-  if (result.status === 'done') {
-    // The hand-off lives in lib/pipeline.ts, like every other step boundary.
-    await continueAfterBroll(data.clipId);
+  try {
+    const result = await runBrollJob(data, progress);
+    if (result.status === 'done') {
+      // The hand-off lives in lib/pipeline.ts, like every other step boundary.
+      await continueAfterBroll(data.clipId);
+    }
+    return result;
+  } catch (error) {
+    // Recorded even when the queue will retry: the clip tile must never claim a
+    // plan is coming when the pass is already failing.
+    const message = toErrorMessage(error);
+    await saveClipBrollPlan(data.clipId, null, 'failed', message).catch(() => undefined);
+    throw error;
   }
-  return result;
 }
 
 interface LoopState {
@@ -261,14 +270,16 @@ async function startWorker(): Promise<void> {
   const clipConcurrency = workerSettings.clipConcurrency;
   const transcriptionConcurrency = 1;
   const detectionConcurrency = workerSettings.viralConcurrency;
-  const BROLL_CONCURRENCY = 1;
+  // One B-roll pass at a time: each one calls the LLM, Commons and Gemini, and the
+  // free tiers are per-account, so parallel passes only compete with themselves.
+  const brollConcurrency = 1;
 
   log.section('ClipCraft worker starting');
   log.detail(`SQLite: ${getDatabasePath()} (WAL, busy_timeout=5000ms)`);
   log.detail(`Clip concurrency: ${clipConcurrency} (Settings -> Worker & limits; restart the worker to change it)`);
   log.detail(`Transcription concurrency: ${transcriptionConcurrency}`);
   log.detail(`Viral detection concurrency: ${detectionConcurrency}`);
-  log.detail(`B-roll concurrency: ${BROLL_CONCURRENCY} (network-bound)`);
+  log.detail(`B-roll concurrency: ${brollConcurrency} (network-bound)`);
   if (recovered > 0) log.warn(`Recovered ${recovered} job(s) left running by a previous worker process.`);
 
   // A worker that died between two pipeline steps would otherwise leave a video
@@ -308,12 +319,12 @@ async function startWorker(): Promise<void> {
       async (job) => viralDetectionJob(job.payload as ViralDetectionJobData),
       state
     ),
-    // B-roll is network-bound (LLM + image providers), so two jobs at a time is
-    // already plenty on one machine; the render loop stays the CPU-bound one.
+    // B-roll is network-bound (LLM + image providers), so one job at a time is
+    // plenty on one machine; the render loop stays the CPU-bound one.
     runQueueLoop(
       BROLL_QUEUE_NAME,
       'b-roll',
-      BROLL_CONCURRENCY,
+      brollConcurrency,
       async (job, onProgress) =>
         brollJob(job.payload as BrollJobData, onProgress),
       state

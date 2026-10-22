@@ -27,7 +27,7 @@ import type {
   BrollVerificationSummary,
   WordTimestamp,
 } from "../types";
-import { deriveFallbackKeywords, parseBrollAnalysis, transcriptSentenceAt, type BrollAnalysis } from "./analysis";
+import { deriveFallbackKeywords, transcriptSentenceAt, type BrollAnalysis } from "./analysis";
 import { planCardRect, type FaceZoneRect } from "./card";
 import { brollImageBudget, scheduleBroll, type BrollCandidateInput } from "./scheduler";
 import type { BrollCandidate } from "./providers/types";
@@ -121,9 +121,7 @@ export async function buildBrollPlan(
   const entityBudget = options.enableFullscreen
     ? Math.min(budget.targetMax, MAX_ENTITIES_PER_CLIP)
     : 0;
-  const keywordBudget = options.enableLandscape
-    ? Math.max(1, Math.min(budget.targetMax + 2, budget.targetMax))
-    : 0;
+  const keywordBudget = options.enableLandscape ? budget.targetMax : 0;
 
   /* ----------------------------- 1. analysis ---------------------------- */
 
@@ -454,9 +452,4 @@ export async function buildBrollPlan(
 /** Short helper used in the "not placed" note; the scheduler uses the same bounds. */
 function slotLength(): string {
   return "2.5-4";
-}
-
-/** Parse the analysis reply with the shared validator (exported for the worker). */
-export function parseAnalysisReply(text: string, clipDuration: number): BrollAnalysis {
-  return parseBrollAnalysis(text, clipDuration);
 }

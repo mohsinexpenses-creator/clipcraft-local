@@ -58,7 +58,7 @@ export const BrollOverlayComposition: React.FC<BrollOverlayCompositionProps> = (
             borderRadius: Math.round(card.height * 0.055),
             overflow: 'hidden',
             border: '2px solid rgba(255,255,255,0.24)',
-            boxShadow: '0 18px 46px rgba(0,0,0,0.28)',
+            boxShadow: '0 10px 26px rgba(0,0,0,0.22)',
           }}
         >
           <Img

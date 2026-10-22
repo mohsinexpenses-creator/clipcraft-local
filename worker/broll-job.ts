@@ -9,7 +9,13 @@
  */
 
 import { AppError } from "../lib/errors";
-import { getClip, getDefaultCaptionPreset, getVideo, saveClipBrollPlan } from "../lib/db";
+import {
+  getClip,
+  getDefaultCaptionPreset,
+  getVideo,
+  saveClipBrollPlan,
+  updateClip,
+} from "../lib/db";
 import { loadEffectiveSettings } from "../lib/app-settings";
 import { DEFAULT_BROLL_OPTIONS, type BrollJobData, type BrollPlan, type WordTimestamp } from "../lib/types";
 import { resolveBrollOptions } from "../lib/pipeline-defaults";
@@ -115,6 +121,11 @@ export async function runBrollJob(
   const options = resolveBrollOptions(
     (video.pipeline?.broll as unknown) ?? (settings.pipeline?.broll as unknown) ?? DEFAULT_BROLL_OPTIONS
   );
+
+  // The tile shows "planning…" while the job runs; nothing else writes this field.
+  clip.brollStatus = "running";
+  clip.brollError = undefined;
+  await updateClip(clip);
 
   if (!options.autoBroll && trigger === "auto") {
     console.log("[broll] autoBroll is off for this video - nothing to do.");

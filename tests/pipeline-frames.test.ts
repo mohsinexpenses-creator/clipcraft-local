@@ -170,6 +170,34 @@ test('transparent overlays are composited into the base filter graph before the 
   ));
 });
 
+test('B-roll sequences are composited BEFORE the caption layer, whatever their start times', () => {
+  // The renderer passes B-roll first and the caption/hook/CTA sequence last. The
+  // order of the overlay statements IS the paint order, so the captions must be the
+  // final overlay in the graph - that is what keeps text readable on top of an image.
+  const graph = buildOverlayFilterStatements(
+    [
+      { name: 'b-roll fullscreen #1', inputPattern: '/tmp/broll0/ov_%05d.png', startAtSeconds: 12.5 },
+      { name: 'b-roll landscape #2', inputPattern: '/tmp/broll1/ov_%05d.png', startAtSeconds: 20 },
+      { name: 'remotion overlays', inputPattern: '/tmp/captions/ov_%05d.png', startAtSeconds: 0 },
+    ],
+    [2, 3, 4]
+  );
+
+  // Three overlays over the base, and the graph ends on the final [v] label.
+  const overlays = graph.filter((statement) => statement.includes('overlay='));
+  assert.equal(overlays.length, 3);
+  assert.ok(overlays[0].startsWith('[vbase][overlay0]'), 'the first B-roll paints on the base');
+  assert.ok(overlays[1].startsWith('[vcomp0][overlay1]'), 'the second B-roll paints on top of the first');
+  assert.ok(
+    overlays[2].startsWith('[vcomp1][overlay2]') && overlays[2].endsWith('[v]'),
+    'the caption layer is painted last and produces the output'
+  );
+  // Each B-roll item keeps its own start time.
+  assert.ok(graph.some((statement) => statement.includes('[2:v]setpts=PTS+12.5000/TB')));
+  assert.ok(graph.some((statement) => statement.includes('[3:v]setpts=PTS+20.0000/TB')));
+  assert.ok(graph.some((statement) => statement.includes('[4:v]format=rgba[overlay2]')), 'captions start at 0');
+});
+
 test('hook intervals outside the base segment fail instead of being clamped to a partial replay', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'clipcraft-hook-window-'));
   try {
