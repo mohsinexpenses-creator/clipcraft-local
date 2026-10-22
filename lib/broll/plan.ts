@@ -44,8 +44,11 @@ import {
 /** An image that is downloaded, prepared and ready to be painted. */
 export interface PreparedBrollImage {
   cacheKey: string;
-  /** Original download in the cache dir (file name only). */
-  sourceFile: string;
+  /**
+   * Original download in the cache dir (file name only). Filled in from
+   * `download()` by the plan builder; a prepare step may omit it.
+   */
+  sourceFile?: string;
   /** Prepared JPEG the renderer paints (file name only). */
   renderFile: string;
   crop?: import("../types").BrollCropPlan;

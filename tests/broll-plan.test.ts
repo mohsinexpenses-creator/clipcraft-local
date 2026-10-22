@@ -290,3 +290,41 @@ test('a 3 s hook is excluded even when the first mention is inside it', async ()
     assert.ok(item.start >= 3, `item starts at ${item.start}`);
   }
 });
+
+test('a busy 60 s clip with plenty of material lands inside the 10-15 image target', async () => {
+  // The realistic worst case: the detector reports more entities and keyword moments
+  // than can be used. The plan must still be 10-15 items, full-screen first, with no
+  // overlaps and nothing in the hook window.
+  const deps = makeDeps({
+    entities: Array.from({ length: 12 }, (_, index) => ({
+      type: 'person' as const,
+      name: `Speaker ${index}`,
+      searchQuery: `speaker ${index}`,
+      start: 4 + index * 4.5,
+      end: 6 + index * 4.5,
+    })),
+    keywords: Array.from({ length: 12 }, (_, index) => ({
+      visualKeywords: [`conference hall ${index}`],
+      start: 5 + index * 4.5,
+      end: 7 + index * 4.5,
+    })),
+  });
+
+  const plan = await buildBrollPlan(baseInput, deps);
+
+  assert.ok(plan.items.length >= 10, `only ${plan.items.length} items`);
+  assert.ok(plan.items.length <= 15, `${plan.items.length} items is over budget`);
+  assert.ok(plan.items.some((item) => item.kind === 'fullscreen'), 'entities must not be crowded out');
+  assert.ok(plan.items.some((item) => item.kind === 'landscape'));
+
+  const sorted = [...plan.items].sort((a, b) => a.start - b.start);
+  for (let index = 0; index < sorted.length; index += 1) {
+    const item = sorted[index];
+    assert.ok(item.start >= baseInput.hookDuration, `${item.id} starts inside the hook window`);
+    assert.ok(item.start >= item.end - 4.001 && item.end - item.start >= 2.499, `${item.id} lasts ${item.end - item.start}s`);
+    const previous = sorted[index - 1];
+    if (previous) {
+      assert.ok(item.start - previous.end >= 1.5 - 1e-6, `${previous.id} and ${item.id} overlap or touch`);
+    }
+  }
+});

@@ -178,13 +178,12 @@ export function createBrollDeps(options: BrollSourceOptions): BrollPlanDeps {
       entityType: BrollEntityType,
       cacheKey: string
     ): Promise<PreparedBrollImage> {
-      const prepared = await prepareFullscreenFile(bytes, { cacheKey, entityType });
-      return { cacheKey, sourceFile: "", renderFile: prepared.renderFile, crop: prepared.crop };
+      // `sourceFile` comes from `download()`; the plan builder fills it in.
+      return prepareFullscreenFile(bytes, { cacheKey, entityType });
     },
 
     async prepareCard(bytes: Buffer, cacheKey: string): Promise<PreparedBrollImage> {
-      const prepared = await prepareCardFile(bytes, { cacheKey });
-      return { cacheKey, sourceFile: "", renderFile: prepared.renderFile };
+      return prepareCardFile(bytes, { cacheKey });
     },
 
     async thumbnail(bytes: Buffer) {
