@@ -27,9 +27,17 @@ import type {
   BrollVerificationSummary,
   WordTimestamp,
 } from "../types";
-import { deriveFallbackKeywords, transcriptSentenceAt, type BrollAnalysis } from "./analysis";
+import {
+  deriveFallbackKeywords,
+  transcriptSentenceAt,
+  type BrollAnalysis,
+} from "./analysis";
 import { planCardRect, type FaceZoneRect } from "./card";
-import { brollImageBudget, scheduleBroll, type BrollCandidateInput } from "./scheduler";
+import {
+  brollImageBudget,
+  scheduleBroll,
+  type BrollCandidateInput,
+} from "./scheduler";
 import type { BrollCandidate } from "./providers/types";
 import { attributionFor } from "./providers/types";
 import type { StockSearchResult } from "./providers/stock";
@@ -63,11 +71,13 @@ export interface BrollPlanDeps {
   }): Promise<BrollAnalysis>;
   searchEntity(query: string): Promise<BrollCandidate[]>;
   searchStock(query: string): Promise<StockSearchResult>;
-  download(candidate: BrollCandidate): Promise<{ cacheKey: string; sourceFile: string; bytes: Buffer }>;
+  download(
+    candidate: BrollCandidate,
+  ): Promise<{ cacheKey: string; sourceFile: string; bytes: Buffer }>;
   prepareFullscreen(
     bytes: Buffer,
     entityType: BrollEntityType,
-    cacheKey: string
+    cacheKey: string,
   ): Promise<PreparedBrollImage>;
   prepareCard(bytes: Buffer, cacheKey: string): Promise<PreparedBrollImage>;
   thumbnail(bytes: Buffer): Promise<{ data: string; mime: string }>;
@@ -97,7 +107,10 @@ export const MAX_ENTITIES_PER_CLIP = 4;
 /** Candidate images checked per entity. */
 export const ENTITY_CANDIDATES_PER_SEARCH = 4;
 
-function toVerification(verdict: VisionVerdict, now: Date): BrollVerificationSummary {
+function toVerification(
+  verdict: VisionVerdict,
+  now: Date,
+): BrollVerificationSummary {
   return {
     confidence: verdict.confidence,
     reason: verdict.reason,
@@ -113,13 +126,17 @@ function toVerification(verdict: VisionVerdict, now: Date): BrollVerificationSum
  */
 export async function buildBrollPlan(
   input: BrollPlanInput,
-  deps: BrollPlanDeps
+  deps: BrollPlanDeps,
 ): Promise<BrollPlan> {
   const now = deps.now ?? (() => new Date());
   const options = input.options;
   const notes: string[] = [];
   const skipped: BrollSkip[] = [];
-  const budget = brollImageBudget(input.clipDuration, options.minImages, options.maxImages);
+  const budget = brollImageBudget(
+    input.clipDuration,
+    options.minImages,
+    options.maxImages,
+  );
 
   const entityBudget = options.enableFullscreen
     ? Math.min(budget.targetMax, MAX_ENTITIES_PER_CLIP)
@@ -137,13 +154,19 @@ export async function buildBrollPlan(
       keywordBudget,
     });
     console.log(
-      `[broll] Analysis: ${analysis.entities.length} entit(ies), ${analysis.broll.length} keyword moment(s).`
+      `[broll] Analysis: ${analysis.entities.length} entit(ies), ${analysis.broll.length} keyword moment(s).`,
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    notes.push(`AI analysis failed (${message}); fell back to keywords from the transcript.`);
+    notes.push(
+      `AI analysis failed (${message}); fell back to keywords from the transcript.`,
+    );
     skipped.push({ stage: "analysis", reason: message });
-    analysis = deriveFallbackKeywords(input.words, input.clipDuration, keywordBudget);
+    analysis = deriveFallbackKeywords(
+      input.words,
+      input.clipDuration,
+      keywordBudget,
+    );
   }
 
   // A provider that answers with nothing usable still leaves the clip without
@@ -152,15 +175,19 @@ export async function buildBrollPlan(
     const fallback = deriveFallbackKeywords(
       input.words,
       input.clipDuration,
-      budget.targetMax - analysis.broll.length
+      budget.targetMax - analysis.broll.length,
     );
-    const existing = new Set(analysis.broll.map((moment) => moment.visualKeywords[0]?.toLowerCase()));
+    const existing = new Set(
+      analysis.broll.map((moment) => moment.visualKeywords[0]?.toLowerCase()),
+    );
     const extra = fallback.broll.filter(
-      (moment) => !existing.has(moment.visualKeywords[0]?.toLowerCase())
+      (moment) => !existing.has(moment.visualKeywords[0]?.toLowerCase()),
     );
     if (extra.length > 0) {
       analysis = { ...analysis, broll: [...analysis.broll, ...extra] };
-      notes.push(`Topped up ${extra.length} keyword moment(s) from the transcript.`);
+      notes.push(
+        `Topped up ${extra.length} keyword moment(s) from the transcript.`,
+      );
     }
   }
 
@@ -183,7 +210,7 @@ export async function buildBrollPlan(
 
   if (entityBudget > 0 && !deps.visionAvailable) {
     notes.push(
-      "No Gemini key is configured, so named entities are skipped: an unverified full-screen image is never shown."
+      "No Gemini key is configured, so named entities are skipped: an unverified full-screen image is never shown.",
     );
     for (const entity of analysis.entities) {
       skipped.push({
@@ -210,34 +237,59 @@ export async function buildBrollPlan(
     const context = transcriptSentenceAt(input.words, entity.start);
     let candidates: BrollCandidate[];
     try {
-      candidates = (await deps.searchEntity(entity.searchQuery)).slice(0, ENTITY_CANDIDATES_PER_SEARCH);
+      candidates = (await deps.searchEntity(entity.searchQuery)).slice(
+        0,
+        ENTITY_CANDIDATES_PER_SEARCH,
+      );
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      notes.push(`Wikimedia Commons search failed for "${entity.name}": ${reason}`);
+      notes.push(
+        `Wikimedia Commons search failed for "${entity.name}": ${reason}`,
+      );
       skipped.push({ stage: "search", entity: entity.name, reason });
       continue;
     }
 
     if (candidates.length === 0) {
-      skipped.push({ stage: "search", entity: entity.name, reason: "No usable image on Wikimedia Commons." });
+      skipped.push({
+        stage: "search",
+        entity: entity.name,
+        reason: "No usable image on Wikimedia Commons.",
+      });
       continue;
     }
 
     // Download + thumbnail the candidates for the single vision request.
-    const downloaded: Array<{ candidate: BrollCandidate; bytes: Buffer; data: string; mime: string }> = [];
+    const downloaded: Array<{
+      candidate: BrollCandidate;
+      bytes: Buffer;
+      data: string;
+      mime: string;
+    }> = [];
     for (const candidate of candidates.slice(0, VISION_CANDIDATE_COUNT)) {
       try {
         const file = await deps.download(candidate);
         const thumb = await deps.thumbnail(file.bytes);
-        downloaded.push({ candidate, bytes: file.bytes, data: thumb.data, mime: thumb.mime });
+        downloaded.push({
+          candidate,
+          bytes: file.bytes,
+          data: thumb.data,
+          mime: thumb.mime,
+        });
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
-        notes.push(`Could not download a "${entity.name}" candidate: ${reason}`);
+        notes.push(
+          `Could not download a "${entity.name}" candidate: ${reason}`,
+        );
       }
     }
 
     if (downloaded.length === 0) {
-      skipped.push({ stage: "download", entity: entity.name, reason: "No candidate could be downloaded." });
+      skipped.push({
+        stage: "download",
+        entity: entity.name,
+        reason: "No candidate could be downloaded.",
+      });
       continue;
     }
 
@@ -250,7 +302,11 @@ export async function buildBrollPlan(
         commonsTitle: downloaded[0].candidate.title,
         commonsDescription: downloaded[0].candidate.description,
         commonsCategories: downloaded[0].candidate.categories,
-        images: downloaded.map((item, index) => ({ index, data: item.data, mime: item.mime })),
+        images: downloaded.map((item, index) => ({
+          index,
+          data: item.data,
+          mime: item.mime,
+        })),
       });
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
@@ -261,7 +317,7 @@ export async function buildBrollPlan(
 
     console.log(
       `[broll] Vision "${entity.name}": pick=${verdict.pickIndex} confidence=${verdict.confidence.toFixed(2)} ` +
-        `text=${verdict.hasTextOrWatermark} safe=${verdict.isSafe} - ${verdict.reason}`
+        `text=${verdict.hasTextOrWatermark} safe=${verdict.isSafe} - ${verdict.reason}`,
     );
 
     if (!verdictAccepts(verdict) || verdict.pickIndex === null) {
@@ -275,14 +331,22 @@ export async function buildBrollPlan(
 
     const chosen = downloaded[verdict.pickIndex];
     if (!chosen) {
-      skipped.push({ stage: "verify", entity: entity.name, reason: "The verified candidate was not downloaded." });
+      skipped.push({
+        stage: "verify",
+        entity: entity.name,
+        reason: "The verified candidate was not downloaded.",
+      });
       continue;
     }
 
     try {
       const file = await deps.download(chosen.candidate);
       const preparedImage = {
-        ...(await deps.prepareFullscreen(file.bytes, entity.type, file.cacheKey)),
+        ...(await deps.prepareFullscreen(
+          file.bytes,
+          entity.type,
+          file.cacheKey,
+        )),
         sourceFile: file.sourceFile,
       };
       prepared.push({
@@ -326,11 +390,15 @@ export async function buildBrollPlan(
         skipped.push({ stage: "search", reason: `${query}: ${reason}` });
         continue;
       }
-      if (result.notes.length > 0) notes.push(...result.notes.map((note) => `${query}: ${note}`));
+      if (result.notes.length > 0)
+        notes.push(...result.notes.map((note) => `${query}: ${note}`));
 
       const candidate = result.candidates[0];
       if (!candidate) {
-        skipped.push({ stage: "search", reason: `No stock result for "${query}".` });
+        skipped.push({
+          stage: "search",
+          reason: `No stock result for "${query}".`,
+        });
         continue;
       }
 
@@ -341,7 +409,10 @@ export async function buildBrollPlan(
           sourceFile: file.sourceFile,
         };
         prepared.push({
-          id: `card-${query.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40)}`,
+          id: `card-${query
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "-")
+            .slice(0, 40)}`,
           kind: "landscape",
           priority: CARD_PRIORITY,
           desiredStart: moment.start,
@@ -349,7 +420,9 @@ export async function buildBrollPlan(
           candidate,
           // The other search hits let the clip tile swap the card without a new
           // provider search; they are downloaded on demand.
-          alternatives: result.candidates.slice(1, 3).map((entry) => attributionFor(entry)),
+          alternatives: result.candidates
+            .slice(1, 3)
+            .map((entry) => attributionFor(entry)),
           prepared: preparedImage,
           query,
         });
@@ -374,7 +447,10 @@ export async function buildBrollPlan(
   const scheduled = scheduleBroll({
     clipDuration: input.clipDuration,
     hookDuration: input.hookDuration,
-    minCount: options.enableLandscape || options.enableFullscreen ? budget.targetMin : 0,
+    minCount:
+      options.enableLandscape || options.enableFullscreen
+        ? budget.targetMin
+        : 0,
     maxCount: budget.targetMax,
     candidates: candidatesForSchedule,
   });
@@ -394,7 +470,9 @@ export async function buildBrollPlan(
       attribution: attributionFor(source.candidate),
       cacheKey: source.prepared.cacheKey,
       renderFile: source.prepared.renderFile,
-      ...(source.prepared.sourceFile ? { sourceFile: source.prepared.sourceFile } : {}),
+      ...(source.prepared.sourceFile
+        ? { sourceFile: source.prepared.sourceFile }
+        : {}),
       ...(source.prepared.crop ? { crop: source.prepared.crop } : {}),
       ...(source.alternatives && source.alternatives.length > 0
         ? { alternatives: source.alternatives }
@@ -434,8 +512,15 @@ export async function buildBrollPlan(
 
   console.log(
     `[broll] Plan: ${counts.fullscreen} full-screen + ${counts.landscape} card(s) ` +
-      `(target ${counts.targetMin}-${counts.targetMax}), ${skipped.length} skipped.`
+      `(target ${counts.targetMin}-${counts.targetMax}), ${skipped.length} skipped.`,
   );
+
+  for (const skip of skipped) {
+    console.log(
+      `[broll] skipped (${skip.stage})${skip.entity ? ` "${skip.entity}"` : ""}: ${skip.reason}`,
+    );
+  }
+  for (const note of notes) console.log(`[broll] note: ${note}`);
 
   return {
     version: 1,

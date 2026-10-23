@@ -54,8 +54,12 @@ export interface VisionRequestInput {
 export function buildVisionPrompt(input: VisionRequestInput): string {
   const meta = [
     input.commonsTitle ? `File title: ${input.commonsTitle}` : "",
-    input.commonsDescription ? `File description: ${input.commonsDescription.slice(0, 400)}` : "",
-    input.commonsCategories?.length ? `Categories: ${input.commonsCategories.slice(0, 8).join(", ")}` : "",
+    input.commonsDescription
+      ? `File description: ${input.commonsDescription.slice(0, 400)}`
+      : "",
+    input.commonsCategories?.length
+      ? `Categories: ${input.commonsCategories.slice(0, 8).join(", ")}`
+      : "",
   ]
     .filter(Boolean)
     .join("\n");
@@ -65,7 +69,9 @@ export function buildVisionPrompt(input: VisionRequestInput): string {
     "",
     `I need a photo that clearly shows the ${input.entityType} "${input.entityName}" - recognisable and unambiguous.`,
     "Candidate images follow, in order (image 0, image 1, ...).",
-    meta ? `\nWhat Wikimedia Commons says about the first candidate:\n${meta}` : "",
+    meta
+      ? `\nWhat Wikimedia Commons says about the first candidate:\n${meta}`
+      : "",
     "",
     "Answer with ONE JSON object and nothing else:",
     '{ "pickIndex": 0, "confidence": 0.0, "reason": "...", "hasTextOrWatermark": false, "isSafe": true }',
@@ -90,7 +96,10 @@ function clamp01(value: number): number {
  * Parse the model's answer. Unknown shape is a rejection (null pick), never a
  * crash: a bad verdict must not kill the whole B-roll run.
  */
-export function parseVisionVerdict(text: string, candidateCount: number): VisionVerdict {
+export function parseVisionVerdict(
+  text: string,
+  candidateCount: number,
+): VisionVerdict {
   const rejected = (reason: string): VisionVerdict => ({
     pickIndex: null,
     confidence: 0,
@@ -101,27 +110,39 @@ export function parseVisionVerdict(text: string, candidateCount: number): Vision
 
   let data: unknown;
   try {
-    const cleaned = text.replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
+    const cleaned = text
+      .replace(/^```(?:json)?/i, "")
+      .replace(/```$/, "")
+      .trim();
     data = JSON.parse(cleaned);
   } catch {
     return rejected("The vision answer was not valid JSON.");
   }
-  if (!data || typeof data !== "object") return rejected("The vision answer was not an object.");
+  if (!data || typeof data !== "object")
+    return rejected("The vision answer was not an object.");
   const record = data as Record<string, unknown>;
 
   const rawPick = record.pickIndex ?? record.pick_index ?? record.index;
   let pickIndex: number | null = null;
-  if (typeof rawPick === "number" && Number.isInteger(rawPick) && rawPick >= 0 && rawPick < candidateCount) {
+  if (
+    typeof rawPick === "number" &&
+    Number.isInteger(rawPick) &&
+    rawPick >= 0 &&
+    rawPick < candidateCount
+  ) {
     pickIndex = rawPick;
   }
 
   const rawConfidence = record.confidence;
   let confidence = 0;
   if (typeof rawConfidence === "number" && Number.isFinite(rawConfidence)) {
-    confidence = clamp01(rawConfidence > 1 ? rawConfidence / 100 : rawConfidence);
+    confidence = clamp01(
+      rawConfidence > 1 ? rawConfidence / 100 : rawConfidence,
+    );
   }
 
-  const reason = typeof record.reason === "string" ? record.reason.trim().slice(0, 300) : "";
+  const reason =
+    typeof record.reason === "string" ? record.reason.trim().slice(0, 300) : "";
   const hasTextOrWatermark =
     record.hasTextOrWatermark === true || record.has_text_or_watermark === true;
   const isSafe = record.isSafe === undefined ? true : record.isSafe !== false;
@@ -129,7 +150,11 @@ export function parseVisionVerdict(text: string, candidateCount: number): Vision
   return {
     pickIndex,
     confidence,
-    reason: reason || (pickIndex === null ? "The model did not pick a candidate." : "No reason given."),
+    reason:
+      reason ||
+      (pickIndex === null
+        ? "The model did not pick a candidate."
+        : "No reason given."),
     hasTextOrWatermark,
     isSafe,
   };
@@ -147,9 +172,11 @@ export function verdictAccepts(verdict: VisionVerdict): boolean {
 
 /** Why a verdict rejected the entity - logged and stored on the skip. */
 export function verdictRejectionReason(verdict: VisionVerdict): string {
-  if (verdict.pickIndex === null) return verdict.reason || "No candidate matched the entity.";
+  if (verdict.pickIndex === null)
+    return verdict.reason || "No candidate matched the entity.";
   if (!verdict.isSafe) return `Unsafe/unsuitable image: ${verdict.reason}`;
-  if (verdict.hasTextOrWatermark) return `Heavy text or watermark: ${verdict.reason}`;
+  if (verdict.hasTextOrWatermark)
+    return `Heavy text or watermark: ${verdict.reason}`;
   if (verdict.confidence < VISION_MIN_CONFIDENCE) {
     return `Not confident enough (${verdict.confidence.toFixed(2)} < ${VISION_MIN_CONFIDENCE}): ${verdict.reason}`;
   }
@@ -170,16 +197,23 @@ export interface VerifyEntityOptions {
  */
 export async function verifyEntityImage(
   input: VisionRequestInput,
-  options: VerifyEntityOptions = {}
+  options: VerifyEntityOptions = {},
 ): Promise<VisionVerdict> {
   const keys = options.keys ?? (await llmKeysFor());
   if (keys.length === 0) {
-    throw new AppError("No Gemini key is configured, so B-roll images cannot be verified.", {
-      status: 400,
-      resolution: "Add a Gemini key in Settings -> AI providers. Unverified images are never shown.",
-    });
+    throw new AppError(
+      "No Gemini key is configured, so B-roll images cannot be verified.",
+      {
+        status: 400,
+        resolution:
+          "Add a Gemini key in Settings -> AI providers. Unverified images are never shown.",
+      },
+    );
   }
-  const model = options.model?.trim() || LLM_PROVIDER_CHAIN[0]?.model || "gemini-3.5-flash";
+  const primaryModel =
+    options.model?.trim() || LLM_PROVIDER_CHAIN[0]?.model || "gemini-3.5-flash";
+  // A busy model (503 / timeout) must not cost the image: fall back to the next one.
+  const models = [...new Set([primaryModel, "gemini-3.6-flash"])];
   const fetcher = options.fetcher ?? defaultBrollFetch;
   const prompt = buildVisionPrompt(input);
 
@@ -189,13 +223,18 @@ export async function verifyEntityImage(
   }
 
   let lastError: unknown;
-  for (const key of keys) {
+  for (const { model, key } of models.flatMap((model) =>
+    keys.map((key) => ({ model, key })),
+  )) {
     try {
       const response = await fetcher(
         `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
         {
           method: "POST",
-          headers: { "content-type": "application/json", "x-goog-api-key": key },
+          headers: {
+            "content-type": "application/json",
+            "x-goog-api-key": key,
+          },
           body: JSON.stringify({
             contents: [{ role: "user", parts }],
             generationConfig: {
@@ -205,11 +244,13 @@ export async function verifyEntityImage(
             },
           }),
           signal: AbortSignal.timeout(options.timeoutMs ?? VISION_TIMEOUT_MS),
-        }
+        },
       );
 
       if (response.status === 401 || response.status === 403) {
-        lastError = new Error("Gemini rejected the API key (HTTP " + response.status + ").");
+        lastError = new Error(
+          "Gemini rejected the API key (HTTP " + response.status + ").",
+        );
         continue; // Another key in the pool may still work.
       }
       if (!response.ok) {
@@ -236,6 +277,7 @@ export async function verifyEntityImage(
   throw new AppError("Gemini Vision could not verify the B-roll candidates.", {
     status: 502,
     details: lastError instanceof Error ? lastError.message : String(lastError),
-    resolution: "The clip is rendered without B-roll for this entity. Retry B-roll later.",
+    resolution:
+      "The clip is rendered without B-roll for this entity. Retry B-roll later.",
   });
 }

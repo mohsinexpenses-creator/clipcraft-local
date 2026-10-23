@@ -24,7 +24,10 @@ export interface BrollRequestInit {
   signal?: AbortSignal;
 }
 
-export type BrollFetch = (url: string, init?: BrollRequestInit) => Promise<BrollHttpResponse>;
+export type BrollFetch = (
+  url: string,
+  init?: BrollRequestInit,
+) => Promise<BrollHttpResponse>;
 
 /**
  * Wikimedia asks for a descriptive User-Agent and blocks the default one; the
@@ -56,13 +59,16 @@ export function redactUrl(url: string): string {
     let changed = false;
     for (const name of [...parsed.searchParams.keys()]) {
       if (/key|token|secret|client|auth|sig/i.test(name)) {
-        parsed.searchParams.set(name, 'redacted');
+        parsed.searchParams.set(name, "redacted");
         changed = true;
       }
     }
     return changed ? parsed.toString() : url;
   } catch {
-    return url.replace(/([?&](?:key|api_key|token|secret|client_id|signature)=)[^&]*/gi, '$1redacted');
+    return url.replace(
+      /([?&](?:key|api_key|token|secret|client_id|signature)=)[^&]*/gi,
+      "$1redacted",
+    );
   }
 }
 
@@ -71,7 +77,10 @@ export class BrollHttpError extends AppError {
   readonly statusCode: number;
   readonly retryable: boolean;
 
-  constructor(message: string, options: { statusCode: number; retryable: boolean; details?: string }) {
+  constructor(
+    message: string,
+    options: { statusCode: number; retryable: boolean; details?: string },
+  ) {
     super(message, {
       status: 502,
       details: options.details,
@@ -118,10 +127,24 @@ export interface FetchJsonOptions {
   provider: string;
 }
 
+function describeFetchError(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const cause = (error as { cause?: { code?: string; message?: string } })
+    .cause;
+  const detail = cause?.code ?? cause?.message;
+  return detail ? `${error.message} (${detail})` : error.message;
+}
+
 /** GET + JSON parse with a timeout; errors carry the provider name and status. */
-export async function fetchJson(url: string, options: FetchJsonOptions): Promise<unknown> {
+export async function fetchJson(
+  url: string,
+  options: FetchJsonOptions,
+): Promise<unknown> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_HTTP_TIMEOUT_MS);
+  const timer = setTimeout(
+    () => controller.abort(),
+    options.timeoutMs ?? DEFAULT_HTTP_TIMEOUT_MS,
+  );
   timer.unref?.();
   try {
     const response = await options.fetcher(url, {
@@ -135,11 +158,14 @@ export async function fetchJson(url: string, options: FetchJsonOptions): Promise
       throw new ProviderQuotaError(options.provider, "HTTP 429");
     }
     if (!response.ok) {
-      throw new BrollHttpError(`${options.provider} answered HTTP ${response.status}.`, {
-        statusCode: response.status,
-        retryable: response.status >= 500,
-        details: redactUrl(url),
-      });
+      throw new BrollHttpError(
+        `${options.provider} answered HTTP ${response.status}.`,
+        {
+          statusCode: response.status,
+          retryable: response.status >= 500,
+          details: redactUrl(url),
+        },
+      );
     }
     try {
       return await response.json();
@@ -152,11 +178,13 @@ export async function fetchJson(url: string, options: FetchJsonOptions): Promise
     }
   } catch (error) {
     if (error instanceof AppError) throw error;
-    const message = error instanceof Error ? error.message : String(error);
+    const message = describeFetchError(error);
     const aborted = controller.signal.aborted;
     throw new BrollHttpError(
-      aborted ? `${options.provider} timed out.` : `${options.provider} could not be reached.`,
-      { statusCode: 0, retryable: true, details: redactUrl(message) }
+      aborted
+        ? `${options.provider} timed out.`
+        : `${options.provider} could not be reached.`,
+      { statusCode: 0, retryable: true, details: redactUrl(message) },
     );
   } finally {
     clearTimeout(timer);
@@ -166,31 +194,40 @@ export async function fetchJson(url: string, options: FetchJsonOptions): Promise
 /** Byte download with the same rules as `fetchJson`. */
 export async function fetchBytes(
   url: string,
-  options: FetchJsonOptions
+  options: FetchJsonOptions,
 ): Promise<Buffer> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_HTTP_TIMEOUT_MS);
+  const timer = setTimeout(
+    () => controller.abort(),
+    options.timeoutMs ?? DEFAULT_HTTP_TIMEOUT_MS,
+  );
   timer.unref?.();
   try {
     const response = await options.fetcher(url, {
       headers: options.headers,
       signal: controller.signal,
     });
-    if (response.status === 429) throw new ProviderQuotaError(options.provider, "HTTP 429");
+    if (response.status === 429)
+      throw new ProviderQuotaError(options.provider, "HTTP 429");
     if (!response.ok) {
-      throw new BrollHttpError(`${options.provider} answered HTTP ${response.status}.`, {
-        statusCode: response.status,
-        retryable: response.status >= 500,
-        details: redactUrl(url),
-      });
+      throw new BrollHttpError(
+        `${options.provider} answered HTTP ${response.status}.`,
+        {
+          statusCode: response.status,
+          retryable: response.status >= 500,
+          details: redactUrl(url),
+        },
+      );
     }
     return Buffer.from(await response.arrayBuffer());
   } catch (error) {
     if (error instanceof AppError) throw error;
-    const message = error instanceof Error ? error.message : String(error);
+    const message = describeFetchError(error);
     throw new BrollHttpError(
-      controller.signal.aborted ? `${options.provider} timed out.` : `${options.provider} could not be reached.`,
-      { statusCode: 0, retryable: true, details: redactUrl(message) }
+      controller.signal.aborted
+        ? `${options.provider} timed out.`
+        : `${options.provider} could not be reached.`,
+      { statusCode: 0, retryable: true, details: redactUrl(message) },
     );
   } finally {
     clearTimeout(timer);
@@ -208,8 +245,13 @@ export interface RetryOptions {
  * Bounded retries with exponential backoff. `sleep` is injectable so tests never
  * actually wait; the worker uses real timers.
  */
-export async function withRetries<T>(task: () => Promise<T>, options: RetryOptions): Promise<T> {
-  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+export async function withRetries<T>(
+  task: () => Promise<T>,
+  options: RetryOptions,
+): Promise<T> {
+  const sleep =
+    options.sleep ??
+    ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const shouldRetry = options.shouldRetry ?? (() => true);
   let lastError: unknown;
 
@@ -237,7 +279,9 @@ export function createRateLimiter(options: {
   sleep?: (ms: number) => Promise<void>;
 }): <T>(task: () => Promise<T>) => Promise<T> {
   const now = options.now ?? Date.now;
-  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const sleep =
+    options.sleep ??
+    ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   let nextAt = 0;
   let chain: Promise<unknown> = Promise.resolve();
 
