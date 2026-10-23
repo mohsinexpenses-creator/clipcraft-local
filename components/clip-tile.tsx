@@ -153,6 +153,7 @@ export function ClipTile({
   const isLive = isProcessing || isQueued;
   const score = clipScore(clip);
   const title = clip.aiAnalysis?.viral_packaging.video_title || clip.hookText || "Untitled clip";
+  const downloadName = clip.outputPath?.split("/").pop() || `${title.replace(/[^\w\-]+/g, "_").slice(0, 60)}.mp4`;
   const captionName =
     clip.captionPreset?.name ||
     captionPresets.find((preset) => preset._id === clip.captionPresetId)?.name ||
@@ -346,7 +347,7 @@ export function ClipTile({
                     variant="ghost"
                     size="icon-sm"
                     nativeButton={false}
-                    render={<a href={mediaUrl} download={`${title.replace(/[^\w\-]+/g, "_").slice(0, 60)}.mp4`} />}
+                    render={<a href={mediaUrl} download={downloadName} />}
                     aria-label="Download clip"
                   />
                 }

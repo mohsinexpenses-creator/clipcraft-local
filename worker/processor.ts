@@ -38,6 +38,7 @@ import { cachedImagePath } from '../lib/broll/cache';
 import { fitCardRectToBand } from '../lib/broll/card';
 import { buildBrollSfxCues } from '../lib/broll/sfx';
 import { captionReservedBand } from '../lib/overlay-stack';
+import { buildClipFileName } from './clip-file-name';
 
 /** How far either side of the window we still accept transcript words. */
 const WORD_SLACK_SECONDS = 0.5;
@@ -155,7 +156,11 @@ export async function processClipJob(
   // Optional pre-caption diagnostic branch (SAVE_PRECAPTION_DEBUG=1). The normal
   // final render goes directly from the source into the title-named deliverable.
   const intermediateVideoPath = path.join(outputDir, `${clipId}_precaption.mp4`);
-  const clipFileBase = sanitizeClipFileName(clip.aiAnalysis?.viral_packaging.video_title) || clipId;
+  const clipFileBase = buildClipFileName(
+    clip.aiAnalysis?.rank,
+    clip.aiAnalysis?.viral_packaging.video_title,
+    clip.aiAnalysis?.viral_packaging.hashtags
+  ) || clipId;
   const finalVideoPath = uniqueClipPath(outputDir, clipFileBase);
 
   // Cancellation: the UI flips clip.cancelling (POST /api/clips/<id>/cancel).
@@ -667,22 +672,6 @@ export async function processClipJob(
   } finally {
     if (cancelWatcher) clearInterval(cancelWatcher);
   }
-}
-
-/**
- * Turn a clip title into a safe file name (Windows + macOS friendly):
- * characters illegal in file names become spaces, whitespace is collapsed,
- * and the result is capped at 80 chars so long LLM titles cannot overflow
- * path limits. Returns '' when nothing usable remains (caller falls back
- * to the clip id).
- */
-function sanitizeClipFileName(title: string | undefined): string {
-  if (!title) return '';
-  const cleaned = title
-    .replace(/[\/\\:*?"<>|\u0000-\u001f]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return cleaned.slice(0, 80).trim();
 }
 
 /** Same-title clips must not overwrite each other: append -2, -3, ... if needed. */
