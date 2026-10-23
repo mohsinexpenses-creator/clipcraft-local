@@ -1,8 +1,14 @@
-import React from 'react';
-import { AbsoluteFill, Img, interpolate, useCurrentFrame, useVideoConfig } from 'remotion';
-import { brollFrameStyle } from '../lib/broll/animation';
-import { captionContrastTreatment } from '../lib/broll/crop';
-import type { BrollCardRect } from '../lib/types';
+import React from "react";
+import {
+  AbsoluteFill,
+  Img,
+  interpolate,
+  useCurrentFrame,
+  useVideoConfig,
+} from "remotion";
+import { brollFrameStyle } from "../lib/broll/animation";
+import { captionContrastTreatment } from "../lib/broll/crop";
+import type { BrollCardRect } from "../lib/types";
 
 /**
  * One B-roll item, painted on a transparent canvas.
@@ -15,7 +21,7 @@ import type { BrollCardRect } from '../lib/types';
  * preset is modified, and with B-roll off this composition is never used.
  */
 export interface BrollOverlayCompositionProps extends Record<string, unknown> {
-  kind: 'fullscreen' | 'landscape';
+  kind: "fullscreen" | "landscape";
   /** Loopback URL of the prepared image (never a remote URL). */
   imageUrl: string;
   /** Required for landscape: where the card sits on the 1080x1920 canvas. */
@@ -28,7 +34,9 @@ export interface BrollOverlayCompositionProps extends Record<string, unknown> {
   captionBand?: { top: number; bottom: number };
 }
 
-export const BrollOverlayComposition: React.FC<BrollOverlayCompositionProps> = ({
+export const BrollOverlayComposition: React.FC<
+  BrollOverlayCompositionProps
+> = ({
   kind,
   imageUrl,
   card,
@@ -42,13 +50,13 @@ export const BrollOverlayComposition: React.FC<BrollOverlayCompositionProps> = (
   const style = brollFrameStyle(kind, elapsed, durationSeconds);
   const treatment = captionContrastTreatment(captionTextColor);
 
-  if (kind === 'landscape' && card) {
+  if (kind === "landscape" && card) {
     const mediaScale = style.mediaScale;
     return (
-      <AbsoluteFill style={{ backgroundColor: 'transparent' }}>
+      <AbsoluteFill style={{ backgroundColor: "transparent" }}>
         <div
           style={{
-            position: 'absolute',
+            position: "absolute",
             left: card.x,
             top: card.y,
             width: card.width,
@@ -56,26 +64,26 @@ export const BrollOverlayComposition: React.FC<BrollOverlayCompositionProps> = (
             opacity: style.opacity,
             transform: `translateY(${style.translateY}px) scale(${style.scale})`,
             borderRadius: Math.round(card.height * 0.055),
-            overflow: 'hidden',
-            border: '2px solid rgba(255,255,255,0.24)',
-            boxShadow: '0 10px 26px rgba(0,0,0,0.22)',
+            overflow: "hidden",
+            border: "2px solid rgba(255,255,255,0.24)",
+            boxShadow: "0 10px 26px rgba(0,0,0,0.22)",
           }}
         >
           <Img
             src={imageUrl}
             style={{
-              width: '100%',
-              height: '100%',
-              objectFit: 'cover',
+              width: "100%",
+              height: "100%",
+              objectFit: "cover",
               transform: `scale(${mediaScale}) translateX(${style.mediaX}px)`,
             }}
           />
-          {/* A whisper of darkening keeps a bright card from punching a hole in the frame. */}
+          {/* Captions overlap the lower part of the card: a contrast scrim keeps them readable. */}
           <div
             style={{
-              position: 'absolute',
+              position: "absolute",
               inset: 0,
-              background: 'linear-gradient(180deg, rgba(0,0,0,0) 55%, rgba(0,0,0,0.22) 100%)',
+              background: `linear-gradient(180deg, rgba(0,0,0,0) 45%, ${treatment.scrimColor} 100%)`,
             }}
           />
         </div>
@@ -84,13 +92,19 @@ export const BrollOverlayComposition: React.FC<BrollOverlayCompositionProps> = (
   }
 
   // Full screen: the image fills the canvas, the scrim sits under the captions.
-  const band = captionBand ?? { top: Math.round(height * 0.64), bottom: Math.round(height * 0.75) };
+  const band = captionBand ?? {
+    top: Math.round(height * 0.64),
+    bottom: Math.round(height * 0.75),
+  };
   const scrimTop = Math.max(0, Math.round(height * 0.42));
   const pillTop = Math.max(0, Math.min(height - 40, band.top + 8));
-  const pillHeight = Math.max(40, Math.min(height - pillTop, band.bottom - band.top + 56));
+  const pillHeight = Math.max(
+    40,
+    Math.min(height - pillTop, band.bottom - band.top + 56),
+  );
 
   return (
-    <AbsoluteFill style={{ backgroundColor: 'transparent' }}>
+    <AbsoluteFill style={{ backgroundColor: "transparent" }}>
       <AbsoluteFill
         style={{
           opacity: style.opacity,
@@ -100,9 +114,9 @@ export const BrollOverlayComposition: React.FC<BrollOverlayCompositionProps> = (
         <Img
           src={imageUrl}
           style={{
-            width: '100%',
-            height: '100%',
-            objectFit: 'cover',
+            width: "100%",
+            height: "100%",
+            objectFit: "cover",
             transform: `scale(${style.mediaScale}) translateX(${style.mediaX}px)`,
           }}
         />
@@ -111,7 +125,9 @@ export const BrollOverlayComposition: React.FC<BrollOverlayCompositionProps> = (
       {/* Scrim: the caption's own colour decides whether it is dark or light. */}
       <AbsoluteFill
         style={{
-          opacity: interpolate(style.opacity, [0, 1], [0, 1], { extrapolateRight: 'clamp' }),
+          opacity: interpolate(style.opacity, [0, 1], [0, 1], {
+            extrapolateRight: "clamp",
+          }),
           background: `linear-gradient(180deg, rgba(0,0,0,0) ${Math.round((scrimTop / height) * 100)}%, ${
             treatment.scrimColor
           } 100%)`,
@@ -119,7 +135,7 @@ export const BrollOverlayComposition: React.FC<BrollOverlayCompositionProps> = (
       />
       <div
         style={{
-          position: 'absolute',
+          position: "absolute",
           left: Math.round(width * 0.04),
           top: pillTop,
           width: Math.round(width * 0.92),

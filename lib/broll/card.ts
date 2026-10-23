@@ -9,11 +9,20 @@
  */
 
 import type { BrollCardRect } from "../types";
-import { OVERLAY_CANVAS_HEIGHT, OVERLAY_CANVAS_WIDTH, OVERLAY_STACK_GAP, OVERLAY_TOP_MARGIN } from "../overlay-stack";
+import {
+  OVERLAY_CANVAS_HEIGHT,
+  OVERLAY_CANVAS_WIDTH,
+  OVERLAY_TOP_MARGIN,
+} from "../overlay-stack";
 
-/** Card frame: 16:9, leaving ~100 px on each side of the canvas. */
-export const CARD_WIDTH = 880;
-export const CARD_HEIGHT = 495;
+/** Card frame: 16:9, 70% of the canvas width (756 x 425 on a 1080 canvas). */
+export const CARD_WIDTH_FRACTION = 0.7;
+export const CARD_WIDTH = Math.round(
+  OVERLAY_CANVAS_WIDTH * CARD_WIDTH_FRACTION,
+);
+export const CARD_HEIGHT = Math.round((CARD_WIDTH * 9) / 16);
+/** How far the card reaches into the caption band: 0.5 = the band's vertical middle. */
+export const CARD_CAPTION_OVERLAP = 1;
 /** Clear space between the card and a face box. */
 export const CARD_FACE_GAP = 28;
 
@@ -31,6 +40,17 @@ export interface CardPlacementInput {
   faceZones?: FaceZoneRect[];
   canvasWidth?: number;
   canvasHeight?: number;
+}
+
+/** Lowest y the card may reach: the vertical middle of the caption band. */
+function cardBottomLimit(
+  band: { top: number; bottom: number },
+  canvasHeight: number,
+): number {
+  return Math.min(
+    canvasHeight,
+    band.top + (band.bottom - band.top) * CARD_CAPTION_OVERLAP,
+  );
 }
 
 function overlapArea(a: BrollCardRect, b: FaceZoneRect): number {
@@ -57,15 +77,9 @@ export function planCardRect(input: CardPlacementInput): BrollCardRect {
   const canvasWidth = input.canvasWidth ?? OVERLAY_CANVAS_WIDTH;
   const canvasHeight = input.canvasHeight ?? OVERLAY_CANVAS_HEIGHT;
   const top = OVERLAY_TOP_MARGIN;
-  const bottom = Math.min(canvasHeight, input.captionBand.top - OVERLAY_STACK_GAP);
+  const bottom = cardBottomLimit(input.captionBand, canvasHeight);
   const available = Math.max(0, bottom - top);
   const faceZones = (input.faceZones ?? []).map(expanded);
-
-  // Ideal position: just below the lowest face (so the speaker's head stays clear),
-  // otherwise a little under the top edge where the card reads best.
-  const lowestFaceBottom = faceZones.length
-    ? Math.max(...faceZones.map((zone) => zone.y + zone.height))
-    : null;
 
   // Shrinking keeps a 16:9 frame; it is only used when no full-size position is
   // free of faces, so the card is as large as the frame allows.
@@ -78,14 +92,15 @@ export function planCardRect(input: CardPlacementInput): BrollCardRect {
     if (height > available) continue;
     const x = Math.round((canvasWidth - width) / 2);
     const maxY = Math.max(top, bottom - height);
-    const idealY =
-      lowestFaceBottom === null
-        ? top + Math.round((maxY - top) * 0.15)
-        : Math.min(maxY, lowestFaceBottom + 8);
+    // Ideal: the card's bottom edge sits at the caption band's middle.
+    const idealY = maxY;
 
     for (let y = top; y <= maxY + 0.5; y += 8) {
       const rect = { x, y, width, height };
-      const covered = faceZones.reduce((sum, zone) => sum + overlapArea(rect, zone), 0);
+      const covered = faceZones.reduce(
+        (sum, zone) => sum + overlapArea(rect, zone),
+        0,
+      );
       // Covering a face is catastrophic; distance from the ideal spot is a nudge.
       const score = covered * 1000 + Math.abs(y - idealY) + (1 - scale) * 120;
       if (!best || score < best.score) best = { rect, score };
@@ -102,7 +117,12 @@ export function planCardRect(input: CardPlacementInput): BrollCardRect {
     return { x: Math.round((canvasWidth - width) / 2), y: top, width, height };
   }
 
-  return { ...best.rect, y: Math.round(Math.min(bottom - best.rect.height, Math.max(top, best.rect.y))) };
+  return {
+    ...best.rect,
+    y: Math.round(
+      Math.min(bottom - best.rect.height, Math.max(top, best.rect.y)),
+    ),
+  };
 }
 
 /**
@@ -117,12 +137,13 @@ export function planCardRect(input: CardPlacementInput): BrollCardRect {
 export function fitCardRectToBand(
   rect: BrollCardRect,
   captionBand: { top: number; bottom: number },
-  canvas: { width?: number; height?: number } = {}
+  canvas: { width?: number; height?: number } = {},
 ): BrollCardRect {
   const canvasWidth = canvas.width ?? OVERLAY_CANVAS_WIDTH;
   const canvasHeight = canvas.height ?? OVERLAY_CANVAS_HEIGHT;
-  const limit = Math.min(canvasHeight, captionBand.top - OVERLAY_STACK_GAP);
-  if (rect.y + rect.height <= limit && rect.y >= OVERLAY_TOP_MARGIN) return rect;
+  const limit = cardBottomLimit(captionBand, canvasHeight);
+  if (rect.y + rect.height <= limit && rect.y >= OVERLAY_TOP_MARGIN)
+    return rect;
 
   const available = limit - OVERLAY_TOP_MARGIN;
   // Below this there is no room for a readable card; keeping the planned rect (and
@@ -131,19 +152,31 @@ export function fitCardRectToBand(
   if (available < 120) return rect;
 
   if (rect.height <= available) {
-    const y = Math.max(OVERLAY_TOP_MARGIN, Math.min(limit - rect.height, rect.y));
+    const y = Math.max(
+      OVERLAY_TOP_MARGIN,
+      Math.min(limit - rect.height, rect.y),
+    );
     return { ...rect, y };
   }
 
   const scale = available / rect.height;
   const height = Math.max(1, Math.round(rect.height * scale));
   const width = Math.max(1, Math.round(rect.width * scale));
-  const x = Math.max(0, Math.min(canvasWidth - width, Math.round(rect.x + (rect.width - width) / 2)));
+  const x = Math.max(
+    0,
+    Math.min(
+      canvasWidth - width,
+      Math.round(rect.x + (rect.width - width) / 2),
+    ),
+  );
   return { x, y: OVERLAY_TOP_MARGIN, width, height };
 }
 
 /** True when a planned card (plus gap) touches any face box - used by tests/logs. */
-export function cardCoversFace(card: BrollCardRect, faceZones: FaceZoneRect[]): boolean {
+export function cardCoversFace(
+  card: BrollCardRect,
+  faceZones: FaceZoneRect[],
+): boolean {
   return faceZones.some((zone) => overlapArea(card, expanded(zone)) > 0);
 }
 
@@ -160,7 +193,7 @@ export function mapFaceToCanvas(
   frameWidth: number,
   frameHeight: number,
   canvasWidth = OVERLAY_CANVAS_WIDTH,
-  canvasHeight = OVERLAY_CANVAS_HEIGHT
+  canvasHeight = OVERLAY_CANVAS_HEIGHT,
 ): FaceZoneRect | null {
   if (
     !Number.isFinite(face.width) ||
@@ -177,8 +210,17 @@ export function mapFaceToCanvas(
   const targetAspect = canvasWidth / canvasHeight;
   const cropWidth = Math.min(frameWidth, frameHeight * targetAspect);
   const cropHeight = Math.min(frameHeight, frameWidth / targetAspect);
-  const cropX = Math.max(0, Math.min(frameWidth - cropWidth, face.x + face.width / 2 - cropWidth / 2));
-  const cropY = Math.max(0, Math.min(frameHeight - cropHeight, face.y + face.height / 2 - cropHeight * 0.4));
+  const cropX = Math.max(
+    0,
+    Math.min(frameWidth - cropWidth, face.x + face.width / 2 - cropWidth / 2),
+  );
+  const cropY = Math.max(
+    0,
+    Math.min(
+      frameHeight - cropHeight,
+      face.y + face.height / 2 - cropHeight * 0.4,
+    ),
+  );
 
   const scaleX = canvasWidth / cropWidth;
   const scaleY = canvasHeight / cropHeight;
