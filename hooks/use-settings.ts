@@ -1,11 +1,23 @@
 "use client";
 
 import * as React from "react";
-import { AppSettings, AppSettingsSection, AppSettingsSnapshot, ResolvedPaths } from "@/lib/types";
+import {
+  AppSettings,
+  AppSettingsSection,
+  AppSettingsSnapshot,
+  ResolvedPaths,
+} from "@/lib/types";
 import { useToast } from "@/components/ui/toaster";
 
 /** One provider probe, mirrored from `lib/settings-verify.ts` (kept structural so the client needs no server import). */
-export type VerifyTarget = "gemini" | "deepgram" | "pexels" | "pixabay" | "unsplash";
+export type VerifyTarget =
+  | "gemini"
+  | "deepgram"
+  | "pexels"
+  | "pixabay"
+  | "unsplash"
+  | "wikimedia"
+  | "openverse";
 
 export interface VerifyResult {
   target: VerifyTarget;
@@ -20,7 +32,12 @@ export interface VerifyResult {
 
 export interface SettingsOptions {
   captionPresets: Array<{ id: string; name: string; isDefault: boolean }>;
-  overlayPresets: Array<{ id: string; kind: "hook" | "cta"; name: string; isDefault: boolean }>;
+  overlayPresets: Array<{
+    id: string;
+    kind: "hook" | "cta";
+    name: string;
+    isDefault: boolean;
+  }>;
 }
 
 export interface SettingsPayload extends AppSettingsSnapshot {
@@ -40,6 +57,8 @@ export type SettingsBusy =
   | "verify:pexels"
   | "verify:pixabay"
   | "verify:unsplash"
+  | "verify:wikimedia"
+  | "verify:openverse"
   | "verify:all"
   | null;
 
@@ -52,14 +71,17 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   // A dev server that restarted mid-edit answers a /api path with an HTML 404, and
   // "Unexpected token '<'" is what that looks like in a toast. Say what happened instead:
   // the page is fine, the request never reached a handler.
-  const parsed = text.trimStart().startsWith("{") || text.trimStart().startsWith("[") ? safeParse(text) : null;
+  const parsed =
+    text.trimStart().startsWith("{") || text.trimStart().startsWith("[")
+      ? safeParse(text)
+      : null;
   if (!response.ok) {
     const detail = parsed ? String(parsed.error ?? parsed.message ?? "") : "";
     throw new Error(
       detail ||
-      (parsed
-        ? `${url} failed (HTTP ${response.status}).`
-        : `The app server answered ${url} with HTTP ${response.status} and no JSON. A dev server that was just restarted does this - reload the page.`)
+        (parsed
+          ? `${url} failed (HTTP ${response.status}).`
+          : `The app server answered ${url} with HTTP ${response.status} and no JSON. A dev server that was just restarted does this - reload the page.`),
     );
   }
   return (parsed ?? {}) as T;
@@ -72,7 +94,6 @@ function safeParse(text: string): Record<string, unknown> | null {
     return null;
   }
 }
-
 
 /**
  * The Settings page's only data source.
@@ -102,7 +123,9 @@ export function useSettings() {
       setRevision((current) => current + 1);
       setError(null);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not load settings.");
+      setError(
+        caught instanceof Error ? caught.message : "Could not load settings.",
+      );
     } finally {
       setBusy(null);
     }
@@ -117,20 +140,30 @@ export function useSettings() {
     async (section: AppSettingsSection, value: object) => {
       setBusy(`save:${section}`);
       try {
-        const data = await requestJson<{ snapshot: SettingsPayload }>("/api/settings", {
-          method: "PUT",
-          body: JSON.stringify({ section, value }),
-        });
+        const data = await requestJson<{ snapshot: SettingsPayload }>(
+          "/api/settings",
+          {
+            method: "PUT",
+            body: JSON.stringify({ section, value }),
+          },
+        );
         // The response wraps the fresh snapshot; the page state IS the snapshot.
         setPayload(data.snapshot);
         setRevision((current) => current + 1);
         setError(null);
-        toast({ title: "Settings saved", description: settingsToastNote(section), tone: "success" });
+        toast({
+          title: "Settings saved",
+          description: settingsToastNote(section),
+          tone: "success",
+        });
         return true;
       } catch (caught) {
         toast({
           title: "Could not save",
-          description: caught instanceof Error ? caught.message : "The server refused these settings.",
+          description:
+            caught instanceof Error
+              ? caught.message
+              : "The server refused these settings.",
           tone: "error",
         });
         return false;
@@ -138,19 +171,26 @@ export function useSettings() {
         setBusy(null);
       }
     },
-    [toast]
+    [toast],
   );
 
   const reset = React.useCallback(
     async (section: AppSettingsSection) => {
       setBusy(`reset:${section}`);
       try {
-        const data = await requestJson<{ snapshot: SettingsPayload }>(`/api/settings?section=${section}`, {
-          method: "DELETE",
-        });
+        const data = await requestJson<{ snapshot: SettingsPayload }>(
+          `/api/settings?section=${section}`,
+          {
+            method: "DELETE",
+          },
+        );
         setPayload(data.snapshot);
         setRevision((current) => current + 1);
-        setResults((current) => current.filter((result) => section !== "ai" || result.target !== "gemini"));
+        setResults((current) =>
+          current.filter(
+            (result) => section !== "ai" || result.target !== "gemini",
+          ),
+        );
         toast({
           title: "Reset to defaults",
           description: settingsResetNote(section),
@@ -160,7 +200,10 @@ export function useSettings() {
       } catch (caught) {
         toast({
           title: "Could not reset",
-          description: caught instanceof Error ? caught.message : "The server refused the reset.",
+          description:
+            caught instanceof Error
+              ? caught.message
+              : "The server refused the reset.",
           tone: "error",
         });
         return false;
@@ -168,7 +211,7 @@ export function useSettings() {
         setBusy(null);
       }
     },
-    [toast]
+    [toast],
   );
 
   /**
@@ -179,10 +222,13 @@ export function useSettings() {
   const importEnv = React.useCallback(async () => {
     setBusy("import-env");
     try {
-      const data = await requestJson<{ snapshot: SettingsPayload; copied: { geminiKeys: number; deepgram: boolean } }>(
-        "/api/settings",
-        { method: "POST", body: JSON.stringify({ action: "import-env" }) }
-      );
+      const data = await requestJson<{
+        snapshot: SettingsPayload;
+        copied: { geminiKeys: number; deepgram: boolean };
+      }>("/api/settings", {
+        method: "POST",
+        body: JSON.stringify({ action: "import-env" }),
+      });
       setPayload(data.snapshot);
       setRevision((current) => current + 1);
       toast({
@@ -197,7 +243,10 @@ export function useSettings() {
     } catch (caught) {
       toast({
         title: "Nothing was copied",
-        description: caught instanceof Error ? caught.message : "The server refused the import.",
+        description:
+          caught instanceof Error
+            ? caught.message
+            : "The server refused the import.",
         tone: "error",
       });
       return false;
@@ -216,13 +265,21 @@ export function useSettings() {
     }) => {
       setBusy(`verify:${input.target}`);
       try {
-        const data = await requestJson<{ results: VerifyResult[] }>("/api/settings/verify", {
-          method: "POST",
-          body: JSON.stringify(input),
-        });
+        const data = await requestJson<{ results: VerifyResult[] }>(
+          "/api/settings/verify",
+          {
+            method: "POST",
+            body: JSON.stringify(input),
+          },
+        );
         setResults((current) => {
           const kept = current.filter(
-            (result) => !data.results.some((fresh) => fresh.target === result.target && fresh.label === result.label)
+            (result) =>
+              !data.results.some(
+                (fresh) =>
+                  fresh.target === result.target &&
+                  fresh.label === result.label,
+              ),
           );
           return [...kept, ...data.results];
         });
@@ -230,7 +287,10 @@ export function useSettings() {
       } catch (caught) {
         toast({
           title: "Verification failed",
-          description: caught instanceof Error ? caught.message : "The probe could not run.",
+          description:
+            caught instanceof Error
+              ? caught.message
+              : "The probe could not run.",
           tone: "error",
         });
         return [];
@@ -238,7 +298,7 @@ export function useSettings() {
         setBusy(null);
       }
     },
-    [toast]
+    [toast],
   );
 
   const effective: AppSettings | null = payload?.effective ?? null;
@@ -309,4 +369,3 @@ function settingsToastNote(section: AppSettingsSection): string {
       return "";
   }
 }
-

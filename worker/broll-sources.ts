@@ -16,7 +16,11 @@ import type {
   WordTimestamp,
 } from "../lib/types";
 import { completeWithFallback } from "../lib/llm";
-import { buildBrollPrompt, parseBrollAnalysis, type BrollAnalysis } from "../lib/broll/analysis";
+import {
+  buildBrollPrompt,
+  parseBrollAnalysis,
+  type BrollAnalysis,
+} from "../lib/broll/analysis";
 import {
   cacheImage,
   jsonCacheKey,
@@ -25,7 +29,12 @@ import {
   VERDICT_CACHE_TTL_MS,
   writeJsonCache,
 } from "../lib/broll/cache";
-import { createRateLimiter, defaultBrollFetch, fetchJson, type BrollFetch } from "../lib/broll/http";
+import {
+  createRateLimiter,
+  defaultBrollFetch,
+  fetchJson,
+  type BrollFetch,
+} from "../lib/broll/http";
 import {
   buildCommonsSearchUrl,
   parseCommonsResponse,
@@ -35,15 +44,26 @@ import {
   searchStockAcrossProviders,
   trackUnsplashDownload,
   type StockKeys,
+  type StockProviderId,
   type StockSearchResult,
 } from "../lib/broll/providers/stock";
+import { searchOpenverse } from "../lib/broll/providers/openverse";
 import type { BrollCandidate } from "../lib/broll/providers/types";
-import { makeVisionThumbnail, prepareCardFile, prepareFullscreenFile } from "../lib/broll/image";
+import {
+  makeVisionThumbnail,
+  prepareCardFile,
+  prepareFullscreenFile,
+} from "../lib/broll/image";
 import { verifyEntityImage, type VisionVerdict } from "../lib/broll/vision";
 import type { BrollPlanDeps, PreparedBrollImage } from "../lib/broll/plan";
 
 /** Wikimedia asks clients not to hammer the API; one request per second is safe. */
 const commonsLimiter = createRateLimiter({ minIntervalMs: 1000 });
+const openverseLimiter = createRateLimiter({ minIntervalMs: 1000 });
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 export interface BrollSourceOptions {
   ai: AiProviderSettings;
@@ -67,10 +87,12 @@ function stockKeys(ai: AiProviderSettings): StockKeys {
 async function cachedProviderSearch(
   provider: BrollProviderId,
   query: string,
-  loader: () => Promise<BrollCandidate[]>
+  loader: () => Promise<BrollCandidate[]>,
 ): Promise<BrollCandidate[]> {
   const key = jsonCacheKey(["search", provider, query.toLowerCase().trim()]);
-  const cached = await readJsonCache<BrollCandidate[]>(key, { ttlMs: SEARCH_CACHE_TTL_MS });
+  const cached = await readJsonCache<BrollCandidate[]>(key, {
+    ttlMs: SEARCH_CACHE_TTL_MS,
+  });
   if (cached) return cached;
   const fresh = await loader();
   if (fresh.length > 0) await writeJsonCache(key, fresh);
@@ -80,9 +102,12 @@ async function cachedProviderSearch(
 export function createBrollDeps(options: BrollSourceOptions): BrollPlanDeps {
   const fetcher = options.fetcher ?? defaultBrollFetch;
   const keys = stockKeys(options.ai);
-  const geminiKeys = options.ai.geminiApiKeys.map((key) => key.trim()).filter(Boolean);
+  const geminiKeys = options.ai.geminiApiKeys
+    .map((key) => key.trim())
+    .filter(Boolean);
   const providerOrder = options.providerOrder.filter(
-    (provider): provider is Exclude<BrollProviderId, "wikimedia"> => provider !== "wikimedia"
+    (provider): provider is StockProviderId =>
+      provider !== "wikimedia" && provider !== "openverse",
   );
 
   return {
@@ -105,7 +130,9 @@ export function createBrollDeps(options: BrollSourceOptions): BrollPlanDeps {
         input.words[0]?.word ?? "",
         input.words[input.words.length - 1]?.word ?? "",
       ]);
-      const cached = await readJsonCache<BrollAnalysis>(cacheKey, { ttlMs: SEARCH_CACHE_TTL_MS });
+      const cached = await readJsonCache<BrollAnalysis>(cacheKey, {
+        ttlMs: SEARCH_CACHE_TTL_MS,
+      });
       if (cached) return cached;
 
       const result = await completeWithFallback({
@@ -121,15 +148,47 @@ export function createBrollDeps(options: BrollSourceOptions): BrollPlanDeps {
     },
 
     async searchEntity(query: string): Promise<BrollCandidate[]> {
-      return cachedProviderSearch("wikimedia", query, async () => {
-        const payload = await commonsLimiter(() =>
-          fetchJson(buildCommonsSearchUrl(query, 10), {
-            fetcher,
-            provider: "Wikimedia Commons",
-          })
+      let commonsError: unknown;
+      try {
+        const fromCommons = await cachedProviderSearch(
+          "wikimedia",
+          query,
+          async () => {
+            const payload = await commonsLimiter(() =>
+              fetchJson(buildCommonsSearchUrl(query, 10), {
+                fetcher,
+                provider: "Wikimedia Commons",
+              }),
+            );
+            return rankCommonsCandidates(parseCommonsResponse(payload));
+          },
         );
-        return rankCommonsCandidates(parseCommonsResponse(payload));
-      });
+        if (fromCommons.length > 0) return fromCommons;
+      } catch (error) {
+        commonsError = error;
+      }
+
+      // Commons is unreachable (or had nothing usable): fall back to Openverse.
+      try {
+        const fromOpenverse = await cachedProviderSearch(
+          "openverse",
+          query,
+          () => openverseLimiter(() => searchOpenverse(query, { fetcher })),
+        );
+        if (fromOpenverse.length > 0) {
+          console.log(
+            `[broll] "${query}": using Openverse (${fromOpenverse.length} candidate(s)).`,
+          );
+        }
+        return fromOpenverse;
+      } catch (error) {
+        if (commonsError) {
+          throw new Error(
+            `Wikimedia Commons: ${describeError(commonsError)} | Openverse: ${describeError(error)}`,
+          );
+        }
+        return []; // Commons answered (empty); Openverse failing just means no image.
+      }
     },
 
     async searchStock(query: string): Promise<StockSearchResult> {
@@ -142,7 +201,9 @@ export function createBrollDeps(options: BrollSourceOptions): BrollPlanDeps {
           .map(([name, value]) => `${name}:${value ? 1 : 0}`)
           .join(","),
       ]);
-      const cached = await readJsonCache<StockSearchResult>(key, { ttlMs: SEARCH_CACHE_TTL_MS });
+      const cached = await readJsonCache<StockSearchResult>(key, {
+        ttlMs: SEARCH_CACHE_TTL_MS,
+      });
       if (cached) {
         const first = cached.candidates[0];
         if (cached.provider === "unsplash" && keys.unsplash && first) {
@@ -169,20 +230,26 @@ export function createBrollDeps(options: BrollSourceOptions): BrollPlanDeps {
     async download(candidate: BrollCandidate) {
       return cacheImage(candidate, {
         fetcher,
-        provider: candidate.provider === "wikimedia" ? "Wikimedia Commons" : candidate.provider,
+        provider:
+          candidate.provider === "wikimedia"
+            ? "Wikimedia Commons"
+            : candidate.provider,
       });
     },
 
     async prepareFullscreen(
       bytes: Buffer,
       entityType: BrollEntityType,
-      cacheKey: string
+      cacheKey: string,
     ): Promise<PreparedBrollImage> {
       // `sourceFile` comes from `download()`; the plan builder fills it in.
       return prepareFullscreenFile(bytes, { cacheKey, entityType });
     },
 
-    async prepareCard(bytes: Buffer, cacheKey: string): Promise<PreparedBrollImage> {
+    async prepareCard(
+      bytes: Buffer,
+      cacheKey: string,
+    ): Promise<PreparedBrollImage> {
       return prepareCardFile(bytes, { cacheKey });
     },
 
@@ -198,9 +265,14 @@ export function createBrollDeps(options: BrollSourceOptions): BrollPlanDeps {
         ...input.images.map((image) => image.data.length),
         input.context.slice(0, 120),
       ]);
-      const cached = await readJsonCache<VisionVerdict>(cacheKey, { ttlMs: VERDICT_CACHE_TTL_MS });
+      const cached = await readJsonCache<VisionVerdict>(cacheKey, {
+        ttlMs: VERDICT_CACHE_TTL_MS,
+      });
       if (cached) return cached;
-      const verdict = await verifyEntityImage(input, { fetcher, keys: geminiKeys });
+      const verdict = await verifyEntityImage(input, {
+        fetcher,
+        keys: geminiKeys,
+      });
       await writeJsonCache(cacheKey, verdict);
       return verdict;
     },
@@ -211,7 +283,10 @@ export function createBrollDeps(options: BrollSourceOptions): BrollPlanDeps {
 export async function ensureBrollCacheReady(): Promise<void> {
   const { ensureBrollCacheDirs } = await import("../lib/broll/cache");
   await ensureBrollCacheDirs();
-  await fs.mkdir(await import("../lib/broll/cache").then((module) => module.brollImageDir()), {
-    recursive: true,
-  });
+  await fs.mkdir(
+    await import("../lib/broll/cache").then((module) => module.brollImageDir()),
+    {
+      recursive: true,
+    },
+  );
 }

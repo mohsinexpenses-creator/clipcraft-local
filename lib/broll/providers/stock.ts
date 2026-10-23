@@ -18,6 +18,12 @@ import { ProviderKeyError, ProviderQuotaError, fetchJson } from "../http";
 import type { BrollCandidate } from "./types";
 import { isUsableImage } from "./types";
 
+/** The providers that serve landscape cards (Commons and Openverse are entity-only). */
+export type StockProviderId = Exclude<
+  BrollProviderId,
+  "wikimedia" | "openverse"
+>;
+
 /** Minimum width/height ratio for a card: wider than 5:4. */
 export const MIN_LANDSCAPE_ASPECT = 1.25;
 
@@ -109,7 +115,7 @@ export function parsePexelsResponse(payload: unknown): BrollCandidate[] {
 export async function searchPexels(
   query: string,
   key: string,
-  options: StockSearchOptions
+  options: StockSearchOptions,
 ): Promise<BrollCandidate[]> {
   const payload = await fetchJson(buildPexelsUrl(query, options.limit ?? 8), {
     fetcher: options.fetcher,
@@ -134,7 +140,11 @@ interface PixabayHit {
   user?: string;
 }
 
-export function buildPixabayUrl(query: string, key: string, limit: number): string {
+export function buildPixabayUrl(
+  query: string,
+  key: string,
+  limit: number,
+): string {
   const params = new URLSearchParams({
     key,
     q: query,
@@ -181,13 +191,16 @@ export function parsePixabayResponse(payload: unknown): BrollCandidate[] {
 export async function searchPixabay(
   query: string,
   key: string,
-  options: StockSearchOptions
+  options: StockSearchOptions,
 ): Promise<BrollCandidate[]> {
-  const payload = await fetchJson(buildPixabayUrl(query, key, options.limit ?? 8), {
-    fetcher: options.fetcher,
-    provider: "Pixabay",
-    timeoutMs: options.timeoutMs,
-  });
+  const payload = await fetchJson(
+    buildPixabayUrl(query, key, options.limit ?? 8),
+    {
+      fetcher: options.fetcher,
+      provider: "Pixabay",
+      timeoutMs: options.timeoutMs,
+    },
+  );
   return dedupe(parsePixabayResponse(payload), options.limit ?? 8);
 }
 
@@ -237,7 +250,9 @@ export function parseUnsplashResponse(payload: unknown): BrollCandidate[] {
       author: photo.user?.name,
       license: "Unsplash License",
       licenseUrl: "https://unsplash.com/license",
-      ...(photo.links?.download_location ? { downloadLocation: photo.links.download_location } : {}),
+      ...(photo.links?.download_location
+        ? { downloadLocation: photo.links.download_location }
+        : {}),
     });
   }
   return candidates;
@@ -246,7 +261,7 @@ export function parseUnsplashResponse(payload: unknown): BrollCandidate[] {
 export async function searchUnsplash(
   query: string,
   key: string,
-  options: StockSearchOptions
+  options: StockSearchOptions,
 ): Promise<BrollCandidate[]> {
   const payload = await fetchJson(buildUnsplashUrl(query, options.limit ?? 8), {
     fetcher: options.fetcher,
@@ -265,9 +280,10 @@ export async function searchUnsplash(
 export async function trackUnsplashDownload(
   candidate: BrollCandidate,
   key: string,
-  options: { fetcher: BrollFetch; timeoutMs?: number }
+  options: { fetcher: BrollFetch; timeoutMs?: number },
 ): Promise<boolean> {
-  if (candidate.provider !== "unsplash" || !candidate.downloadLocation) return false;
+  if (candidate.provider !== "unsplash" || !candidate.downloadLocation)
+    return false;
   try {
     await fetchJson(candidate.downloadLocation, {
       fetcher: options.fetcher,
@@ -290,7 +306,7 @@ export interface StockSearchResult {
   notes: string[];
 }
 
-export const PROVIDER_LABELS: Record<Exclude<BrollProviderId, "wikimedia">, string> = {
+export const PROVIDER_LABELS: Record<StockProviderId, string> = {
   pexels: "Pexels",
   pixabay: "Pixabay",
   unsplash: "Unsplash",
@@ -303,11 +319,15 @@ export const PROVIDER_LABELS: Record<Exclude<BrollProviderId, "wikimedia">, stri
  */
 export async function searchStockAcrossProviders(
   query: string,
-  options: StockSearchOptions & { providerOrder: BrollProviderId[]; keys: StockKeys }
+  options: StockSearchOptions & {
+    providerOrder: BrollProviderId[];
+    keys: StockKeys;
+  },
 ): Promise<StockSearchResult> {
   const notes: string[] = [];
   const order = options.providerOrder.filter(
-    (provider): provider is Exclude<BrollProviderId, "wikimedia"> => provider !== "wikimedia"
+    (provider): provider is StockProviderId =>
+      provider !== "wikimedia" && provider !== "openverse",
   );
 
   for (const provider of order) {
@@ -328,10 +348,16 @@ export async function searchStockAcrossProviders(
     } catch (error) {
       // Quota/key/network problems move on to the next provider. Any other AppError
       // is a provider bug we still want to survive, so it also just becomes a note.
-      if (error instanceof ProviderQuotaError || error instanceof ProviderKeyError || error instanceof AppError) {
+      if (
+        error instanceof ProviderQuotaError ||
+        error instanceof ProviderKeyError ||
+        error instanceof AppError
+      ) {
         notes.push(`${PROVIDER_LABELS[provider]}: ${error.summary}`);
       } else {
-        notes.push(`${PROVIDER_LABELS[provider]}: ${error instanceof Error ? error.message : String(error)}`);
+        notes.push(
+          `${PROVIDER_LABELS[provider]}: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     }
   }

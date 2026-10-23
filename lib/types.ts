@@ -45,7 +45,12 @@ export interface PipelineOptions {
  * ========================================================================== */
 
 /** Where a B-roll image came from. `wikimedia` needs no key, the rest do. */
-export type BrollProviderId = "wikimedia" | "pexels" | "pixabay" | "unsplash";
+export type BrollProviderId =
+  | "wikimedia"
+  | "openverse"
+  | "pexels"
+  | "pixabay"
+  | "unsplash";
 
 /** Full-screen 9:16 image, or a landscape card inside a rounded frame. */
 export type BrollItemKind = "fullscreen" | "landscape";

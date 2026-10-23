@@ -522,7 +522,9 @@ function ProvidersCard({
   // Stock keys are edited independently of the Gemini pool and of Deepgram: each
   // field saves only itself, so a pasted-but-unsaved Pexels key never blocks a
   // Deepgram change.
-  const [stockDrafts, setStockDrafts] = React.useState<Record<string, string>>({});
+  const [stockDrafts, setStockDrafts] = React.useState<Record<string, string>>(
+    {},
+  );
   const storedDeepgramMasked = String(
     (settings.stored.ai as { deepgramApiKey?: string } | undefined)
       ?.deepgramApiKey ?? "",
@@ -598,15 +600,17 @@ function ProvidersCard({
               Viral detection runs on Google AI Studio. Keys are tried in order
               and rotate on a 429, so a second free key is real redundancy.
               Gemini Vision checks every full-screen B-roll image; Deepgram is
-              optional: set a key only to transcribe in the cloud instead of with
-              local whisper.cpp.
+              optional: set a key only to transcribe in the cloud instead of
+              with local whisper.cpp.
             </p>
           </div>
         </div>
         <Button
           size="sm"
           variant="outline"
-          onClick={() => void settings.verify({ target: "all", withVision: true })}
+          onClick={() =>
+            void settings.verify({ target: "all", withVision: true })
+          }
           disabled={settings.busy !== null}
         >
           {settings.busy === "verify:all" ? (
@@ -905,9 +909,9 @@ function ProvidersCard({
               </div>
             ) : (
               <p className="text-[11px] leading-snug text-muted-foreground">
-                Nothing saved yet, so transcription runs on local whisper.cpp - a key
-                is only needed for cloud transcription. Test asks Deepgram without
-                storing anything; Save stores it for the next upload.
+                Nothing saved yet, so transcription runs on local whisper.cpp -
+                a key is only needed for cloud transcription. Test asks Deepgram
+                without storing anything; Save stores it for the next upload.
               </p>
             )}
           </div>
@@ -991,6 +995,20 @@ const STOCK_PROVIDERS = [
   },
 ];
 
+/** Key-free sources for named entities: the only thing to test is the connection. */
+const ENTITY_SOURCES = [
+  {
+    id: "wikimedia" as const,
+    label: "Wikimedia Commons",
+    hint: "First choice for named people, places and events. Tests the search API and the image host.",
+  },
+  {
+    id: "openverse" as const,
+    label: "Openverse",
+    hint: "Fallback when Commons is unreachable or finds nothing. The anonymous quota is small: a test uses one request.",
+  },
+];
+
 function StockProviderCards({
   settings,
   effective,
@@ -1010,7 +1028,8 @@ function StockProviderCards({
           B-roll image providers
         </h3>
         <p className="text-[11px] text-muted-foreground">
-          Landscape cards only. Entity images come from Wikimedia Commons, which needs no key.
+          Keyed providers fill the landscape cards; named entities use the
+          key-free sources below.
         </p>
       </div>
 
@@ -1018,13 +1037,18 @@ function StockProviderCards({
         {STOCK_PROVIDERS.map((provider) => {
           const stored = String(effective.ai[provider.field] ?? "");
           const draft = drafts[provider.field] ?? "";
-          const result = settings.results.find((entry) => entry.target === provider.id);
+          const result = settings.results.find(
+            (entry) => entry.target === provider.id,
+          );
           const busyKey = `save:ai` as const;
           const saving = settings.busy === busyKey && draft.trim().length > 0;
           const testing = settings.busy === `verify:${provider.id}`;
 
           return (
-            <div key={provider.id} className="space-y-2 rounded-xl border bg-muted/20 p-3">
+            <div
+              key={provider.id}
+              className="space-y-2 rounded-xl border bg-muted/20 p-3"
+            >
               <div className="flex items-center justify-between gap-2">
                 <h4 className="flex items-center gap-1.5 text-[12px] font-semibold">
                   {provider.label}
@@ -1042,7 +1066,10 @@ function StockProviderCards({
                 <Input
                   value={draft}
                   onChange={(event) =>
-                    setDrafts((current) => ({ ...current, [provider.field]: event.target.value }))
+                    setDrafts((current) => ({
+                      ...current,
+                      [provider.field]: event.target.value,
+                    }))
                   }
                   placeholder={stored || `Paste a ${provider.label} key`}
                   spellCheck={false}
@@ -1062,7 +1089,11 @@ function StockProviderCards({
                     })
                   }
                 >
-                  {testing ? <Loader2 className="animate-spin" /> : <ShieldCheck />}
+                  {testing ? (
+                    <Loader2 className="animate-spin" />
+                  ) : (
+                    <ShieldCheck />
+                  )}
                   Test
                 </Button>
                 <Button
@@ -1070,8 +1101,14 @@ function StockProviderCards({
                   variant="soft"
                   disabled={!draft.trim() || settings.busy !== null}
                   onClick={async () => {
-                    const ok = await settings.save("ai", { [provider.field]: draft.trim() });
-                    if (ok) setDrafts((current) => ({ ...current, [provider.field]: "" }));
+                    const ok = await settings.save("ai", {
+                      [provider.field]: draft.trim(),
+                    });
+                    if (ok)
+                      setDrafts((current) => ({
+                        ...current,
+                        [provider.field]: "",
+                      }));
                   }}
                 >
                   {saving ? <Loader2 className="animate-spin" /> : <Save />}
@@ -1083,7 +1120,11 @@ function StockProviderCards({
                 <p className="min-w-0">
                   {stored ? (
                     <>
-                      Saved as <code className="font-mono text-foreground">{stored}</code>.{" "}
+                      Saved as{" "}
+                      <code className="font-mono text-foreground">
+                        {stored}
+                      </code>
+                      .{" "}
                     </>
                   ) : null}
                   {provider.hint}
@@ -1094,7 +1135,9 @@ function StockProviderCards({
                       size="xs"
                       variant="ghost"
                       disabled={settings.busy !== null}
-                      onClick={() => void settings.verify({ target: provider.id })}
+                      onClick={() =>
+                        void settings.verify({ target: provider.id })
+                      }
                     >
                       Test saved
                     </Button>
@@ -1102,7 +1145,9 @@ function StockProviderCards({
                       size="xs"
                       variant="ghost"
                       disabled={settings.busy !== null}
-                      onClick={() => void settings.save("ai", { [provider.field]: "" })}
+                      onClick={() =>
+                        void settings.save("ai", { [provider.field]: "" })
+                      }
                     >
                       Remove
                     </Button>
@@ -1124,6 +1169,72 @@ function StockProviderCards({
                   {result.message}
                   {result.latencyMs ? ` (${result.latencyMs} ms)` : ""}
                 </p>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="mt-3 grid gap-3 lg:grid-cols-2">
+        {ENTITY_SOURCES.map((source) => {
+          const result = settings.results.find(
+            (entry) => entry.target === source.id,
+          );
+          const testing = settings.busy === `verify:${source.id}`;
+
+          return (
+            <div
+              key={source.id}
+              className="space-y-2 rounded-xl border bg-muted/20 p-3"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <h4 className="text-[12px] font-semibold">{source.label}</h4>
+                <span className="flex items-center gap-1 text-[10.5px] text-muted-foreground">
+                  No key needed
+                  {result ? <ResultDot result={result} /> : null}
+                </span>
+              </div>
+
+              <div className="flex items-start justify-between gap-2">
+                <p className="min-w-0 text-[10.5px] leading-snug text-muted-foreground">
+                  {source.hint}
+                </p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={settings.busy !== null}
+                  onClick={() => void settings.verify({ target: source.id })}
+                >
+                  {testing ? (
+                    <Loader2 className="animate-spin" />
+                  ) : (
+                    <ShieldCheck />
+                  )}
+                  Test
+                </Button>
+              </div>
+
+              {result ? (
+                <div
+                  className={cn(
+                    "rounded-md px-2 py-1 text-[10.5px] leading-snug",
+                    result.status === "ok"
+                      ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                      : result.status === "limited"
+                        ? "bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                        : "bg-destructive/10 text-destructive",
+                  )}
+                >
+                  <p>
+                    {result.message}
+                    {result.latencyMs ? ` (${result.latencyMs} ms)` : ""}
+                  </p>
+                  {result.notes?.map((note) => (
+                    <p key={note} className="opacity-80">
+                      · {note}
+                    </p>
+                  ))}
+                </div>
               ) : null}
             </div>
           );
