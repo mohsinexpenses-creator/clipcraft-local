@@ -26,6 +26,25 @@ export const CARD_CAPTION_OVERLAP = 1;
 /** Clear space between the card and a face box. */
 export const CARD_FACE_GAP = 28;
 
+/** How far (px) a card may sink below the caption band to avoid a face. */
+export const CARD_MAX_CAPTION_SPILL = 200;
+
+/** Lowest y a card of fixed height may take (band limit + allowed spill). */
+function cardLowestY(
+  bottomLimit: number,
+  cardHeight: number,
+  canvasHeight: number,
+): number {
+  const ideal = Math.max(OVERLAY_TOP_MARGIN, bottomLimit - cardHeight);
+  return Math.max(
+    OVERLAY_TOP_MARGIN,
+    Math.min(
+      canvasHeight - cardHeight - OVERLAY_TOP_MARGIN,
+      ideal + CARD_MAX_CAPTION_SPILL,
+    ),
+  );
+}
+
 export interface FaceZoneRect {
   x: number;
   y: number;
@@ -70,69 +89,46 @@ function expanded(zone: FaceZoneRect): FaceZoneRect {
 }
 
 /**
- * The card rectangle. Deterministic: same input, same rect - the render reads it
- * straight from the plan.
+ * The card rectangle. Size is ALWAYS fixed (70% width, 16:9). Only y moves:
+ * first choice is the ideal spot, then the nearest spot that keeps clear of faces.
  */
 export function planCardRect(input: CardPlacementInput): BrollCardRect {
   const canvasWidth = input.canvasWidth ?? OVERLAY_CANVAS_WIDTH;
   const canvasHeight = input.canvasHeight ?? OVERLAY_CANVAS_HEIGHT;
   const top = OVERLAY_TOP_MARGIN;
   const bottom = cardBottomLimit(input.captionBand, canvasHeight);
-  const available = Math.max(0, bottom - top);
   const faceZones = (input.faceZones ?? []).map(expanded);
 
-  // Shrinking keeps a 16:9 frame; it is only used when no full-size position is
-  // free of faces, so the card is as large as the frame allows.
-  const scales = [1, 0.85, 0.72, 0.6, 0.5, 0.42];
-  let best: { rect: BrollCardRect; score: number } | null = null;
+  const width = CARD_WIDTH;
+  const height = CARD_HEIGHT;
+  const x = Math.round((canvasWidth - width) / 2);
+  const idealY = Math.max(top, bottom - height);
+  const lowestY = cardLowestY(bottom, height, canvasHeight);
 
-  for (const scale of scales) {
-    const width = Math.round(CARD_WIDTH * scale);
-    const height = Math.round(CARD_HEIGHT * scale);
-    if (height > available) continue;
-    const x = Math.round((canvasWidth - width) / 2);
-    const maxY = Math.max(top, bottom - height);
-    // Ideal: the card's bottom edge sits at the caption band's middle.
-    const idealY = maxY;
-
-    for (let y = top; y <= maxY + 0.5; y += 8) {
-      const rect = { x, y, width, height };
-      const covered = faceZones.reduce(
-        (sum, zone) => sum + overlapArea(rect, zone),
-        0,
-      );
-      // Covering a face is catastrophic; distance from the ideal spot is a nudge.
-      const score = covered * 1000 + Math.abs(y - idealY) + (1 - scale) * 120;
-      if (!best || score < best.score) best = { rect, score };
+  let bestY = idealY;
+  let bestScore = Number.POSITIVE_INFINITY;
+  for (let y = top; y <= lowestY + 0.5; y += 8) {
+    const rect = { x, y, width, height };
+    const covered = faceZones.reduce(
+      (sum, zone) => sum + overlapArea(rect, zone),
+      0,
+    );
+    // Sinking into the caption band is tolerated, but only as a last resort.
+    const spill = Math.max(0, y + height - bottom);
+    const score = covered * 1000 + spill * width + Math.abs(y - idealY);
+    if (score < bestScore) {
+      bestScore = score;
+      bestY = y;
     }
-    // A full-size, face-free position wins outright - no need to try smaller cards.
-    if (best && best.score < 120) break;
   }
 
-  if (!best) {
-    // Nothing fits (a caption band at the very top): a small centred card is still
-    // better than no card, and the caller can see the overlap in `card`.
-    const height = Math.max(120, Math.min(CARD_HEIGHT, available || 200));
-    const width = Math.round(height * (CARD_WIDTH / CARD_HEIGHT));
-    return { x: Math.round((canvasWidth - width) / 2), y: top, width, height };
-  }
-
-  return {
-    ...best.rect,
-    y: Math.round(
-      Math.min(bottom - best.rect.height, Math.max(top, best.rect.y)),
-    ),
-  };
+  return { x, y: Math.round(bestY), width, height };
 }
 
 /**
- * Re-fit a PLANNED card rect to the caption band in force at RENDER time.
- *
- * The plan is made when B-roll is planned; the user may change the caption preset
- * afterwards. The stored rect was clear of the old band, so it is moved (or, when
- * there is not enough room, shrunk at a constant 16:9) to stay clear of the new one.
- * A card is never allowed to sit on the captions: that is the one overlap the
- * viewer cannot forgive.
+ * Re-fit a PLANNED card at RENDER time. Never resizes: the size is forced to
+ * the fixed 70% / 16:9 frame (this also repairs old plans) and only y is
+ * clamped. The planned y is kept, so face avoidance from planning survives.
  */
 export function fitCardRectToBand(
   rect: BrollCardRect,
@@ -142,34 +138,14 @@ export function fitCardRectToBand(
   const canvasWidth = canvas.width ?? OVERLAY_CANVAS_WIDTH;
   const canvasHeight = canvas.height ?? OVERLAY_CANVAS_HEIGHT;
   const limit = cardBottomLimit(captionBand, canvasHeight);
-  if (rect.y + rect.height <= limit && rect.y >= OVERLAY_TOP_MARGIN)
-    return rect;
 
-  const available = limit - OVERLAY_TOP_MARGIN;
-  // Below this there is no room for a readable card; keeping the planned rect (and
-  // the image) beats shrinking it into a sliver. captionReservedBand never puts a
-  // band this high - this only guards against a hand-edited preset.
-  if (available < 120) return rect;
+  const width = CARD_WIDTH;
+  const height = CARD_HEIGHT;
+  const x = Math.round((canvasWidth - width) / 2);
+  const maxY = cardLowestY(limit, height, canvasHeight);
+  const y = Math.round(Math.min(maxY, Math.max(OVERLAY_TOP_MARGIN, rect.y)));
 
-  if (rect.height <= available) {
-    const y = Math.max(
-      OVERLAY_TOP_MARGIN,
-      Math.min(limit - rect.height, rect.y),
-    );
-    return { ...rect, y };
-  }
-
-  const scale = available / rect.height;
-  const height = Math.max(1, Math.round(rect.height * scale));
-  const width = Math.max(1, Math.round(rect.width * scale));
-  const x = Math.max(
-    0,
-    Math.min(
-      canvasWidth - width,
-      Math.round(rect.x + (rect.width - width) / 2),
-    ),
-  );
-  return { x, y: OVERLAY_TOP_MARGIN, width, height };
+  return { x, y, width, height };
 }
 
 /** True when a planned card (plus gap) touches any face box - used by tests/logs. */
