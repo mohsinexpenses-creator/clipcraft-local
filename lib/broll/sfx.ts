@@ -14,7 +14,7 @@
  *  - nothing is scheduled outside the rendered timeline.
  */
 
-export const BROLL_SFX_VOLUME = 0.28;
+export const BROLL_SFX_VOLUME = 0.50;
 /** Minimum spacing between two cues (s). */
 export const BROLL_SFX_MIN_SPACING = 0.35;
 
