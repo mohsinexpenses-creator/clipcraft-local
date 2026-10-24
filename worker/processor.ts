@@ -1,5 +1,5 @@
-import fs from 'fs';
-import path from 'path';
+import fs from "fs";
+import path from "path";
 import {
   getCaptionPreset,
   getClip,
@@ -8,37 +8,45 @@ import {
   getOverlayStylePreset,
   getVideo,
   updateClip,
-} from '../lib/db';
-import { AppError, RenderCancelledError, toErrorMessage } from '../lib/errors';
-import { resolveClipsDir } from '../lib/paths';
-import { resolveCaptionThemeOverlayStyle } from '../lib/caption-theme-styles';
+} from "../lib/db";
+import { AppError, RenderCancelledError, toErrorMessage } from "../lib/errors";
+import { resolveClipsDir } from "../lib/paths";
+import { resolveCaptionThemeOverlayStyle } from "../lib/caption-theme-styles";
 
-import { getVideoMetadata } from '../lib/ffmpeg';
-import { getCaptionOffsetMs, shiftCaptionWords } from './caption-timing';
-import { ClipLayout, ClipRecord, JobData, OverlayStylePreset } from '../lib/types';
-import { detectSpeakerTimeline } from './asd';
-import { buildLayoutPlan, getSplitFramingSettings } from './layout';
-import { adaptOverlaysToLayout, describePlacements } from './overlay-layout';
-import { color, log } from '../lib/logger';
+import { getVideoMetadata } from "../lib/ffmpeg";
+import { getCaptionOffsetMs, shiftCaptionWords } from "./caption-timing";
+import {
+  ClipLayout,
+  ClipRecord,
+  JobData,
+  OverlayStylePreset,
+} from "../lib/types";
+import { detectSpeakerTimeline } from "./asd";
+import { buildLayoutPlan, getSplitFramingSettings } from "./layout";
+import { adaptOverlaysToLayout, describePlacements } from "./overlay-layout";
+import { color, log } from "../lib/logger";
 import {
   HOOK_TRANSITION_SECONDS,
   normalizeFps,
   processVideoSegment,
   type OverlayFrameSequence,
-} from './ffmpeg-pipeline';
-import { DEFAULT_HOOK_FALLBACK_SECONDS, resolveHookTiming } from './hook-timing';
+} from "./ffmpeg-pipeline";
+import {
+  DEFAULT_HOOK_FALLBACK_SECONDS,
+  resolveHookTiming,
+} from "./hook-timing";
 import {
   prepareRemotionBrollOverlays,
   prepareRemotionCaptionOverlays,
   type PreparedBrollOverlays,
   type PreparedCaptionOverlays,
-} from './remotion-renderer';
-import { startMediaServer, type ClipMediaServer } from './clip-http-server';
-import { cachedImagePath } from '../lib/broll/cache';
-import { fitCardRectToBand } from '../lib/broll/card';
-import { buildBrollSfxCues } from '../lib/broll/sfx';
-import { captionReservedBand } from '../lib/overlay-stack';
-import { buildClipFileName } from './clip-file-name';
+} from "./remotion-renderer";
+import { startMediaServer, type ClipMediaServer } from "./clip-http-server";
+import { cachedImagePath } from "../lib/broll/cache";
+import { anchoredCardRect } from "../lib/broll/card";
+import { buildBrollSfxCues } from "../lib/broll/sfx";
+import { captionReservedBand } from "../lib/overlay-stack";
+import { buildClipFileName } from "./clip-file-name";
 
 /** How far either side of the window we still accept transcript words. */
 const WORD_SLACK_SECONDS = 0.5;
@@ -47,12 +55,16 @@ const WORD_SLACK_SECONDS = 0.5;
  * Last-resort overlay copy. A render should never die just because an LLM call was
  * skipped or returned nothing - the user can always re-render with better text.
  */
-function deriveOverlayText(words: Array<{ word: string }>, maxWords: number, fallback: string): string {
+function deriveOverlayText(
+  words: Array<{ word: string }>,
+  maxWords: number,
+  fallback: string,
+): string {
   const text = words
     .slice(0, maxWords)
     .map((entry) => entry.word)
-    .join(' ')
-    .replace(/\s+/g, ' ')
+    .join(" ")
+    .replace(/\s+/g, " ")
     .trim()
     .toUpperCase();
 
@@ -62,32 +74,40 @@ function deriveOverlayText(words: Array<{ word: string }>, maxWords: number, fal
 /** Resolve an explicit overlay id, or use the current database default only when absent. */
 async function resolveOverlayStyle(
   id: string | undefined,
-  kind: 'hook' | 'cta'
+  kind: "hook" | "cta",
 ): Promise<OverlayStylePreset> {
   if (id?.trim()) {
     const preset = await getOverlayStylePreset(id.trim());
     if (!preset || preset.kind !== kind) {
-      throw new AppError(`Overlay style preset ${id} was not found for ${kind}.`, {
-        status: 404,
-        resolution: 'Select an existing overlay style preset from the dashboard and retry rendering.',
-      });
+      throw new AppError(
+        `Overlay style preset ${id} was not found for ${kind}.`,
+        {
+          status: 404,
+          resolution:
+            "Select an existing overlay style preset from the dashboard and retry rendering.",
+        },
+      );
     }
     return preset;
   }
 
   const preset = await getDefaultOverlayStylePreset(kind);
   if (!preset) {
-    throw new AppError(`No default ${kind.toUpperCase()} style preset is configured.`, {
-      status: 500,
-      resolution: 'Choose a database default for Hook and CTA in preset settings.',
-    });
+    throw new AppError(
+      `No default ${kind.toUpperCase()} style preset is configured.`,
+      {
+        status: 500,
+        resolution:
+          "Choose a database default for Hook and CTA in preset settings.",
+      },
+    );
   }
   return preset;
 }
 
 export async function processClipJob(
   jobData: JobData,
-  onProgress?: (progress: number) => void
+  onProgress?: (progress: number) => void,
 ): Promise<ClipRecord> {
   const {
     clipId,
@@ -104,7 +124,7 @@ export async function processClipJob(
 
   log.section(
     `Render ${color.bold(clipId)}` +
-      color.gray(`  ·  video ${videoId}  ·  ${start}s → ${end}s`)
+      color.gray(`  ·  video ${videoId}  ·  ${start}s → ${end}s`),
   );
 
   const reportProgress = async (value: number): Promise<void> => {
@@ -116,34 +136,41 @@ export async function processClipJob(
   if (!clip) {
     throw new AppError(`Clip record ${clipId} was not found in SQLite.`, {
       status: 404,
-      resolution: 'Create the clip again from viral detection before attempting to render it.',
+      resolution:
+        "Create the clip again from viral detection before attempting to render it.",
     });
   }
 
   const video = await getVideo(videoId);
   if (!video) {
-    throw new AppError(`Source video record ${videoId} was not found in SQLite.`, {
-      status: 404,
-      resolution: 'Upload the source video again before rendering clips.',
-    });
+    throw new AppError(
+      `Source video record ${videoId} was not found in SQLite.`,
+      {
+        status: 404,
+        resolution: "Upload the source video again before rendering clips.",
+      },
+    );
   }
 
   if (!fs.existsSync(video.filePath)) {
-    throw new AppError('The source video file is missing from disk.', {
+    throw new AppError("The source video file is missing from disk.", {
       status: 404,
       details: video.filePath,
-      resolution: 'Upload the video again so ClipCraft can rebuild the source file.',
+      resolution:
+        "Upload the video again so ClipCraft can rebuild the source file.",
     });
   }
 
-  clip.status = 'processing';
+  clip.status = "processing";
   clip.progress = 5;
   clip.error = undefined;
   // A re-render starts fresh: a stale cancelling flag (from a previous
   // cancelled render) must not abort this new job on its first poll.
   clip.cancelling = false;
   if (!(await updateClip(clip))) {
-    throw new RenderCancelledError('Clip was deleted before rendering started.');
+    throw new RenderCancelledError(
+      "Clip was deleted before rendering started.",
+    );
   }
   await reportProgress(5);
 
@@ -155,12 +182,16 @@ export async function processClipJob(
   const outputDir = path.join(resolveClipsDir(), outputBase);
   // Optional pre-caption diagnostic branch (SAVE_PRECAPTION_DEBUG=1). The normal
   // final render goes directly from the source into the title-named deliverable.
-  const intermediateVideoPath = path.join(outputDir, `${clipId}_precaption.mp4`);
-  const clipFileBase = buildClipFileName(
-    clip.aiAnalysis?.rank,
-    clip.aiAnalysis?.viral_packaging.video_title,
-    clip.aiAnalysis?.viral_packaging.hashtags
-  ) || clipId;
+  const intermediateVideoPath = path.join(
+    outputDir,
+    `${clipId}_precaption.mp4`,
+  );
+  const clipFileBase =
+    buildClipFileName(
+      clip.aiAnalysis?.rank,
+      clip.aiAnalysis?.viral_packaging.video_title,
+      clip.aiAnalysis?.viral_packaging.hashtags,
+    ) || clipId;
   const finalVideoPath = uniqueClipPath(outputDir, clipFileBase);
 
   // Cancellation: the UI flips clip.cancelling (POST /api/clips/<id>/cancel).
@@ -192,19 +223,23 @@ export async function processClipJob(
     const sourceMeta = await getVideoMetadata(video.filePath);
     const renderFps = normalizeFps(sourceMeta.fps);
     const sourceVariableFrameRate = sourceMeta.isVariableFrameRate === true;
-    const audioStartOffsetSeconds = sourceMeta.audioStartTime === null
-      ? 0
-      : sourceMeta.audioStartTime - sourceMeta.videoStartTime;
-    const rateDetail = sourceMeta.averageFrameRate && sourceMeta.nominalFrameRate
-      ? `avg/r=${sourceMeta.averageFrameRate}/${sourceMeta.nominalFrameRate}`
-      : 'FFprobe frame rates unavailable';
+    const audioStartOffsetSeconds =
+      sourceMeta.audioStartTime === null
+        ? 0
+        : sourceMeta.audioStartTime - sourceMeta.videoStartTime;
+    const rateDetail =
+      sourceMeta.averageFrameRate && sourceMeta.nominalFrameRate
+        ? `avg/r=${sourceMeta.averageFrameRate}/${sourceMeta.nominalFrameRate}`
+        : "FFprobe frame rates unavailable";
     log.detail(
       `Source ${sourceMeta.width}x${sourceMeta.height} @ ${sourceMeta.fps}fps ` +
-      `(${rateDetail}${sourceVariableFrameRate ? ', VFR → CFR normalize' : ''}; render @ ${renderFps}fps), ` +
-      `audio=${sourceMeta.hasAudio ? 'yes' : 'no'}, ${sourceMeta.duration.toFixed(1)}s`
+        `(${rateDetail}${sourceVariableFrameRate ? ", VFR → CFR normalize" : ""}; render @ ${renderFps}fps), ` +
+        `audio=${sourceMeta.hasAudio ? "yes" : "no"}, ${sourceMeta.duration.toFixed(1)}s`,
     );
     if (sourceMeta.hasAudio && Math.abs(audioStartOffsetSeconds) > 0.001) {
-      log.detail(`Audio stream starts ${audioStartOffsetSeconds >= 0 ? '+' : ''}${audioStartOffsetSeconds.toFixed(3)}s from video; preserving this offset.`);
+      log.detail(
+        `Audio stream starts ${audioStartOffsetSeconds >= 0 ? "+" : ""}${audioStartOffsetSeconds.toFixed(3)}s from video; preserving this offset.`,
+      );
     }
 
     const segmentDuration = Math.max(0.1, end - start);
@@ -216,7 +251,8 @@ export async function processClipJob(
     const clipWords = allWords
       .filter(
         (word) =>
-          word.end >= start - WORD_SLACK_SECONDS && word.start <= end + WORD_SLACK_SECONDS
+          word.end >= start - WORD_SLACK_SECONDS &&
+          word.start <= end + WORD_SLACK_SECONDS,
       )
       .map((word) => ({
         ...word,
@@ -226,12 +262,15 @@ export async function processClipJob(
       }));
 
     if (clipWords.length === 0) {
-      throw new AppError('No transcript words were found for this clip window.', {
-        status: 400,
-        details: `window=${start}s-${end}s, transcriptWords=${allWords.length}`,
-        resolution:
-          'Re-run transcription, or pick a segment that overlaps spoken audio - captions need word timings.',
-      });
+      throw new AppError(
+        "No transcript words were found for this clip window.",
+        {
+          status: 400,
+          details: `window=${start}s-${end}s, transcriptWords=${allWords.length}`,
+          resolution:
+            "Re-run transcription, or pick a segment that overlaps spoken audio - captions need word timings.",
+        },
+      );
     }
 
     // This adjustment is deliberately caption-only. The audio filter and profanity
@@ -239,7 +278,9 @@ export async function processClipJob(
     const captionOffsetMs = getCaptionOffsetMs();
     const captionWords = shiftCaptionWords(clipWords, captionOffsetMs);
     if (captionOffsetMs !== 0) {
-      log.detail(`Caption offset ${captionOffsetMs > 0 ? '+' : ''}${captionOffsetMs}ms (positive = captions later; audio unchanged).`);
+      log.detail(
+        `Caption offset ${captionOffsetMs > 0 ? "+" : ""}${captionOffsetMs}ms (positive = captions later; audio unchanged).`,
+      );
     }
 
     // hookDuration/ctaDuration are optional on the job payload; never pass undefined
@@ -247,9 +288,10 @@ export async function processClipJob(
     // A positive hookDuration means "hook intro enabled". When viral analysis has
     // a valid hook_timestamp, its complete start→end interval is the actual intro
     // duration; the 3s value is only a fallback for older/invalid analysis data.
-    const rawHookDuration = Number.isFinite(hookDuration) && (hookDuration ?? 0) >= 0
-      ? (hookDuration as number)
-      : DEFAULT_HOOK_FALLBACK_SECONDS;
+    const rawHookDuration =
+      Number.isFinite(hookDuration) && (hookDuration ?? 0) >= 0
+        ? (hookDuration as number)
+        : DEFAULT_HOOK_FALLBACK_SECONDS;
     const hookOff = rawHookDuration < 0.15;
 
     // Replay the exact detected hook interval at the beginning, then play the
@@ -270,20 +312,21 @@ export async function processClipJob(
     const safeHookDuration = hookTiming.duration;
     const hookStart = hookTiming.start;
 
-    if (hookTiming.source === 'timestamps') {
+    if (hookTiming.source === "timestamps") {
       log.ok(
         `Hook moment (from viral prompt): ${hookTiming.startAbsolute!.toFixed(1)}s → ` +
-        `${hookTiming.endAbsolute!.toFixed(1)}s (${safeHookDuration.toFixed(2)}s)` +
-        (hook?.hook_line ? `  ("${hook.hook_line}")` : '')
+          `${hookTiming.endAbsolute!.toFixed(1)}s (${safeHookDuration.toFixed(2)}s)` +
+          (hook?.hook_line ? `  ("${hook.hook_line}")` : ""),
       );
-    } else if (hookTiming.source === 'fallback') {
+    } else if (hookTiming.source === "fallback") {
       log.detail(
-        `No usable hook timestamp range on this clip - using a ${safeHookDuration.toFixed(2)}s fallback.`
+        `No usable hook timestamp range on this clip - using a ${safeHookDuration.toFixed(2)}s fallback.`,
       );
     }
 
-    log.step('Step 1/3 · Face tracking + active speaker detection');
-    const layout: ClipLayout = jobData.layout === 'split-screen' ? 'split-screen' : 'speaker-focus';
+    log.step("Step 1/3 · Face tracking + active speaker detection");
+    const layout: ClipLayout =
+      jobData.layout === "split-screen" ? "split-screen" : "speaker-focus";
     clip.layout = layout;
 
     // No fallbacks by design: detectSpeakerTimeline throws an informative
@@ -295,14 +338,20 @@ export async function processClipJob(
       segmentDuration,
       sourceMeta.width,
       sourceMeta.height,
-      { hasAudio: sourceMeta.hasAudio }
+      { hasAudio: sourceMeta.hasAudio },
     );
     const splitFraming = getSplitFramingSettings();
-    const plan = buildLayoutPlan(asd, layout, sourceMeta.width, sourceMeta.height, splitFraming);
-    if (layout === 'split-screen') {
+    const plan = buildLayoutPlan(
+      asd,
+      layout,
+      sourceMeta.width,
+      sourceMeta.height,
+      splitFraming,
+    );
+    if (layout === "split-screen") {
       log.detail(
         `Split framing: face target ${(splitFraming.faceTargetFrac * 100).toFixed(0)}% of pane height, ` +
-        `maximum crop zoom ${splitFraming.zoom.toFixed(1)}x.`
+          `maximum crop zoom ${splitFraming.zoom.toFixed(1)}x.`,
       );
     }
     checkCancelled();
@@ -311,22 +360,24 @@ export async function processClipJob(
     // into something else: when only one person is found the planner renders a
     // single speaker window, and that is reported loudly here and on the clip.
     // Persist an empty string to clear any note from a previous render.
-    clip.layoutNote = '';
-    if (layout === 'split-screen') {
-      if (plan.mode === 'split') {
+    clip.layoutNote = "";
+    if (layout === "split-screen") {
+      if (plan.mode === "split") {
         log.ok(
           `Split screen: ${plan.cells.length} panes - ` +
-          plan.cells
-            .map((cell, i) => `pane ${i + 1} = person#${cell.trackId}`)
-            .join(', ')
+            plan.cells
+              .map((cell, i) => `pane ${i + 1} = person#${cell.trackId}`)
+              .join(", "),
         );
       } else {
-        clip.layoutNote = plan.splitFallbackReason ?? 'Split screen could not be applied; rendered a single speaker window.';
+        clip.layoutNote =
+          plan.splitFallbackReason ??
+          "Split screen could not be applied; rendered a single speaker window.";
         log.warn(`SPLIT SCREEN NOT APPLIED - ${clip.layoutNote}`);
       }
     }
 
-    if (plan.mode === 'single') {
+    if (plan.mode === "single") {
       clip.cropData = {
         x: 0,
         y: 0,
@@ -336,30 +387,41 @@ export async function processClipJob(
     }
     clip.progress = 20;
     if (!(await updateClip(clip))) {
-      throw new RenderCancelledError('Clip was deleted while render planning was in progress.');
+      throw new RenderCancelledError(
+        "Clip was deleted while render planning was in progress.",
+      );
     }
     await reportProgress(20);
 
     const requestedCaptionPresetId =
-      typeof captionPresetId === 'string' && captionPresetId.trim()
+      typeof captionPresetId === "string" && captionPresetId.trim()
         ? captionPresetId.trim()
         : clip.captionPresetId?.trim() || undefined;
     const defaultCaptionPreset = requestedCaptionPresetId
       ? null
       : await getDefaultCaptionPreset();
-    const resolvedCaptionPresetId = requestedCaptionPresetId ?? defaultCaptionPreset?._id;
+    const resolvedCaptionPresetId =
+      requestedCaptionPresetId ?? defaultCaptionPreset?._id;
     if (!resolvedCaptionPresetId) {
-      throw new AppError('No caption preset is selected and no database default is configured.', {
-        status: 500,
-        resolution: 'Choose a default caption preset in preset settings before rendering.',
-      });
+      throw new AppError(
+        "No caption preset is selected and no database default is configured.",
+        {
+          status: 500,
+          resolution:
+            "Choose a default caption preset in preset settings before rendering.",
+        },
+      );
     }
     const preset = await getCaptionPreset(resolvedCaptionPresetId);
     if (!preset) {
-      throw new AppError(`Caption preset ${resolvedCaptionPresetId} was not found.`, {
-        status: 404,
-        resolution: 'Select an existing caption preset from the dashboard and retry rendering.',
-      });
+      throw new AppError(
+        `Caption preset ${resolvedCaptionPresetId} was not found.`,
+        {
+          status: 404,
+          resolution:
+            "Select an existing caption preset from the dashboard and retry rendering.",
+        },
+      );
     }
 
     // hookDuration 0 means the hook intro/overlay was turned off for this clip
@@ -367,14 +429,18 @@ export async function processClipJob(
     // would only be ignored by the overlay.
     const hookOverlayEnabled = safeHookDuration > 0;
     const resolvedHookText = !hookOverlayEnabled
-      ? ''
+      ? ""
       : hookText?.trim() ||
         clip.hookText?.trim() ||
-        deriveOverlayText(clipWords, 8, 'WATCH THIS');
+        deriveOverlayText(clipWords, 8, "WATCH THIS");
     if (!hookOverlayEnabled) {
-      log.detail('Hook overlay disabled for this clip (hookDuration=0) - rendering without hook text.');
+      log.detail(
+        "Hook overlay disabled for this clip (hookDuration=0) - rendering without hook text.",
+      );
     } else if (!hookText?.trim() && !clip.hookText?.trim()) {
-      log.warn(`No hook text supplied - derived "${resolvedHookText}" from the transcript.`);
+      log.warn(
+        `No hook text supplied - derived "${resolvedHookText}" from the transcript.`,
+      );
     }
 
     // ctaDuration 0 means the CTA card was turned off for this clip (detection
@@ -386,12 +452,18 @@ export async function processClipJob(
       : (clip.ctaDuration ?? 2.5);
     const ctaOverlayEnabled = rawCtaDuration > 0;
     const resolvedCtaText = !ctaOverlayEnabled
-      ? ''
-      : ctaText?.trim() || clip.ctaText?.trim() || deriveOverlayText(clipWords.slice(-10), 8, 'FOLLOW FOR MORE');
+      ? ""
+      : ctaText?.trim() ||
+        clip.ctaText?.trim() ||
+        deriveOverlayText(clipWords.slice(-10), 8, "FOLLOW FOR MORE");
     if (!ctaOverlayEnabled) {
-      log.detail('CTA overlay disabled for this clip (ctaDuration=0) - rendering without CTA text.');
+      log.detail(
+        "CTA overlay disabled for this clip (ctaDuration=0) - rendering without CTA text.",
+      );
     } else if (!ctaText?.trim() && !clip.ctaText?.trim()) {
-      log.warn(`No CTA text supplied - derived "${resolvedCtaText}" from the transcript.`);
+      log.warn(
+        `No CTA text supplied - derived "${resolvedCtaText}" from the transcript.`,
+      );
     }
 
     const resolvedCtaDuration = ctaOverlayEnabled ? rawCtaDuration : 0;
@@ -401,13 +473,23 @@ export async function processClipJob(
     const requestedHookStylePresetId = [
       jobData.hookStylePresetId,
       clip.hookStylePresetId,
-    ].find((id) => typeof id === 'string' && id.trim())?.trim();
+    ]
+      .find((id) => typeof id === "string" && id.trim())
+      ?.trim();
     const requestedCtaStylePresetId = [
       jobData.ctaStylePresetId,
       clip.ctaStylePresetId,
-    ].find((id) => typeof id === 'string' && id.trim())?.trim();
-    const hookStyle = await resolveOverlayStyle(requestedHookStylePresetId, 'hook');
-    const ctaStyle = await resolveOverlayStyle(requestedCtaStylePresetId, 'cta');
+    ]
+      .find((id) => typeof id === "string" && id.trim())
+      ?.trim();
+    const hookStyle = await resolveOverlayStyle(
+      requestedHookStylePresetId,
+      "hook",
+    );
+    const ctaStyle = await resolveOverlayStyle(
+      requestedCtaStylePresetId,
+      "cta",
+    );
 
     // Persist the resolved ids so legacy clips keep the exact presets used by
     // this render even if the database defaults change before a later rerender.
@@ -415,7 +497,9 @@ export async function processClipJob(
     clip.hookStylePresetId = hookStyle._id;
     clip.ctaStylePresetId = ctaStyle._id;
     if (!(await updateClip(clip))) {
-      throw new RenderCancelledError('Clip was deleted while presets were being resolved.');
+      throw new RenderCancelledError(
+        "Clip was deleted while presets were being resolved.",
+      );
     }
 
     // A selected caption theme also skins the Hook and CTA card typography,
@@ -435,15 +519,25 @@ export async function processClipJob(
       timing: {
         clipDuration: segmentDuration,
         hookStart,
-        hookVisibleSeconds: Math.max(0, safeHookDuration - Math.min(HOOK_TRANSITION_SECONDS, safeHookDuration / 2)),
+        hookVisibleSeconds: Math.max(
+          0,
+          safeHookDuration -
+            Math.min(HOOK_TRANSITION_SECONDS, safeHookDuration / 2),
+        ),
         ctaDuration: resolvedCtaDuration,
       },
       caption: preset,
-      hook: hookOverlayEnabled ? { style: themedHookStyle, text: resolvedHookText } : null,
-      cta: ctaOverlayEnabled ? { style: themedCtaStyle, text: resolvedCtaText } : null,
+      hook: hookOverlayEnabled
+        ? { style: themedHookStyle, text: resolvedHookText }
+        : null,
+      cta: ctaOverlayEnabled
+        ? { style: themedCtaStyle, text: resolvedCtaText }
+        : null,
     });
     if (overlayLayout.adapted) {
-      log.detail(`Overlay layout (split screen): ${describePlacements(overlayLayout)}`);
+      log.detail(
+        `Overlay layout (split screen): ${describePlacements(overlayLayout)}`,
+      );
       for (const note of overlayLayout.notes) log.detail(`  · ${note}`);
     }
     const captionPresetForRender = overlayLayout.caption;
@@ -451,36 +545,40 @@ export async function processClipJob(
     const ctaStyleForRender = overlayLayout.ctaStyle ?? themedCtaStyle;
 
     log.step(
-      `Step 2/3 · Render transparent overlays (Remotion)  ${color.gray(`(${clipWords.length} words, preset "${preset.name}")`)}`
+      `Step 2/3 · Render transparent overlays (Remotion)  ${color.gray(`(${clipWords.length} words, preset "${preset.name}")`)}`,
     );
     const overlayProgressSink = (progress: number): void => {
       const scaled = 20 + Math.max(0, Math.min(100, progress)) * 0.1;
       clip.progress = Math.max(clip.progress ?? 0, Math.round(scaled));
-      void updateClip(clip).catch((error) => log.warn('progress save failed: ' + toErrorMessage(error)));
+      void updateClip(clip).catch((error) =>
+        log.warn("progress save failed: " + toErrorMessage(error)),
+      );
       void reportProgress(scaled);
     };
 
     checkCancelled();
     const totalDuration = segmentDuration + safeHookDuration;
-    const preparedOverlays: PreparedCaptionOverlays = await prepareRemotionCaptionOverlays({
-      fps: renderFps,
-      totalDuration,
-      hookText: resolvedHookText,
-      hookDuration: safeHookDuration,
-      hookStart,
-      hookTransitionDuration: safeHookDuration > 0
-        ? Math.min(HOOK_TRANSITION_SECONDS, safeHookDuration / 2)
-        : 0,
-      ctaText: resolvedCtaText,
-      ctaDuration: resolvedCtaDuration,
-      words: captionWords,
-      preset: captionPresetForRender,
-      hookStyle: hookStyleForRender,
-      ctaStyle: ctaStyleForRender,
-      captionLiftScale: overlayLayout.captionLiftScale,
-      onProgress: overlayProgressSink,
-      isCancelled: () => cancelFlag,
-    });
+    const preparedOverlays: PreparedCaptionOverlays =
+      await prepareRemotionCaptionOverlays({
+        fps: renderFps,
+        totalDuration,
+        hookText: resolvedHookText,
+        hookDuration: safeHookDuration,
+        hookStart,
+        hookTransitionDuration:
+          safeHookDuration > 0
+            ? Math.min(HOOK_TRANSITION_SECONDS, safeHookDuration / 2)
+            : 0,
+        ctaText: resolvedCtaText,
+        ctaDuration: resolvedCtaDuration,
+        words: captionWords,
+        preset: captionPresetForRender,
+        hookStyle: hookStyleForRender,
+        ctaStyle: ctaStyleForRender,
+        captionLiftScale: overlayLayout.captionLiftScale,
+        onProgress: overlayProgressSink,
+        isCancelled: () => cancelFlag,
+      });
 
     /**
      * B-roll: the plan was made by the `broll` job (before this render) and this is
@@ -498,19 +596,24 @@ export async function processClipJob(
         .map((item) => ({ item, filePath: cachedImagePath(item.renderFile) }))
         .filter(({ filePath }) => {
           const exists = fs.existsSync(filePath);
-          if (!exists) log.warn(`B-roll image missing from the cache, skipping it: ${path.basename(filePath)}`);
+          if (!exists)
+            log.warn(
+              `B-roll image missing from the cache, skipping it: ${path.basename(filePath)}`,
+            );
           return exists;
         });
       if (usable.length > 0) {
         try {
           brollMediaServer = await startMediaServer(
             usable.map(({ filePath }, index) => ({
-              route: `broll-${index}${path.extname(filePath) || '.jpg'}`,
+              route: `broll-${index}${path.extname(filePath) || ".jpg"}`,
               filePath,
-            }))
+            })),
           );
           const mediaServer = brollMediaServer;
           const captionBand = captionReservedBand(captionPresetForRender);
+          const cardLayout =
+            plan.mode === "split" ? "split-screen" : "speaker-focus";
           preparedBroll = await prepareRemotionBrollOverlays({
             fps: renderFps,
             items: usable.map(({ item }, index) => ({
@@ -518,10 +621,9 @@ export async function processClipJob(
               kind: item.kind,
               start: item.start,
               end: item.end,
-              imageUrl: `${mediaServer.baseUrl}/broll-${index}${path.extname(usable[index].filePath) || '.jpg'}`,
-              // Re-fit to the caption band in force NOW: the plan may predate a
-              // caption-preset change, and a card must never land on the captions.
-              ...(item.card ? { card: fitCardRectToBand(item.card, captionBand) } : {}),
+              imageUrl: `${mediaServer.baseUrl}/broll-${index}${path.extname(usable[index].filePath) || ".jpg"}`,
+              // Fixed anchor per layout (CARD_* constants in lib/broll/card.ts).
+              ...(item.card ? { card: anchoredCardRect(cardLayout) } : {}),
             })),
             captionTextColor: captionPresetForRender.textColor,
             captionBand,
@@ -533,9 +635,9 @@ export async function processClipJob(
           if (brollPlan.options.sfx) {
             sfx = buildBrollSfxCues(
               usable.map(({ item }) => ({ start: item.start, end: item.end })),
-              { totalDuration, enabled: true }
+              { totalDuration, enabled: true },
             ).map((cue) => ({
-              filePath: path.join(process.cwd(), 'public', 'sfx', cue.file),
+              filePath: path.join(process.cwd(), "public", "sfx", cue.file),
               atSeconds: cue.atSeconds,
             }));
             sfx = sfx.filter((cue) => fs.existsSync(cue.filePath));
@@ -556,7 +658,7 @@ export async function processClipJob(
     if (brollSequences.length > 0) {
       log.detail(
         `B-roll: ${brollSequences.length} sequence(s) from ${brollFileCount} image(s), ` +
-          `${sfx.length} sound effect(s); painted UNDER the captions`
+          `${sfx.length} sound effect(s); painted UNDER the captions`,
       );
     }
 
@@ -571,12 +673,16 @@ export async function processClipJob(
       checkCancelled();
       log.step(
         `Step 3/3 · FFmpeg crop + hook + overlays + one final encode ` +
-        color.gray(`(${preparedOverlays.sequences.length} transparent layer(s))`)
+          color.gray(
+            `(${preparedOverlays.sequences.length} transparent layer(s))`,
+          ),
       );
       const progressSink = (progress: number): void => {
         const scaled = 30 + Math.max(0, Math.min(80, progress)) * 0.85;
         clip.progress = Math.max(clip.progress ?? 0, Math.round(scaled));
-        void updateClip(clip).catch((error) => log.warn('progress save failed: ' + toErrorMessage(error)));
+        void updateClip(clip).catch((error) =>
+          log.warn("progress save failed: " + toErrorMessage(error)),
+        );
         void reportProgress(scaled);
       };
 
@@ -598,9 +704,10 @@ export async function processClipJob(
         overlays: [...brollSequences, ...preparedOverlays.sequences],
         sfx,
         words: clipWords,
-        debugOutputPath: process.env.SAVE_PRECAPTION_DEBUG?.trim() === '1'
-          ? intermediateVideoPath
-          : undefined,
+        debugOutputPath:
+          process.env.SAVE_PRECAPTION_DEBUG?.trim() === "1"
+            ? intermediateVideoPath
+            : undefined,
         isCancelled: () => cancelFlag,
         sourceIsVariableFrameRate: sourceVariableFrameRate,
         videoStartTimeSeconds: sourceMeta.videoStartTime,
@@ -617,13 +724,21 @@ export async function processClipJob(
         fileSizeBytes: fs.statSync(finalVideoPath).size,
       };
     } finally {
-      try { fs.rmSync(preparedOverlays.workDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+      try {
+        fs.rmSync(preparedOverlays.workDir, { recursive: true, force: true });
+      } catch {
+        /* best-effort */
+      }
       if (preparedBroll) {
-        try { fs.rmSync(preparedBroll.workDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+        try {
+          fs.rmSync(preparedBroll.workDir, { recursive: true, force: true });
+        } catch {
+          /* best-effort */
+        }
       }
     }
 
-    clip.status = 'done';
+    clip.status = "done";
     clip.progress = 100;
     clip.hookText = resolvedHookText;
     clip.ctaText = resolvedCtaText;
@@ -637,14 +752,16 @@ export async function processClipJob(
     clip.outputFps = renderResult.fps;
     clip.error = undefined;
     if (!(await updateClip(clip))) {
-      throw new RenderCancelledError('Clip was deleted while rendering was finishing.');
+      throw new RenderCancelledError(
+        "Clip was deleted while rendering was finishing.",
+      );
     }
     await reportProgress(100);
 
     log.ok(
       `Rendered ${color.bold(clipId)}: ${renderResult.width}x${renderResult.height} @ ` +
-      `${renderResult.fps}fps, ${renderResult.durationSeconds.toFixed(2)}s, ` +
-      `${(renderResult.fileSizeBytes / 1024 / 1024).toFixed(2)} MB`
+        `${renderResult.fps}fps, ${renderResult.durationSeconds.toFixed(2)}s, ` +
+        `${(renderResult.fileSizeBytes / 1024 / 1024).toFixed(2)} MB`,
     );
     log.detail(`→ ${finalVideoPath}`);
     return clip;
@@ -653,20 +770,26 @@ export async function processClipJob(
       // A cancel is not a failure: persist the cancelled state, end the job
       // cleanly (no rethrow -> no retry).
       log.warn(`Render cancelled by user: ${color.bold(clipId)}`);
-      clip.status = 'failed';
-      clip.error = 'Cancelled by user.';
+      clip.status = "failed";
+      clip.error = "Cancelled by user.";
       clip.cancelling = false;
       await updateClip(clip).catch((saveError) =>
-        log.error('Could not persist the cancelled state: ' + toErrorMessage(saveError))
+        log.error(
+          "Could not persist the cancelled state: " + toErrorMessage(saveError),
+        ),
       );
       return clip;
     }
-    log.error(`Render failed for ${color.bold(clipId)}: ${toErrorMessage(error)}`);
-    clip.status = 'failed';
+    log.error(
+      `Render failed for ${color.bold(clipId)}: ${toErrorMessage(error)}`,
+    );
+    clip.status = "failed";
     clip.error = toErrorMessage(error);
     clip.cancelling = false;
     await updateClip(clip).catch((saveError) =>
-      log.error('Could not persist the failure state: ' + toErrorMessage(saveError))
+      log.error(
+        "Could not persist the failure state: " + toErrorMessage(saveError),
+      ),
     );
     throw error;
   } finally {

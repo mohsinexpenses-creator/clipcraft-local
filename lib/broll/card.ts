@@ -25,6 +25,13 @@ export const CARD_HEIGHT = Math.round((CARD_WIDTH * 9) / 16);
 export const CARD_CAPTION_OVERLAP = 1;
 /** Clear space between the card and a face box. */
 export const CARD_FACE_GAP = 28;
+/** Layouts a card can be anchored for. */
+export type CardLayoutMode = "speaker-focus" | "split-screen";
+
+/** Speaker focus: card bottom edge sits this fraction of the canvas height ABOVE the clip bottom. */
+export const CARD_BOTTOM_ABOVE_CLIP_BOTTOM = 0.2;
+/** Split screen: card bottom edge sits this fraction of the canvas height ABOVE the center line. */
+export const CARD_BOTTOM_ABOVE_CENTER = 0.1;
 
 /** How far (px) a card may sink below the caption band to avoid a face. */
 export const CARD_MAX_CAPTION_SPILL = 200;
@@ -145,6 +152,27 @@ export function fitCardRectToBand(
   const maxY = cardLowestY(limit, height, canvasHeight);
   const y = Math.round(Math.min(maxY, Math.max(OVERLAY_TOP_MARGIN, rect.y)));
 
+  return { x, y, width, height };
+}
+
+/**
+ * Fixed placement per layout. Size stays 70% / 16:9; only the vertical anchor
+ * differs. The card's BOTTOM edge is the anchor.
+ */
+export function anchoredCardRect(
+  mode: CardLayoutMode,
+  canvas: { width?: number; height?: number } = {},
+): BrollCardRect {
+  const canvasWidth = canvas.width ?? OVERLAY_CANVAS_WIDTH;
+  const canvasHeight = canvas.height ?? OVERLAY_CANVAS_HEIGHT;
+  const bottom =
+    mode === "split-screen"
+      ? canvasHeight / 2 - canvasHeight * CARD_BOTTOM_ABOVE_CENTER
+      : canvasHeight * (1 - CARD_BOTTOM_ABOVE_CLIP_BOTTOM);
+  const width = CARD_WIDTH;
+  const height = CARD_HEIGHT;
+  const x = Math.round((canvasWidth - width) / 2);
+  const y = Math.max(OVERLAY_TOP_MARGIN, Math.round(bottom - height));
   return { x, y, width, height };
 }
 
