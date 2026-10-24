@@ -14,12 +14,12 @@
  *  - nothing is scheduled outside the rendered timeline.
  */
 
-export const BROLL_SFX_VOLUME = 0.50;
+export const BROLL_SFX_VOLUME = 0.5;
 /** Minimum spacing between two cues (s). */
 export const BROLL_SFX_MIN_SPACING = 0.35;
 
 export const BROLL_SFX_FILES = {
-  enter: "whoosh.wav",
+  enter: "pop.wav",
   exit: "pop.wav",
 } as const;
 
@@ -39,22 +39,22 @@ export interface BrollSfxCue {
  */
 export function buildBrollSfxCues(
   items: Array<{ start: number; end: number }>,
-  options: { totalDuration: number; enabled: boolean; minSpacing?: number }
+  options: { totalDuration: number; enabled: boolean; minSpacing?: number },
 ): BrollSfxCue[] {
   if (!options.enabled) return [];
   const spacing = options.minSpacing ?? BROLL_SFX_MIN_SPACING;
-  const total = Number.isFinite(options.totalDuration) ? Math.max(0, options.totalDuration) : 0;
+  const total = Number.isFinite(options.totalDuration)
+    ? Math.max(0, options.totalDuration)
+    : 0;
 
   const raw: BrollSfxCue[] = [];
   for (const item of items) {
-    if (Number.isFinite(item.start)) raw.push({ file: BROLL_SFX_FILES.enter, atSeconds: item.start, kind: "in" });
-    if (Number.isFinite(item.end)) {
+    if (Number.isFinite(item.start))
       raw.push({
-        file: BROLL_SFX_FILES.exit,
-        atSeconds: Math.max(0, item.end - 0.12),
-        kind: "out",
+        file: BROLL_SFX_FILES.enter,
+        atSeconds: item.start,
+        kind: "in",
       });
-    }
   }
 
   raw.sort((a, b) => a.atSeconds - b.atSeconds);
@@ -117,12 +117,13 @@ export function buildSfxMixPlan(input: {
       totalDuration: input.totalDuration,
       volume: input.volume ?? BROLL_SFX_VOLUME,
       index,
-    })
+    }),
   );
   const labels = [`${input.baseLabel}`];
-  for (let index = 0; index < input.cueInputIndices.length; index += 1) labels.push(`[sfx${index}]`);
+  for (let index = 0; index < input.cueInputIndices.length; index += 1)
+    labels.push(`[sfx${index}]`);
   statements.push(
-    `${labels.join("")}amix=inputs=${labels.length}:duration=first:dropout_transition=0:normalize=0[amixed]`
+    `${labels.join("")}amix=inputs=${labels.length}:duration=first:dropout_transition=0:normalize=0[amixed]`,
   );
   return { statements, label: "[amixed]" };
 }

@@ -63,10 +63,11 @@ export const BrollOverlayComposition: React.FC<
             height: card.height,
             opacity: style.opacity,
             transform: `translateY(${style.translateY}px) scale(${style.scale})`,
-            borderRadius: Math.round(card.height * 0.055),
+            boxSizing: "border-box",
+            borderRadius: 28,
             overflow: "hidden",
-            border: "2px solid rgba(255,255,255,0.24)",
-            boxShadow: "0 10px 26px rgba(0,0,0,0.22)",
+            border: "10px solid #ffffff",
+            boxShadow: "0 8px 24px rgba(0,0,0,0.25)",
           }}
         >
           <Img
@@ -76,14 +77,6 @@ export const BrollOverlayComposition: React.FC<
               height: "100%",
               objectFit: "cover",
               transform: `scale(${mediaScale}) translateX(${style.mediaX}px)`,
-            }}
-          />
-          {/* Captions overlap the lower part of the card: a contrast scrim keeps them readable. */}
-          <div
-            style={{
-              position: "absolute",
-              inset: 0,
-              background: `linear-gradient(180deg, rgba(0,0,0,0) 45%, ${treatment.scrimColor} 100%)`,
             }}
           />
         </div>

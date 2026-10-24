@@ -23,13 +23,13 @@ export const BROLL_ANIMATION = {
     enterSlidePx: 18,
   },
   landscape: {
-    enterSeconds: 0.25,
-    exitSeconds: 0.25,
-    enterScaleFrom: 0.94,
-    exitScaleTo: 0.96,
-    enterSlidePx: 28,
-    kenBurnsZoom: 0.05,
-    kenBurnsPanPx: 10,
+    enterSeconds: 0.15,
+    exitSeconds: 0.15,
+    enterScaleFrom: 0,
+    exitScaleTo: 0,
+    enterSlidePx: 0,
+    kenBurnsZoom: 0,
+    kenBurnsPanPx: 0,
   },
 } as const;
 
@@ -56,6 +56,14 @@ export function easeOutCubic(value: number): number {
   return 1 - (1 - t) ** 3;
 }
 
+/** Overshoots ~10% then settles: the "bounce" of a sticker pop-in. */
+export function easeOutBack(value: number): number {
+  const t = clamp01(value);
+  const c1 = 1.70158;
+  const c3 = c1 + 1;
+  return 1 + c3 * (t - 1) ** 3 + c1 * (t - 1) ** 2;
+}
+
 function cubicEaseIn(value: number): number {
   const t = clamp01(value);
   return t ** 3;
@@ -68,7 +76,7 @@ function cubicEaseIn(value: number): number {
 export function brollFrameStyle(
   kind: "fullscreen" | "landscape",
   elapsed: number,
-  duration: number
+  duration: number,
 ): BrollFrameStyle {
   const config = BROLL_ANIMATION[kind];
   const safeDuration = Math.max(0.1, duration);
@@ -83,20 +91,20 @@ export function brollFrameStyle(
   let translateY = 0;
 
   if (t < enter) {
-    const p = easeOutCubic(enter > 0 ? t / enter : 1);
+    const linear = enter > 0 ? t / enter : 1;
+    const p = easeOutCubic(linear);
     opacity = p;
     if (kind === "fullscreen") {
       scale = config.enterScaleFrom + (1 - config.enterScaleFrom) * p;
       translateY = config.enterSlidePx * (1 - p);
     } else {
-      scale = config.enterScaleFrom + (1 - config.enterScaleFrom) * p;
-      translateY = config.enterSlidePx * (1 - p);
+      // Sticker: pops in place with a bounce (0 -> ~1.1 -> 1), no slide.
+      scale = easeOutBack(linear);
     }
   } else if (t > holdEnd) {
     const p = cubicEaseIn(exit > 0 ? (t - holdEnd) / exit : 1);
     opacity = 1 - p;
-    scale = kind === "fullscreen" ? 1 - (1 - config.exitScaleTo) * p : 1 + (config.exitScaleTo - 1) * p;
-    translateY = kind === "fullscreen" ? 0 : -config.enterSlidePx * 0.5 * p;
+    scale = kind === "fullscreen" ? 1 - (1 - config.exitScaleTo) * p : 1 - p;
   }
 
   const progress = clamp01(safeDuration > 0 ? t / safeDuration : 1);
@@ -116,7 +124,10 @@ export function brollFrameStyle(
  * The frames one item needs. Each item is rendered as its OWN short Remotion
  * sequence, so 4 s of B-roll costs 4 s of frames - not the clip's full length.
  */
-export function brollSequenceFrames(durationSeconds: number, fps: number): number {
+export function brollSequenceFrames(
+  durationSeconds: number,
+  fps: number,
+): number {
   const safeFps = Number.isFinite(fps) && fps > 0 ? fps : 30;
   return Math.max(1, Math.round(Math.max(0, durationSeconds) * safeFps));
 }

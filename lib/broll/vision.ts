@@ -18,9 +18,9 @@ import type { BrollFetch } from "./http";
 import { defaultBrollFetch } from "./http";
 
 /** Below this, the pick is treated as "not sure" and the entity is skipped. */
-export const VISION_MIN_CONFIDENCE = 0.6;
+export const VISION_MIN_CONFIDENCE = 0.5; // was 0.6
 /** Candidates sent per request (the brief says 3-4). */
-export const VISION_CANDIDATE_COUNT = 4;
+export const VISION_CANDIDATE_COUNT = 6; // was 4
 /** Long edge of each image sent to the model. */
 export const VISION_IMAGE_SIZE = 512;
 export const VISION_TIMEOUT_MS = 60_000;
@@ -67,7 +67,7 @@ export function buildVisionPrompt(input: VisionRequestInput): string {
   return [
     `The speaker says: "${input.context}"`,
     "",
-    `I need a photo that clearly shows the ${input.entityType} "${input.entityName}" - recognisable and unambiguous.`,
+    `I need a photo that clearly shows the ${input.entityType} "${input.entityName}". A photo that also fits what the speaker says is preferred, but ANY clear, recognisable photo of this exact ${input.entityType} is acceptable.`,
     "Candidate images follow, in order (image 0, image 1, ...).",
     meta
       ? `\nWhat Wikimedia Commons says about the first candidate:\n${meta}`
@@ -279,5 +279,143 @@ export async function verifyEntityImage(
     details: lastError instanceof Error ? lastError.message : String(lastError),
     resolution:
       "The clip is rendered without B-roll for this entity. Retry B-roll later.",
+  });
+}
+
+/* ----------------------- Batched check for stock cards ---------------------- */
+
+export interface CardVisionItem {
+  id: string;
+  keyword: string;
+  image: { data: string; mime: string };
+}
+export interface CardVisionVerdict {
+  id: string;
+  relevant: boolean;
+  hasText: boolean;
+}
+
+export function buildCardBatchPrompt(items: CardVisionItem[]): string {
+  return [
+    "Below are stock photos, in order (image 0, image 1, ...). Each was picked for a keyword:",
+    ...items.map((item, index) => `${index}: "${item.keyword}"`),
+    "",
+    "For EVERY image decide whether it works as a small sticker in a short video.",
+    'Reply with ONE JSON object only: { "results": [ { "index": 0, "relevant": true, "hasText": false } ] }',
+    "- relevant=true when the photo clearly shows the keyword (or an obvious example of it); false when unrelated or only vaguely connected.",
+    "- hasText=true when the photo contains readable text, a watermark, a logo, a sign with words, a screenshot or a UI.",
+    "- One result per image, same order, no commentary.",
+  ].join("\n");
+}
+
+export function parseCardBatch(
+  text: string,
+  items: CardVisionItem[],
+): CardVisionVerdict[] {
+  let data: unknown;
+  try {
+    data = JSON.parse(
+      text
+        .replace(/^```(?:json)?/i, "")
+        .replace(/```$/, "")
+        .trim(),
+    );
+  } catch {
+    return [];
+  }
+  const results = (data as { results?: unknown } | null)?.results;
+  if (!Array.isArray(results)) return [];
+  const verdicts: CardVisionVerdict[] = [];
+  for (const entry of results) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    const index = record.index;
+    if (
+      typeof index !== "number" ||
+      !Number.isInteger(index) ||
+      index < 0 ||
+      index >= items.length
+    )
+      continue;
+    verdicts.push({
+      id: items[index].id,
+      relevant: record.relevant !== false,
+      hasText: record.hasText === true,
+    });
+  }
+  return verdicts;
+}
+
+/** ONE Gemini request for all cards of a clip. Missing/unparsable verdicts count as "fine". */
+export async function verifyCardBatch(
+  items: CardVisionItem[],
+  options: VerifyEntityOptions = {},
+): Promise<CardVisionVerdict[]> {
+  if (items.length === 0) return [];
+  const keys = options.keys ?? (await llmKeysFor());
+  if (keys.length === 0) {
+    throw new AppError(
+      "No Gemini key is configured, so stock cards cannot be checked.",
+      { status: 400 },
+    );
+  }
+  const primaryModel =
+    options.model?.trim() || LLM_PROVIDER_CHAIN[0]?.model || "gemini-3.5-flash";
+  const models = [...new Set([primaryModel, "gemini-3.6-flash"])];
+  const fetcher = options.fetcher ?? defaultBrollFetch;
+  const parts: unknown[] = [{ text: buildCardBatchPrompt(items) }];
+  for (const item of items) {
+    parts.push({
+      inline_data: { mime_type: item.image.mime, data: item.image.data },
+    });
+  }
+
+  let lastError: unknown;
+  for (const { model, key } of models.flatMap((m) =>
+    keys.map((k) => ({ model: m, key: k })),
+  )) {
+    try {
+      const response = await fetcher(
+        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-goog-api-key": key,
+          },
+          body: JSON.stringify({
+            contents: [{ role: "user", parts }],
+            generationConfig: {
+              temperature: 0,
+              maxOutputTokens: 1500,
+              responseMimeType: "application/json",
+            },
+          }),
+          signal: AbortSignal.timeout(options.timeoutMs ?? VISION_TIMEOUT_MS),
+        },
+      );
+      if (!response.ok) {
+        lastError = new Error(`Gemini answered HTTP ${response.status}.`);
+        continue;
+      }
+      const payload = (await response.json()) as {
+        candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+      };
+      const text = (payload.candidates?.[0]?.content?.parts ?? [])
+        .map((part) => part.text ?? "")
+        .join("")
+        .trim();
+      if (!text) {
+        lastError = new Error("Gemini returned an empty answer.");
+        continue;
+      }
+      return parseCardBatch(text, items);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw new AppError("Gemini Vision could not check the stock cards.", {
+    status: 502,
+    details: lastError instanceof Error ? lastError.message : String(lastError),
   });
 }

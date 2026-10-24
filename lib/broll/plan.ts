@@ -62,12 +62,19 @@ export interface PreparedBrollImage {
   crop?: import("../types").BrollCropPlan;
 }
 
+export interface CardVerdict {
+  id: string;
+  relevant: boolean;
+  hasText: boolean;
+}
+
 export interface BrollPlanDeps {
   analyze(input: {
     clipDuration: number;
     words: WordTimestamp[];
     entityBudget: number;
     keywordBudget: number;
+    keywordMin: number;
   }): Promise<BrollAnalysis>;
   searchEntity(query: string): Promise<BrollCandidate[]>;
   searchStock(query: string): Promise<StockSearchResult>;
@@ -82,6 +89,14 @@ export interface BrollPlanDeps {
   prepareCard(bytes: Buffer, cacheKey: string): Promise<PreparedBrollImage>;
   thumbnail(bytes: Buffer): Promise<{ data: string; mime: string }>;
   verify(input: VisionRequestInput): Promise<VisionVerdict>;
+  /** One batched vision request over every chosen card. Absent = cards are not checked. */
+  verifyCards?(
+    items: Array<{
+      id: string;
+      keyword: string;
+      image: { data: string; mime: string };
+    }>,
+  ): Promise<CardVerdict[]>;
   /** False when no Gemini key is configured - entities are then skipped up front. */
   visionAvailable: boolean;
   now?: () => Date;
@@ -105,7 +120,9 @@ export const CARD_PRIORITY = 50;
 /** Never send more than this many entities per clip to Commons + Gemini. */
 export const MAX_ENTITIES_PER_CLIP = 4;
 /** Candidate images checked per entity. */
-export const ENTITY_CANDIDATES_PER_SEARCH = 4;
+export const ENTITY_CANDIDATES_PER_SEARCH = 6; // was 4
+/** Stock candidates kept per keyword (the first is used, the rest are replacements). */
+export const CARD_CANDIDATES_PER_KEYWORD = 3;
 
 function toVerification(
   verdict: VisionVerdict,
@@ -152,6 +169,7 @@ export async function buildBrollPlan(
       words: input.words,
       entityBudget,
       keywordBudget,
+      keywordMin: keywordBudget > 0 ? budget.targetMin : 0,
     });
     console.log(
       `[broll] Analysis: ${analysis.entities.length} entit(ies), ${analysis.broll.length} keyword moment(s).`,
@@ -266,23 +284,27 @@ export async function buildBrollPlan(
       data: string;
       mime: string;
     }> = [];
-    for (const candidate of candidates.slice(0, VISION_CANDIDATE_COUNT)) {
-      try {
-        const file = await deps.download(candidate);
-        const thumb = await deps.thumbnail(file.bytes);
-        downloaded.push({
-          candidate,
-          bytes: file.bytes,
-          data: thumb.data,
-          mime: thumb.mime,
-        });
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
-        notes.push(
-          `Could not download a "${entity.name}" candidate: ${reason}`,
-        );
-      }
-    }
+    const settled = await Promise.all(
+      candidates.slice(0, VISION_CANDIDATE_COUNT).map(async (candidate) => {
+        try {
+          const file = await deps.download(candidate);
+          const thumb = await deps.thumbnail(file.bytes);
+          return {
+            candidate,
+            bytes: file.bytes,
+            data: thumb.data,
+            mime: thumb.mime,
+          };
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          notes.push(
+            `Could not download a "${entity.name}" candidate: ${reason}`,
+          );
+          return null;
+        }
+      }),
+    );
+    for (const entry of settled) if (entry) downloaded.push(entry);
 
     if (downloaded.length === 0) {
       skipped.push({
@@ -376,6 +398,21 @@ export async function buildBrollPlan(
   if (keywordBudget > 0) {
     const moments = analysis.broll.slice(0, budget.targetMax + 2);
     const usedQueries = new Set<string>();
+
+    interface CardEntry {
+      id: string;
+      query: string;
+      start: number;
+      end: number;
+      candidates: BrollCandidate[];
+      cursor: number;
+      file?: { cacheKey: string; sourceFile: string; bytes: Buffer };
+      thumb?: { data: string; mime: string };
+      flagged: boolean;
+    }
+    const entries: CardEntry[] = [];
+
+    // 3a. Search every keyword (cached). No result -> retry with the last word only.
     for (const moment of moments) {
       const query = moment.visualKeywords.join(" ").trim();
       if (!query || usedQueries.has(query.toLowerCase())) continue;
@@ -384,6 +421,12 @@ export async function buildBrollPlan(
       let result: StockSearchResult;
       try {
         result = await deps.searchStock(query);
+        if (result.candidates.length === 0 && query.includes(" ")) {
+          const retry = await deps.searchStock(
+            query.split(/\s+/).pop() as string,
+          );
+          if (retry.candidates.length > 0) result = retry;
+        }
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         notes.push(`Stock search failed for "${query}": ${reason}`);
@@ -392,43 +435,138 @@ export async function buildBrollPlan(
       }
       if (result.notes.length > 0)
         notes.push(...result.notes.map((note) => `${query}: ${note}`));
-
-      const candidate = result.candidates[0];
-      if (!candidate) {
+      if (result.candidates.length === 0) {
         skipped.push({
           stage: "search",
           reason: `No stock result for "${query}".`,
         });
         continue;
       }
+      entries.push({
+        id: `card-${query
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .slice(0, 40)}`,
+        query,
+        start: moment.start,
+        end: moment.end,
+        candidates: result.candidates.slice(0, CARD_CANDIDATES_PER_KEYWORD),
+        cursor: 0,
+        flagged: false,
+      });
+    }
 
+    // 3b. Download the current candidate of each entry (next one on failure), in parallel.
+    const load = async (entry: CardEntry): Promise<boolean> => {
+      while (entry.cursor < entry.candidates.length) {
+        try {
+          const file = await deps.download(entry.candidates[entry.cursor]);
+          entry.file = file;
+          entry.thumb = await deps.thumbnail(file.bytes);
+          return true;
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          notes.push(
+            `Could not download a "${entry.query}" candidate: ${reason}`,
+          );
+          entry.cursor += 1;
+        }
+      }
+      return false;
+    };
+    await Promise.all(entries.map((entry) => load(entry)));
+    const loaded = entries.filter((entry) => entry.file && entry.thumb);
+    for (const entry of entries) {
+      if (!entry.file) {
+        skipped.push({
+          stage: "download",
+          reason: `${entry.query}: no candidate could be downloaded.`,
+        });
+      }
+    }
+
+    // 3c. ONE batched vision request; flagged cards (text / unrelated) get the next
+    //     candidate and are re-checked once. Nothing is ever skipped here.
+    if (deps.verifyCards && deps.visionAvailable && loaded.length > 0) {
       try {
-        const file = await deps.download(candidate);
+        for (let round = 0; round < 2; round += 1) {
+          const pending = loaded.filter(
+            (entry) => round === 0 || entry.flagged,
+          );
+          if (pending.length === 0) break;
+          const verdicts = await deps.verifyCards(
+            pending.map((entry) => ({
+              id: entry.id,
+              keyword: entry.query,
+              image: entry.thumb as { data: string; mime: string },
+            })),
+          );
+          const byId = new Map(
+            verdicts.map((verdict) => [verdict.id, verdict]),
+          );
+          for (const entry of pending) {
+            const verdict = byId.get(entry.id);
+            entry.flagged = verdict
+              ? verdict.hasText || !verdict.relevant
+              : false;
+          }
+          if (round === 1) break;
+          for (const entry of pending.filter(
+            (candidate) => candidate.flagged,
+          )) {
+            const before = {
+              cursor: entry.cursor,
+              file: entry.file,
+              thumb: entry.thumb,
+            };
+            entry.cursor += 1;
+            if (!(await load(entry))) {
+              Object.assign(entry, before); // nothing better: keep the current image
+              entry.flagged = false;
+            }
+          }
+        }
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        notes.push(
+          `Card check failed (${reason}); using the top result for each keyword.`,
+        );
+      }
+    } else if (loaded.length > 0 && !deps.visionAvailable) {
+      notes.push(
+        "No Gemini key: stock cards were not checked for text or relevance.",
+      );
+    }
+
+    // 3d. Prepare the final pick of every entry.
+    for (const entry of loaded) {
+      const file = entry.file;
+      if (!file) continue;
+      try {
         const preparedImage = {
           ...(await deps.prepareCard(file.bytes, file.cacheKey)),
           sourceFile: file.sourceFile,
         };
         prepared.push({
-          id: `card-${query
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, "-")
-            .slice(0, 40)}`,
+          id: entry.id,
           kind: "landscape",
           priority: CARD_PRIORITY,
-          desiredStart: moment.start,
-          desiredEnd: moment.end,
-          candidate,
-          // The other search hits let the clip tile swap the card without a new
-          // provider search; they are downloaded on demand.
-          alternatives: result.candidates
-            .slice(1, 3)
-            .map((entry) => attributionFor(entry)),
+          desiredStart: entry.start,
+          desiredEnd: entry.end,
+          candidate: entry.candidates[entry.cursor],
+          alternatives: entry.candidates
+            .filter((_candidate, index) => index !== entry.cursor)
+            .slice(0, 2)
+            .map((candidate) => attributionFor(candidate)),
           prepared: preparedImage,
-          query,
+          query: entry.query,
         });
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
-        skipped.push({ stage: "download", reason: `${query}: ${reason}` });
+        skipped.push({
+          stage: "download",
+          reason: `${entry.query}: ${reason}`,
+        });
       }
     }
   }

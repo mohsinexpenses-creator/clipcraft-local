@@ -93,7 +93,6 @@ const ABSTRACT_WORDS = new Set([
   "vibes",
   "content",
   "business",
-  "money",
   "wealth",
   "love",
   "trust",
@@ -130,7 +129,8 @@ export function isConcreteKeyword(phrase: string): boolean {
     .filter(Boolean);
   if (words.length === 0 || words.length > 4) return false;
   if (words.every((word) => ABSTRACT_WORDS.has(word))) return false;
-  if (words.some((word) => ABSTRACT_WORDS.has(word)) && words.length === 1) return false;
+  if (words.some((word) => ABSTRACT_WORDS.has(word)) && words.length === 1)
+    return false;
   // A single abstract word is never photographable on its own.
   if (words.length === 1 && words[0].length < 3) return false;
   return true;
@@ -144,7 +144,9 @@ function readTime(value: unknown, field: string, clipDuration: number): number {
         ? parseTimestamp(value)
         : null;
   if (parsed === null || parsed < 0) {
-    throw invalidBrollResponse(`${field} must be a timestamp in seconds (got ${show(value)})`);
+    throw invalidBrollResponse(
+      `${field} must be a timestamp in seconds (got ${show(value)})`,
+    );
   }
   return Math.min(clipDuration, parsed);
 }
@@ -152,7 +154,7 @@ function readTime(value: unknown, field: string, clipDuration: number): number {
 function readWindow(
   entry: Record<string, unknown>,
   field: string,
-  clipDuration: number
+  clipDuration: number,
 ): { start: number; end: number } {
   const start = readTime(entry.start, `${field}.start`, clipDuration);
   const end = readTime(entry.end, `${field}.end`, clipDuration);
@@ -162,6 +164,25 @@ function readWindow(
     return { start, end: Math.min(clipDuration, start + 2.5) };
   }
   return { start, end };
+}
+
+/** Start time from the transcript word the model pointed at (never from model-guessed seconds). */
+function windowFromWord(
+  entry: Record<string, unknown>,
+  words: readonly WordTimestamp[],
+  clipDuration: number,
+  span: number,
+): { start: number; end: number } | null {
+  const raw = entry.wordIndex ?? entry.word_index;
+  if (
+    typeof raw !== "number" ||
+    !Number.isInteger(raw) ||
+    raw < 0 ||
+    raw >= words.length
+  )
+    return null;
+  const start = Math.min(clipDuration, Math.max(0, words[raw].start));
+  return { start, end: Math.min(clipDuration, start + span) };
 }
 
 const invalidBrollResponse = (summary: string, details?: string) =>
@@ -176,24 +197,34 @@ const invalidBrollResponse = (summary: string, details?: string) =>
  * Parse + validate the model's answer. Entities keep the model's search query
  * (falling back to the name); keyword moments keep only concrete phrases.
  */
-export function parseBrollAnalysis(text: string, clipDuration: number): BrollAnalysis {
+export function parseBrollAnalysis(
+  text: string,
+  clipDuration: number,
+  words: readonly WordTimestamp[] = [],
+): BrollAnalysis {
   let data: unknown;
   try {
     data = JSON.parse(text);
   } catch {
-    throw invalidBrollResponse("The B-roll response is not valid JSON.", text.slice(0, 300));
+    throw invalidBrollResponse(
+      "The B-roll response is not valid JSON.",
+      text.slice(0, 300),
+    );
   }
   if (!isRecord(data)) {
     throw invalidBrollResponse(
       'The B-roll response must be a JSON object: { "entities": [...], "broll": [...] }.',
-      text.slice(0, 300)
+      text.slice(0, 300),
     );
   }
 
   const entitiesRaw = data.entities ?? [];
   const brollRaw = data.broll ?? [];
   if (!Array.isArray(entitiesRaw)) {
-    throw invalidBrollResponse('"entities" must be an array.', show(data.entities));
+    throw invalidBrollResponse(
+      '"entities" must be an array.',
+      show(data.entities),
+    );
   }
   if (!Array.isArray(brollRaw)) {
     throw invalidBrollResponse('"broll" must be an array.', show(data.broll));
@@ -202,21 +233,31 @@ export function parseBrollAnalysis(text: string, clipDuration: number): BrollAna
   const entities: BrollEntity[] = [];
   for (const [index, entry] of entitiesRaw.slice(0, MAX_ENTITIES).entries()) {
     const where = `entities[${index}]`;
-    if (!isRecord(entry)) throw invalidBrollResponse(`${where} must be an object.`, show(entry));
+    if (!isRecord(entry))
+      throw invalidBrollResponse(`${where} must be an object.`, show(entry));
 
-    const type = typeof entry.type === "string" ? entry.type.trim().toLowerCase() : "";
+    const type =
+      typeof entry.type === "string" ? entry.type.trim().toLowerCase() : "";
     if (!ENTITY_TYPES.has(type)) {
-      throw invalidBrollResponse(`${where}.type must be person, place or event.`, show(entry.type));
+      throw invalidBrollResponse(
+        `${where}.type must be person, place or event.`,
+        show(entry.type),
+      );
     }
     if (typeof entry.name !== "string" || !entry.name.trim()) {
-      throw invalidBrollResponse(`${where}.name must be a non-empty string.`, show(entry.name));
+      throw invalidBrollResponse(
+        `${where}.name must be a non-empty string.`,
+        show(entry.name),
+      );
     }
     const name = entry.name.trim().slice(0, MAX_NAME_LENGTH);
     const query =
       typeof entry.searchQuery === "string" && entry.searchQuery.trim()
         ? entry.searchQuery.trim().slice(0, MAX_QUERY_LENGTH)
         : name;
-    const window = readWindow(entry, where, clipDuration);
+    const window =
+      windowFromWord(entry, words, clipDuration, 3) ??
+      readWindow(entry, where, clipDuration);
 
     entities.push({
       type: type as BrollEntityType,
@@ -227,23 +268,35 @@ export function parseBrollAnalysis(text: string, clipDuration: number): BrollAna
   }
 
   const broll: BrollKeywordMoment[] = [];
-  for (const [index, entry] of brollRaw.slice(0, MAX_KEYWORD_MOMENTS).entries()) {
+  for (const [index, entry] of brollRaw
+    .slice(0, MAX_KEYWORD_MOMENTS)
+    .entries()) {
     const where = `broll[${index}]`;
-    if (!isRecord(entry)) throw invalidBrollResponse(`${where} must be an object.`, show(entry));
+    if (!isRecord(entry))
+      throw invalidBrollResponse(`${where} must be an object.`, show(entry));
     const keywordsRaw = entry.visualKeywords ?? entry.visual_keywords;
     if (!Array.isArray(keywordsRaw)) {
-      throw invalidBrollResponse(`${where}.visualKeywords must be an array of strings.`, show(keywordsRaw));
+      throw invalidBrollResponse(
+        `${where}.visualKeywords must be an array of strings.`,
+        show(keywordsRaw),
+      );
     }
     const keywords = [
       ...new Set(
         keywordsRaw
           .filter((word): word is string => typeof word === "string")
           .map((word) => word.trim().slice(0, MAX_KEYWORD_LENGTH))
-          .filter((word) => word && isConcreteKeyword(word))
+          .filter((word) => word && isConcreteKeyword(word)),
       ),
     ].slice(0, 4);
     if (keywords.length === 0) continue; // Nothing photographable in this moment.
-    broll.push({ visualKeywords: keywords, ...readWindow(entry, where, clipDuration) });
+    const window =
+      windowFromWord(entry, words, clipDuration, 1.3) ??
+      (entry.start !== undefined
+        ? readWindow(entry, where, clipDuration)
+        : null);
+    if (!window) continue; // No usable timing for this moment.
+    broll.push({ visualKeywords: keywords, ...window });
   }
 
   return { entities, broll };
@@ -256,7 +309,7 @@ export function parseBrollAnalysis(text: string, clipDuration: number): BrollAna
 export function transcriptSentenceAt(
   words: readonly WordTimestamp[],
   at: number,
-  options: { maxWords?: number } = {}
+  options: { maxWords?: number } = {},
 ): string {
   const maxWords = options.maxWords ?? 24;
   if (words.length === 0) return "";
@@ -279,12 +332,20 @@ export function transcriptSentenceAt(
 export function deriveFallbackKeywords(
   words: readonly WordTimestamp[],
   clipDuration: number,
-  targetMoments: number
+  targetMoments: number,
 ): BrollAnalysis {
   const usable = words
     .filter((word) => word.end > word.start)
-    .map((word) => ({ ...word, clean: word.word.replace(/[^A-Za-z0-9'-]/g, "").trim().toLowerCase() }))
-    .filter((word) => word.clean.length >= 4 && !ABSTRACT_WORDS.has(word.clean));
+    .map((word) => ({
+      ...word,
+      clean: word.word
+        .replace(/[^A-Za-z0-9'-]/g, "")
+        .trim()
+        .toLowerCase(),
+    }))
+    .filter(
+      (word) => word.clean.length >= 4 && !ABSTRACT_WORDS.has(word.clean),
+    );
 
   const seen = new Set<string>();
   const picks: Array<{ keyword: string; start: number; end: number }> = [];
@@ -297,12 +358,17 @@ export function deriveFallbackKeywords(
   const moments: BrollKeywordMoment[] = [];
   const slots = Math.max(1, targetMoments);
   for (let index = 0; index < slots; index += 1) {
-    const pick = picks[index % Math.max(1, picks.length)];
-    const centre = picks.length
-      ? pick.start
-      : ((index + 0.5) / slots) * clipDuration;
-    const start = Math.max(0, Math.min(clipDuration - 2.5, centre - 1));
-    const end = Math.min(clipDuration, start + 3.5);
+    const pick = picks.length
+      ? picks[
+          Math.min(
+            picks.length - 1,
+            Math.floor(((index + 0.5) * picks.length) / slots),
+          )
+        ]
+      : undefined;
+    const centre = pick ? pick.start : ((index + 0.5) / slots) * clipDuration;
+    const start = Math.max(0, Math.min(clipDuration - 1.5, centre));
+    const end = Math.min(clipDuration, start + 1.5);
     moments.push({
       visualKeywords: [pick?.keyword ?? "abstract background"],
       start,
@@ -318,26 +384,29 @@ export function buildBrollPrompt(input: {
   words: readonly WordTimestamp[];
   entityBudget: number;
   keywordBudget: number;
+  keywordMin?: number;
 }): string {
   const transcript = transcriptForPrompt(input.words);
+  const min = Math.min(input.keywordMin ?? 0, input.keywordBudget);
   return [
     "You are planning B-roll for a vertical short clip.",
-    `The clip is ${input.clipDuration.toFixed(1)} seconds long. Every timestamp below is relative to the clip start (0 = first frame).`,
+    `The clip is ${input.clipDuration.toFixed(1)} seconds long. The transcript lines look like "#index start-end word".`,
     "",
     "Return ONE JSON object, no markdown, no commentary:",
-    '{ "entities": [ { "type": "person" | "place" | "event", "name": "…", "searchQuery": "…", "start": 0.0, "end": 0.0 } ],',
-    '  "broll": [ { "visualKeywords": ["…"], "start": 0.0, "end": 0.0 } ] }',
+    '{ "entities": [ { "type": "person" | "place" | "event", "name": "…", "searchQuery": "…", "wordIndex": 0 } ],',
+    '  "broll": [ { "visualKeywords": ["…"], "wordIndex": 0 } ] }',
+    "",
+    "wordIndex is the #index of the exact transcript word where the thing is spoken. NEVER invent timestamps.",
     "",
     "entities:",
     "- ONLY real, specific, named things a stock/Wikimedia photo could show: a public figure, a brand, a landmark, a city, a stadium, a named event.",
     `- At most ${input.entityBudget}. Leave the array empty when nothing is named.`,
-    "- searchQuery is what you would type into Wikimedia Commons (e.g. \"Elon Musk\", \"Eiffel Tower\", \"2024 Summer Olympics\").",
-    "- start/end is the exact moment the speaker says it.",
+    '- searchQuery is what you would type into Wikimedia Commons (e.g. "Elon Musk", "Eiffel Tower", "2024 Summer Olympics").',
     "",
     "broll:",
-    "- Concrete, PHOTOGRAPHABLE English phrases (1-3 words) for the remaining speech: \"city skyline\", \"coffee cup\", \"running shoes\", \"crowded stadium\".",
-    `- At most ${input.keywordBudget} moments, spread across the clip, each covering 3-5 seconds of speech.`,
-    "- NEVER abstract ideas: no \"success\", \"growth\", \"mindset\", \"motivation\", \"value\", \"journey\".",
+    `- Between ${min} and ${input.keywordBudget} moments, in chronological order, spread across the WHOLE clip (never leave more than 6 seconds without one).`,
+    '- ONE concrete, PHOTOGRAPHABLE English noun phrase (1-3 words) per moment, taken from what is being talked about: "city skyline", "coffee cup", "courtroom", "cash".',
+    '- NEVER abstract ideas: no "success", "growth", "mindset", "motivation", "value", "journey".',
     "- Never repeat the same keyword.",
     "",
     "Transcript (clip-relative seconds):",
@@ -348,7 +417,10 @@ export function buildBrollPrompt(input: {
 function transcriptForPrompt(words: readonly WordTimestamp[]): string {
   if (!words.length) return "(no words in this clip)";
   return words
-    .map((word) => `${word.start.toFixed(2)}-${word.end.toFixed(2)} ${word.word}`)
+    .map(
+      (word, index) =>
+        `#${index} ${word.start.toFixed(2)}-${word.end.toFixed(2)} ${word.word}`,
+    )
     .join("\n")
     .slice(0, 12_000);
 }

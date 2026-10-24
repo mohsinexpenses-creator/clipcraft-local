@@ -614,6 +614,13 @@ export async function processClipJob(
           const captionBand = captionReservedBand(captionPresetForRender);
           const cardLayout =
             plan.mode === "split" ? "split-screen" : "speaker-focus";
+          const faceBands =
+            plan.mode === "split"
+              ? plan.cells.map((cell) => ({
+                  top: cell.faceZone.top,
+                  bottom: cell.faceZone.bottom,
+                }))
+              : [];
           preparedBroll = await prepareRemotionBrollOverlays({
             fps: renderFps,
             items: usable.map(({ item }, index) => ({
@@ -623,7 +630,9 @@ export async function processClipJob(
               end: item.end,
               imageUrl: `${mediaServer.baseUrl}/broll-${index}${path.extname(usable[index].filePath) || ".jpg"}`,
               // Fixed anchor per layout (CARD_* constants in lib/broll/card.ts).
-              ...(item.card ? { card: anchoredCardRect(cardLayout) } : {}),
+              ...(item.card
+                ? { card: anchoredCardRect(cardLayout, { faceBands }) }
+                : {}),
             })),
             captionTextColor: captionPresetForRender.textColor,
             captionBand,

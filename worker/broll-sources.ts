@@ -54,8 +54,16 @@ import {
   prepareCardFile,
   prepareFullscreenFile,
 } from "../lib/broll/image";
-import { verifyEntityImage, type VisionVerdict } from "../lib/broll/vision";
-import type { BrollPlanDeps, PreparedBrollImage } from "../lib/broll/plan";
+import {
+  verifyCardBatch,
+  verifyEntityImage,
+  type VisionVerdict,
+} from "../lib/broll/vision";
+import type {
+  BrollPlanDeps,
+  CardVerdict,
+  PreparedBrollImage,
+} from "../lib/broll/plan";
 
 /** Wikimedia asks clients not to hammer the API; one request per second is safe. */
 const commonsLimiter = createRateLimiter({ minIntervalMs: 1000 });
@@ -118,6 +126,7 @@ export function createBrollDeps(options: BrollSourceOptions): BrollPlanDeps {
       words: WordTimestamp[];
       entityBudget: number;
       keywordBudget: number;
+      keywordMin: number;
     }): Promise<BrollAnalysis> {
       const prompt = buildBrollPrompt(input);
       // The transcript is what the answer depends on, so its first/last words plus
@@ -127,6 +136,7 @@ export function createBrollDeps(options: BrollSourceOptions): BrollPlanDeps {
         input.clipDuration.toFixed(2),
         input.words.length,
         prompt.length,
+        input.keywordMin,
         input.words[0]?.word ?? "",
         input.words[input.words.length - 1]?.word ?? "",
       ]);
@@ -142,7 +152,11 @@ export function createBrollDeps(options: BrollSourceOptions): BrollPlanDeps {
         temperature: 0.3,
         maxTokens: 1200,
       });
-      const analysis = parseBrollAnalysis(result.text, input.clipDuration);
+      const analysis = parseBrollAnalysis(
+        result.text,
+        input.clipDuration,
+        input.words,
+      );
       await writeJsonCache(cacheKey, analysis);
       return analysis;
     },
@@ -275,6 +289,23 @@ export function createBrollDeps(options: BrollSourceOptions): BrollPlanDeps {
       });
       await writeJsonCache(cacheKey, verdict);
       return verdict;
+    },
+
+    async verifyCards(items): Promise<CardVerdict[]> {
+      const cacheKey = jsonCacheKey([
+        "cardverdict",
+        ...items.map((item) => `${item.keyword}:${item.image.data.length}`),
+      ]);
+      const cached = await readJsonCache<CardVerdict[]>(cacheKey, {
+        ttlMs: VERDICT_CACHE_TTL_MS,
+      });
+      if (cached) return cached;
+      const verdicts = await verifyCardBatch(items, {
+        fetcher,
+        keys: geminiKeys,
+      });
+      await writeJsonCache(cacheKey, verdicts);
+      return verdicts;
     },
   };
 }

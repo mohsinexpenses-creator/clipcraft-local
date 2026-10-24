@@ -30,8 +30,8 @@ export type CardLayoutMode = "speaker-focus" | "split-screen";
 
 /** Speaker focus: card bottom edge sits this fraction of the canvas height ABOVE the clip bottom. */
 export const CARD_BOTTOM_ABOVE_CLIP_BOTTOM = 0.2;
-/** Split screen: card bottom edge sits this fraction of the canvas height ABOVE the center line. */
-export const CARD_BOTTOM_ABOVE_CENTER = 0.1;
+/** Split screen: card centre sits this fraction of the canvas height above (+) / below (-) the seam. */
+export const CARD_SEAM_OFFSET = 0;
 
 /** How far (px) a card may sink below the caption band to avoid a face. */
 export const CARD_MAX_CAPTION_SPILL = 200;
@@ -156,24 +156,56 @@ export function fitCardRectToBand(
 }
 
 /**
- * Fixed placement per layout. Size stays 70% / 16:9; only the vertical anchor
- * differs. The card's BOTTOM edge is the anchor.
+ * Fixed placement per layout; size stays 70% / 16:9. Speaker focus: bottom edge anchor.
+ * Split screen: centred on the seam, nudged vertically (minimum) away from face bands.
  */
 export function anchoredCardRect(
   mode: CardLayoutMode,
-  canvas: { width?: number; height?: number } = {},
+  options: {
+    faceBands?: Array<{ top: number; bottom: number }>;
+    canvas?: { width?: number; height?: number };
+  } = {},
 ): BrollCardRect {
-  const canvasWidth = canvas.width ?? OVERLAY_CANVAS_WIDTH;
-  const canvasHeight = canvas.height ?? OVERLAY_CANVAS_HEIGHT;
-  const bottom =
-    mode === "split-screen"
-      ? canvasHeight / 2 - canvasHeight * CARD_BOTTOM_ABOVE_CENTER
-      : canvasHeight * (1 - CARD_BOTTOM_ABOVE_CLIP_BOTTOM);
+  const canvasWidth = options.canvas?.width ?? OVERLAY_CANVAS_WIDTH;
+  const canvasHeight = options.canvas?.height ?? OVERLAY_CANVAS_HEIGHT;
   const width = CARD_WIDTH;
   const height = CARD_HEIGHT;
   const x = Math.round((canvasWidth - width) / 2);
-  const y = Math.max(OVERLAY_TOP_MARGIN, Math.round(bottom - height));
-  return { x, y, width, height };
+  const minY = OVERLAY_TOP_MARGIN;
+  const maxY = canvasHeight - height - OVERLAY_TOP_MARGIN;
+
+  if (mode === "speaker-focus") {
+    const bottom = canvasHeight * (1 - CARD_BOTTOM_ABOVE_CLIP_BOTTOM);
+    return {
+      x,
+      y: Math.round(Math.min(maxY, Math.max(minY, bottom - height))),
+      width,
+      height,
+    };
+  }
+
+  const preferred =
+    canvasHeight / 2 - canvasHeight * CARD_SEAM_OFFSET - height / 2;
+  const bands = (options.faceBands ?? []).map((band) => ({
+    top: band.top - CARD_FACE_GAP,
+    bottom: band.bottom + CARD_FACE_GAP,
+  }));
+  let bestY = Math.min(maxY, Math.max(minY, preferred));
+  let bestScore = Number.POSITIVE_INFINITY;
+  for (let y = minY; y <= maxY; y += 4) {
+    const covered = bands.reduce(
+      (sum, band) =>
+        sum +
+        Math.max(0, Math.min(y + height, band.bottom) - Math.max(y, band.top)),
+      0,
+    );
+    const score = covered * 4 + Math.abs(y - preferred);
+    if (score < bestScore) {
+      bestScore = score;
+      bestY = y;
+    }
+  }
+  return { x, y: Math.round(bestY), width, height };
 }
 
 /** True when a planned card (plus gap) touches any face box - used by tests/logs. */
