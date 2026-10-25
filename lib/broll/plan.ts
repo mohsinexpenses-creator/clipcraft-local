@@ -77,6 +77,11 @@ export interface BrollPlanDeps {
     keywordMin: number;
   }): Promise<BrollAnalysis>;
   searchEntity(query: string): Promise<BrollCandidate[]>;
+  /**
+   * Second source for an entity, tried only when every Commons candidate failed to
+   * download (rate limit / timeout). Absent = no second attempt.
+   */
+  searchEntityFallback?(query: string): Promise<BrollCandidate[]>;
   searchStock(query: string): Promise<StockSearchResult>;
   download(
     candidate: BrollCandidate,
@@ -278,33 +283,57 @@ export async function buildBrollPlan(
     }
 
     // Download + thumbnail the candidates for the single vision request.
-    const downloaded: Array<{
+    type Downloaded = {
       candidate: BrollCandidate;
       bytes: Buffer;
       data: string;
       mime: string;
-    }> = [];
-    const settled = await Promise.all(
-      candidates.slice(0, VISION_CANDIDATE_COUNT).map(async (candidate) => {
-        try {
-          const file = await deps.download(candidate);
-          const thumb = await deps.thumbnail(file.bytes);
-          return {
-            candidate,
-            bytes: file.bytes,
-            data: thumb.data,
-            mime: thumb.mime,
-          };
-        } catch (error) {
-          const reason = error instanceof Error ? error.message : String(error);
+    };
+    const downloadAll = async (list: BrollCandidate[]): Promise<Downloaded[]> => {
+      const settled = await Promise.all(
+        list.slice(0, VISION_CANDIDATE_COUNT).map(async (candidate) => {
+          try {
+            const file = await deps.download(candidate);
+            const thumb = await deps.thumbnail(file.bytes);
+            return {
+              candidate,
+              bytes: file.bytes,
+              data: thumb.data,
+              mime: thumb.mime,
+            };
+          } catch (error) {
+            const reason =
+              error instanceof Error ? error.message : String(error);
+            notes.push(
+              `Could not download a "${entity.name}" candidate: ${reason}`,
+            );
+            return null;
+          }
+        }),
+      );
+      return settled.filter((entry): entry is Downloaded => entry !== null);
+    };
+
+    let downloaded = await downloadAll(candidates);
+
+    // Commons answered the search but none of its images could be fetched (429 /
+    // timeout): try the second source before giving the entity up.
+    if (downloaded.length === 0 && deps.searchEntityFallback) {
+      try {
+        const alternative = (
+          await deps.searchEntityFallback(entity.searchQuery)
+        ).slice(0, ENTITY_CANDIDATES_PER_SEARCH);
+        if (alternative.length > 0) {
           notes.push(
-            `Could not download a "${entity.name}" candidate: ${reason}`,
+            `No Commons image for "${entity.name}" could be downloaded; trying ${alternative.length} Openverse candidate(s).`,
           );
-          return null;
+          downloaded = await downloadAll(alternative);
         }
-      }),
-    );
-    for (const entry of settled) if (entry) downloaded.push(entry);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        notes.push(`Second image source failed for "${entity.name}": ${reason}`);
+      }
+    }
 
     if (downloaded.length === 0) {
       skipped.push({

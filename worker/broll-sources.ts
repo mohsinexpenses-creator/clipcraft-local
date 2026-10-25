@@ -30,9 +30,11 @@ import {
   writeJsonCache,
 } from "../lib/broll/cache";
 import {
+  BrollHttpError,
   createRateLimiter,
   defaultBrollFetch,
   fetchJson,
+  ProviderQuotaError,
   type BrollFetch,
 } from "../lib/broll/http";
 import {
@@ -68,6 +70,46 @@ import type {
 /** Wikimedia asks clients not to hammer the API; one request per second is safe. */
 const commonsLimiter = createRateLimiter({ minIntervalMs: 1000 });
 const openverseLimiter = createRateLimiter({ minIntervalMs: 1000 });
+/**
+ * upload.wikimedia.org throttles bursts and generic clients with HTTP 429, so image
+ * downloads go one at a time with a small gap (the search limiter above only
+ * covers the API, not the file host).
+ */
+const commonsDownloadLimiter = createRateLimiter({ minIntervalMs: 400 });
+
+const COMMONS_DOWNLOAD_ATTEMPTS = 3;
+const COMMONS_BACKOFF_BASE_MS = 1500;
+const COMMONS_BACKOFF_MAX_MS = 15_000;
+
+/** A 429, a 5xx or a timeout is worth another try; anything else is final. */
+function isTransientDownloadError(error: unknown): boolean {
+  if (error instanceof ProviderQuotaError) return true;
+  if (error instanceof BrollHttpError) return error.retryable;
+  return false;
+}
+
+/** Run one Commons download with spacing, `Retry-After` and exponential backoff. */
+async function downloadFromCommons<T>(run: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await commonsDownloadLimiter(run);
+    } catch (error) {
+      if (
+        attempt >= COMMONS_DOWNLOAD_ATTEMPTS - 1 ||
+        !isTransientDownloadError(error)
+      ) {
+        throw error;
+      }
+      const hinted =
+        error instanceof ProviderQuotaError ? error.retryAfterMs : undefined;
+      const delay = Math.min(
+        hinted ?? COMMONS_BACKOFF_BASE_MS * 2 ** attempt,
+        COMMONS_BACKOFF_MAX_MS,
+      );
+      await new Promise<void>((resolve) => setTimeout(resolve, delay));
+    }
+  }
+}
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -161,6 +203,12 @@ export function createBrollDeps(options: BrollSourceOptions): BrollPlanDeps {
       return analysis;
     },
 
+    async searchEntityFallback(query: string): Promise<BrollCandidate[]> {
+      return cachedProviderSearch("openverse", query, () =>
+        openverseLimiter(() => searchOpenverse(query, { fetcher })),
+      );
+    },
+
     async searchEntity(query: string): Promise<BrollCandidate[]> {
       let commonsError: unknown;
       try {
@@ -242,13 +290,18 @@ export function createBrollDeps(options: BrollSourceOptions): BrollPlanDeps {
     },
 
     async download(candidate: BrollCandidate) {
-      return cacheImage(candidate, {
-        fetcher,
-        provider:
-          candidate.provider === "wikimedia"
-            ? "Wikimedia Commons"
-            : candidate.provider,
-      });
+      if (candidate.provider !== "wikimedia") {
+        return cacheImage(candidate, { fetcher, provider: candidate.provider });
+      }
+      // The Commons API already returned a standard-size thumbnail (`thumbUrl`,
+      // ~1080-1280 px). The original can be many MB, which is what timed out and
+      // got throttled; the thumbnail is plenty for a 1080x1920 frame.
+      const source = candidate.thumbUrl
+        ? { ...candidate, imageUrl: candidate.thumbUrl }
+        : candidate;
+      return downloadFromCommons(() =>
+        cacheImage(source, { fetcher, provider: "Wikimedia Commons" }),
+      );
     },
 
     async prepareFullscreen(

@@ -30,11 +30,12 @@ export type BrollFetch = (
 ) => Promise<BrollHttpResponse>;
 
 /**
- * Wikimedia asks for a descriptive User-Agent and blocks the default one; the
- * stock APIs do not care but sending it everywhere is harmless.
+ * Wikimedia asks for a descriptive User-Agent that includes a way to contact the
+ * operator (a URL or an e-mail) and throttles generic ones hard; the stock APIs do
+ * not care but sending it everywhere is harmless.
  */
 export const BROLL_USER_AGENT =
-  "clipcraft-local/0.1 (local video editor; B-roll image fetcher)";
+  "clipcraft-local/0.1 (https://github.com/mohsinexpenses-creator/clipcraft-local; local video editor, B-roll image fetcher)";
 
 export const DEFAULT_HTTP_TIMEOUT_MS = 20_000;
 
@@ -94,15 +95,31 @@ export class BrollHttpError extends AppError {
 /** The provider said "slow down" or "out of quota" - move to the next one. */
 export class ProviderQuotaError extends AppError {
   readonly provider: string;
+  /** Server-requested wait (`Retry-After`), when the answer carried one. */
+  readonly retryAfterMs?: number;
 
-  constructor(provider: string, detail: string) {
+  constructor(provider: string, detail: string, retryAfterMs?: number) {
     super(`${provider} is rate-limited or out of quota.`, {
       status: 429,
       details: detail,
       resolution: `The next provider in the order is used instead. Check the ${provider} quota in Settings.`,
     });
     this.provider = provider;
+    if (retryAfterMs !== undefined) this.retryAfterMs = retryAfterMs;
   }
+}
+
+/** `Retry-After` as milliseconds (seconds or an HTTP date); undefined when absent/unusable. */
+export function parseRetryAfterMs(
+  value: string | null | undefined,
+  now: () => number = Date.now,
+): number | undefined {
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1000);
+  const date = Date.parse(value);
+  if (Number.isNaN(date)) return undefined;
+  return Math.max(0, date - now());
 }
 
 /** The provider rejected the key (401/403). Only this is ever worded as a key problem. */
@@ -208,7 +225,11 @@ export async function fetchBytes(
       signal: controller.signal,
     });
     if (response.status === 429)
-      throw new ProviderQuotaError(options.provider, "HTTP 429");
+      throw new ProviderQuotaError(
+        options.provider,
+        "HTTP 429",
+        parseRetryAfterMs(response.headers?.get("retry-after")),
+      );
     if (!response.ok) {
       throw new BrollHttpError(
         `${options.provider} answered HTTP ${response.status}.`,

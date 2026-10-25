@@ -402,6 +402,8 @@ export function buildBrollPrompt(input: {
     "- ONLY real, specific, named things a stock/Wikimedia photo could show: a public figure, a brand, a landmark, a city, a stadium, a named event.",
     `- At most ${input.entityBudget}. Leave the array empty when nothing is named.`,
     '- searchQuery is what you would type into Wikimedia Commons (e.g. "Elon Musk", "Eiffel Tower", "2024 Summer Olympics").',
+    '- name and searchQuery MUST be the full, unambiguous name: "Alex Cooper", never just "Alex". If the speaker only says a first name, complete it from the rest of the transcript; if you cannot, leave that entity out.',
+    "- Skip private individuals nobody would have a public photo of, and skip podcast or show logos.",
     "",
     "broll:",
     `- Between ${min} and ${input.keywordBudget} moments, in chronological order, spread across the WHOLE clip (never leave more than 6 seconds without one).`,
