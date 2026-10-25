@@ -61,7 +61,7 @@ const visionInput = {
   images: [{ index: 0, data: 'aGVsbG8=', mime: 'image/jpeg' }],
 };
 
-test('one 503 is retried on the same model and the verdict still arrives', async () => {
+test('a 503 is not retried on the same Gemini model', async () => {
   const statuses = [503, 200];
   const urls: string[] = [];
   const fetcher: BrollFetch = async (url) => {
@@ -69,28 +69,30 @@ test('one 503 is retried on the same model and the verdict still arrives', async
     const status = statuses.shift() ?? 200;
     return response(status, status === 200 ? okBody : {});
   };
-  const verdict = await verifyEntityImage(visionInput, { fetcher, keys: ['k1'], retryDelayMs: 0 });
-  assert.equal(verdict.pickIndex, 0);
-  assert.equal(urls.length, 2);
-  assert.equal(urls[0], urls[1], 'the retry uses the same model first');
+  await assert.rejects(
+    verifyEntityImage(visionInput, { fetcher, keys: ['k1'], retryDelayMs: 0 }),
+    /could not verify/
+  );
+  assert.equal(urls.length, 1);
 });
 
-test('when the busy models stay down, the lite model is the last fallback', async () => {
+test('a busy Gemini model is not replaced with another model', async () => {
   const urls: string[] = [];
   const fetcher: BrollFetch = async (url) => {
     urls.push(url);
     return url.includes('gemini-3.5-flash-lite') ? response(200, okBody) : response(503);
   };
-  const verdict = await verifyEntityImage(visionInput, {
-    fetcher,
-    keys: ['k1'],
-    model: 'gemini-3.8-flash',
-    retryDelayMs: 0,
-  });
-  assert.equal(verdict.pickIndex, 0);
+  await assert.rejects(
+    verifyEntityImage(visionInput, {
+      fetcher,
+      keys: ['k1'],
+      model: 'gemini-3.8-flash',
+      retryDelayMs: 0,
+    }),
+    /could not verify/
+  );
+  assert.equal(urls.length, 1);
   assert.ok(urls[0].includes('gemini-3.8-flash'));
-  assert.ok(urls.some((url) => url.includes('gemini-3.6-flash')));
-  assert.ok(urls[urls.length - 1].includes('gemini-3.5-flash-lite'));
 });
 
 test('a rejected key is not retried', async () => {
@@ -100,7 +102,7 @@ test('a rejected key is not retried', async () => {
     return response(403);
   };
   await assert.rejects(verifyEntityImage(visionInput, { fetcher, keys: ['bad'], model: 'm1', retryDelayMs: 0 }));
-  assert.equal(calls, 3, 'one call per model, no retry on 401/403');
+  assert.equal(calls, 1, 'one request total, no key rotation or model fallback');
 });
 
 /* ----------------------- plan: Openverse second source ----------------------- */
@@ -191,21 +193,22 @@ const baseInput = {
   captionBand: { top: 1300, bottom: 1500 },
 };
 
-test('when no Commons image downloads, the Openverse fallback is tried and still passes the vision gate', async () => {
-  const deps = makeDeps((item) => item.provider === 'wikimedia');
+test('when no Openverse image downloads, the Wikimedia fallback is tried and still passes the vision gate', async () => {
+  const deps = makeDeps((item) => item.provider === 'openverse');
+  deps.searchEntity = async () => [candidate('openverse', 'ov-primary')];
   deps.searchEntityFallback = async () => {
     deps.calls.fallback += 1;
-    return [candidate('openverse', 'ov-1')];
+    return [candidate('wikimedia', 'commons-1')];
   };
   const plan = await buildBrollPlan(baseInput, deps);
   const fullscreen = plan.items.filter((item) => item.kind === 'fullscreen');
   assert.equal(deps.calls.fallback, 1);
   assert.equal(fullscreen.length, 1);
-  assert.equal(fullscreen[0].attribution.provider, 'openverse');
+  assert.equal(fullscreen[0].attribution.provider, 'wikimedia');
   assert.equal(deps.calls.verify, 1);
 });
 
-test('the fallback is not used when a Commons image downloaded fine', async () => {
+test('the fallback is not used when an Openverse image downloaded fine', async () => {
   const deps = makeDeps(() => false);
   deps.searchEntityFallback = async () => {
     deps.calls.fallback += 1;

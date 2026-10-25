@@ -15,6 +15,7 @@ import {
   parseUnsplashResponse,
   searchStockAcrossProviders,
 } from '../lib/broll/providers/stock';
+import { parseOpenverseResponse } from '../lib/broll/providers/openverse';
 import { attributionFor, cacheKeyFor, isUsableImage, stripHtml } from '../lib/broll/providers/types';
 import { ProviderQuotaError } from '../lib/broll/http';
 import type { BrollHttpResponse, BrollFetch } from '../lib/broll/http';
@@ -38,6 +39,24 @@ function jsonResponse(body: unknown, status = 200): BrollHttpResponse {
 function fakeFetch(handler: (url: string) => BrollHttpResponse | Promise<BrollHttpResponse>): BrollFetch {
   return (url) => Promise.resolve(handler(url));
 }
+
+test('Openverse candidates keep the original image separate from its thumbnail', () => {
+  const [candidate] = parseOpenverseResponse({
+    results: [
+      {
+        id: 'openverse-1',
+        url: 'https://upload.wikimedia.org/wikipedia/commons/full.jpg',
+        thumbnail: 'https://api.openverse.org/v1/images/openverse-1/thumb/',
+        width: 2400,
+        height: 1600,
+        filetype: 'jpg',
+      },
+    ],
+  });
+
+  assert.equal(candidate.imageUrl, 'https://upload.wikimedia.org/wikipedia/commons/full.jpg');
+  assert.equal(candidate.thumbUrl, 'https://api.openverse.org/v1/images/openverse-1/thumb/');
+});
 
 const COMMONS_SAMPLE = {
   query: {

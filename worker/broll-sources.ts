@@ -204,13 +204,31 @@ export function createBrollDeps(options: BrollSourceOptions): BrollPlanDeps {
     },
 
     async searchEntityFallback(query: string): Promise<BrollCandidate[]> {
-      return cachedProviderSearch("openverse", query, () =>
-        openverseLimiter(() => searchOpenverse(query, { fetcher })),
-      );
+      return cachedProviderSearch("wikimedia", query, async () => {
+        const payload = await commonsLimiter(() =>
+          fetchJson(buildCommonsSearchUrl(query, 10), {
+            fetcher,
+            provider: "Wikimedia Commons",
+          }),
+        );
+        return rankCommonsCandidates(parseCommonsResponse(payload));
+      });
     },
 
     async searchEntity(query: string): Promise<BrollCandidate[]> {
-      let commonsError: unknown;
+      let openverseError: unknown;
+      try {
+        const fromOpenverse = await cachedProviderSearch(
+          "openverse",
+          query,
+          () => openverseLimiter(() => searchOpenverse(query, { fetcher })),
+        );
+        if (fromOpenverse.length > 0) return fromOpenverse;
+      } catch (error) {
+        openverseError = error;
+      }
+
+      // Openverse is unreachable (or had nothing usable): use Commons as fallback.
       try {
         const fromCommons = await cachedProviderSearch(
           "wikimedia",
@@ -225,31 +243,19 @@ export function createBrollDeps(options: BrollSourceOptions): BrollPlanDeps {
             return rankCommonsCandidates(parseCommonsResponse(payload));
           },
         );
-        if (fromCommons.length > 0) return fromCommons;
-      } catch (error) {
-        commonsError = error;
-      }
-
-      // Commons is unreachable (or had nothing usable): fall back to Openverse.
-      try {
-        const fromOpenverse = await cachedProviderSearch(
-          "openverse",
-          query,
-          () => openverseLimiter(() => searchOpenverse(query, { fetcher })),
-        );
-        if (fromOpenverse.length > 0) {
+        if (fromCommons.length > 0) {
           console.log(
-            `[broll] "${query}": using Openverse (${fromOpenverse.length} candidate(s)).`,
+            `[broll] "${query}": using Wikimedia Commons (${fromCommons.length} candidate(s)).`,
           );
         }
-        return fromOpenverse;
+        return fromCommons;
       } catch (error) {
-        if (commonsError) {
+        if (openverseError) {
           throw new Error(
-            `Wikimedia Commons: ${describeError(commonsError)} | Openverse: ${describeError(error)}`,
+            `Openverse: ${describeError(openverseError)} | Wikimedia Commons: ${describeError(error)}`,
           );
         }
-        return []; // Commons answered (empty); Openverse failing just means no image.
+        return []; // Openverse answered (empty); Commons failing just means no image.
       }
     },
 
@@ -293,14 +299,8 @@ export function createBrollDeps(options: BrollSourceOptions): BrollPlanDeps {
       if (candidate.provider !== "wikimedia") {
         return cacheImage(candidate, { fetcher, provider: candidate.provider });
       }
-      // The Commons API already returned a standard-size thumbnail (`thumbUrl`,
-      // ~1080-1280 px). The original can be many MB, which is what timed out and
-      // got throttled; the thumbnail is plenty for a 1080x1920 frame.
-      const source = candidate.thumbUrl
-        ? { ...candidate, imageUrl: candidate.thumbUrl }
-        : candidate;
       return downloadFromCommons(() =>
-        cacheImage(source, { fetcher, provider: "Wikimedia Commons" }),
+        cacheImage(candidate, { fetcher, provider: "Wikimedia Commons" }),
       );
     },
 

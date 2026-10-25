@@ -1,11 +1,10 @@
 /**
- * Openverse (WordPress's open-licence image index) as the fallback for named
- * entities when Wikimedia Commons is unreachable or has nothing usable.
+ * Openverse (WordPress's open-licence image index) for named entities, with
+ * Wikimedia Commons used when Openverse has nothing usable.
  *
  * Anonymous access works without a key (low rate limit), so this is only ever
  * called after Commons fails, and its answers are cached by the caller.
- * Results hosted on wikimedia.org are downloaded through Openverse's own thumbnail
- * proxy, because that host is the one that may be blocked on this network.
+ * `url` is the full image; `thumbnail` is retained only as metadata for preview.
  */
 
 import type { BrollFetch } from "../http";
@@ -31,6 +30,7 @@ interface OpenverseImage {
   license_url?: string;
   foreign_landing_url?: string;
   url?: string;
+  thumbnail?: string;
   width?: number | null;
   height?: number | null;
   filetype?: string | null;
@@ -75,10 +75,6 @@ export function parseOpenverseResponse(payload: unknown): BrollCandidate[] {
     const mime = type ? MIME_BY_TYPE[type] : "image/jpeg";
     if (!mime || !isUsableImage({ width, height, mime })) continue;
 
-    // wikimedia.org may be unreachable from here: let Openverse fetch it for us.
-    const imageUrl = item.url.includes("wikimedia.org")
-      ? `${OPENVERSE_API_URL}${item.id}/thumb/?full_size=true`
-      : item.url;
     const tags = (item.tags ?? [])
       .map((tag) => tag.name?.trim())
       .filter((name): name is string => Boolean(name));
@@ -88,8 +84,8 @@ export function parseOpenverseResponse(payload: unknown): BrollCandidate[] {
       provider: "openverse",
       providerId: item.id,
       pageUrl: item.foreign_landing_url ?? item.url,
-      imageUrl,
-      thumbUrl: imageUrl,
+      imageUrl: item.url,
+      thumbUrl: item.thumbnail ?? item.url,
       width,
       height,
       mime,

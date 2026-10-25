@@ -22,9 +22,8 @@
  * plain REST `generateContent` endpoint. Node 18+ global `fetch` is enough,
  * so the chain adds zero dependencies.
  *
- * Current chain (Sep 2026, after trimming every provider that proved
- * uncapable in live use): Google AI Studio only, with two Flash models as
- * separate daily-pool redundancy. Groq was removed (free per-minute INPUT
+ * Current chain (Oct 2026): Google AI Studio models are tried in order, once
+ * each, with no same-model retry. Groq was removed (free per-minute INPUT
  * cap -> HTTP 413 on any transcript over ~5 min, plus constant 429s),
  * Cerebras (free models 402 PAID), Mistral (~1 RPM, 429 bursts) and NVIDIA
  * NIM (models 410 Gone + timeouts) all failed in live use. To add a
@@ -57,26 +56,12 @@ export interface LlmProviderEntry {
    * the request sends min(requested, this).
    */
   maxTokens?: number;
-  /**
-   * Optional extra attempts on TRANSIENT failures (HTTP 429/503 only),
-   * spaced LLM_RETRY_DELAY_MS apart, before giving up on this entry and
-   * moving to the next provider. Defaults to 0 = move on immediately
-   * (the original spec). Free tiers are bursty, so consider `retries: 1`
-   * on slots you rely on.
-   */
-  retries?: number;
 }
 
 /**
- * THE FALLBACK CHAIN - tried in this exact order.
+ * THE FALLBACK CHAIN - tried in this exact order, once per model.
  *
- * Trimmed to Google AI Studio on 2026-09-27 after live testing: every other
- * free provider in the previous 13-slot chain failed on real workloads
- * (Groq 413 on long transcripts + 429s, Cerebras 402, Mistral 429,
- * NVIDIA NIM 410/timeouts, OpenRouter key unused). Both Flash models use
- * the same GEMINI_API_KEY but draw from SEPARATE free daily pools, so the
- * second slot is real redundancy against 503 high-demand spikes on one
- * model. Add entries below to re-introduce providers.
+ * A model is never retried; a failure advances to the next configured model.
  */
 export const LLM_PROVIDER_CHAIN: LlmProviderEntry[] = [
   {
@@ -85,7 +70,6 @@ export const LLM_PROVIDER_CHAIN: LlmProviderEntry[] = [
     model: "gemini-3.8-flash",
     apiKeyEnv: "GEMINI_API_KEY",
     kind: "gemini-native",
-    retries: 1,
   },
   {
     id: "gemini-studio-3-6",
@@ -93,7 +77,6 @@ export const LLM_PROVIDER_CHAIN: LlmProviderEntry[] = [
     model: "gemini-3.6-flash",
     apiKeyEnv: "GEMINI_API_KEY",
     kind: "gemini-native",
-    retries: 1,
   },
   {
     id: "gemini-studio-3-5-lite",
@@ -101,7 +84,6 @@ export const LLM_PROVIDER_CHAIN: LlmProviderEntry[] = [
     model: "gemini-3.5-flash-lite",
     apiKeyEnv: "GEMINI_API_KEY",
     kind: "gemini-native",
-    retries: 1,
   },
   {
     id: "gemini-studio-3-1-lite",
@@ -109,7 +91,6 @@ export const LLM_PROVIDER_CHAIN: LlmProviderEntry[] = [
     model: "gemini-3.1-flash-lite",
     apiKeyEnv: "GEMINI_API_KEY",
     kind: "gemini-native",
-    retries: 1,
   },
   {
     id: "gemini-studio-2-5-lite",
@@ -117,7 +98,6 @@ export const LLM_PROVIDER_CHAIN: LlmProviderEntry[] = [
     model: "gemini-2.5-flash-lite",
     apiKeyEnv: "GEMINI_API_KEY",
     kind: "gemini-native",
-    retries: 1,
   },
 ];
 
@@ -160,22 +140,7 @@ class LlmCallFailure extends Error {
 /** Per-call timeout so one hung provider cannot stall the whole analysis. */
 const LLM_CALL_TIMEOUT_MS = 120_000;
 
-/** Pause between retries of a transiently failing (429/503) entry. */
-const LLM_RETRY_DELAY_MS = 2_000;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/**
- * The keys this entry can try, in order.
- *
- * Every chain slot is a Google AI Studio model, and they all share one pool - which
- * lives in Settings -> AI providers, not in `.env.local`. A pool of three keys means
- * three attempts on the same model before the next model is tried, which is the whole
- * point: each key has its own free daily quota. An empty pool means "not configured"
- * and every caller says so out loud rather than trying anything.
- */
+/** Return the configured API key pool; each model attempt uses its first key. */
 export async function llmKeysFor(entry?: LlmProviderEntry): Promise<string[]> {
   void entry;
   const settings = await loadEffectiveSettings();
@@ -385,7 +350,7 @@ function effectiveMaxTokens(
   );
 }
 
-/** One attempt with one key. Kept separate from the retry loops so callers stay readable. */
+/** Make one model request using one key. */
 async function callEntryWithKey(
   entry: LlmProviderEntry,
   apiKey: string,
@@ -398,14 +363,10 @@ async function callEntryWithKey(
 }
 
 /**
- * Run one completion against the fallback chain.
+ * Run one completion against the model fallback chain.
  *
- * - Entries without a configured key are skipped (and logged as such).
- * - On HTTP 429/503 the next entry is tried immediately.
- * - On any other error the failure is logged and the next entry is tried too.
- * - If every entry fails, an AppError (HTTP 502) is thrown whose `details`
- *   list every attempt and why it failed — the caller can surface that for
- *   the specific chunk without the rest of the pipeline knowing.
+ * Each model is called at most once, using the first configured key. Any
+ * failure advances to the next model without retrying the current one.
  *
  * On success, logs which provider/model handled the request and how long it
  * took.
@@ -416,9 +377,7 @@ export async function completeWithFallback(
 ): Promise<LlmCompletionResult> {
   const attempts: string[] = [];
 
-  // The Gemini key pool is resolved once per completion, not per entry: all five
-  // chain slots share one env var, so re-reading it five times would be five queries
-  // for the same answer.
+  // All configured models currently use this same Gemini key pool.
   const keyPool = new Map<string, string[]>();
   for (const entry of chain) {
     if (!keyPool.has(entry.apiKeyEnv)) keyPool.set(entry.apiKeyEnv, await llmKeysFor(entry));
@@ -426,7 +385,7 @@ export async function completeWithFallback(
 
   for (const entry of chain) {
     const label = `${entry.provider} (${entry.model})`;
-    const keys = keyPool.get(entry.apiKeyEnv) ?? [];
+    const keys = (keyPool.get(entry.apiKeyEnv) ?? []).slice(0, 1);
 
     if (keys.length === 0) {
       const why = "no key is configured (Settings -> AI providers)";
@@ -436,73 +395,24 @@ export async function completeWithFallback(
     }
 
     const startedAt = Date.now();
-    const maxAttempts = (entry.retries ?? 0) + 1;
-    // A free-tier key can be out of daily quota while the next key on the SAME model
-    // still works, so a transient failure rotates keys before giving up on the model.
-    // The retry delay is only paid for same-key retries, never for a key switch.
-    console.log(
-      `[LLM] Trying ${label} for "${request.task}" ...` +
-        (keys.length > 1 ? ` (${keys.length} keys)` : "")
-    );
-
-    for (let keyIndex = 0; keyIndex < keys.length; keyIndex++) {
-      let stopEntry = false;
-
-      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        try {
-          const text = await callEntryWithKey(entry, keys[keyIndex], request);
-          const tookMs = Date.now() - startedAt;
-          console.log(
-            `[LLM] ${label} handled "${request.task}" in ${tookMs}ms` +
-              (keys.length > 1 ? ` (key #${keyIndex + 1})` : "")
-          );
-          return { text, entry, tookMs };
-        } catch (error) {
-          const failure =
-            error instanceof LlmCallFailure
-              ? error
-              : new LlmCallFailure(entry, toErrorMessage(error));
-          const transient = failure.statusCode === 429 || failure.statusCode === 503;
-
-          if (transient && attempt < maxAttempts) {
-            console.warn(
-              `[LLM] ${label} got HTTP ${failure.statusCode} - transient, retrying in ${LLM_RETRY_DELAY_MS}ms ` +
-                `(attempt ${attempt + 1}/${maxAttempts}, key #${keyIndex + 1})`
-            );
-            await sleep(LLM_RETRY_DELAY_MS);
-            continue;
-          }
-
-          if (transient && keyIndex + 1 < keys.length) {
-            console.warn(
-              `[LLM] ${label} was rate limited with key #${keyIndex + 1} - switching to key #${keyIndex + 2}`
-            );
-            break; // Next key, same model.
-          }
-
-          console.warn(
-            `[LLM] ${label} ${
-              transient
-                ? `was rate limited / unavailable (HTTP ${failure.statusCode}) - moving to the next provider`
-                : `failed (${failure.message}) - moving to the next provider`
-            }`
-          );
-          attempts.push(
-            `${label}: ${failure.message}${transient ? ` (after ${attempt} attempt${attempt > 1 ? "s" : ""})` : ""}`
-          );
-          stopEntry = true;
-          break;
-        }
-      }
-
-      if (stopEntry) break;
+    console.log(`[LLM] Trying ${label} for "${request.task}" ...`);
+    try {
+      const text = await callEntryWithKey(entry, keys[0], request);
+      const tookMs = Date.now() - startedAt;
+      console.log(`[LLM] ${label} handled "${request.task}" in ${tookMs}ms`);
+      return { text, entry, tookMs };
+    } catch (error) {
+      const failure =
+        error instanceof LlmCallFailure
+          ? error
+          : new LlmCallFailure(entry, toErrorMessage(error));
+      console.warn(`[LLM] ${label} failed (${failure.message}) - trying next model`);
+      attempts.push(`${label}: ${failure.message}`);
     }
   }
 
   throw new AppError(
-    chain.length === LLM_PROVIDER_CHAIN.length
-      ? `Every provider in the LLM fallback chain failed for "${request.task}".`
-      : `Every provider in the requested LLM chain failed for "${request.task}".`,
+    `Every model in the LLM fallback chain failed for "${request.task}".`,
     {
       status: 502,
       details: attempts.join(" • "),

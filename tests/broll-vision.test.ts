@@ -137,7 +137,7 @@ test('verify sends the images with the key in the header, never the URL', async 
   assert.equal(body.contents[0].parts[1].inline_data.mime_type, 'image/jpeg');
 });
 
-test('a rejected key rotates to the next key, and an exhausted pool throws', async () => {
+test('a Gemini verification uses one key and one request even when more keys are configured', async () => {
   const keysSeen: string[] = [];
   const fetcher: BrollFetch = (_url, init) => {
     const key = init?.headers?.['x-goog-api-key'] ?? '';
@@ -156,21 +156,15 @@ test('a rejected key rotates to the next key, and an exhausted pool throws', asy
           })
     );
   };
-  const verdict = await verifyEntityImage(
-    { entityName: 'X', entityType: 'person', context: 'x', images },
-    { fetcher, keys: ['bad', 'good'] }
-  );
-  assert.deepEqual(keysSeen, ['bad', 'good']);
-  assert.equal(verdict.pickIndex, 1);
-
   await assert.rejects(
     () =>
       verifyEntityImage(
         { entityName: 'X', entityType: 'person', context: 'x', images },
-        { fetcher, keys: ['bad'] }
+        { fetcher, keys: ['bad', 'good'] }
       ),
     /could not verify/
   );
+  assert.deepEqual(keysSeen, ['bad']);
 });
 
 test('no configured key is a clear, actionable error', async () => {

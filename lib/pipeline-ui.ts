@@ -13,6 +13,11 @@ export interface VideoListItem extends VideoSummary {
   pipelineStatus: PipelineStatus;
 }
 
+export function mediaUrlForOutputPath(outputPath?: string): string | null {
+  if (!outputPath) return null;
+  return `/api/media${outputPath.split("/").map(encodeURIComponent).join("/")}`;
+}
+
 export function formatTime(seconds: number): string {
   const total = Math.max(0, Math.floor(seconds));
   const m = Math.floor(total / 60);

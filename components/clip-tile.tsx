@@ -17,7 +17,7 @@ import {
 } from "lucide-react"
 import { cn } from "cn"
 import type { CaptionPreset, ClipRecord } from "@/lib/types"
-import { clipScore, formatTime, scoreTone } from "@/lib/pipeline-ui"
+import { clipScore, formatTime, mediaUrlForOutputPath, scoreTone } from "@/lib/pipeline-ui"
 import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
@@ -145,7 +145,7 @@ export function ClipTile({
   const [engaged, setEngaged] = React.useState(false);
   const [analysisOpen, setAnalysisOpen] = React.useState(false);
 
-  const mediaUrl = clip.outputPath ? `/api/media${clip.outputPath}` : null;
+  const mediaUrl = mediaUrlForOutputPath(clip.outputPath);
   const isDone = clip.status === "done" && Boolean(mediaUrl);
   const isProcessing = clip.status === "processing";
   const isQueued = clip.status === "pending";

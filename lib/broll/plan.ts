@@ -267,7 +267,7 @@ export async function buildBrollPlan(
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       notes.push(
-        `Wikimedia Commons search failed for "${entity.name}": ${reason}`,
+        `Entity image search failed for "${entity.name}": ${reason}`,
       );
       skipped.push({ stage: "search", entity: entity.name, reason });
       continue;
@@ -277,7 +277,7 @@ export async function buildBrollPlan(
       skipped.push({
         stage: "search",
         entity: entity.name,
-        reason: "No usable image on Wikimedia Commons.",
+        reason: "No usable image from Openverse or Wikimedia Commons.",
       });
       continue;
     }
@@ -316,8 +316,8 @@ export async function buildBrollPlan(
 
     let downloaded = await downloadAll(candidates);
 
-    // Commons answered the search but none of its images could be fetched (429 /
-    // timeout): try the second source before giving the entity up.
+    // Openverse answered the search but none of its images could be fetched:
+    // try Wikimedia Commons before giving the entity up.
     if (downloaded.length === 0 && deps.searchEntityFallback) {
       try {
         const alternative = (
@@ -325,13 +325,13 @@ export async function buildBrollPlan(
         ).slice(0, ENTITY_CANDIDATES_PER_SEARCH);
         if (alternative.length > 0) {
           notes.push(
-            `No Commons image for "${entity.name}" could be downloaded; trying ${alternative.length} Openverse candidate(s).`,
+            `No Openverse image for "${entity.name}" could be downloaded; trying ${alternative.length} Wikimedia Commons candidate(s).`,
           );
           downloaded = await downloadAll(alternative);
         }
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
-        notes.push(`Second image source failed for "${entity.name}": ${reason}`);
+        notes.push(`Wikimedia Commons fallback failed for "${entity.name}": ${reason}`);
       }
     }
 

@@ -14,7 +14,7 @@
 import { AppError } from "../errors";
 import { LLM_PROVIDER_CHAIN, llmKeysFor } from "../llm";
 import type { BrollEntityType } from "../types";
-import type { BrollFetch, BrollHttpResponse } from "./http";
+import type { BrollFetch } from "./http";
 import { defaultBrollFetch } from "./http";
 
 /** Below this, the pick is treated as "not sure" and the entity is skipped. */
@@ -189,36 +189,8 @@ export interface VerifyEntityOptions {
   keys?: string[];
   model?: string;
   timeoutMs?: number;
-  /** Wait before the single retry of a busy (5xx/429) or timed-out request. */
+  /** Kept for compatibility; Gemini verification is attempted once. */
   retryDelayMs?: number;
-}
-
-/** Models tried after the configured primary; the lite model is the least busy. */
-export const VISION_FALLBACK_MODELS = [
-  "gemini-3.6-flash",
-  "gemini-3.5-flash-lite",
-] as const;
-export const VISION_RETRY_DELAY_MS = 1200;
-const TRANSIENT_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
-
-/**
- * One request, and ONE retry when Gemini is momentarily busy (503/429/5xx) or the
- * call timed out. Without this a single 503 skipped the entity for the whole clip.
- */
-async function sendWithRetry(
-  retryDelayMs: number | undefined,
-  send: () => Promise<BrollHttpResponse>,
-): Promise<BrollHttpResponse> {
-  const delay = retryDelayMs ?? VISION_RETRY_DELAY_MS;
-  try {
-    const response = await send();
-    if (!TRANSIENT_STATUSES.has(response.status)) return response;
-  } catch {
-    // Timeout / network blip: fall through to the retry below.
-  }
-  if (delay > 0)
-    await new Promise<void>((resolve) => setTimeout(resolve, delay));
-  return send();
 }
 
 /**
@@ -242,8 +214,6 @@ export async function verifyEntityImage(
   }
   const primaryModel =
     options.model?.trim() || LLM_PROVIDER_CHAIN[0]?.model || "gemini-3.5-flash";
-  // A busy model (503 / timeout) must not cost the image: fall back to the next one.
-  const models = [...new Set([primaryModel, ...VISION_FALLBACK_MODELS])];
   const fetcher = options.fetcher ?? defaultBrollFetch;
   const prompt = buildVisionPrompt(input);
 
@@ -253,57 +223,41 @@ export async function verifyEntityImage(
   }
 
   let lastError: unknown;
-  for (const { model, key } of models.flatMap((model) =>
-    keys.map((key) => ({ model, key })),
-  )) {
-    try {
-      const response = await sendWithRetry(options.retryDelayMs, () =>
-        fetcher(
-        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "x-goog-api-key": key,
-          },
-          body: JSON.stringify({
-            contents: [{ role: "user", parts }],
-            generationConfig: {
-              temperature: 0,
-              maxOutputTokens: 1024, // Gemini 3.x spends part of this on thinking
-              responseMimeType: "application/json",
-            },
-          }),
-          signal: AbortSignal.timeout(options.timeoutMs ?? VISION_TIMEOUT_MS),
+  try {
+    const response = await fetcher(
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(primaryModel)}:generateContent`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-goog-api-key": keys[0],
         },
-        ),
-      );
+        body: JSON.stringify({
+          contents: [{ role: "user", parts }],
+          generationConfig: {
+            temperature: 0,
+            maxOutputTokens: 1024,
+            responseMimeType: "application/json",
+          },
+        }),
+        signal: AbortSignal.timeout(options.timeoutMs ?? VISION_TIMEOUT_MS),
+      },
+    );
 
-      if (response.status === 401 || response.status === 403) {
-        lastError = new Error(
-          "Gemini rejected the API key (HTTP " + response.status + ").",
-        );
-        continue; // Another key in the pool may still work.
-      }
-      if (!response.ok) {
-        lastError = new Error(`Gemini answered HTTP ${response.status}.`);
-        continue;
-      }
-      const payload = (await response.json()) as {
-        candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-      };
-      const text = (payload.candidates?.[0]?.content?.parts ?? [])
-        .map((part) => part.text ?? "")
-        .join("")
-        .trim();
-      if (!text) {
-        lastError = new Error("Gemini returned an empty answer.");
-        continue;
-      }
-      return parseVisionVerdict(text, input.images.length);
-    } catch (error) {
-      lastError = error;
+    if (!response.ok) {
+      throw new Error(`Gemini answered HTTP ${response.status}.`);
     }
+    const payload = (await response.json()) as {
+      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    };
+    const text = (payload.candidates?.[0]?.content?.parts ?? [])
+      .map((part) => part.text ?? "")
+      .join("")
+      .trim();
+    if (!text) throw new Error("Gemini returned an empty answer.");
+    return parseVisionVerdict(text, input.images.length);
+  } catch (error) {
+    lastError = error;
   }
 
   throw new AppError("Gemini Vision could not verify the B-roll candidates.", {
@@ -393,7 +347,6 @@ export async function verifyCardBatch(
   }
   const primaryModel =
     options.model?.trim() || LLM_PROVIDER_CHAIN[0]?.model || "gemini-3.5-flash";
-  const models = [...new Set([primaryModel, ...VISION_FALLBACK_MODELS])];
   const fetcher = options.fetcher ?? defaultBrollFetch;
   const parts: unknown[] = [{ text: buildCardBatchPrompt(items) }];
   for (const item of items) {
@@ -403,50 +356,38 @@ export async function verifyCardBatch(
   }
 
   let lastError: unknown;
-  for (const { model, key } of models.flatMap((m) =>
-    keys.map((k) => ({ model: m, key: k })),
-  )) {
-    try {
-      const response = await sendWithRetry(options.retryDelayMs, () =>
-        fetcher(
-        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "x-goog-api-key": key,
-          },
-          body: JSON.stringify({
-            contents: [{ role: "user", parts }],
-            generationConfig: {
-              temperature: 0,
-              maxOutputTokens: 2048,
-              responseMimeType: "application/json",
-            },
-          }),
-          signal: AbortSignal.timeout(options.timeoutMs ?? VISION_TIMEOUT_MS),
+  try {
+    const response = await fetcher(
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(primaryModel)}:generateContent`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-goog-api-key": keys[0],
         },
-        ),
-      );
-      if (!response.ok) {
-        lastError = new Error(`Gemini answered HTTP ${response.status}.`);
-        continue;
-      }
-      const payload = (await response.json()) as {
-        candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-      };
-      const text = (payload.candidates?.[0]?.content?.parts ?? [])
-        .map((part) => part.text ?? "")
-        .join("")
-        .trim();
-      if (!text) {
-        lastError = new Error("Gemini returned an empty answer.");
-        continue;
-      }
-      return parseCardBatch(text, items);
-    } catch (error) {
-      lastError = error;
-    }
+        body: JSON.stringify({
+          contents: [{ role: "user", parts }],
+          generationConfig: {
+            temperature: 0,
+            maxOutputTokens: 2048,
+            responseMimeType: "application/json",
+          },
+        }),
+        signal: AbortSignal.timeout(options.timeoutMs ?? VISION_TIMEOUT_MS),
+      },
+    );
+    if (!response.ok) throw new Error(`Gemini answered HTTP ${response.status}.`);
+    const payload = (await response.json()) as {
+      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    };
+    const text = (payload.candidates?.[0]?.content?.parts ?? [])
+      .map((part) => part.text ?? "")
+      .join("")
+      .trim();
+    if (!text) throw new Error("Gemini returned an empty answer.");
+    return parseCardBatch(text, items);
+  } catch (error) {
+    lastError = error;
   }
   throw new AppError("Gemini Vision could not check the stock cards.", {
     status: 502,
