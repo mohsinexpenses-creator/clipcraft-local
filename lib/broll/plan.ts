@@ -266,11 +266,18 @@ export async function buildBrollPlan(
       );
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      notes.push(
-        `Entity image search failed for "${entity.name}": ${reason}`,
-      );
+      notes.push(`Entity image search failed for "${entity.name}": ${reason}`);
       skipped.push({ stage: "search", entity: entity.name, reason });
       continue;
+    }
+    if (candidates.length === 0 && deps.searchEntityFallback) {
+      try {
+        candidates = (
+          await deps.searchEntityFallback(entity.searchQuery)
+        ).slice(0, ENTITY_CANDIDATES_PER_SEARCH);
+      } catch {
+        /* fallback is best-effort */
+      }
     }
 
     if (candidates.length === 0) {
@@ -289,7 +296,9 @@ export async function buildBrollPlan(
       data: string;
       mime: string;
     };
-    const downloadAll = async (list: BrollCandidate[]): Promise<Downloaded[]> => {
+    const downloadAll = async (
+      list: BrollCandidate[],
+    ): Promise<Downloaded[]> => {
       const settled = await Promise.all(
         list.slice(0, VISION_CANDIDATE_COUNT).map(async (candidate) => {
           try {
@@ -331,7 +340,9 @@ export async function buildBrollPlan(
         }
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
-        notes.push(`Wikimedia Commons fallback failed for "${entity.name}": ${reason}`);
+        notes.push(
+          `Wikimedia Commons fallback failed for "${entity.name}": ${reason}`,
+        );
       }
     }
 

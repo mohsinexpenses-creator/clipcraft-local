@@ -193,6 +193,54 @@ export interface VerifyEntityOptions {
   retryDelayMs?: number;
 }
 
+const VISION_FALLBACK_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash-lite"];
+
+/** Tries the primary model, then the fallbacks. Returns the answer text. */
+async function geminiGenerate(
+  keys: string[],
+  primaryModel: string,
+  options: VerifyEntityOptions,
+  body: unknown,
+  timeoutMs: number,
+): Promise<string> {
+  const fetcher = options.fetcher ?? defaultBrollFetch;
+  const models = [
+    primaryModel,
+    ...VISION_FALLBACK_MODELS.filter((m) => m !== primaryModel),
+  ];
+  let lastError: unknown;
+  for (const model of models) {
+    try {
+      const response = await fetcher(
+        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-goog-api-key": keys[0],
+          },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(options.timeoutMs ?? timeoutMs),
+        },
+      );
+      if (!response.ok)
+        throw new Error(`Gemini (${model}) answered HTTP ${response.status}.`);
+      const payload = (await response.json()) as {
+        candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+      };
+      const text = (payload.candidates?.[0]?.content?.parts ?? [])
+        .map((part) => part.text ?? "")
+        .join("")
+        .trim();
+      if (!text) throw new Error(`Gemini (${model}) returned an empty answer.`);
+      return text;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
 /**
  * Ask Gemini which candidate (if any) shows the entity. Throws only when no key
  * is configured or every key fails - the caller records that as a skip.
@@ -214,7 +262,6 @@ export async function verifyEntityImage(
   }
   const primaryModel =
     options.model?.trim() || LLM_PROVIDER_CHAIN[0]?.model || "gemini-3.5-flash";
-  const fetcher = options.fetcher ?? defaultBrollFetch;
   const prompt = buildVisionPrompt(input);
 
   const parts: unknown[] = [{ text: prompt }];
@@ -224,37 +271,20 @@ export async function verifyEntityImage(
 
   let lastError: unknown;
   try {
-    const response = await fetcher(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(primaryModel)}:generateContent`,
+    const text = await geminiGenerate(
+      keys,
+      primaryModel,
+      options,
       {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-goog-api-key": keys[0],
+        contents: [{ role: "user", parts }],
+        generationConfig: {
+          temperature: 0,
+          maxOutputTokens: 1024,
+          responseMimeType: "application/json",
         },
-        body: JSON.stringify({
-          contents: [{ role: "user", parts }],
-          generationConfig: {
-            temperature: 0,
-            maxOutputTokens: 1024,
-            responseMimeType: "application/json",
-          },
-        }),
-        signal: AbortSignal.timeout(options.timeoutMs ?? VISION_TIMEOUT_MS),
       },
+      30_000,
     );
-
-    if (!response.ok) {
-      throw new Error(`Gemini answered HTTP ${response.status}.`);
-    }
-    const payload = (await response.json()) as {
-      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-    };
-    const text = (payload.candidates?.[0]?.content?.parts ?? [])
-      .map((part) => part.text ?? "")
-      .join("")
-      .trim();
-    if (!text) throw new Error("Gemini returned an empty answer.");
     return parseVisionVerdict(text, input.images.length);
   } catch (error) {
     lastError = error;
@@ -347,7 +377,6 @@ export async function verifyCardBatch(
   }
   const primaryModel =
     options.model?.trim() || LLM_PROVIDER_CHAIN[0]?.model || "gemini-3.5-flash";
-  const fetcher = options.fetcher ?? defaultBrollFetch;
   const parts: unknown[] = [{ text: buildCardBatchPrompt(items) }];
   for (const item of items) {
     parts.push({
@@ -357,34 +386,20 @@ export async function verifyCardBatch(
 
   let lastError: unknown;
   try {
-    const response = await fetcher(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(primaryModel)}:generateContent`,
+    const text = await geminiGenerate(
+      keys,
+      primaryModel,
+      options,
       {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-goog-api-key": keys[0],
+        contents: [{ role: "user", parts }],
+        generationConfig: {
+          temperature: 0,
+          maxOutputTokens: 2048,
+          responseMimeType: "application/json",
         },
-        body: JSON.stringify({
-          contents: [{ role: "user", parts }],
-          generationConfig: {
-            temperature: 0,
-            maxOutputTokens: 2048,
-            responseMimeType: "application/json",
-          },
-        }),
-        signal: AbortSignal.timeout(options.timeoutMs ?? VISION_TIMEOUT_MS),
       },
+      40_000,
     );
-    if (!response.ok) throw new Error(`Gemini answered HTTP ${response.status}.`);
-    const payload = (await response.json()) as {
-      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-    };
-    const text = (payload.candidates?.[0]?.content?.parts ?? [])
-      .map((part) => part.text ?? "")
-      .join("")
-      .trim();
-    if (!text) throw new Error("Gemini returned an empty answer.");
     return parseCardBatch(text, items);
   } catch (error) {
     lastError = error;
