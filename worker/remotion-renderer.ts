@@ -1,13 +1,14 @@
-import fs from 'fs';
-import os from 'os';
-import path from 'path';
-import { AppError, RenderCancelledError, toErrorMessage } from '../lib/errors';
-import { CaptionPreset, OverlayStylePreset, WordTimestamp } from '../lib/types';
-import { maskProfanity } from '../lib/profanity';
-import { log } from '../lib/logger';
-import { CaptionOverlayCompositionProps } from '../remotion/OverlayCompositions';
-import { OverlayFrameSequence } from './ffmpeg-pipeline';
-import { normalizeFps } from './ffmpeg-pipeline';
+import fs from "fs";
+import os from "os";
+import path from "path";
+import zlib from "zlib";
+import { AppError, RenderCancelledError, toErrorMessage } from "../lib/errors";
+import { CaptionPreset, OverlayStylePreset, WordTimestamp } from "../lib/types";
+import { maskProfanity } from "../lib/profanity";
+import { log } from "../lib/logger";
+import { CaptionOverlayCompositionProps } from "../remotion/OverlayCompositions";
+import { OverlayFrameSequence } from "./ffmpeg-pipeline";
+import { normalizeFps } from "./ffmpeg-pipeline";
 
 export interface PreparedCaptionOverlays {
   workDir: string;
@@ -43,10 +44,10 @@ export function getRemotionBundle(): Promise<string> {
   if (cachedBundlePromise) return cachedBundlePromise;
 
   cachedBundlePromise = (async () => {
-    const { bundle } = await import('@remotion/bundler');
-    const entryPoint = path.join(process.cwd(), 'remotion', 'index.tsx');
+    const { bundle } = await import("@remotion/bundler");
+    const entryPoint = path.join(process.cwd(), "remotion", "index.tsx");
 
-    log.detail('Bundling the Remotion project (first clip only)...');
+    log.detail("Bundling the Remotion project (first clip only)...");
     const bundled = await bundle({ entryPoint });
     log.ok(`Bundle ready: ${bundled}`);
     return bundled;
@@ -60,7 +61,9 @@ export function getRemotionBundle(): Promise<string> {
 
 function getRenderTimeoutMs(): number {
   const minutes = Number(process.env.REMOTION_TIMEOUT_MINUTES?.trim());
-  return Number.isFinite(minutes) && minutes > 0 ? minutes * 60_000 : 60 * 60_000;
+  return Number.isFinite(minutes) && minutes > 0
+    ? minutes * 60_000
+    : 60 * 60_000;
 }
 
 function checkCancelled(isCancelled?: () => boolean): void {
@@ -75,10 +78,17 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(
-      () => reject(new AppError(`Remotion overlay rendering timed out after ${Math.round(ms / 60000)} minutes.`, {
-        resolution: 'Close other heavy apps, lower REMOTION_CONCURRENCY, shorten the clip, or raise REMOTION_TIMEOUT_MINUTES.',
-      })),
-      ms
+      () =>
+        reject(
+          new AppError(
+            `Remotion overlay rendering timed out after ${Math.round(ms / 60000)} minutes.`,
+            {
+              resolution:
+                "Close other heavy apps, lower REMOTION_CONCURRENCY, shorten the clip, or raise REMOTION_TIMEOUT_MINUTES.",
+            },
+          ),
+        ),
+      ms,
     );
   });
   return Promise.race([promise, timeout]).finally(() => {
@@ -87,43 +97,49 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 }
 
 function normalizePngSequence(outputDir: string): string {
-  const files = fs.readdirSync(outputDir)
-    .filter((file) => file.toLowerCase().endsWith('.png'))
+  const files = fs
+    .readdirSync(outputDir)
+    .filter((file) => file.toLowerCase().endsWith(".png"))
     .map((file) => ({ file, index: Number(file.match(/(\d+)/)?.[1] ?? -1) }))
     .filter(({ index }) => Number.isFinite(index) && index >= 0)
     .sort((a, b) => a.index - b.index);
-  if (files.length === 0) throw new Error(`Remotion produced no PNG frames in ${outputDir}`);
+  if (files.length === 0)
+    throw new Error(`Remotion produced no PNG frames in ${outputDir}`);
 
   // Rename in two phases to avoid a collision if the renderer already happens
   // to use the ov_00001.png pattern.
   const temporary = files.map(({ file }, index) => {
-    const tempName = `__normalized_${String(index + 1).padStart(6, '0')}.png`;
+    const tempName = `__normalized_${String(index + 1).padStart(6, "0")}.png`;
     fs.renameSync(path.join(outputDir, file), path.join(outputDir, tempName));
     return tempName;
   });
   temporary.forEach((file, index) => {
     fs.renameSync(
       path.join(outputDir, file),
-      path.join(outputDir, `ov_${String(index + 1).padStart(5, '0')}.png`)
+      path.join(outputDir, `ov_${String(index + 1).padStart(5, "0")}.png`),
     );
   });
-  return path.join(outputDir, 'ov_%05d.png');
+  return path.join(outputDir, "ov_%05d.png");
 }
 
 export async function prepareRemotionCaptionOverlays(
-  options: PrepareRemotionOverlaysOptions
+  options: PrepareRemotionOverlaysOptions,
 ): Promise<PreparedCaptionOverlays> {
   const fps = normalizeFps(options.fps);
   const totalDuration = Math.max(0.1, options.totalDuration);
   const durationInFrames = Math.max(1, Math.round(totalDuration * fps));
-  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clipcraft-remotion-'));
-  const outputDir = path.join(workDir, 'frames');
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "clipcraft-remotion-"));
+  const outputDir = path.join(workDir, "frames");
   fs.mkdirSync(outputDir, { recursive: true });
 
   try {
     checkCancelled(options.isCancelled);
-    const { renderFrames, selectComposition } = await import('@remotion/renderer');
-    const bundleDir = await withTimeout(getRemotionBundle(), getRenderTimeoutMs());
+    const { renderFrames, selectComposition } =
+      await import("@remotion/renderer");
+    const bundleDir = await withTimeout(
+      getRemotionBundle(),
+      getRenderTimeoutMs(),
+    );
     const inputProps: CaptionOverlayCompositionProps = {
       hookText: maskProfanity(options.hookText),
       hookDuration: options.hookDuration,
@@ -132,7 +148,10 @@ export async function prepareRemotionCaptionOverlays(
       ctaText: maskProfanity(options.ctaText),
       ctaDuration: options.ctaDuration,
       totalDuration,
-      words: options.words.map((word) => ({ ...word, word: maskProfanity(word.word) })),
+      words: options.words.map((word) => ({
+        ...word,
+        word: maskProfanity(word.word),
+      })),
       preset: options.preset,
       hookStyle: options.hookStyle,
       ctaStyle: options.ctaStyle,
@@ -142,17 +161,17 @@ export async function prepareRemotionCaptionOverlays(
     const composition = await withTimeout(
       selectComposition({
         serveUrl: bundleDir,
-        id: 'CaptionOverlayComposition',
+        id: "CaptionOverlayComposition",
         inputProps,
-        logLevel: 'error',
+        logLevel: "error",
       }),
-      getRenderTimeoutMs()
+      getRenderTimeoutMs(),
     );
     checkCancelled(options.isCancelled);
 
     log.detail(
       `Remotion overlay frames: ${durationInFrames} frames @ ${fps}fps, ` +
-      `${totalDuration.toFixed(2)}s (transparent PNG; no source-video encode)`
+        `${totalDuration.toFixed(2)}s (transparent PNG; no source-video encode)`,
     );
     await withTimeout(
       renderFrames({
@@ -166,17 +185,25 @@ export async function prepareRemotionCaptionOverlays(
         serveUrl: bundleDir,
         inputProps,
         outputDir,
-        imageFormat: 'png',
-        concurrency: Number(process.env.REMOTION_CONCURRENCY?.trim()) || undefined,
+        imageFormat: "png",
+        concurrency:
+          Number(process.env.REMOTION_CONCURRENCY?.trim()) || undefined,
         onStart: () => undefined,
         onFrameUpdate: (framesRendered) => {
           if (options.onProgress) {
-            options.onProgress(Math.round((framesRendered / durationInFrames) * 100));
+            options.onProgress(
+              Math.round((framesRendered / durationInFrames) * 100),
+            );
           }
         },
-        logLevel: (process.env.REMOTION_LOG_LEVEL?.trim() as 'info' | 'verbose' | 'warn' | 'error') || 'info',
+        logLevel:
+          (process.env.REMOTION_LOG_LEVEL?.trim() as
+            | "info"
+            | "verbose"
+            | "warn"
+            | "error") || "info",
       }),
-      getRenderTimeoutMs()
+      getRenderTimeoutMs(),
     );
     checkCancelled(options.isCancelled);
 
@@ -184,14 +211,22 @@ export async function prepareRemotionCaptionOverlays(
     log.ok(`Remotion overlays ready: ${durationInFrames} transparent frames`);
     return {
       workDir,
-      sequences: [{ name: 'remotion overlays', inputPattern, startAtSeconds: 0 }],
+      sequences: [
+        { name: "remotion overlays", inputPattern, startAtSeconds: 0 },
+      ],
     };
   } catch (error) {
-    try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* best-effort */ }
-    if (error instanceof RenderCancelledError || error instanceof AppError) throw error;
-    throw new AppError('Remotion overlay rendering failed.', {
+    try {
+      fs.rmSync(workDir, { recursive: true, force: true });
+    } catch {
+      /* best-effort */
+    }
+    if (error instanceof RenderCancelledError || error instanceof AppError)
+      throw error;
+    throw new AppError("Remotion overlay rendering failed.", {
       details: toErrorMessage(error),
-      resolution: 'Inspect the Remotion log, confirm Chromium is available, and retry the render.',
+      resolution:
+        "Inspect the Remotion log, confirm Chromium is available, and retry the render.",
     });
   }
 }
@@ -205,7 +240,7 @@ export interface PrepareBrollOverlaysOptions {
   /** Items to paint, already scheduled on the FINAL (hook-inclusive) timeline. */
   items: Array<{
     id: string;
-    kind: 'fullscreen' | 'landscape';
+    kind: "fullscreen" | "landscape";
     start: number;
     end: number;
     imageUrl: string;
@@ -222,6 +257,88 @@ export interface PreparedBrollOverlays {
   sequences: OverlayFrameSequence[];
 }
 
+function crc32(buf: Buffer): number {
+  let crc = 0xffffffff;
+  for (const byte of buf) {
+    let c = (crc ^ byte) & 0xff;
+    for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    crc = c ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type: string, data: Buffer): Buffer {
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length);
+  const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(body));
+  return Buffer.concat([length, body, crc]);
+}
+
+/** Fully transparent RGBA PNG (used for the frames between two B-roll items). */
+function createBlankPng(width: number, height: number): Buffer {
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8; // bit depth
+  header[9] = 6; // RGBA
+  const raw = Buffer.alloc((width * 4 + 1) * height); // filter 0 + zero pixels
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", header),
+    pngChunk("IDAT", zlib.deflateSync(raw)),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+interface BrollPiece {
+  dir: string;
+  startFrame: number;
+  count: number;
+}
+
+/** One continuous ov_%05d.png sequence from all items; gaps are transparent frames. */
+function mergeBrollPieces(
+  workDir: string,
+  pieces: BrollPiece[],
+  fps: number,
+): OverlayFrameSequence {
+  if (pieces.length === 0) throw new Error("No B-roll frames were rendered.");
+  const first = Math.min(...pieces.map((piece) => piece.startFrame));
+  const last = Math.max(
+    ...pieces.map((piece) => piece.startFrame + piece.count),
+  );
+  const mergedDir = path.join(workDir, "merged");
+  fs.mkdirSync(mergedDir, { recursive: true });
+  const blank = path.join(workDir, "blank.png");
+  fs.writeFileSync(blank, createBlankPng(1080, 1920));
+
+  const owner = new Map<number, string>();
+  for (const piece of pieces) {
+    for (let i = 0; i < piece.count; i += 1) {
+      owner.set(
+        piece.startFrame + i,
+        path.join(piece.dir, `ov_${String(i + 1).padStart(5, "0")}.png`),
+      );
+    }
+  }
+  for (let frame = first; frame < last; frame += 1) {
+    const target = path.join(
+      mergedDir,
+      `ov_${String(frame - first + 1).padStart(5, "0")}.png`,
+    );
+    const source = owner.get(frame);
+    if (source) fs.renameSync(source, target);
+    else fs.copyFileSync(blank, target);
+  }
+  return {
+    name: "b-roll (merged)",
+    inputPattern: path.join(mergedDir, "ov_%05d.png"),
+    startAtSeconds: first / fps,
+  };
+}
+
 /**
  * Paint every B-roll item as its OWN short transparent PNG sequence.
  *
@@ -232,22 +349,29 @@ export interface PreparedBrollOverlays {
  * per item would dominate the render time.
  */
 export async function prepareRemotionBrollOverlays(
-  options: PrepareBrollOverlaysOptions
+  options: PrepareBrollOverlaysOptions,
 ): Promise<PreparedBrollOverlays> {
   const fps = normalizeFps(options.fps);
-  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clipcraft-broll-'));
-  let browser: Awaited<ReturnType<typeof import('@remotion/renderer').openBrowser>> | null = null;
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "clipcraft-broll-"));
+  let browser: Awaited<
+    ReturnType<typeof import("@remotion/renderer").openBrowser>
+  > | null = null;
 
   try {
-    const { renderFrames, selectComposition, openBrowser } = await import('@remotion/renderer');
-    const bundleDir = await withTimeout(getRemotionBundle(), getRenderTimeoutMs());
-    browser = await openBrowser('chrome', {});
+    const { renderFrames, selectComposition, openBrowser } =
+      await import("@remotion/renderer");
+    const bundleDir = await withTimeout(
+      getRemotionBundle(),
+      getRenderTimeoutMs(),
+    );
+    browser = await openBrowser("chrome", {});
 
-    const sequences: OverlayFrameSequence[] = [];
+    const pieces: BrollPiece[] = [];
     const total = Math.max(1, options.items.length);
     const totalFrames = options.items.reduce(
-      (sum, item) => sum + Math.max(1, Math.round((item.end - item.start) * fps)),
-      0
+      (sum, item) =>
+        sum + Math.max(1, Math.round((item.end - item.start) * fps)),
+      0,
     );
     let renderedFrames = 0;
 
@@ -255,7 +379,10 @@ export async function prepareRemotionBrollOverlays(
       checkCancelled(options.isCancelled);
       const durationSeconds = Math.max(0.1, item.end - item.start);
       const durationInFrames = Math.max(1, Math.round(durationSeconds * fps));
-      const outputDir = path.join(workDir, `item-${String(index).padStart(2, '0')}`);
+      const outputDir = path.join(
+        workDir,
+        `item-${String(index).padStart(2, "0")}`,
+      );
       fs.mkdirSync(outputDir, { recursive: true });
 
       const inputProps = {
@@ -270,47 +397,66 @@ export async function prepareRemotionBrollOverlays(
       const composition = await withTimeout(
         selectComposition({
           serveUrl: bundleDir,
-          id: 'BrollOverlayComposition',
+          id: "BrollOverlayComposition",
           inputProps,
-          logLevel: 'error',
+          logLevel: "error",
         }),
-        getRenderTimeoutMs()
+        getRenderTimeoutMs(),
       );
       checkCancelled(options.isCancelled);
 
       await withTimeout(
         renderFrames({
-          composition: { ...composition, width: 1080, height: 1920, fps, durationInFrames },
+          composition: {
+            ...composition,
+            width: 1080,
+            height: 1920,
+            fps,
+            durationInFrames,
+          },
           serveUrl: bundleDir,
           inputProps,
           outputDir,
-          imageFormat: 'png',
+          imageFormat: "png",
           puppeteerInstance: browser,
-          concurrency: Number(process.env.REMOTION_CONCURRENCY?.trim()) || undefined,
+          concurrency:
+            Number(process.env.REMOTION_CONCURRENCY?.trim()) || undefined,
           onStart: () => undefined,
           onFrameUpdate: (framesRendered) => {
             renderedFrames += 1;
             if (options.onProgress && totalFrames > 0) {
-              options.onProgress(Math.round((renderedFrames / totalFrames) * 100));
+              options.onProgress(
+                Math.round((renderedFrames / totalFrames) * 100),
+              );
             }
             void framesRendered;
           },
-          logLevel: (process.env.REMOTION_LOG_LEVEL?.trim() as 'info' | 'verbose' | 'warn' | 'error') || 'info',
+          logLevel:
+            (process.env.REMOTION_LOG_LEVEL?.trim() as
+              | "info"
+              | "verbose"
+              | "warn"
+              | "error") || "info",
         }),
-        getRenderTimeoutMs()
+        getRenderTimeoutMs(),
       );
       checkCancelled(options.isCancelled);
 
-      const inputPattern = normalizePngSequence(outputDir);
-      sequences.push({
-        name: `b-roll ${item.kind} #${index + 1}`,
-        inputPattern,
-        startAtSeconds: Math.max(0, item.start),
+      normalizePngSequence(outputDir);
+      pieces.push({
+        dir: outputDir,
+        startFrame: Math.max(0, Math.round(item.start * fps)),
+        count: fs
+          .readdirSync(outputDir)
+          .filter((file) => /^ov_\d+\.png$/.test(file)).length,
       });
       options.onProgress?.(Math.round(((index + 1) / total) * 100));
     }
 
-    log.ok(`Remotion B-roll ready: ${sequences.length} sequence(s)`);
+    const sequences = [mergeBrollPieces(workDir, pieces, fps)];
+    log.ok(
+      `Remotion B-roll ready: ${options.items.length} item(s) merged into 1 layer`,
+    );
     return { workDir, sequences };
   } catch (error) {
     try {
@@ -318,10 +464,12 @@ export async function prepareRemotionBrollOverlays(
     } catch {
       /* best-effort */
     }
-    if (error instanceof RenderCancelledError || error instanceof AppError) throw error;
-    throw new AppError('Remotion B-roll rendering failed.', {
+    if (error instanceof RenderCancelledError || error instanceof AppError)
+      throw error;
+    throw new AppError("Remotion B-roll rendering failed.", {
       details: toErrorMessage(error),
-      resolution: 'Inspect the Remotion log, confirm Chromium is available, and retry the render.',
+      resolution:
+        "Inspect the Remotion log, confirm Chromium is available, and retry the render.",
     });
   } finally {
     if (browser) {

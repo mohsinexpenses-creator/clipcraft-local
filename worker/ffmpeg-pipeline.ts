@@ -491,6 +491,8 @@ export async function processVideoSegment(
   for (const overlay of overlays) {
     overlayInputIndices.push(nextInput++);
     inputArgs.push(
+      "-thread_queue_size",
+      "1024",
       "-framerate",
       ffmpegFpsArg(fps),
       "-start_number",
@@ -722,6 +724,7 @@ export async function processVideoSegment(
 
     await runFfmpeg(args, {
       label: "trim+mirror+crop+color+overlays+encode",
+      stallTimeoutMs: 120_000,
       totalDurationSeconds: totalDuration,
       isCancelled,
       onProgress: (progress) => {

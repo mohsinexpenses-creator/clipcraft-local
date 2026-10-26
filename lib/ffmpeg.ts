@@ -116,7 +116,8 @@ function warnFfprobeOnce(message: string): void {
 }
 
 function findExecutableOnPath(command: string): string | null {
-  const extension = process.platform === "win32" && !/\.exe$/i.test(command) ? ".exe" : "";
+  const extension =
+    process.platform === "win32" && !/\.exe$/i.test(command) ? ".exe" : "";
   for (const directory of (process.env.PATH ?? "").split(path.delimiter)) {
     if (!directory) continue;
     const candidate = path.join(directory, `${command}${extension}`);
@@ -131,18 +132,24 @@ export function getFfprobePath(): string {
   const executable = isWin ? "ffprobe.exe" : "ffprobe";
   const configured = process.env.FFPROBE_PATH?.trim();
   if (configured && configured.toLowerCase() !== "your_ffprobe_path") {
-    if (fs.existsSync(configured) || !/[\\/]/.test(configured)) return configured;
-    warnFfprobeOnce(`FFPROBE_PATH="${configured}" does not exist - searching beside FFmpeg and on PATH.`);
+    if (fs.existsSync(configured) || !/[\\/]/.test(configured))
+      return configured;
+    warnFfprobeOnce(
+      `FFPROBE_PATH="${configured}" does not exist - searching beside FFmpeg and on PATH.`,
+    );
   }
 
   const siblingDirs: string[] = [];
   // The Settings page override wins over the env override here exactly like in
   // getFfmpegPath(), so ffprobe is looked up beside the ffmpeg actually in use.
   const savedFfmpeg = getStoredPathSettings().ffmpegPath;
-  if (savedFfmpeg && /[\\/]/.test(savedFfmpeg)) siblingDirs.push(path.dirname(savedFfmpeg));
+  if (savedFfmpeg && /[\\/]/.test(savedFfmpeg))
+    siblingDirs.push(path.dirname(savedFfmpeg));
   const ffmpegOverride = process.env.FFMPEG_PATH?.trim();
-  if (ffmpegOverride && /[\\/]/.test(ffmpegOverride)) siblingDirs.push(path.dirname(ffmpegOverride));
-  if (typeof ffmpegStaticPath === "string" && ffmpegStaticPath) siblingDirs.push(path.dirname(ffmpegStaticPath));
+  if (ffmpegOverride && /[\\/]/.test(ffmpegOverride))
+    siblingDirs.push(path.dirname(ffmpegOverride));
+  if (typeof ffmpegStaticPath === "string" && ffmpegStaticPath)
+    siblingDirs.push(path.dirname(ffmpegStaticPath));
   siblingDirs.push(path.join(process.cwd(), "bin", "ffmpeg"));
   siblingDirs.push(path.join(process.cwd(), "node_modules", "ffmpeg-static"));
   for (const directory of siblingDirs) {
@@ -175,6 +182,8 @@ export interface RunFfmpegOptions {
    * promise rejects with RenderCancelledError.
    */
   isCancelled?: () => boolean;
+  /** Kill FFmpeg when it prints nothing (no -stats line) for this long. */
+  stallTimeoutMs?: number;
 }
 
 const DEFAULT_FFMPEG_TIMEOUT_MS = 30 * 60 * 1000;
@@ -200,14 +209,26 @@ export function runFfmpeg(
     }
 
     const child = spawn(ffmpegBin, args, {
-    windowsHide: true,
-    ...(options?.cwd ? { cwd: options.cwd } : {}),
-  });
+      windowsHide: true,
+      ...(options?.cwd ? { cwd: options.cwd } : {}),
+    });
     let stdout = "";
     let stderr = "";
     let timedOut = false;
     let cancelled = false;
     let settled = false;
+    let lastActivity = Date.now();
+    let stalled = false;
+    let stallTimer: NodeJS.Timeout | null = null;
+    if (options?.stallTimeoutMs && options.stallTimeoutMs > 0) {
+      const limit = options.stallTimeoutMs;
+      stallTimer = setInterval(() => {
+        if (settled) return;
+        if (Date.now() - lastActivity < limit) return;
+        stalled = true;
+        child.kill("SIGKILL");
+      }, 5000);
+    }
 
     const timeoutMs = options?.timeoutMs ?? DEFAULT_FFMPEG_TIMEOUT_MS;
     const timer = setTimeout(() => {
@@ -241,6 +262,7 @@ export function runFfmpeg(
     const finishSettled = () => {
       clearTimeout(timer);
       if (cancelTimer) clearInterval(cancelTimer);
+      if (stallTimer) clearInterval(stallTimer);
     };
 
     child.stdout?.on("data", (chunk) => {
@@ -249,6 +271,7 @@ export function runFfmpeg(
 
     child.stderr?.on("data", (chunk) => {
       const text = chunk.toString();
+      lastActivity = Date.now();
       stderr += text;
 
       if (options?.onProgress) {
@@ -305,6 +328,20 @@ export function runFfmpeg(
               details: `timeout=${Math.round(timeoutMs / 60000)} minutes`,
               resolution:
                 "Shorten the clip, or raise the timeout for this step.",
+            },
+          ),
+        );
+        return;
+      }
+
+      if (stalled) {
+        reject(
+          new AppError(
+            `FFmpeg stopped making progress${label} and was killed.`,
+            {
+              details: `No output for ${Math.round((options?.stallTimeoutMs ?? 0) / 1000)}s. ${stderr.slice(-800)}`,
+              resolution:
+                "Retry the render. If it repeats, report the FFmpeg command from the log.",
             },
           ),
         );
@@ -402,12 +439,19 @@ function nullableNumber(value: number | string | undefined): number | null {
 }
 
 /** Parse a rational or decimal FFprobe frame-rate field. */
-export function parseFrameRate(value: string | null | undefined): number | null {
+export function parseFrameRate(
+  value: string | null | undefined,
+): number | null {
   if (!value || value === "N/A") return null;
   const parts = value.split("/");
   const numerator = Number(parts[0]);
   const denominator = parts.length > 1 ? Number(parts[1]) : 1;
-  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator === 0) return null;
+  if (
+    !Number.isFinite(numerator) ||
+    !Number.isFinite(denominator) ||
+    denominator === 0
+  )
+    return null;
   const rate = numerator / denominator;
   return Number.isFinite(rate) && rate > 0 ? rate : null;
 }
@@ -420,18 +464,22 @@ export function parseFrameRate(value: string | null | undefined): number | null 
 export function detectVariableFrameRate(
   averageFrameRate: string | null | undefined,
   nominalFrameRate: string | null | undefined,
-  relativeTolerance = 0.01
+  relativeTolerance = 0.01,
 ): boolean | null {
   const average = parseFrameRate(averageFrameRate);
   const nominal = parseFrameRate(nominalFrameRate);
   if (average === null || nominal === null) return null;
-  return Math.abs(average - nominal) / Math.max(average, nominal) > relativeTolerance;
+  return (
+    Math.abs(average - nominal) / Math.max(average, nominal) > relativeTolerance
+  );
 }
 
 export function parseFfprobeJsonOutput(stdout: string): FfprobeMetadata {
   const raw = JSON.parse(stdout) as RawFfprobeOutput;
   const streams = (raw.streams ?? []).map((stream): FfprobeStreamMetadata => {
-    const sideDataRotation = stream.side_data_list?.find((item) => Number.isFinite(item.rotation))?.rotation;
+    const sideDataRotation = stream.side_data_list?.find((item) =>
+      Number.isFinite(item.rotation),
+    )?.rotation;
     const taggedRotation = nullableNumber(stream.tags?.rotate);
     const rawRotation = sideDataRotation ?? taggedRotation;
     return {
@@ -447,9 +495,10 @@ export function parseFfprobeJsonOutput(stdout: string): FfprobeMetadata {
       bitRate: nullableNumber(stream.bit_rate),
       sampleRate: nullableNumber(stream.sample_rate),
       channels: nullableNumber(stream.channels),
-      rotation: rawRotation === null || rawRotation === undefined
-        ? null
-        : Math.abs(Math.round(rawRotation)) % 360,
+      rotation:
+        rawRotation === null || rawRotation === undefined
+          ? null
+          : Math.abs(Math.round(rawRotation)) % 360,
     };
   });
   return {
@@ -460,13 +509,17 @@ export function parseFfprobeJsonOutput(stdout: string): FfprobeMetadata {
   };
 }
 
-export function parseVideoMetadataFromFfprobe(probe: FfprobeMetadata): VideoMetadata {
+export function parseVideoMetadataFromFfprobe(
+  probe: FfprobeMetadata,
+): VideoMetadata {
   const video = probe.streams.find((stream) => stream.codecType === "video");
   if (!video) throw new Error("ffprobe reported no video stream.");
-  const audio = probe.streams.find((stream) => stream.codecType === "audio") ?? null;
+  const audio =
+    probe.streams.find((stream) => stream.codecType === "audio") ?? null;
   const averageFrameRate = video.averageFrameRate;
   const nominalFrameRate = video.nominalFrameRate;
-  const fps = parseFrameRate(averageFrameRate) ?? parseFrameRate(nominalFrameRate) ?? 0;
+  const fps =
+    parseFrameRate(averageFrameRate) ?? parseFrameRate(nominalFrameRate) ?? 0;
   const duration = probe.formatDuration ?? video.duration ?? 0;
   return {
     duration,
@@ -477,7 +530,10 @@ export function parseVideoMetadataFromFfprobe(probe: FfprobeMetadata): VideoMeta
     rotation: video.rotation ?? 0,
     averageFrameRate,
     nominalFrameRate,
-    isVariableFrameRate: detectVariableFrameRate(averageFrameRate, nominalFrameRate),
+    isVariableFrameRate: detectVariableFrameRate(
+      averageFrameRate,
+      nominalFrameRate,
+    ),
     videoStartTime: video.startTime ?? probe.formatStartTime ?? 0,
     videoDuration: video.duration ?? duration,
     audioStartTime: audio?.startTime ?? null,
@@ -514,77 +570,122 @@ export function parseFfmpegProbeOutput(stderr: string): Partial<VideoMetadata> {
     height: resolutionMatch ? parseInt(resolutionMatch[2], 10) : undefined,
     fps: fpsMatch ? parseFloat(fpsMatch[1]) : undefined,
     hasAudio: Boolean(audioLine),
-    rotation: rotationMatch ? Math.abs(Math.round(parseFloat(rotationMatch[1]))) % 360 : 0,
+    rotation: rotationMatch
+      ? Math.abs(Math.round(parseFloat(rotationMatch[1]))) % 360
+      : 0,
   };
 }
 
 /** Capture a structured FFprobe report for a local media file. */
-export async function probeMediaWithFfprobe(inputPath: string): Promise<FfprobeMetadata> {
-  if (!fs.existsSync(inputPath)) throw new Error(`Media file does not exist: ${inputPath}`);
+export async function probeMediaWithFfprobe(
+  inputPath: string,
+): Promise<FfprobeMetadata> {
+  if (!fs.existsSync(inputPath))
+    throw new Error(`Media file does not exist: ${inputPath}`);
   const ffprobeBin = getFfprobePath();
   return new Promise((resolve, reject) => {
-    const child = spawn(ffprobeBin, [
-      "-v", "error",
-      "-show_streams",
-      "-show_format",
-      "-of", "json",
-      inputPath,
-    ], { windowsHide: true });
+    const child = spawn(
+      ffprobeBin,
+      [
+        "-v",
+        "error",
+        "-show_streams",
+        "-show_format",
+        "-of",
+        "json",
+        inputPath,
+      ],
+      { windowsHide: true },
+    );
     let stdout = "";
     let stderr = "";
-    child.stdout?.on("data", (data) => { stdout += data.toString(); });
-    child.stderr?.on("data", (data) => { stderr += data.toString(); });
-    child.on("error", (error) => reject(new Error(`${ffprobeBin}: ${toErrorMessage(error)}`)));
+    child.stdout?.on("data", (data) => {
+      stdout += data.toString();
+    });
+    child.stderr?.on("data", (data) => {
+      stderr += data.toString();
+    });
+    child.on("error", (error) =>
+      reject(new Error(`${ffprobeBin}: ${toErrorMessage(error)}`)),
+    );
     child.on("close", (code) => {
       if (code !== 0) {
-        reject(new Error(`ffprobe exited with status ${String(code)}: ${stderr.slice(-1500)}`));
+        reject(
+          new Error(
+            `ffprobe exited with status ${String(code)}: ${stderr.slice(-1500)}`,
+          ),
+        );
         return;
       }
       try {
         resolve(parseFfprobeJsonOutput(stdout));
       } catch (error) {
-        reject(new Error(`Could not parse ffprobe JSON: ${toErrorMessage(error)}`));
+        reject(
+          new Error(`Could not parse ffprobe JSON: ${toErrorMessage(error)}`),
+        );
       }
     });
   });
 }
 
 function isValidVideoMetadata(metadata: VideoMetadata): boolean {
-  return Number.isFinite(metadata.duration) && metadata.duration > 0 &&
-    Number.isFinite(metadata.width) && metadata.width > 0 &&
-    Number.isFinite(metadata.height) && metadata.height > 0 &&
-    Number.isFinite(metadata.fps) && metadata.fps > 0 && metadata.fps <= 240;
+  return (
+    Number.isFinite(metadata.duration) &&
+    metadata.duration > 0 &&
+    Number.isFinite(metadata.width) &&
+    metadata.width > 0 &&
+    Number.isFinite(metadata.height) &&
+    metadata.height > 0 &&
+    Number.isFinite(metadata.fps) &&
+    metadata.fps > 0 &&
+    metadata.fps <= 240
+  );
 }
 
-export async function getVideoMetadata(inputPath: string): Promise<VideoMetadata> {
+export async function getVideoMetadata(
+  inputPath: string,
+): Promise<VideoMetadata> {
   if (!fs.existsSync(inputPath)) {
-    throw new AppError("Video metadata could not be read because the file does not exist.", {
-      status: 404,
-      details: inputPath,
-      resolution: "Upload the source video again and retry.",
-    });
+    throw new AppError(
+      "Video metadata could not be read because the file does not exist.",
+      {
+        status: 404,
+        details: inputPath,
+        resolution: "Upload the source video again and retry.",
+      },
+    );
   }
 
   try {
-    const metadata = parseVideoMetadataFromFfprobe(await probeMediaWithFfprobe(inputPath));
-    if (!isValidVideoMetadata(metadata)) throw new Error("ffprobe returned incomplete video metadata.");
+    const metadata = parseVideoMetadataFromFfprobe(
+      await probeMediaWithFfprobe(inputPath),
+    );
+    if (!isValidVideoMetadata(metadata))
+      throw new Error("ffprobe returned incomplete video metadata.");
     return metadata;
   } catch (error) {
     warnFfprobeOnce(
-      `ffprobe metadata unavailable (${toErrorMessage(error)}). VFR detection and stream timing diagnostics are unavailable; install a full FFmpeg build with ffprobe or set FFPROBE_PATH. Falling back to FFmpeg text probing.`
+      `ffprobe metadata unavailable (${toErrorMessage(error)}). VFR detection and stream timing diagnostics are unavailable; install a full FFmpeg build with ffprobe or set FFPROBE_PATH. Falling back to FFmpeg text probing.`,
     );
   }
 
   const ffmpegBin = getFfmpegPath();
   return new Promise((resolve, reject) => {
-    const child = spawn(ffmpegBin, ["-hide_banner", "-i", inputPath], { windowsHide: true });
+    const child = spawn(ffmpegBin, ["-hide_banner", "-i", inputPath], {
+      windowsHide: true,
+    });
     let stderr = "";
-    child.stderr?.on("data", (data) => { stderr += data.toString(); });
+    child.stderr?.on("data", (data) => {
+      stderr += data.toString();
+    });
     child.on("error", (error) => {
-      reject(new AppError("FFmpeg failed while probing video metadata.", {
-        details: `${ffmpegBin}: ${toErrorMessage(error)}`,
-        resolution: "Install FFmpeg and ffprobe or set FFMPEG_PATH / FFPROBE_PATH in .env.local.",
-      }));
+      reject(
+        new AppError("FFmpeg failed while probing video metadata.", {
+          details: `${ffmpegBin}: ${toErrorMessage(error)}`,
+          resolution:
+            "Install FFmpeg and ffprobe or set FFMPEG_PATH / FFPROBE_PATH in .env.local.",
+        }),
+      );
     });
     child.on("close", () => {
       const parsed = parseFfmpegProbeOutput(stderr);
@@ -601,16 +702,19 @@ export async function getVideoMetadata(inputPath: string): Promise<VideoMetadata
         videoStartTime: 0,
         videoDuration: parsed.duration ?? 0,
         audioStartTime: parsed.hasAudio ? 0 : null,
-        audioDuration: parsed.hasAudio ? parsed.duration ?? null : null,
+        audioDuration: parsed.hasAudio ? (parsed.duration ?? null) : null,
         formatBitRate: null,
         videoBitRate: null,
         audioBitRate: null,
       };
       if (!isValidVideoMetadata(metadata)) {
-        reject(new AppError("FFmpeg could not detect complete video metadata.", {
-          details: `duration=${metadata.duration}, size=${metadata.width}x${metadata.height}, fps=${metadata.fps} | ${stderr.slice(-1000)}`,
-          resolution: "Confirm the uploaded file is a valid readable video and retry.",
-        }));
+        reject(
+          new AppError("FFmpeg could not detect complete video metadata.", {
+            details: `duration=${metadata.duration}, size=${metadata.width}x${metadata.height}, fps=${metadata.fps} | ${stderr.slice(-1000)}`,
+            resolution:
+              "Confirm the uploaded file is a valid readable video and retry.",
+          }),
+        );
         return;
       }
       resolve(metadata);
