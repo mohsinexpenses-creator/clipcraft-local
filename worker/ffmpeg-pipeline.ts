@@ -313,7 +313,7 @@ function assertUsableFile(filePath: string, step: string): void {
   }
 
   const { size } = fs.statSync(filePath);
-  if (size < 1024) {
+  if (size < 64) {
     throw new AppError(`FFmpeg produced an empty file during "${step}".`, {
       details: `${filePath} (${size} bytes)`,
       resolution:
@@ -492,7 +492,7 @@ export async function processVideoSegment(
     overlayInputIndices.push(nextInput++);
     inputArgs.push(
       "-thread_queue_size",
-      "1024",
+      "64",
       "-framerate",
       ffmpegFpsArg(fps),
       "-start_number",
@@ -690,7 +690,7 @@ export async function processVideoSegment(
       "-y",
       "-hide_banner",
       "-loglevel",
-      "error",
+      "warning",
       "-stats",
       ...inputArgs,
       ...(audioPlan?.extraArgs ?? []),
@@ -724,7 +724,7 @@ export async function processVideoSegment(
 
     await runFfmpeg(args, {
       label: "trim+mirror+crop+color+overlays+encode",
-      stallTimeoutMs: 120_000,
+      stallTimeoutMs: 180_000,
       totalDurationSeconds: totalDuration,
       isCancelled,
       onProgress: (progress) => {

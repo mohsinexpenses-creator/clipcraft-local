@@ -218,6 +218,7 @@ export function runFfmpeg(
     let cancelled = false;
     let settled = false;
     let lastActivity = Date.now();
+    let lastSeconds = -1;
     let stalled = false;
     let stallTimer: NodeJS.Timeout | null = null;
     if (options?.stallTimeoutMs && options.stallTimeoutMs > 0) {
@@ -271,8 +272,17 @@ export function runFfmpeg(
 
     child.stderr?.on("data", (chunk) => {
       const text = chunk.toString();
-      lastActivity = Date.now();
       stderr += text;
+      const times = [...text.matchAll(/time=(\d+):(\d+):(\d+(?:\.\d+)?)/g)];
+      const latest = times[times.length - 1];
+      if (latest) {
+        const seconds =
+          Number(latest[1]) * 3600 + Number(latest[2]) * 60 + Number(latest[3]);
+        if (seconds > lastSeconds + 0.01) {
+          lastSeconds = seconds;
+          lastActivity = Date.now();
+        }
+      }
 
       if (options?.onProgress) {
         const timeMatch = text.match(/time=(\d+):(\d+):(\d+\.\d+)/);
