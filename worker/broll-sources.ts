@@ -66,9 +66,10 @@ import type {
   CardVerdict,
   PreparedBrollImage,
 } from "../lib/broll/plan";
+import { mergeCandidates } from "../lib/broll/entity-attempts";
 
 /** Wikimedia asks clients not to hammer the API; one request per second is safe. */
-const commonsLimiter = createRateLimiter({ minIntervalMs: 1000 });
+const commonsLimiter = createRateLimiter({ minIntervalMs: 400 });
 const openverseLimiter = createRateLimiter({ minIntervalMs: 1000 });
 /**
  * upload.wikimedia.org throttles bursts and generic clients with HTTP 429, so image
@@ -160,6 +161,14 @@ export function createBrollDeps(options: BrollSourceOptions): BrollPlanDeps {
       provider !== "wikimedia" && provider !== "openverse",
   );
 
+  const searchCommonsCached = (query: string) =>
+    cachedProviderSearch("wikimedia", query, async () => {
+      const payload = await commonsLimiter(() =>
+        fetchJson(buildCommonsSearchUrl(query, 10), { fetcher, provider: "Wikimedia Commons" }),
+      );
+      return rankCommonsCandidates(parseCommonsResponse(payload));
+    });
+
   return {
     visionAvailable: geminiKeys.length > 0,
 
@@ -213,6 +222,24 @@ export function createBrollDeps(options: BrollSourceOptions): BrollPlanDeps {
         );
         return rankCommonsCandidates(parseCommonsResponse(payload));
       });
+    },
+
+    async searchEntityAll(query: string): Promise<BrollCandidate[]> {
+      const [openverse, commons] = await Promise.allSettled([
+        cachedProviderSearch("openverse", query, () =>
+          openverseLimiter(() => searchOpenverse(query, { fetcher })),
+        ),
+        searchCommonsCached(query),
+      ]);
+      if (openverse.status === "rejected" && commons.status === "rejected") {
+        throw new Error(
+          `Openverse: ${describeError(openverse.reason)} | Wikimedia Commons: ${describeError(commons.reason)}`,
+        );
+      }
+      return mergeCandidates(
+        commons.status === "fulfilled" ? commons.value : [],
+        openverse.status === "fulfilled" ? openverse.value : [],
+      );
     },
 
     async searchEntity(query: string): Promise<BrollCandidate[]> {
@@ -299,8 +326,9 @@ export function createBrollDeps(options: BrollSourceOptions): BrollPlanDeps {
       if (candidate.provider !== "wikimedia") {
         return cacheImage(candidate, { fetcher, provider: candidate.provider });
       }
+      const source = candidate.thumbUrl ? { ...candidate, imageUrl: candidate.thumbUrl } : candidate;
       return downloadFromCommons(() =>
-        cacheImage(candidate, { fetcher, provider: "Wikimedia Commons" }),
+        cacheImage(source, { fetcher, provider: "Wikimedia Commons" }),
       );
     },
 
@@ -328,6 +356,7 @@ export function createBrollDeps(options: BrollSourceOptions): BrollPlanDeps {
       const cacheKey = jsonCacheKey([
         "verdict",
         input.entityName.toLowerCase(),
+        input.mode ?? "context",
         input.images.length,
         ...input.images.map((image) => image.data.length),
         input.context.slice(0, 120),

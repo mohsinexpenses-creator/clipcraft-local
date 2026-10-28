@@ -32,7 +32,8 @@ export interface BrollEntity {
   type: BrollEntityType;
   name: string;
   searchQuery: string;
-  /** Clip-relative seconds. */
+  /** Name + what the speaker is talking about, e.g. "Elon Musk Tesla factory". */
+  contextQuery?: string;
   start: number;
   end: number;
 }
@@ -259,10 +260,16 @@ export function parseBrollAnalysis(
       windowFromWord(entry, words, clipDuration, 3) ??
       readWindow(entry, where, clipDuration);
 
+    const contextQuery =
+      typeof entry.contextQuery === "string"
+        ? entry.contextQuery.trim().slice(0, MAX_QUERY_LENGTH)
+        : "";
+
     entities.push({
       type: type as BrollEntityType,
       name,
       searchQuery: query,
+      ...(contextQuery ? { contextQuery } : {}),
       ...window,
     });
   }
@@ -360,11 +367,11 @@ export function deriveFallbackKeywords(
   for (let index = 0; index < slots; index += 1) {
     const pick = picks.length
       ? picks[
-          Math.min(
-            picks.length - 1,
-            Math.floor(((index + 0.5) * picks.length) / slots),
-          )
-        ]
+      Math.min(
+        picks.length - 1,
+        Math.floor(((index + 0.5) * picks.length) / slots),
+      )
+      ]
       : undefined;
     const centre = pick ? pick.start : ((index + 0.5) / slots) * clipDuration;
     const start = Math.max(0, Math.min(clipDuration - 1.5, centre));
@@ -393,7 +400,7 @@ export function buildBrollPrompt(input: {
     `The clip is ${input.clipDuration.toFixed(1)} seconds long. The transcript lines look like "#index start-end word".`,
     "",
     "Return ONE JSON object, no markdown, no commentary:",
-    '{ "entities": [ { "type": "person" | "place" | "event", "name": "…", "searchQuery": "…", "wordIndex": 0 } ],',
+    '{ "entities": [ { "type": "person" | "place" | "event", "name": "…", "searchQuery": "…", "contextQuery": "…", "wordIndex": 0 } ],',
     '  "broll": [ { "visualKeywords": ["…"], "wordIndex": 0 } ] }',
     "",
     "wordIndex is the #index of the exact transcript word where the thing is spoken. NEVER invent timestamps.",
@@ -401,7 +408,8 @@ export function buildBrollPrompt(input: {
     "entities:",
     "- ONLY real, specific, named things a stock/Wikimedia photo could show: a public figure, a brand, a landmark, a city, a stadium, a named event.",
     `- At most ${input.entityBudget}. Leave the array empty when nothing is named.`,
-    '- searchQuery is what you would type into Wikimedia Commons (e.g. "Elon Musk", "Eiffel Tower", "2024 Summer Olympics").',
+    '- searchQuery is the full name ONLY, e.g. "Elon Musk", "Eiffel Tower", "2024 Summer Olympics".',
+    '- contextQuery is the full name PLUS what is being said about it, 2-4 extra words, e.g. "Elon Musk Tesla factory", "Eiffel Tower at night", "Messi World Cup trophy". It must start with the full name.',
     '- name and searchQuery MUST be the full, unambiguous name: "Alex Cooper", never just "Alex". If the speaker only says a first name, complete it from the rest of the transcript; if you cannot, leave that entity out.',
     "- Skip private individuals nobody would have a public photo of, and skip podcast or show logos.",
     "",

@@ -20,7 +20,7 @@ import { defaultBrollFetch } from "./http";
 /** Below this, the pick is treated as "not sure" and the entity is skipped. */
 export const VISION_MIN_CONFIDENCE = 0.5; // was 0.6
 /** Candidates sent per request (the brief says 3-4). */
-export const VISION_CANDIDATE_COUNT = 6; // was 4
+export const VISION_CANDIDATE_COUNT = 4; // was 4
 /** Long edge of each image sent to the model. */
 export const VISION_IMAGE_SIZE = 512;
 export const VISION_TIMEOUT_MS = 60_000;
@@ -49,6 +49,8 @@ export interface VisionRequestInput {
   commonsDescription?: string;
   commonsCategories?: string[];
   images: VisionImage[];
+  /** "context": identity AND situation must fit. "name-only": identity only. */
+  mode?: "context" | "name-only";
 }
 
 export function buildVisionPrompt(input: VisionRequestInput): string {
@@ -64,10 +66,19 @@ export function buildVisionPrompt(input: VisionRequestInput): string {
     .filter(Boolean)
     .join("\n");
 
+  const strict = (input.mode ?? "context") === "context";
+  const intro = strict
+    ? [
+      `The speaker says: "${input.context}"`,
+      "",
+      `I need a photo that clearly shows the ${input.entityType} "${input.entityName}" AND fits the situation the speaker describes. Pick a candidate only when BOTH are true. If the ${input.entityType} is right but the situation clearly does not fit, answer null.`,
+    ]
+    : [
+      `I need a photo that clearly shows the ${input.entityType} "${input.entityName}". Ignore any story or situation: only the identity matters. ANY clear, recognisable photo of this exact ${input.entityType} is acceptable.`,
+    ];
+
   return [
-    `The speaker says: "${input.context}"`,
-    "",
-    `I need a photo that clearly shows the ${input.entityType} "${input.entityName}". A photo that also fits what the speaker says is preferred, but ANY clear, recognisable photo of this exact ${input.entityType} is acceptable.`,
+    ...intro,
     "Candidate images follow, in order (image 0, image 1, ...).",
     meta
       ? `\nWhat Wikimedia Commons says about the first candidate:\n${meta}`
@@ -77,6 +88,7 @@ export function buildVisionPrompt(input: VisionRequestInput): string {
     '{ "pickIndex": 0, "confidence": 0.0, "reason": "...", "hasTextOrWatermark": false, "isSafe": true }',
     "",
     "Rules:",
+    "- The subject must be large and clear enough to fill a vertical 9:16 frame (face or landmark prominent). Reject tiny, distant or crowded subjects.",
     `- pickIndex is the best candidate that clearly depicts "${input.entityName}", or null when none does.`,
     "- confidence is 0..1: how sure you are that the pictured subject IS the named thing (not merely related).",
     "- A portrait of a different person, a building that is not the named building, a generic crowd or a map is NOT a match: use null.",
@@ -283,7 +295,7 @@ export async function verifyEntityImage(
           responseMimeType: "application/json",
         },
       },
-      30_000,
+      20_000,
     );
     return parseVisionVerdict(text, input.images.length);
   } catch (error) {
