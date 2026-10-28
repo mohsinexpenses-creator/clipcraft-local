@@ -137,6 +137,24 @@ test('speaker-focus plan follows the talking person and glides at the change', (
   assert.ok(lastX > 1100, `ends on the right speaker (x=${lastX})`);
 });
 
+test('speaker-focus briefly shows another visible person then returns to the speaker', () => {
+  const speaker = panTrack(1, Array.from({ length: 60 }, () => 400), 0.25, 240);
+  const listener = panTrack(2, Array.from({ length: 60 }, () => 1500), 0.25, 240);
+  const plan = buildSinglePlan(
+    asd([speaker, listener], [{ trackId: 1, t0: 0, t1: 15 }]),
+    1920,
+    1080,
+    0.32
+  );
+
+  const hasPointNear = (time: number, x: number) =>
+    plan.points.some((point) => Math.abs(point.t - time) < 0.001 && point.x === x);
+  assert.ok(hasPointNear(4.85, 1500), 'glides to listener before 5s');
+  assert.ok(hasPointNear(5.85, 1500), 'holds listener for 1s');
+  assert.ok(hasPointNear(6, 400), 'glides back to speaker by 6s');
+  assert.ok(hasPointNear(10.85, 1500), 'repeats after 5s on speaker');
+});
+
 test('split-screen plan builds adaptive cells (one per person, no emphasis layer)', () => {
   const a = panTrack(1, Array.from({ length: 40 }, () => 400));
   const b = panTrack(2, Array.from({ length: 40 }, () => 1500));

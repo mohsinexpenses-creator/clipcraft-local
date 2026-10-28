@@ -311,6 +311,9 @@ function trackToPanPoints(track: Track, srcW: number, deadZonePx = 6): PanPoint[
 
 /** How long (s) the crop window glides from one speaker to the next. */
 const SPEAKER_GLIDE_SECONDS = 0.15;
+/** Time on the active speaker before a brief listener cutaway. */
+const SPEAKER_FOCUS_HOLD_SECONDS = 5;
+const LISTENER_CUTAWAY_SECONDS = 1;
 
 /** Median of a number array (unlike the mean, it rejects outlier sightings). */
 function median(values: number[]): number {
@@ -370,6 +373,46 @@ function buildSpeakerPath(asd: AsdResult, _srcW: number): PanPoint[] {
       points.push({ t: seg.t0, x: prev.x, y: prev.y });
       points.push({ t: Math.min(seg.t0 + SPEAKER_GLIDE_SECONDS, seg.t1), x, y });
     }
+
+    const listeners = asd.tracks
+      .filter((candidate) => candidate.id !== track.id)
+      .map((candidate) => {
+        const visible = candidate.points.filter((p) => p.t >= seg.t0 && p.t <= seg.t1);
+        if (visible.length === 0) return null;
+        return {
+          x: median(visible.map((p) => p.cx)),
+          y: median(visible.map((p) => p.cy)),
+          firstSeen: visible[0].t,
+          lastSeen: visible[visible.length - 1].t,
+        };
+      })
+      .filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== null);
+
+    let cursor = seg.t0 + SPEAKER_FOCUS_HOLD_SECONDS;
+    let listenerIndex = 0;
+    while (
+      cursor + LISTENER_CUTAWAY_SECONDS <= seg.t1 &&
+      listeners.length > 0
+    ) {
+      const listener = listeners[listenerIndex % listeners.length];
+      const cutawayStart = Math.max(cursor - SPEAKER_GLIDE_SECONDS * 2, listener.firstSeen);
+      const listenerStart = cutawayStart + SPEAKER_GLIDE_SECONDS;
+      const listenerEnd = listenerStart + LISTENER_CUTAWAY_SECONDS;
+      const returnEnd = listenerEnd + SPEAKER_GLIDE_SECONDS;
+      if (listener.lastSeen >= listenerEnd && returnEnd <= seg.t1) {
+        points.push(
+          { t: cutawayStart, x, y },
+          { t: listenerStart, x: listener.x, y: listener.y },
+          { t: listenerEnd, x: listener.x, y: listener.y },
+          { t: returnEnd, x, y }
+        );
+        cursor = returnEnd + SPEAKER_FOCUS_HOLD_SECONDS;
+      } else {
+        cursor += SPEAKER_FOCUS_HOLD_SECONDS;
+      }
+      listenerIndex += 1;
+    }
+
     // Lock the anchor for the remainder of the segment.
     points.push({ t: seg.t1, x, y });
 
