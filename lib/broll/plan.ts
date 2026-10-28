@@ -133,7 +133,7 @@ export const CARD_PRIORITY = 50;
 /** Never send more than this many entities per clip to Commons + Gemini. */
 export const MAX_ENTITIES_PER_CLIP = 4;
 /** Candidate images checked per entity. */
-export const ENTITY_CANDIDATES_PER_SEARCH = 4; // was 6
+export const ENTITY_CANDIDATES_PER_SEARCH = 5; // was 6
 /** Gemini verifications per entity before the mention is skipped. */
 export const MAX_VERIFY_ATTEMPTS = 3;
 /** Stock candidates kept per keyword (the first is used, the rest are replacements). */
@@ -290,6 +290,7 @@ export async function buildBrollPlan(
       if (!promise) {
         promise = searchAll(attempt.query).catch((error) => {
           notes.push(`Image search failed for "${entity.name}" (${attempt.label}): ${describe(error)}`);
+          failedSearches.add(key);
           return [] as BrollCandidate[];
         });
         searches.set(key, promise);
@@ -313,6 +314,7 @@ export async function buildBrollPlan(
       return settled.filter((entry): entry is NonNullable<typeof entry> => entry !== null);
     };
 
+    const failedSearches = new Set<string>();
     const seen = new Set<string>(); // never show Gemini the same image twice
     const failures: string[] = [];
     let verified = 0;
@@ -326,7 +328,9 @@ export async function buildBrollPlan(
       const pool = preferPortrait(fresh).slice(0, ENTITY_CANDIDATES_PER_SEARCH);
       pool.forEach((c) => seen.add(candidateKey(c)));
       if (pool.length === 0) {
-        failures.push(`${attempt.label}: no new candidate`);
+        failures.push(
+          `${attempt.label}: ${failedSearches.has(attempt.query.toLowerCase()) ? "search failed (network)" : "no new candidate"}`,
+        );
         continue;
       }
 
@@ -337,21 +341,36 @@ export async function buildBrollPlan(
       }
 
       verified += 1;
-      let verdict: VisionVerdict;
-      try {
-        verdict = await deps.verify({
-          entityName: entity.name,
-          entityType: entity.type,
-          mode: attempt.mode,
-          context: attempt.mode === "context" ? context : "",
-          commonsTitle: downloaded[0].candidate.title,
-          commonsDescription: downloaded[0].candidate.description,
-          commonsCategories: downloaded[0].candidate.categories,
-          images: downloaded.map((item, index) => ({ index, data: item.data, mime: item.mime })),
-        });
-      } catch (error) {
-        failures.push(`${attempt.label}: Gemini error - ${describe(error)}`);
-        continue;
+      let verdict: VisionVerdict | null = null;
+      let lastError = "";
+      for (let tryNo = 0; tryNo < 3 && !verdict; tryNo += 1) {
+        try {
+          verdict = await deps.verify({
+            entityName: entity.name,
+            entityDescriptor: entity.descriptor,
+            entityType: entity.type,
+            mode: attempt.mode,
+            context: attempt.mode === "context" ? context : "",
+            images: downloaded.map((item, index) => ({
+              index,
+              data: item.data,
+              mime: item.mime,
+              title: item.candidate.title,
+              description: item.candidate.description,
+              tags: item.candidate.categories,
+            })),
+          });
+        } catch (error) {
+          lastError = describe(error);
+          if (tryNo < 2) await new Promise<void>((resolve) => setTimeout(resolve, 3000 * (tryNo + 1)));
+        }
+      }
+      if (!verdict) {
+        // Gemini unreachable: this is NOT a rejection. Do not burn the attempt.
+        verified -= 1;
+        pool.forEach((c) => seen.delete(candidateKey(c)));
+        failures.push(`${attempt.label}: Gemini unavailable (not rejected) - ${lastError}`);
+        break;
       }
 
       console.log(

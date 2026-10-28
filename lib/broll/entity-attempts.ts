@@ -17,8 +17,12 @@ const TYPE_HINTS: Record<BrollEntity["type"], string[]> = {
 /** Ordered ladder: context first, then name only, then name + type hint. */
 export function buildEntityAttempts(entity: BrollEntity): EntityAttempt[] {
   const name = entity.name.trim();
+  const role = entity.descriptor?.split(/[,;(]/)[0]?.trim();
   const raw: EntityAttempt[] = [
     { label: "context", query: entity.contextQuery?.trim() || entity.searchQuery, mode: "context" },
+    ...(role
+      ? [{ label: "name+role", query: `${name} ${role}`, mode: "name-only" as const }]
+      : []),
     { label: "name", query: name, mode: "name-only" },
     ...TYPE_HINTS[entity.type].map((hint) => ({
       label: `name+${hint}`,

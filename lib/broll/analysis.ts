@@ -36,6 +36,8 @@ export interface BrollEntity {
   contextQuery?: string;
   start: number;
   end: number;
+  /** 3-8 words: WHO/WHAT it is, e.g. "American podcaster, host of Call Her Daddy". */
+  descriptor?: string;
 }
 
 export interface BrollKeywordMoment {
@@ -260,6 +262,9 @@ export function parseBrollAnalysis(
       windowFromWord(entry, words, clipDuration, 3) ??
       readWindow(entry, where, clipDuration);
 
+    const descriptor =
+      typeof entry.descriptor === "string" ? entry.descriptor.trim().slice(0, 80) : "";
+
     const contextQuery =
       typeof entry.contextQuery === "string"
         ? entry.contextQuery.trim().slice(0, MAX_QUERY_LENGTH)
@@ -270,6 +275,7 @@ export function parseBrollAnalysis(
       name,
       searchQuery: query,
       ...(contextQuery ? { contextQuery } : {}),
+      ...(descriptor ? { descriptor } : {}),
       ...window,
     });
   }
@@ -410,6 +416,7 @@ export function buildBrollPrompt(input: {
     `- At most ${input.entityBudget}. Leave the array empty when nothing is named.`,
     '- searchQuery is the full name ONLY, e.g. "Elon Musk", "Eiffel Tower", "2024 Summer Olympics".',
     '- contextQuery is the full name PLUS what is being said about it, 2-4 extra words, e.g. "Elon Musk Tesla factory", "Eiffel Tower at night", "Messi World Cup trophy". It must start with the full name.',
+    '- descriptor is 3-8 words saying WHO or WHAT it is, so people with the same name are not confused, e.g. "American podcaster, host of Call Her Daddy", "landmark tower in Paris", "annual football tournament".',
     '- name and searchQuery MUST be the full, unambiguous name: "Alex Cooper", never just "Alex". If the speaker only says a first name, complete it from the rest of the transcript; if you cannot, leave that entity out.',
     "- Skip private individuals nobody would have a public photo of, and skip podcast or show logos.",
     "",

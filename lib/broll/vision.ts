@@ -20,7 +20,7 @@ import { defaultBrollFetch } from "./http";
 /** Below this, the pick is treated as "not sure" and the entity is skipped. */
 export const VISION_MIN_CONFIDENCE = 0.5; // was 0.6
 /** Candidates sent per request (the brief says 3-4). */
-export const VISION_CANDIDATE_COUNT = 4; // was 4
+export const VISION_CANDIDATE_COUNT = 5; // was 4
 /** Long edge of each image sent to the model. */
 export const VISION_IMAGE_SIZE = 512;
 export const VISION_TIMEOUT_MS = 60_000;
@@ -35,14 +35,17 @@ export interface VisionVerdict {
 
 export interface VisionImage {
   index: number;
-  /** base64 (no data: prefix). */
   data: string;
   mime: string;
+  title?: string;
+  description?: string;
+  tags?: string[];
 }
 
 export interface VisionRequestInput {
   entityName: string;
   entityType: BrollEntityType;
+  entityDescriptor?: string;
   /** Sentence around the mention - "what is being said". */
   context: string;
   commonsTitle?: string;
@@ -54,40 +57,50 @@ export interface VisionRequestInput {
 }
 
 export function buildVisionPrompt(input: VisionRequestInput): string {
-  const meta = [
-    input.commonsTitle ? `File title: ${input.commonsTitle}` : "",
-    input.commonsDescription
-      ? `File description: ${input.commonsDescription.slice(0, 400)}`
-      : "",
-    input.commonsCategories?.length
-      ? `Categories: ${input.commonsCategories.slice(0, 8).join(", ")}`
-      : "",
-  ]
-    .filter(Boolean)
+  const perImage = input.images
+    .map((image) => {
+      const bits = [
+        image.title ? `title: ${image.title}` : "",
+        image.description ? `description: ${image.description.slice(0, 200)}` : "",
+        image.tags?.length ? `tags: ${image.tags.slice(0, 8).join(", ")}` : "",
+      ]
+        .filter(Boolean)
+        .join("; ");
+      return `Image ${image.index}: ${bits || "no metadata"}`;
+    })
     .join("\n");
 
   const strict = (input.mode ?? "context") === "context";
+  const who = input.entityDescriptor
+    ? `${input.entityType} "${input.entityName}" (${input.entityDescriptor})`
+    : `${input.entityType} "${input.entityName}"`;
   const intro = strict
     ? [
       `The speaker says: "${input.context}"`,
       "",
-      `I need a photo that clearly shows the ${input.entityType} "${input.entityName}" AND fits the situation the speaker describes. Pick a candidate only when BOTH are true. If the ${input.entityType} is right but the situation clearly does not fit, answer null.`,
+      `I need a photo that clearly shows the ${who} "${who}" AND fits the situation the speaker describes. Pick a candidate only when BOTH are true. If the ${who} is right but the situation clearly does not fit, answer null.`,
     ]
     : [
-      `I need a photo that clearly shows the ${input.entityType} "${input.entityName}". Ignore any story or situation: only the identity matters. ANY clear, recognisable photo of this exact ${input.entityType} is acceptable.`,
+      `I need a photo that clearly shows the ${who} "${who}". Ignore any story or situation: only the identity matters. ANY clear, recognisable photo of this exact ${who} is acceptable.`,
     ];
 
   return [
     ...intro,
     "Candidate images follow, in order (image 0, image 1, ...).",
-    meta
-      ? `\nWhat Wikimedia Commons says about the first candidate:\n${meta}`
-      : "",
+    "",
+    "Metadata of each candidate (from the image host):",
+    perImage,
     "",
     "Answer with ONE JSON object and nothing else:",
     '{ "pickIndex": 0, "confidence": 0.0, "reason": "...", "hasTextOrWatermark": false, "isSafe": true }',
     "",
     "Rules:",
+    `- Do NOT guess who a real person is from their face. Decide from the metadata (title, description, tags) and any visible caption or name text, together with the image.`,
+    `- Many people share a name. Choose ONLY an image of the specific one described above${input.entityDescriptor ? ` (${input.entityDescriptor})` : ""}. If the metadata or image shows a different person with the same name (another job, a local business owner, another place), that is NOT a match.`,
+    `- Accept a person only when the metadata names "${input.entityName}" AND nothing in the image or metadata contradicts the description. Use confidence 0.7 or more then.`,
+    "- Among all matching candidates, pickIndex must be the best one with NO heavy text, watermark or logo overlay. Set hasTextOrWatermark=true only when EVERY matching candidate has it.",
+    `- Reject when the metadata names someone else, or nothing links the image to the name.`,
+    `- Landmarks, places and events may also be recognised visually.`,
     "- The subject must be large and clear enough to fill a vertical 9:16 frame (face or landmark prominent). Reject tiny, distant or crowded subjects.",
     `- pickIndex is the best candidate that clearly depicts "${input.entityName}", or null when none does.`,
     "- confidence is 0..1: how sure you are that the pictured subject IS the named thing (not merely related).",
@@ -205,7 +218,7 @@ export interface VerifyEntityOptions {
   retryDelayMs?: number;
 }
 
-const VISION_FALLBACK_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash-lite"];
+const VISION_FALLBACK_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"];
 
 /** Tries the primary model, then the fallbacks. Returns the answer text. */
 async function geminiGenerate(
@@ -295,7 +308,7 @@ export async function verifyEntityImage(
           responseMimeType: "application/json",
         },
       },
-      20_000,
+      35_000,
     );
     return parseVisionVerdict(text, input.images.length);
   } catch (error) {

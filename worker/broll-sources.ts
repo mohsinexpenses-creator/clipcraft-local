@@ -66,10 +66,9 @@ import type {
   CardVerdict,
   PreparedBrollImage,
 } from "../lib/broll/plan";
-import { mergeCandidates } from "../lib/broll/entity-attempts";
 
 /** Wikimedia asks clients not to hammer the API; one request per second is safe. */
-const commonsLimiter = createRateLimiter({ minIntervalMs: 400 });
+const commonsLimiter = createRateLimiter({ minIntervalMs: 1000 });
 const openverseLimiter = createRateLimiter({ minIntervalMs: 1000 });
 /**
  * upload.wikimedia.org throttles bursts and generic clients with HTTP 429, so image
@@ -108,6 +107,17 @@ async function downloadFromCommons<T>(run: () => Promise<T>): Promise<T> {
         COMMONS_BACKOFF_MAX_MS,
       );
       await new Promise<void>((resolve) => setTimeout(resolve, delay));
+    }
+  }
+}
+
+async function withRetry<T>(run: () => Promise<T>, attempts = 2, baseMs = 800): Promise<T> {
+  for (let i = 0; ; i += 1) {
+    try {
+      return await run();
+    } catch (error) {
+      if (i >= attempts - 1) throw error;
+      await new Promise<void>((resolve) => setTimeout(resolve, baseMs * 2 ** i));
     }
   }
 }
@@ -225,20 +235,15 @@ export function createBrollDeps(options: BrollSourceOptions): BrollPlanDeps {
     },
 
     async searchEntityAll(query: string): Promise<BrollCandidate[]> {
-      const [openverse, commons] = await Promise.allSettled([
-        cachedProviderSearch("openverse", query, () =>
-          openverseLimiter(() => searchOpenverse(query, { fetcher })),
-        ),
-        searchCommonsCached(query),
-      ]);
-      if (openverse.status === "rejected" && commons.status === "rejected") {
-        throw new Error(
-          `Openverse: ${describeError(openverse.reason)} | Wikimedia Commons: ${describeError(commons.reason)}`,
-        );
-      }
-      return mergeCandidates(
-        commons.status === "fulfilled" ? commons.value : [],
-        openverse.status === "fulfilled" ? openverse.value : [],
+      return withRetry(
+        () =>
+          cachedProviderSearch("openverse", query, () =>
+            openverseLimiter(() =>
+              searchOpenverse(query, { fetcher, limit: 20, timeoutMs: 25_000 }),
+            ),
+          ),
+        3,
+        1000,
       );
     },
 
@@ -356,6 +361,7 @@ export function createBrollDeps(options: BrollSourceOptions): BrollPlanDeps {
       const cacheKey = jsonCacheKey([
         "verdict",
         input.entityName.toLowerCase(),
+        input.entityDescriptor ?? "",
         input.mode ?? "context",
         input.images.length,
         ...input.images.map((image) => image.data.length),
