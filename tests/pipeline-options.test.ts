@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { sanitizeClipEdits } from '../lib/clip-edits';
+import { applyClipEdits, sanitizeClipEdits } from '../lib/clip-edits';
+import type { ClipRecord } from '../lib/types';
+import { validClip } from './viral-fixtures';
 import {
   resolveBrollOptions,
   sanitizePipelineOptions,
@@ -98,6 +100,27 @@ test('a non-empty hook text without an explicit duration re-enables the hook int
   const edits = sanitizeClipEdits({ hookText: 'WATCH THIS' });
 
   assert.equal(edits.hookDuration, 3);
+});
+
+test('hook timestamps are sanitized and applied to the existing AI analysis', () => {
+  const clip = { aiAnalysis: validClip() } as unknown as ClipRecord;
+  const edits = sanitizeClipEdits({ hookStart: '18.25', hookEnd: '22.5' });
+  const updated = applyClipEdits(clip, edits);
+
+  assert.deepEqual(updated.aiAnalysis?.hook_line_analysis.hook_timestamp, {
+    start: '18.25s',
+    end: '22.5s',
+  });
+  assert.equal(updated.aiAnalysis?.rank, clip.aiAnalysis?.rank);
+});
+
+test('hook timestamps must be a complete increasing pair, or both may be cleared', () => {
+  assert.throws(() => sanitizeClipEdits({ hookStart: '4' }), /needs both/);
+  assert.throws(() => sanitizeClipEdits({ hookStart: '8', hookEnd: '7' }), /after its start time/);
+  assert.deepEqual(sanitizeClipEdits({ hookStart: '', hookEnd: '' }), {
+    hookStart: '',
+    hookEnd: '',
+  });
 });
 
 test('impossible clip windows are rejected with an actionable error', () => {

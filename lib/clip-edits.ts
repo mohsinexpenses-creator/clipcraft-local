@@ -37,7 +37,10 @@ type ClipEditField =
   | 'hookStylePresetId'
   | 'ctaStylePresetId';
 
-export type ClipEdits = Pick<ClipRecord, ClipEditField>;
+export type ClipEdits = Pick<ClipRecord, ClipEditField> & {
+  hookStart?: string;
+  hookEnd?: string;
+};
 
 function readNumber(value: unknown, field: string): number | undefined {
   if (value === undefined || value === null || value === '') return undefined;
@@ -117,6 +120,26 @@ export function sanitizeClipEdits(
   const hookText = readText(body.hookText, 'hookText');
   if (hookText !== undefined) edits.hookText = hookText;
 
+  if ('hookStart' in body || 'hookEnd' in body) {
+    const hookStart = readNumber(body.hookStart, 'hookStart');
+    const hookEnd = readNumber(body.hookEnd, 'hookEnd');
+    if (hookStart === undefined && hookEnd === undefined) {
+      edits.hookStart = '';
+      edits.hookEnd = '';
+    } else if (hookStart === undefined || hookEnd === undefined) {
+      throw new AppError('A hook interval needs both "hookStart" and "hookEnd".', { status: 400 });
+    } else {
+      if (hookStart < 0) {
+        throw new AppError('Hook start time cannot be negative.', { status: 400 });
+      }
+      if (hookEnd <= hookStart) {
+        throw new AppError('Hook end time must be after its start time.', { status: 400 });
+      }
+      edits.hookStart = `${Number(hookStart.toFixed(3))}s`;
+      edits.hookEnd = `${Number(hookEnd.toFixed(3))}s`;
+    }
+  }
+
   const ctaText = readText(body.ctaText, 'ctaText');
   if (ctaText !== undefined) edits.ctaText = ctaText;
 
@@ -146,4 +169,26 @@ export function sanitizeClipEdits(
   if (typeof body.ctaStylePresetId === 'string') edits.ctaStylePresetId = body.ctaStylePresetId.trim();
 
   return edits;
+}
+
+export function applyClipEdits(clip: ClipRecord, edits: Partial<ClipEdits>): ClipRecord {
+  const { hookStart, hookEnd, ...clipFields } = edits;
+  const updated = { ...clip, ...clipFields };
+
+  if (hookStart !== undefined || hookEnd !== undefined) {
+    if (!clip.aiAnalysis || hookStart === undefined || hookEnd === undefined) {
+      throw new AppError('Hook timestamps can only be edited as a complete pair on an analyzed clip.', {
+        status: 400,
+      });
+    }
+    updated.aiAnalysis = {
+      ...clip.aiAnalysis,
+      hook_line_analysis: {
+        ...clip.aiAnalysis.hook_line_analysis,
+        hook_timestamp: { start: hookStart, end: hookEnd },
+      },
+    };
+  }
+
+  return updated;
 }

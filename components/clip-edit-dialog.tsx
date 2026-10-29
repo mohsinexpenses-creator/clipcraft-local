@@ -50,6 +50,8 @@ import {
 interface Draft {
   start: string;
   end: string;
+  hookStart: string;
+  hookEnd: string;
   hookText: string;
   hookDuration: string;
   ctaText: string;
@@ -61,10 +63,30 @@ interface Draft {
   ctaStylePresetId: string;
 }
 
+function parseHookTimestamp(value: string): number | null {
+  const text = value.trim();
+  const plain = /^(\d+(?:\.\d+)?)s?$/.exec(text);
+  if (plain) return Number(plain[1]);
+
+  const clock = /^(\d+):([0-5]\d)(?::([0-5]\d))?(\.\d+)?$/.exec(text);
+  if (!clock) return null;
+  const [, first, second, third, fraction] = clock;
+  const whole = third === undefined
+    ? Number(first) * 60 + Number(second)
+    : Number(first) * 3600 + Number(second) * 60 + Number(third);
+  return whole + (fraction ? Number(fraction) : 0);
+}
+
 function draftFrom(clip: ClipRecord, captionPresets: CaptionPreset[]): Draft {
+  const hookTimestamp = clip.aiAnalysis?.hook_line_analysis.hook_timestamp;
+  const hookStart = hookTimestamp ? parseHookTimestamp(hookTimestamp.start) : null;
+  const hookEnd = hookTimestamp ? parseHookTimestamp(hookTimestamp.end) : null;
+
   return {
     start: clip.start.toFixed(1),
     end: clip.end.toFixed(1),
+    hookStart: hookStart === null ? "" : String(hookStart),
+    hookEnd: hookEnd === null ? "" : String(hookEnd),
     hookText: clip.hookText ?? "",
     hookDuration: String(clip.hookDuration ?? 3),
     ctaText: clip.ctaText ?? "",
@@ -171,6 +193,12 @@ function ClipEditForm({
     const edits = {
       start: Number(draft.start),
       end: Number(draft.end),
+      ...(clip.aiAnalysis
+        ? {
+            hookStart: draft.hookStart,
+            hookEnd: draft.hookEnd,
+          }
+        : {}),
       hookText: draft.hookText.trim(),
       hookDuration: Number(draft.hookDuration) || 0,
       ctaText: draft.ctaText.trim(),
@@ -238,7 +266,7 @@ function ClipEditForm({
           {/* form */}
           <div className="space-y-5">
             <Section title="Clip window" icon={<Clock />} description="Seconds inside the source video.">
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
                 <Field label="Start (s)">
                   <Input
                     type="number"
@@ -263,6 +291,28 @@ function ClipEditForm({
                   </div>
                 </Field>
               </div>
+              {clip.aiAnalysis && (
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="Hook start (s)" hint="Absolute timestamp in the source video. Clear both hook timestamps to use the fallback intro.">
+                    <Input
+                      type="number"
+                      step="0.1"
+                      min={0}
+                      value={draft.hookStart}
+                      onChange={(event) => patch({ hookStart: event.target.value })}
+                    />
+                  </Field>
+                  <Field label="Hook end (s)" hint="Absolute timestamp in the source video. Must be after Hook start and inside the clip window.">
+                    <Input
+                      type="number"
+                      step="0.1"
+                      min={0}
+                      value={draft.hookEnd}
+                      onChange={(event) => patch({ hookEnd: event.target.value })}
+                    />
+                  </Field>
+                </div>
+              )}
             </Section>
 
             <div className="h-px bg-border/70" />

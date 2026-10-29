@@ -3,7 +3,7 @@ import path from 'path';
 import { NextResponse } from 'next/server';
 import { deleteClip, getClip, updateClip } from '@/lib/db';
 import { toErrorMessage, toErrorStatus } from '@/lib/errors';
-import { sanitizeClipEdits } from '@/lib/clip-edits';
+import { applyClipEdits, sanitizeClipEdits } from '@/lib/clip-edits';
 
 export async function GET(
   request: Request,
@@ -46,7 +46,7 @@ export async function PATCH(
 
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
     const edits = sanitizeClipEdits(body);
-    const merged = { ...clip, ...edits };
+    const merged = applyClipEdits(clip, edits);
 
     if (!(await updateClip(merged))) {
       return NextResponse.json({ error: 'Clip not found' }, { status: 404 });
