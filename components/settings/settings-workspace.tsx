@@ -918,23 +918,15 @@ function ProvidersCard({
 
           <Row
             label="Model"
-            hint="Anything Deepgram understands, e.g. nova-3 or nova-2:general."
+            hint="Use a Deepgram model ID, such as nova-3, nova-3-general, nova-2-phonecall, or whisper-large."
             source={settings.sources.ai?.deepgramModel}
           >
-            <Input
-              value={effective.ai.deepgramModel}
-              onChange={() => undefined}
-              readOnly
-              className="h-7 font-mono text-[12px]"
-              aria-label="Deepgram model (read-only until saved)"
+            <ModelEditor
+              save={(model) => settings.save("ai", { deepgramModel: model })}
+              current={effective.ai.deepgramModel}
+              busy={settings.busy === "save:ai"}
             />
           </Row>
-
-          <ModelEditor
-            save={(model) => settings.save("ai", { deepgramModel: model })}
-            current={effective.ai.deepgramModel}
-            busy={settings.busy === "save:ai"}
-          />
 
           <Row
             label="Transcription engine"
@@ -1332,25 +1324,45 @@ function ModelEditor({
   busy: boolean;
 }) {
   const [value, setValue] = React.useState(current);
-  if (value === current) return null;
+  const dirty = value.trim() !== current;
 
   return (
-    <div className="flex items-center gap-1.5 rounded-lg bg-primary/5 px-2 py-1.5">
-      <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
-        Model will change to{" "}
-        <code className="font-mono text-foreground">{value}</code>
-      </span>
-      <Button
-        size="xs"
-        variant="soft"
+    <div className="space-y-1.5">
+      <Input
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && dirty && !busy && value.trim()) {
+            event.preventDefault();
+            void save(value.trim());
+          }
+        }}
         disabled={busy}
-        onClick={() => void save(value)}
-      >
-        Save
-      </Button>
-      <Button size="xs" variant="ghost" onClick={() => setValue(current)}>
-        Undo
-      </Button>
+        className="h-7 font-mono text-[12px]"
+        aria-label="Deepgram model ID"
+        placeholder="nova-3"
+      />
+      {dirty && (
+        <div className="flex justify-end gap-1.5">
+          <Button
+            size="xs"
+            variant="soft"
+            disabled={busy || !value.trim()}
+            onClick={() => void save(value.trim())}
+          >
+            {busy ? <Loader2 className="animate-spin" /> : <Save />}
+            Save
+          </Button>
+          <Button
+            size="xs"
+            variant="ghost"
+            disabled={busy}
+            onClick={() => setValue(current)}
+          >
+            Undo
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
