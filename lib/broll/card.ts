@@ -68,15 +68,14 @@ export interface CardPlacementInput {
   canvasHeight?: number;
 }
 
-/** Lowest y the card may reach: the vertical middle of the caption band. */
+/** The card must sit above the caption block. The band may be wide, but the card
+ * never crosses its top edge; any spill is only a fallback for a face-avoidance
+ * repair, never the normal placement. */
 function cardBottomLimit(
   band: { top: number; bottom: number },
   canvasHeight: number,
 ): number {
-  return Math.min(
-    canvasHeight,
-    band.top + (band.bottom - band.top) * CARD_CAPTION_OVERLAP,
-  );
+  return Math.min(canvasHeight, band.top);
 }
 
 function overlapArea(a: BrollCardRect, b: FaceZoneRect): number {

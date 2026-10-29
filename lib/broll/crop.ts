@@ -40,6 +40,8 @@ export interface FullscreenCropInput {
 }
 
 function clamp(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  if (max < min) return min;
   return Math.min(max, Math.max(min, value));
 }
 
@@ -51,6 +53,28 @@ function even(value: number): number {
 /** Even offsets may legitimately be 0 (full-frame images, centred crops). */
 function evenOffset(value: number): number {
   return Math.max(0, Math.round(value / 2) * 2);
+}
+
+function safeCropRect(input: {
+  sourceWidth: number;
+  sourceHeight: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}): { x: number; y: number; width: number; height: number } {
+  const sourceWidth = Math.max(1, Math.round(input.sourceWidth));
+  const sourceHeight = Math.max(1, Math.round(input.sourceHeight));
+  const width = clamp(Math.round(input.width), 1, sourceWidth);
+  const height = clamp(Math.round(input.height), 1, sourceHeight);
+  const x = clamp(Math.round(input.x), 0, Math.max(0, sourceWidth - width));
+  const y = clamp(Math.round(input.y), 0, Math.max(0, sourceHeight - height));
+  return {
+    x: evenOffset(x),
+    y: evenOffset(y),
+    width: even(width),
+    height: even(height),
+  };
 }
 
 /**
@@ -98,15 +122,23 @@ export function planFullscreenCrop(input: FullscreenCropInput): BrollCropPlan {
 
     const width = even(Math.min(sourceWidth, cropWidth));
     const height = even(Math.min(sourceHeight, cropHeight));
-    const x = evenOffset(clamp(faceCentreX - width / 2, 0, sourceWidth - width));
-    const y = evenOffset(clamp(faceCentreY - height * 0.38, 0, sourceHeight - height));
-    return {
-      mode: "crop",
-      ...base,
+    const x = clamp(faceCentreX - width / 2, 0, Math.max(0, sourceWidth - width));
+    const y = clamp(faceCentreY - height * 0.38, 0, Math.max(0, sourceHeight - height));
+    const safe = safeCropRect({
+      sourceWidth,
+      sourceHeight,
       x,
       y,
       width,
       height,
+    });
+    return {
+      mode: "crop",
+      ...base,
+      x: safe.x,
+      y: safe.y,
+      width: safe.width,
+      height: safe.height,
       faceCentered: true,
     };
   }
@@ -129,15 +161,23 @@ export function planFullscreenCrop(input: FullscreenCropInput): BrollCropPlan {
   // subject of a photo is rarely dead centre).
   const width = even(Math.min(sourceWidth, sourceHeight * targetAspect));
   const height = even(Math.min(sourceHeight, sourceWidth / targetAspect));
-  const x = evenOffset(clamp((sourceWidth - width) / 2, 0, sourceWidth - width));
-  const y = evenOffset(clamp((sourceHeight - height) * 0.42, 0, sourceHeight - height));
-  return {
-    mode: "crop",
-    ...base,
+  const x = clamp((sourceWidth - width) / 2, 0, Math.max(0, sourceWidth - width));
+  const y = clamp((sourceHeight - height) * 0.42, 0, Math.max(0, sourceHeight - height));
+  const safe = safeCropRect({
+    sourceWidth,
+    sourceHeight,
     x,
     y,
     width,
     height,
+  });
+  return {
+    mode: "crop",
+    ...base,
+    x: safe.x,
+    y: safe.y,
+    width: safe.width,
+    height: safe.height,
     faceCentered: false,
   };
 }

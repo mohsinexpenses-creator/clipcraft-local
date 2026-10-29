@@ -103,12 +103,33 @@ export async function prepareFullscreen(
 ): Promise<PreparedFullscreen> {
   const image = await readImage(bytes);
   const face = options.face === undefined ? await detectFace(image) : options.face;
-  const crop = planFullscreenCrop({
+  let crop = planFullscreenCrop({
     sourceWidth: image.bitmap.width,
     sourceHeight: image.bitmap.height,
     face,
     entityType: options.entityType,
   });
+
+  const isValidCrop =
+    Number.isFinite(crop.x) &&
+    Number.isFinite(crop.y) &&
+    Number.isFinite(crop.width) &&
+    Number.isFinite(crop.height) &&
+    crop.x >= 0 &&
+    crop.y >= 0 &&
+    crop.width > 0 &&
+    crop.height > 0 &&
+    crop.x + crop.width <= image.bitmap.width + 1 &&
+    crop.y + crop.height <= image.bitmap.height + 1;
+
+  if (!isValidCrop) {
+    crop = planFullscreenCrop({
+      sourceWidth: image.bitmap.width,
+      sourceHeight: image.bitmap.height,
+      face: null,
+      entityType: options.entityType,
+    });
+  }
 
   let rendered: JimpImage;
   if (crop.mode === "blur-fill") {

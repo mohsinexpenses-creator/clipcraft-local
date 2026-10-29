@@ -27,10 +27,10 @@ export const SCHEDULE_RULES = {
   minGap: 1.5,
   /** Keep this far away from the very end of the clip. */
   tailMargin: 0.15,
-  /** Sticker popups: 0.15 pop-in + ~1.0 hold + 0.15 pop-out. */
-  cardDuration: 1.3,
-  /** Minimum empty time between a sticker and its neighbours. */
-  cardGap: 0.4,
+  /** Cards should live on the same 2.5-4s timeframe as any other B-roll item. */
+  cardDuration: 2.5,
+  /** Keep the same separation rule for cards as for fullscreen items. */
+  cardGap: 1.5,
 } as const;
 
 export interface BrollCandidateInput {

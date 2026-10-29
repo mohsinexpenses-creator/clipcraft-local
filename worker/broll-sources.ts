@@ -51,6 +51,7 @@ import {
 } from "../lib/broll/providers/stock";
 import { searchOpenverse } from "../lib/broll/providers/openverse";
 import type { BrollCandidate } from "../lib/broll/providers/types";
+import { mergeCandidates } from "../lib/broll/entity-attempts";
 import {
   makeVisionThumbnail,
   prepareCardFile,
@@ -171,14 +172,6 @@ export function createBrollDeps(options: BrollSourceOptions): BrollPlanDeps {
       provider !== "wikimedia" && provider !== "openverse",
   );
 
-  const searchCommonsCached = (query: string) =>
-    cachedProviderSearch("wikimedia", query, async () => {
-      const payload = await commonsLimiter(() =>
-        fetchJson(buildCommonsSearchUrl(query, 10), { fetcher, provider: "Wikimedia Commons" }),
-      );
-      return rankCommonsCandidates(parseCommonsResponse(payload));
-    });
-
   return {
     visionAvailable: geminiKeys.length > 0,
 
@@ -235,16 +228,34 @@ export function createBrollDeps(options: BrollSourceOptions): BrollPlanDeps {
     },
 
     async searchEntityAll(query: string): Promise<BrollCandidate[]> {
-      return withRetry(
-        () =>
-          cachedProviderSearch("openverse", query, () =>
-            openverseLimiter(() =>
-              searchOpenverse(query, { fetcher, limit: 20, timeoutMs: 25_000 }),
+      const [openverseResults, commonsResults] = await Promise.all([
+        withRetry(
+          () =>
+            cachedProviderSearch("openverse", query, () =>
+              openverseLimiter(() =>
+                searchOpenverse(query, { fetcher, limit: 20, timeoutMs: 25_000 }),
+              ),
             ),
-          ),
-        3,
-        1000,
-      );
+          3,
+          1000,
+        ),
+        withRetry(
+          () =>
+            cachedProviderSearch("wikimedia", query, async () => {
+              const payload = await commonsLimiter(() =>
+                fetchJson(buildCommonsSearchUrl(query, 10), {
+                  fetcher,
+                  provider: "Wikimedia Commons",
+                }),
+              );
+              return rankCommonsCandidates(parseCommonsResponse(payload));
+            }),
+          3,
+          1000,
+        ),
+      ]);
+
+      return mergeCandidates(openverseResults, commonsResults);
     },
 
     async searchEntity(query: string): Promise<BrollCandidate[]> {

@@ -49,6 +49,19 @@ test('a portrait photo becomes a 9:16 crop at the exact canvas size', async () =
   assert.equal(image.bitmap.height, 1920);
 });
 
+test('an oversized face box falls back to a valid fullscreen crop instead of crashing', async () => {
+  const source = await jpegBytes(1600, 900);
+  const prepared = await prepareFullscreen(source, {
+    face: { x: 1200, y: 100, width: 8000, height: 8000 },
+    entityType: 'person',
+  });
+
+  assert.ok(prepared.crop.mode === 'blur-fill' || prepared.crop.mode === 'crop');
+  const image = await readImage(prepared.buffer);
+  assert.equal(image.bitmap.width, 1080);
+  assert.equal(image.bitmap.height, 1920);
+});
+
 test('the card image is exactly 960x540', async () => {
   const source = await jpegBytes(1920, 1080);
   const card = await prepareCard(source);

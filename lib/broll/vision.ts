@@ -18,7 +18,7 @@ import type { BrollFetch } from "./http";
 import { defaultBrollFetch } from "./http";
 
 /** Below this, the pick is treated as "not sure" and the entity is skipped. */
-export const VISION_MIN_CONFIDENCE = 0.5; // was 0.6
+export const VISION_MIN_CONFIDENCE = 0.6;
 /** Candidates sent per request (the brief says 3-4). */
 export const VISION_CANDIDATE_COUNT = 5; // was 4
 /** Long edge of each image sent to the model. */
@@ -71,18 +71,24 @@ export function buildVisionPrompt(input: VisionRequestInput): string {
     .join("\n");
 
   const strict = (input.mode ?? "context") === "context";
-  const who = input.entityDescriptor
+  const targetLabel = input.entityDescriptor
     ? `${input.entityType} "${input.entityName}" (${input.entityDescriptor})`
     : `${input.entityType} "${input.entityName}"`;
   const intro = strict
     ? [
       `The speaker says: "${input.context}"`,
       "",
-      `I need a photo that clearly shows the ${who} "${who}" AND fits the situation the speaker describes. Pick a candidate only when BOTH are true. If the ${who} is right but the situation clearly does not fit, answer null.`,
+      `I need a photo that clearly shows the ${targetLabel} and fits the situation the speaker describes. Pick a candidate only when BOTH are true. If the ${targetLabel} is right but the situation clearly does not fit, answer null.`,
     ]
     : [
-      `I need a photo that clearly shows the ${who} "${who}". Ignore any story or situation: only the identity matters. ANY clear, recognisable photo of this exact ${who} is acceptable.`,
+      `I need a photo that clearly shows the ${targetLabel}. Ignore any story or situation: only the identity matters. ANY clear, recognisable photo of this exact ${targetLabel} is acceptable.`,
     ];
+
+  const metadata = [
+    ...(input.commonsTitle ? [`Title: ${input.commonsTitle}`] : []),
+    ...(input.commonsDescription ? [`Description: ${input.commonsDescription}`] : []),
+    ...(input.commonsCategories?.length ? [`Tags: ${input.commonsCategories.slice(0, 8).join(", ")}`] : []),
+  ];
 
   return [
     ...intro,
@@ -90,6 +96,7 @@ export function buildVisionPrompt(input: VisionRequestInput): string {
     "",
     "Metadata of each candidate (from the image host):",
     perImage,
+    ...(metadata.length ? ["", "Target metadata:", ...metadata] : []),
     "",
     "Answer with ONE JSON object and nothing else:",
     '{ "pickIndex": 0, "confidence": 0.0, "reason": "...", "hasTextOrWatermark": false, "isSafe": true }',
@@ -218,9 +225,7 @@ export interface VerifyEntityOptions {
   retryDelayMs?: number;
 }
 
-const VISION_FALLBACK_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"];
-
-/** Tries the primary model, then the fallbacks. Returns the answer text. */
+/** Single request only: do not rotate keys or swap models for a transient error. */
 async function geminiGenerate(
   keys: string[],
   primaryModel: string,
@@ -229,41 +234,33 @@ async function geminiGenerate(
   timeoutMs: number,
 ): Promise<string> {
   const fetcher = options.fetcher ?? defaultBrollFetch;
-  const models = [
-    primaryModel,
-    ...VISION_FALLBACK_MODELS.filter((m) => m !== primaryModel),
-  ];
-  let lastError: unknown;
-  for (const model of models) {
-    try {
-      const response = await fetcher(
-        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "x-goog-api-key": keys[0],
-          },
-          body: JSON.stringify(body),
-          signal: AbortSignal.timeout(options.timeoutMs ?? timeoutMs),
+  try {
+    const response = await fetcher(
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(primaryModel)}:generateContent`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-goog-api-key": keys[0],
         },
-      );
-      if (!response.ok)
-        throw new Error(`Gemini (${model}) answered HTTP ${response.status}.`);
-      const payload = (await response.json()) as {
-        candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-      };
-      const text = (payload.candidates?.[0]?.content?.parts ?? [])
-        .map((part) => part.text ?? "")
-        .join("")
-        .trim();
-      if (!text) throw new Error(`Gemini (${model}) returned an empty answer.`);
-      return text;
-    } catch (error) {
-      lastError = error;
-    }
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(options.timeoutMs ?? timeoutMs),
+      },
+    );
+    if (!response.ok)
+      throw new Error(`Gemini (${primaryModel}) answered HTTP ${response.status}.`);
+    const payload = (await response.json()) as {
+      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    };
+    const text = (payload.candidates?.[0]?.content?.parts ?? [])
+      .map((part) => part.text ?? "")
+      .join("")
+      .trim();
+    if (!text) throw new Error(`Gemini (${primaryModel}) returned an empty answer.`);
+    return text;
+  } catch (error) {
+    throw error instanceof Error ? error : new Error(String(error));
   }
-  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 /**

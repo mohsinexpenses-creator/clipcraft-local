@@ -304,7 +304,13 @@ export async function buildBrollPlan(
           try {
             const file = await deps.download(candidate);
             const thumb = await deps.thumbnail(file.bytes);
-            return { candidate, bytes: file.bytes, data: thumb.data, mime: thumb.mime };
+            return {
+              candidate,
+              file,
+              bytes: file.bytes,
+              data: thumb.data,
+              mime: thumb.mime,
+            };
           } catch (error) {
             notes.push(`Could not download a "${entity.name}" candidate: ${describe(error)}`);
             return null;
@@ -315,6 +321,7 @@ export async function buildBrollPlan(
     };
 
     const failedSearches = new Set<string>();
+    const attemptedFallbacks = new Set<string>();
     const seen = new Set<string>(); // never show Gemini the same image twice
     const failures: string[] = [];
     let verified = 0;
@@ -334,7 +341,23 @@ export async function buildBrollPlan(
         continue;
       }
 
-      const downloaded = await downloadAll(pool);
+      let downloaded = await downloadAll(pool);
+      if (downloaded.length === 0 && deps.searchEntityFallback && !attemptedFallbacks.has(attempt.query.toLowerCase())) {
+        attemptedFallbacks.add(attempt.query.toLowerCase());
+        const fallback = await deps.searchEntityFallback(attempt.query).catch((error) => {
+          notes.push(`Image search fallback failed for "${entity.name}" (${attempt.label}): ${describe(error)}`);
+          return [] as BrollCandidate[];
+        });
+        const fallbackPool = preferPortrait(
+          fallback.filter((c) => !seen.has(candidateKey(c))),
+        ).slice(0, ENTITY_CANDIDATES_PER_SEARCH);
+        fallbackPool.forEach((c) => seen.add(candidateKey(c)));
+        downloaded = await downloadAll(fallbackPool);
+        if (downloaded.length === 0) {
+          failures.push(`${attempt.label}: nothing could be downloaded`);
+          continue;
+        }
+      }
       if (downloaded.length === 0) {
         failures.push(`${attempt.label}: nothing could be downloaded`);
         continue;
@@ -385,10 +408,10 @@ export async function buildBrollPlan(
       }
 
       try {
-        const file = await deps.download(chosen.candidate); // cached
+        const selected = chosen.file;
         const preparedImage = {
-          ...(await deps.prepareFullscreen(file.bytes, entity.type, file.cacheKey)),
-          sourceFile: file.sourceFile,
+          ...(await deps.prepareFullscreen(selected.bytes, entity.type, selected.cacheKey)),
+          sourceFile: selected.sourceFile,
         };
         return {
           item: {
@@ -413,9 +436,16 @@ export async function buildBrollPlan(
       }
     }
 
+    const stage =
+      verified === 0 && failures.some((failure) => failure.includes("nothing could be downloaded"))
+        ? "download"
+        : verified === 0
+          ? "search"
+          : "verify";
+
     return {
       skip: {
-        stage: verified === 0 ? "search" : "verify",
+        stage,
         entity: entity.name,
         reason: `Failed ${verified}/${MAX_VERIFY_ATTEMPTS} verification attempt(s) - ${failures.join(" | ")}`.slice(0, 600),
       },
