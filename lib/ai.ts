@@ -28,6 +28,7 @@ import {
   TranscriptData,
   ViralDetectionOptions,
   ViralSegment,
+  WordTimestamp,
 } from './types';
 import { resolveViralOptions } from './pipeline-defaults';
 import { parseViralResponse } from './viral-response';
@@ -36,11 +37,8 @@ import { parseViralResponse } from './viral-response';
  * Output budget for one detection pass. Every clip in the response carries the
  * full analysis block (hook, retention, trigger, safety incl. risky words,
  * packaging, scores) - roughly 1,500-2,000 tokens per clip. A response cut off
- * mid-JSON (or Gemini's MAX_TOKENS finish, which spends part of this budget on
- * thinking) fails every provider in the chain, so the budget is generous: it is
- * only an upper bound, never billed unless used. 40K stays well under the 65K
- * max-output of the Flash models; a request for more clips than fit is
- * completed by the top-up passes.
+ * mid-JSON fails every provider in the chain, so the budget is generous and
+ * larger clip counts are completed by top-up passes.
  */
 export function detectionMaxTokens(clipBudget: number): number {
   return Math.min(40_000, 3_000 + Math.max(1, clipBudget) * 2_000);
@@ -398,4 +396,105 @@ async function generateShortOverlayText(options: {
   }
 
   return cleaned;
+}
+
+export interface HookMomentInput {
+  words: WordTimestamp[];
+  segmentDuration: number;
+  hookDuration: number;
+}
+
+export interface HookMoment {
+  start: number;
+  end: number;
+  reason: string;
+}
+
+const HOOK_MOMENT_TIMEOUT_MS = 45_000;
+const MIN_HOOK_OFFSET_SECONDS = 3;
+
+export async function detectHookMoment(input: HookMomentInput): Promise<HookMoment | null> {
+  const { words, segmentDuration, hookDuration } = input;
+  if (
+    words.length === 0 ||
+    !Number.isFinite(segmentDuration) ||
+    !Number.isFinite(hookDuration) ||
+    segmentDuration <= MIN_HOOK_OFFSET_SECONDS ||
+    hookDuration <= 0
+  ) {
+    return null;
+  }
+
+  const lines: string[] = [];
+  for (let index = 0; index < words.length; index += 8) {
+    const slice = words.slice(index, index + 8);
+    lines.push(`[${slice[0].start.toFixed(1)}s] ${slice.map((word) => word.word).join(' ')}`);
+  }
+
+  const system =
+    'Pick the single strongest hook moment inside the selected short video clip, to replay as its cold open. ' +
+    'Choose a bold claim, cliffhanger, shocking reaction, unanswered question, or peak action that makes viewers ' +
+    'want the context. The moment MUST be from later in the clip, not its opening: start must be at least 3 seconds ' +
+    'after the clip begins. Use only the timestamped transcript. Return only JSON: ' +
+    '{"start":<seconds>,"end":<seconds>,"reason":"<max 8 words>"}. ' +
+    'Timestamps are relative to the clip start. Pick a window approximately the requested length.';
+  const prompt =
+    `Clip length: ${segmentDuration.toFixed(1)}s. Hook window length: ${hookDuration.toFixed(1)}s. ` +
+    `The hook must start at or after ${MIN_HOOK_OFFSET_SECONDS}s.\n` +
+    `Timestamped transcript:\n${lines.join('\n')}`;
+
+  let text: string;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    text = await Promise.race([
+      completeWithFallback({
+        task: 'hook moment detection',
+        system,
+        prompt,
+        maxTokens: 150,
+        temperature: 0.4,
+      }).then((result) => result.text),
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error('hook moment detection timed out')), HOOK_MOMENT_TIMEOUT_MS);
+      }),
+    ]);
+  } catch (error) {
+    log.detail(`Hook moment detection skipped: ${toErrorMessage(error)}`);
+    return null;
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+
+  let start: number | null = null;
+  let end: number | null = null;
+  let reason = '';
+  try {
+    const first = text.indexOf('{');
+    const last = text.lastIndexOf('}');
+    if (first >= 0 && last > first) {
+      const parsed = JSON.parse(text.slice(first, last + 1)) as Record<string, unknown>;
+      if (typeof parsed.start === 'number') start = parsed.start;
+      if (typeof parsed.end === 'number') end = parsed.end;
+      if (typeof parsed.reason === 'string') reason = parsed.reason.trim();
+    }
+  } catch {
+    return null;
+  }
+
+  if (
+    start === null ||
+    end === null ||
+    !Number.isFinite(start) ||
+    !Number.isFinite(end) ||
+    end <= start ||
+    start < MIN_HOOK_OFFSET_SECONDS
+  ) {
+    return null;
+  }
+
+  const maxStart = segmentDuration - hookDuration;
+  if (maxStart < MIN_HOOK_OFFSET_SECONDS) return null;
+  const startGuess = (start + end) / 2 - hookDuration / 2;
+  const safeStart = Math.max(MIN_HOOK_OFFSET_SECONDS, Math.min(startGuess, maxStart));
+  return { start: safeStart, end: safeStart + hookDuration, reason };
 }

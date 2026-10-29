@@ -11,6 +11,7 @@ import {
   detectViralSegments,
   generateCtaText,
   generateHookText,
+  detectHookMoment,
 } from './ai';
 import { AppError, toErrorMessage } from './errors';
 import { log } from './logger';
@@ -370,6 +371,40 @@ export async function runViralDetection(
     const hookText = options.includeHookText
       ? await resolveOverlayText(hook_text_on_video.toUpperCase(), () => generateHookText(overlayTranscript), 'hook')
       : '';
+    let hookIntroEnabled = Boolean(options.includeHookText && hookText && render.hookDuration > 0);
+
+    if (hookIntroEnabled) {
+      const segmentDuration = segment.end - segment.start;
+      const hookWords = video.transcript.words
+        .filter((word) => word.end >= segment.start && word.start <= segment.end)
+        .map((word) => ({
+          ...word,
+          start: Math.max(0, word.start - segment.start),
+          end: Math.min(segmentDuration, word.end - segment.start),
+        }));
+      const hookMoment = await detectHookMoment({
+        words: hookWords,
+        segmentDuration,
+        hookDuration: Math.min(render.hookDuration, segmentDuration / 2),
+      });
+
+      if (hookMoment) {
+        segment.clip.hook_line_analysis.hook_timestamp = {
+          start: `${(segment.start + hookMoment.start).toFixed(3)}s`,
+          end: `${(segment.start + hookMoment.end).toFixed(3)}s`,
+        };
+        segment.clip.hook_line_analysis.hook_moment_source = 'picker';
+      } else {
+        const aiHookStart = Number.parseFloat(segment.clip.hook_line_analysis.hook_timestamp.start);
+        if (!Number.isFinite(aiHookStart) || aiHookStart - segment.start < 3) {
+          segment.clip.hook_line_analysis.hook_timestamp = { start: '', end: '' };
+          hookIntroEnabled = false;
+          log.warn(
+            `No later hook moment was found for clip ${segment.clip.rank}; disabling its hook intro instead of replaying the clip opening.`,
+          );
+        }
+      }
+    }
 
     // Same idea for the CTA; when the switch is off the clip is marked with
     // ctaDuration 0 and the renderer skips the CTA overlay.
@@ -384,7 +419,7 @@ export async function runViralDetection(
       start: segment.start,
       end: segment.end,
       // hookDuration 0 means "no hook intro / no hook overlay" downstream.
-      hookDuration: options.includeHookText && hookText ? render.hookDuration : 0,
+      hookDuration: hookIntroEnabled ? render.hookDuration : 0,
       hookText,
       ctaText,
       // 0 = no CTA overlay (CTA switch was off for this run).

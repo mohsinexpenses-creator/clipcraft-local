@@ -575,6 +575,7 @@ export interface ViralClip {
   hook_line_analysis: {
     hook_line: string;
     hook_timestamp: { start: string; end: string };
+    hook_moment_source?: "picker" | "manual";
     why_it_works: string;
     /** Stored only - the renderer always prepends the hook intro when hook text is on. */
     place_before_clip: boolean;

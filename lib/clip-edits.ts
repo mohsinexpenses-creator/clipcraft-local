@@ -186,6 +186,7 @@ export function applyClipEdits(clip: ClipRecord, edits: Partial<ClipEdits>): Cli
       hook_line_analysis: {
         ...clip.aiAnalysis.hook_line_analysis,
         hook_timestamp: { start: hookStart, end: hookEnd },
+        hook_moment_source: 'manual',
       },
     };
   }

@@ -9,7 +9,7 @@ import test, { type TestContext } from 'node:test';
 import { DELETE as deleteClipRoute } from '../app/api/clips/[id]/route';
 import { POST as renderClipRoute } from '../app/api/clips/route';
 import { POST as detectViralRoute } from '../app/api/videos/[id]/detect-viral/route';
-import { detectionMaxTokens, detectViralSegments } from '../lib/ai';
+import { detectionMaxTokens, detectHookMoment, detectViralSegments } from '../lib/ai';
 import { sortClipsForDisplay } from '../lib/clip-order';
 import { getClip, listClips, savePromptTemplate, saveVideo } from '../lib/db';
 import { AppError } from '../lib/errors';
@@ -68,8 +68,13 @@ function fakeLlm(t: TestContext, reply: (call: LlmCall, index: number) => string
       mimeType: body.generationConfig.responseMimeType,
     });
     const text = reply(calls[calls.length - 1], calls.length - 1);
+    const responseText =
+      calls[calls.length - 1].system.includes('Pick the single strongest hook moment') &&
+      !/"start"\s*:\s*\d+(?:\.\d+)?/.test(text)
+        ? '{"start":15,"end":18,"reason":"test hook"}'
+        : text;
     return new Response(
-      JSON.stringify({ candidates: [{ content: { parts: [{ text }] }, finishReason: 'STOP' }] }),
+      JSON.stringify({ candidates: [{ content: { parts: [{ text: responseText }] }, finishReason: 'STOP' }] }),
       { status: 200 }
     );
   });
@@ -324,7 +329,7 @@ test('detect-viral stores the AI clip unchanged on the record; hook text and CTA
 
   assert.equal(status, 200);
   assert.equal(body.clips?.length, 3);
-  assert.equal(calls.length, 1, 'hook and CTA text came with the detection answer - no extra LLM calls');
+  assert.equal(calls.length, 4, 'one detection call plus one separate hook-moment call per clip');
 
   const stored = sortClipsForDisplay(await listClips('vid'));
   assert.deepEqual(
@@ -332,9 +337,14 @@ test('detect-viral stores the AI clip unchanged on the record; hook text and CTA
     [1, 2, 3]
   );
   assert.equal(new Set(stored.map((clip) => clip.createdAt)).size, 1, 'one detection run shares one createdAt');
-  stored.forEach((clip, index) =>
-    assert.deepEqual(clip.aiAnalysis, clips[index], 'the nested object made the JSON/SQLite round trip unchanged')
-  );
+  stored.forEach((clip, index) => {
+    assert.deepEqual(clip.aiAnalysis?.viral_packaging, clips[index].viral_packaging);
+    assert.deepEqual(clip.aiAnalysis?.hook_line_analysis.hook_timestamp, {
+      start: `${[75, 195, 315][index]}.000s`,
+      end: `${[78, 198, 318][index]}.000s`,
+    });
+    assert.equal(clip.aiAnalysis?.hook_line_analysis.hook_moment_source, 'picker');
+  });
 
   const first = stored[0];
   // The render window (numeric seconds) and the existing fields the card and the worker use.
@@ -418,12 +428,10 @@ test('hook and CTA fall back to the dedicated templates only for clips where the
   assert.equal(withFallback.ctaText, 'FOLLOW FOR MORE');
   assert.equal(withAiText.hookText, 'HE HAD $400 LEFT');
   assert.equal(withAiText.ctaText, 'Would you have done it? 👇');
-  assert.equal(calls.length, 3, 'one detection call + one hook + one CTA, only for the clip that needed them');
-  assert.deepEqual(
-    calls.map((call) => call.mimeType),
-    ['application/json', undefined, undefined],
-    'only the detection call asks for raw JSON'
-  );
+  assert.equal(calls.length, 5, 'one detection call, two hook moments, one hook-text fallback, and one CTA fallback');
+  const fallbackCall = calls.find((call) => call.prompt.startsWith('HOOK PROMPT'));
+  assert.ok(fallbackCall);
+  assert.match(fallbackCall.prompt, /Segment 6 talks about money and risk\./, "the clip's own transcript is injected");
 });
 
 test('on a fresh database the hook/CTA fallback still works, using the built-in prompts', async (t) => {
@@ -445,9 +453,10 @@ test('on a fresh database the hook/CTA fallback still works, using the built-in 
   assert.equal(clip.hookDuration, 3);
   assert.equal(clip.ctaText, 'COMMENT YOUR ANSWER BELOW');
   assert.equal(clip.ctaDuration, 2.5);
-  assert.equal(calls.length, 3);
-  assert.match(calls[1].system, /master social media copywriter/);
-  assert.match(calls[1].prompt, /Segment 6 talks about money and risk\./, "the clip's own transcript is injected");
+  assert.equal(calls.length, 4);
+  const fallbackCall = calls.find((call) => call.prompt.includes('MAX 8 WORDS'));
+  assert.ok(fallbackCall);
+  assert.match(fallbackCall.prompt, /Segment 6 talks about money and risk\./, "the clip's own transcript is injected");
 });
 
 test('if the fallback cannot produce text the run still completes: that overlay is left empty, nothing else is lost', async (t) => {
@@ -514,7 +523,7 @@ test('a detected clip renders and deletes like any other: same job payload, anal
   const queued = (await getClip(clip._id))!;
   assert.equal(queued.status, 'pending');
   assert.equal(queued.layout, 'split-screen');
-  assert.deepEqual(queued.aiAnalysis, clipAt(0));
+  assert.deepEqual(queued.aiAnalysis, clip.aiAnalysis);
 
   // The worker claims it and gets the payload the processor already understands.
   const job = claimNextJob([CLIP_QUEUE_NAME]);
@@ -529,8 +538,7 @@ test('a detected clip renders and deletes like any other: same job payload, anal
   assert.equal(payload.ctaDuration, 2.5);
   assert.equal(payload.layout, 'split-screen');
 
-  // What processor.ts reads from the stored clip: the hook moment is converted to seconds
-  // right where it is needed, and lies 15s into the clip (so the hook intro is cut from there).
+  // The chosen hook moment is stored as absolute source timestamps before rendering.
   const hook = queued.aiAnalysis!.hook_line_analysis;
   assert.equal(parseTimestamp(hook.hook_timestamp.start)! - queued.start, 15);
   assert.equal(hook.hook_line, 'Hook line of clip 1');
@@ -554,4 +562,45 @@ test('detect-viral answers 502 with the clear validation error and creates nothi
   assert.equal(status, 502);
   assert.match(body.error ?? '', /clips\[1\]\.timestamp must use seconds/);
   assert.deepEqual(await listClips('vid'), [], 'nothing half-created');
+});
+
+test('hook moment picker selects a later timestamped moment and rejects the clip opening', async (t) => {
+  createTemporaryDatabase(t);
+  const { calls } = fakeLlm(t, () => '{"start":12,"end":16,"reason":"strong reveal"}');
+  const words = Array.from({ length: 32 }, (_, index) => ({
+    word: `word${index}`,
+    start: index * 0.5,
+    end: index * 0.5 + 0.4,
+  }));
+
+  const moment = await detectHookMoment({ words, segmentDuration: 20, hookDuration: 3 });
+
+  assert.ok(moment);
+  assert.ok(moment.start >= 3);
+  assert.equal(moment.end - moment.start, 3);
+  assert.match(calls[0].system, /at least 3 seconds after the clip begins/);
+  assert.match(calls[0].prompt, /\[0\.0s\]/);
+
+  const { calls: earlyCalls } = fakeLlm(t, () => '{"start":0,"end":3,"reason":"opening"}');
+  const rejected = await detectHookMoment({ words, segmentDuration: 20, hookDuration: 3 });
+  assert.equal(rejected, null);
+  assert.ok(earlyCalls.length > 0);
+});
+
+test('a hook picker that returns the clip opening disables the hook intro instead of replaying the opening', async (t) => {
+  createTemporaryDatabase(t);
+  const { warnings } = fakeLlm(t, (call) =>
+    call.system.includes('Pick the single strongest hook moment')
+      ? '{"start":0,"end":3,"reason":"opening"}'
+      : aiResponse([clipAt(0)])
+  );
+  await saveVideo(makeVideo('vid', VIDEO_SECONDS));
+
+  const { status } = await runDetectRoute('vid', { clipCount: 1 });
+
+  assert.equal(status, 200);
+  const [clip] = await listClips('vid');
+  assert.equal(clip.hookDuration, 0);
+  assert.deepEqual(clip.aiAnalysis?.hook_line_analysis.hook_timestamp, { start: '', end: '' });
+  assert.ok(warnings.some((message) => /disabling its hook intro instead of replaying the clip opening/.test(message)));
 });

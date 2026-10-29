@@ -15,13 +15,13 @@ import { resolveCaptionThemeOverlayStyle } from "../lib/caption-theme-styles";
 
 import { getVideoMetadata } from "../lib/ffmpeg";
 import { getCaptionOffsetMs, shiftCaptionWords } from "./caption-timing";
+import { detectSpeakerTimeline } from "./asd";
 import {
   ClipLayout,
   ClipRecord,
   JobData,
   OverlayStylePreset,
 } from "../lib/types";
-import { detectSpeakerTimeline } from "./asd";
 import { buildLayoutPlan, getSplitFramingSettings } from "./layout";
 import { adaptOverlaysToLayout, describePlacements } from "./overlay-layout";
 import { color, log } from "../lib/logger";
@@ -294,12 +294,7 @@ export async function processClipJob(
         : DEFAULT_HOOK_FALLBACK_SECONDS;
     const hookOff = rawHookDuration < 0.15;
 
-    // Replay the exact detected hook interval at the beginning, then play the
-    // complete selected clip. Both timestamps are absolute video times; the
-    // resolver converts the start to the clip-relative FFmpeg/caption timeline.
-    // A valid interval outside the selected clip is an error, not a silently
-    // shifted or truncated intro. Clips without usable timestamps retain the
-    // legacy first-seconds fallback.
+    // Reuse the hook interval selected and stored during clip creation (or edited by the user).
     const hook = clip.aiAnalysis?.hook_line_analysis;
     const hookTiming = resolveHookTiming({
       enabled: !hookOff,
