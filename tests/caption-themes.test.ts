@@ -124,19 +124,24 @@ test("theme Hook/CTA styling follows the caption accent and preserves saved over
   const cta = DEFAULT_OVERLAY_STYLE_PRESETS.find(
     (style) => style.kind === "cta",
   )!;
-  const matchedHook = resolveCaptionThemeOverlayStyle(caption, hook);
-  const matchedCta = resolveCaptionThemeOverlayStyle(caption, cta);
+  const hookWithFont = { ...hook, fontFamily: "Georgia, 'Times New Roman', serif" };
+  const ctaWithFont = { ...cta, fontFamily: "Rajdhani, sans-serif" };
+  const matchedHook = resolveCaptionThemeOverlayStyle(caption, hookWithFont);
+  const matchedCta = resolveCaptionThemeOverlayStyle(caption, ctaWithFont);
 
-  assert.equal(matchedHook.fontFamily, "Rajdhani, sans-serif");
+  assert.equal(matchedHook.fontFamily, hookWithFont.fontFamily);
+  assert.equal(matchedCta.fontFamily, ctaWithFont.fontFamily);
+  assert.equal(matchedHook.fontWeight, hookWithFont.fontWeight);
+  assert.equal(matchedCta.fontWeight, ctaWithFont.fontWeight);
   assert.equal(matchedHook.borderColor, "#00CC88");
   assert.equal(matchedHook.badgeBackgroundColor, "#00CC88");
   assert.equal(matchedCta.backgroundColor, "#00CC88");
-  assert.equal(matchedHook.fontSize, hook.fontSize);
-  assert.equal(matchedHook.positionY, hook.positionY);
-  assert.equal(matchedHook.badgeText, hook.badgeText);
+  assert.equal(matchedHook.fontSize, hookWithFont.fontSize);
+  assert.equal(matchedHook.positionY, hookWithFont.positionY);
+  assert.equal(matchedHook.badgeText, hookWithFont.badgeText);
 
   const disabled = { ...caption, matchOverlayTheme: false };
-  assert.equal(resolveCaptionThemeOverlayStyle(disabled, hook), hook);
+  assert.equal(resolveCaptionThemeOverlayStyle(disabled, hookWithFont), hookWithFont);
 });
 
 test("caption themes reserve their own band; classic presets keep the classic band", () => {

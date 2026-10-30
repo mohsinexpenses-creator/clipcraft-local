@@ -195,3 +195,20 @@ export function stackPositionPercent(topPx: number): number {
   const percent = (topPx / OVERLAY_CANVAS_HEIGHT) * 100;
   return Math.round(Math.max(0, Math.min(100, percent)) * 10) / 10;
 }
+
+/** Place hooks above the caption top and CTAs below the caption bottom. */
+export function placeOverlayRelativeToCaptions(
+  captionBand: OverlayBand,
+  kind: OverlayStylePreset['kind'],
+  cardHeight: number,
+  offsetPx = 40,
+): number {
+  const offset = Math.max(0, Math.min(600, offsetPx));
+  const top = kind === 'hook'
+    ? captionBand.top - offset - cardHeight
+    : captionBand.bottom + offset;
+  return Math.round(Math.max(
+    OVERLAY_TOP_MARGIN,
+    Math.min(OVERLAY_CANVAS_HEIGHT - OVERLAY_TOP_MARGIN - cardHeight, top),
+  ));
+}

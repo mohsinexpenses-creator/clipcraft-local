@@ -29,6 +29,16 @@ const DEFAULT_SOLID = { hex: '#0F172A', alpha: 0.92 };
 const DEFAULT_GRADIENT_FROM = { hex: '#0F172A', alpha: 0.95 };
 const DEFAULT_GRADIENT_TO = { hex: '#1E293B', alpha: 0.95 };
 const DEFAULT_GRADIENT_ANGLE = 165;
+const OVERLAY_FONTS = [
+  { label: 'Impact', value: "Impact, 'Arial Black', sans-serif" },
+  { label: 'Montserrat', value: 'Montserrat, system-ui, sans-serif' },
+  { label: 'Poppins', value: 'Poppins, Arial, sans-serif' },
+  { label: 'Rajdhani', value: 'Rajdhani, sans-serif' },
+  { label: 'Georgia', value: "Georgia, 'Times New Roman', serif" },
+  { label: 'Arial Black', value: "'Arial Black', Impact, sans-serif" },
+  { label: 'Inter', value: 'Inter, system-ui, sans-serif' },
+  { label: 'Outfit', value: 'Outfit, Arial, sans-serif' },
+];
 
 /**
  * Visual CARD BACKGROUND picker: solid color or gradient, in the same
@@ -499,12 +509,22 @@ export const OverlayStyleEditor: React.FC<OverlayStyleEditorProps> = ({ kind, va
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor={`style-font-${kind}`}>Font family</Label>
-              <Input
-                id={`style-font-${kind}`}
-                value={draft.fontFamily}
-                onChange={(e) => patch({ fontFamily: e.target.value })}
-              />
+              <Label id={`style-font-label-${kind}`}>Font family</Label>
+              <Select value={draft.fontFamily} onValueChange={(fontFamily) => {
+                if (fontFamily) patch({ fontFamily });
+              }}>
+                <SelectTrigger aria-labelledby={`style-font-label-${kind}`}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {!OVERLAY_FONTS.some((font) => font.value === draft.fontFamily) && (
+                    <SelectItem value={draft.fontFamily}>Current saved font</SelectItem>
+                  )}
+                  {OVERLAY_FONTS.map((font) => (
+                    <SelectItem key={font.value} value={font.value}>{font.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
 
             <div className="space-y-2">
@@ -544,12 +564,21 @@ export const OverlayStyleEditor: React.FC<OverlayStyleEditorProps> = ({ kind, va
             </div>
 
             <div className="space-y-1.5 rounded-lg border bg-muted/40 p-3">
-              <p className="text-xs font-medium">Placement</p>
-              <p className="text-[11px] leading-snug text-muted-foreground">
-                The card is always stacked directly above the captions - in every
-                framing layout and both caption engines - so there is no manual
-                position to set here.
-              </p>
+              <div className="flex items-center justify-between">
+                <Label htmlFor={`style-offset-${kind}`}>
+                  Gap {kind === 'hook' ? 'above caption top' : 'below caption bottom'}
+                </Label>
+                <span className="text-xs text-muted-foreground tabular-nums">{draft.captionOffsetPx ?? 40}px</span>
+              </div>
+              <Slider
+                id={`style-offset-${kind}`}
+                min={0}
+                max={320}
+                step={4}
+                value={draft.captionOffsetPx ?? 40}
+                onValueChange={(captionOffsetPx) => patch({ captionOffsetPx })}
+                aria-label={`${kind === 'hook' ? 'Hook gap above caption top' : 'CTA gap below caption bottom'}`}
+              />
             </div>
 
             <div className="space-y-2">
@@ -622,6 +651,7 @@ export const OverlayStyleEditor: React.FC<OverlayStyleEditorProps> = ({ kind, va
                   <SelectItem value="pop">Pop</SelectItem>
                   <SelectItem value="fade">Fade</SelectItem>
                   <SelectItem value="slide-up">Slide up</SelectItem>
+                  <SelectItem value="typewriter">Typewriter</SelectItem>
                   <SelectItem value="none">None</SelectItem>
                 </SelectContent>
               </Select>

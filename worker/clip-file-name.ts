@@ -13,7 +13,7 @@ export function buildClipFileName(
     .join('');
   const prefix = Number.isFinite(rank) && rank! > 0 ? `${rank}_` : '';
   const suffix = safeHashtags ? `_${sanitizePart(safeHashtags)}` : '';
-  return `${prefix}${safeTitle}${suffix}`.slice(0, 80).replace(/[ ._-]+$/g, '');
+  return `${prefix}${safeTitle}${suffix}`.replace(/[ ._-]+$/g, '');
 }
 
 function sanitizePart(value: string): string {

@@ -283,8 +283,6 @@ export function resolveCaptionThemeOverlayStyle(
 
   return {
     ...overlay,
-    fontFamily: theme.overlayFontFamily,
-    fontWeight: 'black',
     textColor: isHook ? theme.hook.textColor : accentText,
     backgroundColor: isHook ? theme.hook.backgroundColor : accent,
     borderColor: accent,

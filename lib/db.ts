@@ -20,6 +20,7 @@ import {
   DEFAULT_CAPTION_PRESETS,
   DEFAULT_OVERLAY_STYLE_PRESETS,
   DEFAULT_PROMPT_TEMPLATES,
+  RETIRED_OVERLAY_STYLE_PRESET_IDS,
 } from "./presets";
 import { AppError } from "./errors";
 
@@ -668,6 +669,10 @@ function seedDefaults(db: SqliteDatabase): void {
   const now = new Date().toISOString();
 
   db.transaction(() => {
+    db.prepare(
+      `DELETE FROM overlay_style_presets WHERE id IN (${RETIRED_OVERLAY_STYLE_PRESET_IDS.map(() => "?").join(",")})`,
+    ).run(...RETIRED_OVERLAY_STYLE_PRESET_IDS);
+
     let captionDefaultExists = Boolean(
       db
         .prepare("SELECT 1 FROM caption_presets WHERE is_default = 1 LIMIT 1")
@@ -1073,6 +1078,10 @@ export async function resetOverlayStylePresets(): Promise<
   `);
 
   db.transaction(() => {
+    db.prepare(
+      `DELETE FROM overlay_style_presets WHERE id IN (${RETIRED_OVERLAY_STYLE_PRESET_IDS.map(() => "?").join(",")})`,
+    ).run(...RETIRED_OVERLAY_STYLE_PRESET_IDS);
+
     for (const preset of DEFAULT_OVERLAY_STYLE_PRESETS) {
       // The destructuring is not decoration: everything left in `config` is what lands in
       // `config_json`, so the columns and the default flag (handled below) are pulled out.

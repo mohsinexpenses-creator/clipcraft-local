@@ -22,6 +22,7 @@ import {
 import {
   DEFAULT_CAPTION_PRESETS,
   DEFAULT_OVERLAY_STYLE_PRESETS,
+  RETIRED_OVERLAY_STYLE_PRESET_IDS,
 } from "../lib/presets";
 import { CAPTION_THEME_NAMES } from "../lib/types";
 import type { CaptionPreset } from "../lib/types";
@@ -209,10 +210,31 @@ test("reset re-syncs the built-in hook and CTA overlay styles too", async (t) =>
     builtIn._id,
   );
 
+  const custom = {
+    ...builtIn,
+    _id: "user-hook-style",
+    name: "My hook style",
+    isDefault: false,
+  };
+  db.prepare(
+    "INSERT INTO overlay_style_presets (id, kind, is_default, created_at, updated_at, name, config_json) VALUES (?, ?, 0, 'test', 'test', ?, ?)",
+  ).run(custom._id, custom.kind, custom.name, JSON.stringify({ ...custom, _id: undefined, kind: undefined, name: undefined, isDefault: undefined }));
+
+  for (const id of RETIRED_OVERLAY_STYLE_PRESET_IDS) {
+    db.prepare(
+      "INSERT OR IGNORE INTO overlay_style_presets (id, kind, is_default, created_at, updated_at, name, config_json) VALUES (?, ?, 0, 'legacy', 'legacy', ?, '{}')",
+    ).run(id, id.startsWith("hook-") ? "hook" : "cta", id);
+  }
+
   const presets = await resetOverlayStylePresets();
   const restored = presets.find((preset) => preset._id === builtIn._id);
   assert.equal(restored?.name, builtIn.name);
   assert.equal(restored?.fontSize, builtIn.fontSize);
+  assert.ok(presets.some((preset) => preset._id === custom._id), "custom overlay row survives");
+  assert.ok(
+    RETIRED_OVERLAY_STYLE_PRESET_IDS.every((id) => !presets.some((preset) => preset._id === id)),
+    "retired built-in rows are removed",
+  );
   assert.equal(
     presets.filter((preset) => preset.kind === builtIn.kind && preset.isDefault)
       .length,

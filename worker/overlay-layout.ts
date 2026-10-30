@@ -6,15 +6,9 @@
  *   - the captions keep their preset position; in a SPLIT SCREEN they move only
  *     when that position would cover a face (recomputed from where the heads
  *     really are on the 1080x1920 canvas);
- *   - the hook card and the CTA card are stacked DIRECTLY ABOVE the caption
- *     block - card bottom a fixed gap above the captions' top edge - no matter
- *     which layout is used. The old behaviour (hook near the top of the frame,
- *     CTA floating mid-frame, face-searching spots in a split) put the cards on
- *     foreheads and between panes; the stack is what modern editors do and what
- *     reads correctly on every framing;
- *   - overlays never cover each other and the caption never moves out of the
- *     way of a card (cards go above it instead), so the "lift captions while
- *     the CTA shows" behaviour is switched off everywhere.
+ *   - the hook is positioned relative to the caption block's top, and the CTA
+ *     relative to its bottom, using each style's saved offset;
+ *   - captions keep their own position and are never lifted to accommodate CTA.
  *
  * Pure logic, no I/O. The result is a set of ADAPTED COPIES of the presets (only
  * `positionY` changes), and the Remotion compositions - which already position
@@ -22,12 +16,11 @@
  */
 import type { CaptionPreset, OverlayStylePreset } from '../lib/types';
 import {
-  OVERLAY_STACK_GAP,
   captionPositionYForBandTop,
   captionReservedBand,
   estimateCtaHeight,
   estimateHookHeight,
-  stackCardAboveCaptions,
+  placeOverlayRelativeToCaptions,
   stackPositionPercent,
   type OverlayBand,
 } from '../lib/overlay-stack';
@@ -205,14 +198,14 @@ export function adaptOverlaysToLayout(input: OverlayAdaptationInput): OverlayAda
   const captionBand: Band = { top: captionTop, bottom: captionTop + capHeight };
   placements.caption = captionBand;
 
-  // 2) HOOK and 3) CTA: DIRECTLY ABOVE the caption block, whatever the layout.
+  // 2) HOOK and 3) CTA follow their configured anchor point on the caption block.
   //    positionY for both is "% from the top" (see remotion/HookOverlay.tsx,
   //    remotion/CTAOverlay.tsx). A style that is ALREADY at the stacked spot
   //    (e.g. a re-render of an adapted clip) comes back unchanged.
   let hookStyle: OverlayStylePreset | undefined = input.hook?.style;
   if (input.hook && input.hook.text.trim()) {
     const height = estimateHookHeight(input.hook.style, input.hook.text);
-    const top = stackCardAboveCaptions(captionBand, height, OVERLAY_STACK_GAP);
+    const top = placeOverlayRelativeToCaptions(captionBand, 'hook', height, input.hook.style.captionOffsetPx);
     const positionY = stackPositionPercent(top);
     if (Math.abs(positionY - (input.hook.style.positionY ?? -1)) > 0.05) {
       notes.push(`hook stacked directly above the captions (y=${top}px)`);
@@ -224,7 +217,7 @@ export function adaptOverlaysToLayout(input: OverlayAdaptationInput): OverlayAda
   let ctaStyle: OverlayStylePreset | undefined = input.cta?.style;
   if (input.cta && input.cta.text.trim()) {
     const height = estimateCtaHeight(input.cta.style, input.cta.text);
-    const top = stackCardAboveCaptions(captionBand, height, OVERLAY_STACK_GAP);
+    const top = placeOverlayRelativeToCaptions(captionBand, 'cta', height, input.cta.style.captionOffsetPx);
     const positionY = stackPositionPercent(top);
     if (Math.abs(positionY - (input.cta.style.positionY ?? -1)) > 0.05) {
       notes.push(`CTA stacked directly above the captions (y=${top}px)`);

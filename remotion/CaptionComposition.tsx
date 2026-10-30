@@ -7,7 +7,7 @@ import {
   captionReservedBand,
   estimateCtaHeight,
   estimateHookHeight,
-  stackCardAboveCaptions,
+  placeOverlayRelativeToCaptions,
   stackPositionPercent,
 } from '../lib/overlay-stack';
 import { resolveCaptionThemeOverlayStyle } from '../lib/caption-theme-styles';
@@ -213,12 +213,7 @@ export const CaptionComposition: React.FC<CaptionCompositionProps> = ({
     }
   );
 
-  /**
-   * The hook card and the CTA card are stacked DIRECTLY ABOVE the captions -
-   * the same placement the worker computes at render time (lib/overlay-stack),
-   * so the preview matches the rendered clip in every framing layout. Because
-   * the cards never sit in the captions' own area, captions never lift.
-   */
+  /** The hook and CTA anchor to opposite edges of the caption band. */
   const captionLiftPercent = 0;
   const themedHookStyle = preset && hookStyle
     ? resolveCaptionThemeOverlayStyle(preset, hookStyle)
@@ -229,11 +224,11 @@ export const CaptionComposition: React.FC<CaptionCompositionProps> = ({
   const captionBand = preset ? captionReservedBand(preset) : null;
   const hookTopPercent =
     captionBand && themedHookStyle && hookText.trim()
-      ? stackPositionPercent(stackCardAboveCaptions(captionBand, estimateHookHeight(themedHookStyle, hookText)))
+      ? stackPositionPercent(placeOverlayRelativeToCaptions(captionBand, 'hook', estimateHookHeight(themedHookStyle, hookText), themedHookStyle.captionOffsetPx))
       : undefined;
   const ctaTopPercent =
     captionBand && themedCtaStyle && ctaText.trim()
-      ? stackPositionPercent(stackCardAboveCaptions(captionBand, estimateCtaHeight(themedCtaStyle, ctaText)))
+      ? stackPositionPercent(placeOverlayRelativeToCaptions(captionBand, 'cta', estimateCtaHeight(themedCtaStyle, ctaText), themedCtaStyle.captionOffsetPx))
       : undefined;
 
   // The FFmpeg stage outputs the processed clip at exactly the composition canvas

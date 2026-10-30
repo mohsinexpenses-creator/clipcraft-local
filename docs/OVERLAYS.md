@@ -22,17 +22,16 @@ presets are additive.
 
 Manage them at `/caption-presets` (tabbed: Captions · Hook overlay · CTA overlay) or via
 `GET/POST/PUT/DELETE /api/overlay-presets` (`kind: 'hook' | 'cta'`; `POST {"action":"reset"}`
-restores the four defaults). Presets are stored in SQLite (`overlay_style_presets`) and
-seeded on first run with four defaults:
+re-syncs the shipped styles and removes retired built-ins while preserving custom rows.
+Presets are stored in SQLite (`overlay_style_presets`) and seeded on first run with four
+distinct defaults:
 
 | Preset | Kind | Look | Animation |
 | --- | --- | --- | --- |
-| `hook-bold-yellow` *(default)* | hook | Yellow impact text on a dark card + red "Hook Intro" chip | pop |
-| `hook-fire-red` | hook | White text on a red alert card | slide-up |
-| `cta-gradient-green` *(default)* | cta | White uppercase CTA on the classic green-blue gradient card | pop |
-| `cta-white-pill` | cta | Dark text on a clean white pill | fade |
-
-These four reproduce the previously hardcoded overlay looks 1:1.
+| `hook-signal-stamp` *(default)* | hook | Acid-lime editorial label on deep green | typewriter |
+| `hook-paper-cut` | hook | Warm paper panel with ink-blue serif lettering | slide-up |
+| `cta-afterglow` *(default)* | cta | Coral-to-yellow close card | typewriter |
+| `cta-blueprint` | cta | Cyan technical lettering on deep teal | slide-up |
 
 ### Caption theme matching
 
@@ -42,10 +41,9 @@ The Captions tab also offers the 13 locally bundled Remotion themes: `pop`, `kar
 `caption_presets.config_json`; no SQL column migration is needed. Caption words are adapted
 from ClipCraft's final (including hook-shifted and profanity-masked) chunks at render time.
 
-The optional **Match Hook + CTA to theme** switch styles both cards with the theme's font,
-accent, shape and entrance motion; it does not change their existing copy or timing. Saved Hook/CTA styles,
-font sizes, badge content and placement remain independent and can be used again by turning
-the switch off. Theme source is vendored under `remotion/caption-themes/vendor` with the
+The optional **Match Hook + CTA to theme** switch styles both cards with the theme's accent,
+shape and entrance motion. It preserves each overlay's selected font, size, copy, timing,
+badge content and caption-relative placement. Theme source is vendored under `remotion/caption-themes/vendor` with the
 upstream MIT license; local Google font assets carry OFL licenses in `public/fonts/licenses`.
 
 ### Fields
@@ -55,30 +53,26 @@ upstream MIT license; local Google font assets carry OFL licenses in `public/fon
 | `fontFamily`, `fontSize`, `fontWeight` | Typography (weights: `normal`/`bold`/`extra-bold`/`black`) |
 | `textColor`, `backgroundColor`, `borderColor`, `borderWidth`, `borderRadius` | Card styling. `backgroundColor` is any CSS color **or gradient** (e.g. `linear-gradient(135deg, rgba(34,197,94,0.94), rgba(14,165,233,0.94))`) — the style editor has a visual **Solid / Gradient** picker (two color stops + per-stop opacity + angle) that writes this field |
 | `textTransform` | `uppercase` or `none` |
-| `positionY` | Card position as **% from the top** of the 9:16 frame (hook default 12, CTA default 64) |
-| `animationStyle` | `pop` · `fade` · `slide-up` · `none` — the entrance animation |
+| `positionY` | Derived card position as **% from the top** of the 9:16 frame |
+| `captionOffsetPx` | Editable gap: Hook above caption top; CTA below caption bottom |
+| `animationStyle` | `pop` · `fade` · `slide-up` · `typewriter` · `none` |
 | `showBadge`, `badgeText`, `badgeBackgroundColor`, `badgeTextColor` | (Hook only) the small chip above the text, e.g. "Hook Intro"; badge colors can be theme-derived |
 
 ## Overlays follow the layout
 
 The **captions** own their position (`positionY`, % from the **bottom**, 22–30 by default).
-The **hook** and **CTA** cards are always placed **directly above the caption block** — one
-fixed gap above the captions' top edge, whatever the layout. That is the single rule, applied
-identically in **speaker focus** and **split screen** (`worker/overlay-layout.ts` +
+The **hook** is anchored above the caption block's top edge; the **CTA** is anchored below its
+bottom edge. Their independent gaps are editable per style, and placement follows captions in
+**speaker focus** and **split screen** (`worker/overlay-layout.ts` +
 `lib/overlay-stack.ts`):
 
 - The **captions** keep their preset position unless, in a split screen, that position would
   cover a face — then they move to the nearest face-free band (the seam between the two
-  heads). The hook and CTA follow the captions wherever they land, staying stacked above them.
-- The **hook** and **CTA** cards are stacked directly above the captions, never on top of a
-  face and never overlapping the caption block. Card heights are estimated from the style and
-  the text so the next element lands exactly one gap above them; if the stack would run off the
-  top of the frame it is clamped to a top margin instead.
-- Because the cards sit above the captions, the old "lift the captions while the CTA card is on
-  screen" behaviour is switched off (`captionLiftScale = 0`) — the cards never share the
-  caption area, so there is nothing to lift out of the way.
-- Only `positionY` is changed, on a copy: fonts, colours, card styling and animation are exactly
-  your preset's, and the preset you saved is never modified.
+  heads). Hook and CTA placement follows the adjusted caption band.
+- Card heights are estimated from the style and text. Both overlays are clamped to frame
+  margins when a caption edge or configured gap would otherwise place them off-screen.
+- Captions do not lift when the CTA appears (`captionLiftScale = 0`).
+- The worker derives `positionY` on a copy; saved style presets are never modified.
 
 A face is protected from the brow-line up to a forehead's height above the detector box and
 down to the chin, plus a 16 px gap; hair is avoided too, but covering a little of it is

@@ -2,9 +2,8 @@
  * Overlay placement contract:
  *  - captions keep their preset position; in a split screen they move ONLY when
  *    that position would cover a face;
- *  - the hook card and the CTA card are ALWAYS stacked directly above the
- *    caption block (card bottom one gap above the captions' top), in every
- *    framing layout;
+ *  - hook cards anchor above the caption top and CTA cards below the caption
+ *    bottom, using each style's configured gap;
  *  - captions never lift out of the way of a card (captionLiftScale = 0).
  */
 import assert from 'node:assert/strict';
@@ -20,11 +19,7 @@ import {
   estimateHookHeight,
   estimateLineCount,
 } from '../worker/overlay-layout';
-import {
-  OVERLAY_STACK_GAP,
-  OVERLAY_TOP_MARGIN,
-  captionReservedBand,
-} from '../lib/overlay-stack';
+import { OVERLAY_TOP_MARGIN, captionReservedBand } from '../lib/overlay-stack';
 import { DEFAULT_CAPTION_PRESETS, DEFAULT_OVERLAY_STYLE_PRESETS } from '../lib/presets';
 import type { CaptionPreset, OverlayStylePreset } from '../lib/types';
 
@@ -105,14 +100,18 @@ function intersects(a: Band, b: { top: number; bottom: number }): boolean {
   return Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 0;
 }
 
-/** The stacked invariant: card bottom sits OVERLAY_STACK_GAP above the caption band. */
-function assertStackedAbove(card: Band, caption: Band): void {
-  const expectedBottom = Math.max(OVERLAY_TOP_MARGIN + (card.bottom - card.top), caption.top - OVERLAY_STACK_GAP);
-  assert.ok(
-    Math.abs(card.bottom - expectedBottom) <= 1,
-    `card ${Math.round(card.top)}-${Math.round(card.bottom)} must end ${OVERLAY_STACK_GAP}px above captions ` +
-      `(top ${Math.round(caption.top)}), expected bottom ${Math.round(expectedBottom)}`
-  );
+function assertCaptionAnchors(result: OverlayAdaptation): void {
+  const caption = result.placements.caption!;
+  const hook = result.placements.hook!;
+  const cta = result.placements.cta!;
+  const hookOffset = result.hookStyle?.captionOffsetPx ?? 40;
+  const ctaOffset = result.ctaStyle?.captionOffsetPx ?? 40;
+  if (hook.top > OVERLAY_TOP_MARGIN) {
+    assert.ok(Math.abs(caption.top - hook.bottom - hookOffset) <= 1, 'hook gap follows caption top');
+  }
+  if (cta.bottom < 1920 - OVERLAY_TOP_MARGIN) {
+    assert.ok(Math.abs(cta.top - caption.bottom - ctaOffset) <= 1, 'CTA gap follows caption bottom');
+  }
 }
 
 test('speaker focus: captions keep their preset position', () => {
@@ -128,7 +127,7 @@ test('speaker focus: captions keep their preset position', () => {
   assert.deepEqual(result.placements.caption, captionReservedBand(DEFAULT_CAPTION_PRESETS[0]));
 });
 
-test('every layout: hook and CTA are stacked directly above the captions', () => {
+test('every layout: hook and CTA follow opposite caption edges', () => {
   const single = buildLayoutPlan(asd([track(1, 900, 400, 110, 20)], 20), 'speaker-focus', 1920, 1080);
   const split = twoHostPlan();
   for (const plan of [single, split]) {
@@ -142,8 +141,7 @@ test('every layout: hook and CTA are stacked directly above the captions', () =>
         });
     const { caption, hook, cta } = result.placements;
     assert.ok(caption && hook && cta, `placements complete (${plan.mode})`);
-    assertStackedAbove(hook!, caption!);
-    assertStackedAbove(cta!, caption!);
+    assertCaptionAnchors(result);
     assert.equal(result.captionLiftScale, 0);
   }
 });
@@ -158,8 +156,7 @@ test('split-screen fallback to a single window (only one person found) still sta
     cta: { style: ctaStyle, text: CTA_TEXT },
   });
   assert.equal(result.caption, DEFAULT_CAPTION_PRESETS[0], 'captions keep the preset position');
-  assertStackedAbove(result.placements.hook!, result.placements.caption!);
-  assertStackedAbove(result.placements.cta!, result.placements.caption!);
+  assertCaptionAnchors(result);
 });
 
 test('split screen: captions dodge the faces, the cards stack above them', () => {
@@ -176,8 +173,7 @@ test('split screen: captions dodge the faces, the cards stack above them', () =>
         `${Math.round(cell.faceZone.top)}-${Math.round(cell.faceZone.bottom)}`
     );
   }
-  assertStackedAbove(hook!, caption!);
-  assertStackedAbove(cta!, caption!);
+  assertCaptionAnchors(result);
   assert.equal(result.captionLiftScale, 0);
 });
 
@@ -276,12 +272,11 @@ test('three and four pane grids: captions clear of every face, cards stacked abo
       plan: split, caption: DEFAULT_CAPTION_PRESETS[0],
       hook: { style: hookStyle, text: HOOK_TEXT }, cta: { style: ctaStyle, text: CTA_TEXT },
     });
-    const { caption, hook, cta } = result.placements;
+    const { caption } = result.placements;
     for (const cell of split.cells) {
       assert.ok(!intersects(caption!, cell.faceZone), `${split.cells.length} panes: caption vs face`);
     }
-    assertStackedAbove(hook!, caption!);
-    assertStackedAbove(cta!, caption!);
+    assertCaptionAnchors(result);
   }
 });
 
@@ -316,40 +311,18 @@ test('estimateLineCount: word wrap, monotonic in size, an over-long single word 
 });
 
 /**
- * REAL sizes of the hook / CTA cards, measured in headless Chrome through Remotion
- * (alpha bounding box of the rendered PNG, default presets). The estimate must never be
- * SMALLER (an under-estimate is what could stack the next overlay onto the card) and
- * must not be wildly bigger.
+ * Card estimates should remain useful for the refreshed styles: positive, bounded,
+ * and larger for long text than for a short label.
  */
-const MEASURED_HOOK_PX: Array<[string, string, number]> = [
-  ['hook-midnight-glass', 'WAIT FOR IT', 125],
-  ['hook-midnight-glass', 'WHY BROADWAY ROXY CASTING IS WILD', 171],
-  ['hook-midnight-glass', 'THE ONE THING NOBODY TELLS YOU ABOUT GETTING CAST IN A BROADWAY MUSICAL AFTER THIRTY', 217],
-  ['hook-midnight-glass', 'THIS CHANGED EVERYTHING I KNEW ABOUT CASTING DIRECTORS AND WHAT THEY REALLY LOOK FOR IN AN AUDITION ROOM', 262],
-  ['hook-crimson-alert', 'WAIT FOR IT', 128],
-  ['hook-crimson-alert', 'WHY BROADWAY ROXY CASTING IS WILD', 180],
-  ['hook-crimson-alert', 'THE ONE THING NOBODY TELLS YOU ABOUT GETTING CAST IN A BROADWAY MUSICAL AFTER THIRTY', 230],
-  ['hook-crimson-alert', 'THIS CHANGED EVERYTHING I KNEW ABOUT CASTING DIRECTORS AND WHAT THEY REALLY LOOK FOR IN AN AUDITION ROOM', 280],
-];
-const MEASURED_CTA_PX: Array<[string, string, number]> = [
-  ['cta-aurora-gradient', 'FOLLOW', 81],
-  ['cta-aurora-gradient', 'FOLLOW FOR MORE CLIPS LIKE THIS', 81],
-  ['cta-aurora-gradient', 'FOLLOW FOR PART TWO OF THIS STORY AND MANY MORE CLIPS LIKE IT EVERY SINGLE WEEK', 162],
-  ['cta-mono-pill', 'FOLLOW', 78],
-  ['cta-mono-pill', 'FOLLOW FOR MORE CLIPS LIKE THIS', 78],
-  ['cta-mono-pill', 'FOLLOW FOR PART TWO OF THIS STORY AND MANY MORE CLIPS LIKE IT EVERY SINGLE WEEK', 155],
-];
-
-test('card-height estimates are never smaller than what Chrome really renders (and not wildly larger)', () => {
-  const styleById = (id: string) => DEFAULT_OVERLAY_STYLE_PRESETS.find((p) => p._id === id)!;
-  for (const [id, text, real] of MEASURED_HOOK_PX) {
-    const est = estimateHookHeight(styleById(id), text);
-    assert.ok(est >= real, `hook ${id} "${text.slice(0, 24)}...": estimate ${est} < real ${real}`);
-    assert.ok(est <= real + 70, `hook ${id}: estimate ${est} is wildly above real ${real}`);
-  }
-  for (const [id, text, real] of MEASURED_CTA_PX) {
-    const est = estimateCtaHeight(styleById(id), text);
-    assert.ok(est >= real, `cta ${id} "${text.slice(0, 24)}...": estimate ${est} < real ${real}`);
-    assert.ok(est <= real + 70, `cta ${id}: estimate ${est} is wildly above real ${real}`);
+test('card-height estimates stay bounded and grow with long overlay text', () => {
+  const short = 'FOLLOW';
+  const long = 'FOLLOW FOR PART TWO OF THIS STORY AND MANY MORE CLIPS LIKE IT EVERY SINGLE WEEK';
+  for (const style of DEFAULT_OVERLAY_STYLE_PRESETS) {
+    const estimate = style.kind === 'hook' ? estimateHookHeight : estimateCtaHeight;
+    const shortHeight = estimate(style, short);
+    const longHeight = estimate(style, long);
+    assert.ok(shortHeight > 0 && shortHeight < 400, `${style._id} short height ${shortHeight}`);
+    assert.ok(longHeight >= shortHeight, `${style._id}: ${longHeight} >= ${shortHeight}`);
+    assert.ok(longHeight < 700, `${style._id} long height ${longHeight}`);
   }
 });

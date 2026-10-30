@@ -88,6 +88,13 @@ export const HookOverlay: React.FC<HookOverlayProps> = ({
   const fontSize = style?.fontSize ?? 38;
   const fontWeight =
     style?.fontWeight === 'normal' ? 400 : style?.fontWeight === 'bold' ? 700 : style?.fontWeight === 'extra-bold' ? 800 : 900;
+  const revealProgress = style?.animationStyle === 'typewriter'
+    ? interpolate(frame, [0, Math.max(1, Math.round(0.65 * fps))], [0, 1], {
+        extrapolateLeft: 'clamp',
+        extrapolateRight: 'clamp',
+      })
+    : 1;
+  const visibleText = text.slice(0, Math.ceil(text.length * revealProgress));
 
   return (
     <div
@@ -151,7 +158,7 @@ export const HookOverlay: React.FC<HookOverlayProps> = ({
             display: 'block',
           }}
         >
-          {text}
+          {visibleText}
         </span>
       </div>
     </div>

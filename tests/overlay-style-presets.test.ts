@@ -13,6 +13,10 @@ test('default overlay style presets cover hook + cta with unique ids', () => {
   const ctas = DEFAULT_OVERLAY_STYLE_PRESETS.filter((p) => p.kind === 'cta');
   assert.ok(hooks.length >= 2, 'at least two hook styles');
   assert.ok(ctas.length >= 2, 'at least two cta styles');
+  assert.ok(hooks.some((style) => style.animationStyle === 'typewriter'));
+  assert.ok(ctas.some((style) => style.animationStyle === 'typewriter'));
+  assert.ok(hooks.every((style) => typeof style.captionOffsetPx === 'number'));
+  assert.ok(ctas.every((style) => typeof style.captionOffsetPx === 'number'));
 });
 
 test('style presets keep hook/CTA text generation intact (styling only)', () => {
@@ -26,21 +30,21 @@ test('style presets keep hook/CTA text generation intact (styling only)', () => 
 });
 
 test('the shipped default styles retain their hook and CTA presentation', () => {
-  const hook = DEFAULT_OVERLAY_STYLE_PRESETS.find((p) => p._id === 'hook-midnight-glass')!;
+  const hook = DEFAULT_OVERLAY_STYLE_PRESETS.find((p) => p._id === 'hook-signal-stamp')!;
   assert.ok(hook, 'hook-midnight-glass present');
-  assert.equal(hook.animationStyle, 'pop');
-  assert.equal(hook.badgeText, 'Watch This');
-  assert.equal(hook.positionY, 12);
+  assert.equal(hook.animationStyle, 'typewriter');
+  assert.equal(hook.badgeText, 'The Moment');
+  assert.equal(hook.captionOffsetPx, 48);
 
-  const cta = DEFAULT_OVERLAY_STYLE_PRESETS.find((p) => p._id === 'cta-aurora-gradient')!;
+  const cta = DEFAULT_OVERLAY_STYLE_PRESETS.find((p) => p._id === 'cta-afterglow')!;
   assert.ok(cta, 'cta-aurora-gradient present');
-  assert.equal(cta.animationStyle, 'pop');
-  assert.equal(cta.positionY, 64);
+  assert.equal(cta.animationStyle, 'typewriter');
+  assert.equal(cta.captionOffsetPx, 44);
   assert.ok(cta.backgroundColor.includes('linear-gradient'), cta.backgroundColor);
 });
 
 test('all animation styles are ones the overlays actually render', () => {
   for (const preset of DEFAULT_OVERLAY_STYLE_PRESETS) {
-    assert.ok(['pop', 'fade', 'slide-up', 'none'].includes(preset.animationStyle), preset.animationStyle);
+    assert.ok(['pop', 'fade', 'slide-up', 'typewriter', 'none'].includes(preset.animationStyle), preset.animationStyle);
   }
 });

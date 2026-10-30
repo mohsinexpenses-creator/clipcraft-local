@@ -661,7 +661,9 @@ export interface OverlayStylePreset {
   textTransform: "uppercase" | "none";
   /** Vertical position of the card, % from the TOP of the frame. */
   positionY: number;
-  animationStyle: "pop" | "fade" | "slide-up" | "none";
+  /** Gap from the caption block: above its top for hooks, below its bottom for CTAs. */
+  captionOffsetPx?: number;
+  animationStyle: "pop" | "fade" | "slide-up" | "typewriter" | "none";
   /** Hook only: small chip shown above the text ("Hook Intro"). */
   showBadge?: boolean;
   badgeText?: string;
