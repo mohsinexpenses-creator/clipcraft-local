@@ -124,6 +124,8 @@ export const AnimatedWord: React.FC<AnimatedWordProps> = ({
     animationStyle = "karaoke",
     uppercase = true,
   } = preset;
+  const scaleFactor = Math.min(1.2, Math.max(0.4, (preset.captionScale ?? 100) / 100));
+  const effectiveFontSize = Math.max(12, Math.round(fontSize * scaleFactor));
 
   const chunkDuration = Math.max(0.2, active.end - active.start);
   const localTime = currentTime - active.start;
@@ -200,7 +202,7 @@ export const AnimatedWord: React.FC<AnimatedWordProps> = ({
             .join(" ");
           const fontSize = fitCaptionFontSize(
             text,
-            line.style.fontSize,
+            line.style.fontSize * scaleFactor,
             1080 * 0.88,
             line.style.letterSpacing,
             line.style.uppercase,
@@ -336,7 +338,7 @@ export const AnimatedWord: React.FC<AnimatedWordProps> = ({
     zIndex: 20,
     padding: "8px 16px",
     fontFamily,
-    fontSize,
+    fontSize: effectiveFontSize,
     fontWeight: fontWeightToCss(fontWeight),
     textTransform: uppercase ? "uppercase" : "none",
     opacity,

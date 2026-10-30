@@ -36,6 +36,7 @@ export const CaptionThemeOverlay: React.FC<CaptionThemeOverlayProps> = ({
   const band = captionReservedBand(preset);
   const centerY = (band.top + band.bottom) / 2;
   const canvasScale = height / OVERLAY_CANVAS_HEIGHT;
+  const captionScale = Math.min(1.2, Math.max(0.4, (preset.captionScale ?? 100) / 100));
   const offsetY = (centerY - OVERLAY_CANVAS_HEIGHT / 2) * canvasScale -
     (bottomLiftPercent / 100) * height;
 
@@ -51,13 +52,15 @@ export const CaptionThemeOverlay: React.FC<CaptionThemeOverlayProps> = ({
           transform: `translateY(${offsetY.toFixed(2)}px)`,
         }}
       >
-        <CaptionTheme
-          data={selected.data}
-          theme={theme}
-          primaryColor={preset.textColor}
-          secondaryColor={preset.highlightColor}
-          fontSize={preset.fontSize}
-        />
+        <div style={{ transform: `scale(${captionScale})`, transformOrigin: 'center center' }}>
+          <CaptionTheme
+            data={selected.data}
+            theme={theme}
+            primaryColor={preset.textColor}
+            secondaryColor={preset.highlightColor}
+            fontSize={preset.fontSize * captionScale}
+          />
+        </div>
       </div>
     </AbsoluteFill>
   );

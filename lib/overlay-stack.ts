@@ -127,7 +127,8 @@ interface CaptionGeometry {
  * presets reserve their own (conservative) visual band instead.
  */
 function captionGeometry(preset: CaptionPreset): CaptionGeometry {
-  const fontSize = Number.isFinite(preset.fontSize) && preset.fontSize > 0 ? preset.fontSize : 48;
+  const scaleFactor = Number.isFinite(preset.captionScale) ? Math.min(1.2, Math.max(0.4, preset.captionScale! / 100)) : 1;
+  const fontSize = Number.isFinite(preset.fontSize) && preset.fontSize > 0 ? preset.fontSize * scaleFactor : 48 * scaleFactor;
   const positionY = Number.isFinite(preset.positionY) ? preset.positionY : 25;
   const bottomEdge = OVERLAY_CANVAS_HEIGHT * (1 - positionY / 100);
 

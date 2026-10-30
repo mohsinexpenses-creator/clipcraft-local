@@ -737,6 +737,8 @@ export interface CaptionPreset {
   name: string;
   fontFamily: string;
   fontSize: number; // e.g. 48
+  /** Global size multiplier applied to the whole caption block, 0-100%, default 70. */
+  captionScale?: number;
   fontWeight: CaptionFontWeight;
   textColor: string; // hex or rgb
   highlightColor: string; // active word highlight hex or rgb

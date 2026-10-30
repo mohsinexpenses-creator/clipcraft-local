@@ -62,6 +62,25 @@ const ANIMATION_LABELS: Record<string, string> = {
   static: "Static",
 };
 
+const FONT_OPTIONS = [
+  "Inter, system-ui, sans-serif",
+  "Poppins, Arial, sans-serif",
+  "Montserrat, system-ui, sans-serif",
+  "Outfit, Arial, sans-serif",
+  "Rajdhani, sans-serif",
+  "Georgia, 'Times New Roman', serif",
+  "'Arial Black', Impact, sans-serif",
+  "Impact, 'Arial Black', sans-serif",
+  "'Segoe UI', sans-serif",
+] as const;
+
+const ANIMATION_OPTIONS = [
+  { value: "karaoke", label: "Karaoke" },
+  { value: "word-pop", label: "Word pop" },
+  { value: "fade-in", label: "Fade in" },
+  { value: "static", label: "Static" },
+] as const;
+
 function ColorField({
   label,
   value,
@@ -215,6 +234,7 @@ export default function CaptionPresetsPage() {
       name: "Custom preset",
       fontFamily: theme?.captionFontFamily ?? "Inter, sans-serif",
       fontSize: 50,
+      captionScale: 70,
       fontWeight: "bold",
       textColor: theme?.captionPrimaryColor ?? "#FFFFFF",
       highlightColor: theme?.captionAccentColor ?? "#FFE600",
@@ -824,20 +844,30 @@ export default function CaptionPresetsPage() {
                               </div>
                               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                                 <div className="space-y-2">
-                                  <Label htmlFor={`line-font-${index}`}>
+                                  <Label id={`line-font-label-${index}`}>
                                     Font family
                                   </Label>
-                                  <Input
-                                    id={`line-font-${index}`}
+                                  <Select
                                     value={
                                       line.fontFamily ?? activePreset.fontFamily
                                     }
-                                    onChange={(event) =>
+                                    onValueChange={(value) =>
                                       patchLineStyle(index, {
-                                        fontFamily: event.target.value,
+                                        fontFamily: value ?? activePreset.fontFamily,
                                       })
                                     }
-                                  />
+                                  >
+                                    <SelectTrigger aria-labelledby={`line-font-label-${index}`}>
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      {FONT_OPTIONS.map((font) => (
+                                        <SelectItem key={`${font}-${index}`} value={font}>
+                                          {font.split(",")[0].replace(/['"]/g, "")}
+                                        </SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
                                 </div>
                                 <div className="space-y-2">
                                   <Label htmlFor={`line-max-words-${index}`}>
@@ -1103,6 +1133,30 @@ export default function CaptionPresetsPage() {
                     </div>
 
                     <div className="space-y-2">
+                      <Label id="font-family-label">Font family</Label>
+                      <Select
+                        value={activePreset.fontFamily || "Inter, system-ui, sans-serif"}
+                        onValueChange={(value) =>
+                          setActivePreset({
+                            ...activePreset,
+                            fontFamily: value ?? activePreset.fontFamily,
+                          })
+                        }
+                      >
+                        <SelectTrigger aria-labelledby="font-family-label">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {FONT_OPTIONS.map((font) => (
+                            <SelectItem key={font} value={font}>
+                              {font.split(",")[0].replace(/['"]/g, "")}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-2">
                       <Label id="weight-label">Font weight</Label>
                       <Select
                         value={activePreset.fontWeight}
@@ -1126,6 +1180,32 @@ export default function CaptionPresetsPage() {
                       </Select>
                     </div>
 
+                    <div className="space-y-2">
+                      <Label id="animation-label">Animation</Label>
+                      <Select
+                        value={activePreset.animationStyle}
+                        onValueChange={(value) =>
+                          setActivePreset({
+                            ...activePreset,
+                            animationStyle:
+                              (value as CaptionPreset["animationStyle"]) ||
+                              "karaoke",
+                          })
+                        }
+                      >
+                        <SelectTrigger aria-labelledby="animation-label">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {ANIMATION_OPTIONS.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>
+                              {option.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
                     <div className="space-y-3">
                       <div className="flex items-center justify-between">
                         <Label>Font size</Label>
@@ -1141,6 +1221,28 @@ export default function CaptionPresetsPage() {
                           setActivePreset({ ...activePreset, fontSize: v })
                         }
                         aria-label="Font size"
+                      />
+                    </div>
+
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <Label>Caption scale</Label>
+                        <span className="text-xs font-medium text-muted-foreground tabular-nums">
+                          {activePreset.captionScale ?? 70}%
+                        </span>
+                      </div>
+                      <Slider
+                        min={40}
+                        max={100}
+                        step={5}
+                        value={activePreset.captionScale ?? 70}
+                        onValueChange={(v) =>
+                          setActivePreset({
+                            ...activePreset,
+                            captionScale: v,
+                          })
+                        }
+                        aria-label="Caption scale"
                       />
                     </div>
 
@@ -1278,10 +1380,10 @@ export default function CaptionPresetsPage() {
             sticky and its player is sized from the viewport HEIGHT, so scrolling
             through a long style list never moves (or outgrows) the preview. */}
         <div
-          className="animate-fade-up min-w-fit lg:col-span-5"
+          className="animate-fade-up w-full min-w-0 lg:w-[420px] lg:shrink-0 lg:col-span-5"
           style={{ animationDelay: "120ms" }}
         >
-          <div className="flex flex-col gap-3 lg:sticky lg:top-6 lg:max-h-[calc(100dvh-3rem)]">
+          <div className="flex flex-col gap-3 lg:sticky lg:top-6 lg:max-h-[calc(100dvh-3rem)] lg:self-start">
             <div className="rounded-xl border bg-card/70 p-3 shadow-card">
               <h2 className="flex items-center gap-2 text-[13px] font-semibold tracking-tight">
                 <MonitorPlay className="size-3.5 text-muted-foreground" />

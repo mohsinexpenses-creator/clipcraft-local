@@ -49,7 +49,8 @@ export function resolveCaptionLineStyle(
   const styles = preset.lineStyles ?? [];
   const safeIndex = styles.length ? Math.min(Math.max(0, styleIndex), styles.length - 1) : -1;
   const line = safeIndex >= 0 ? styles[safeIndex] : undefined;
-  const globalFontSize = finiteOr(preset.fontSize, 48);
+  const scaleFactor = clamp(finiteOr(preset.captionScale, 100) / 100, 0.4, 1.2);
+  const globalFontSize = finiteOr(preset.fontSize, 48) * scaleFactor;
   const fontSize = clamp(finiteOr(line?.fontSize, globalFontSize), 12, 160);
   return {
     fontFamily: line?.fontFamily?.trim() || preset.fontFamily || 'Arial, sans-serif',

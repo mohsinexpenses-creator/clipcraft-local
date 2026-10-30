@@ -1,0 +1,765 @@
+npm notice run clipcraft-local@0.1.0 npx
+npm notice run tsx --test tests/*.test.ts
+✔ with nothing stored, the built-in defaults win and nothing is marked as app-configured (38.4113ms)
+✔ a value that only exists in .env.local is NOT a setting - the page is the whole truth (2.4315ms)
+✔ a stored section overrides the defaults, and only for the fields it contains (1.3384ms)
+✔ an empty field never becomes zero, but an explicit zero is respected (0.7749ms)
+✔ a stored null means "decide for me", and a missing row means the same default (1.3423ms)
+✔ stored values are clamped on the way in, not silently fixed on read (18.3419ms)
+✔ secrets are masked, validated, and a masked entry means the key already stored (3.8651ms)
+✔ a Deepgram model id is judged leniently: a near-certain typo is flagged, an unusual id is allowed (0.8876ms)
+✔ resolving settings never rewrites process.env (env is only ever displayed) (0.8466ms)
+✔ the snapshot reports a restart only for a loop size the app actually stores (37.7739ms)
+✔ the ai section round-trips its keys without ever returning one in full (13.9848ms)
+✔ paths settings: stored values win, empty means automatic, and resolveSettings stays pure (1.4906ms)
+✔ paths settings: sanitize trims, clears on empty/null and rejects control characters (3.9753ms)
+✔ stock provider keys are masked, validated and stored like every other secret (14.5648ms)
+✔ disjoint, spatially close tracks merge into one person (26.4973ms)
+✔ tracks that share the screen are never merged (1.1349ms)
+✔ disjoint tracks far apart stay separate (different seats) (0.9127ms)
+✔ merge is transitive across three fragments (0.7028ms)
+✔ a well-formed analysis is parsed and clamped to the clip (30.2091ms)
+✔ a zero-length or reversed mention gets a usable window instead of failing (8.0754ms)
+✔ bad JSON, wrong shapes and bad types are rejected with the field named (4.3178ms)
+✔ missing arrays are an empty plan, not an error (0.6211ms)
+✔ keyword concreteness: phrases are short and photographable (0.6845ms)
+✔ the surrounding sentence is taken from the word timings (1.1025ms)
+✔ fallback keywords come from the transcript, spread over the clip (11.1952ms)
+✔ fallback keywords work with an empty transcript (0.7116ms)
+✔ the prompt carries the clip-relative transcript and the JSON contract (2.6121ms)
+✔ a full-screen item fades in from a 1.08 scale and settles at 1 (4.7904ms)
+✔ the Ken Burns push is monotonic and small (0.6169ms)
+✖ a landscape card slides up into place and fades out at the end (50.4529ms)
+✔ extremely short items still enter and exit within half their length (0.8726ms)
+✔ easeOutCubic stays within 0..1 and clamps its input (0.6201ms)
+✔ sequence frames are per item, not per clip (0.6388ms)
+✔ a 16:9 photo is cropped to a 9:16 window, centred on the face (21.1521ms)
+✔ a face in an already-vertical photo is not cropped out of frame (0.5695ms)
+✔ a landscape place/event without a face keeps the whole photo (blur fill) (7.1151ms)
+✔ a portrait photo without a face is centre-cropped, not blurred (0.8557ms)
+✔ the card crop is a 16:9 centre window and never upscales the source (0.7459ms)
+✔ a card sits above the caption band and never covers it (1.2018ms)
+✔ a card avoids a detected face even when that pushes it lower (1.1071ms)
+✖ the card shrinks when the free space above the captions is small (36.5587ms)
+✔ a face in a source frame maps onto the 9:16 canvas with head room (0.9604ms)
+✔ a degenerate face box produces no zone (7.392ms)
+✖ a planned card is re-fitted when the caption preset moved after planning (1.1343ms)
+✖ a card is shrunk at 16:9 when the new band leaves no room for it (2.3076ms)
+✔ a card already clear of the band is returned untouched (14.681ms)
+✔ swap replaces the image with the next recorded alternative and keeps the old one (5831.0502ms)
+✔ swap without alternatives is a clear 400, not a new provider search (63.2189ms)
+✔ remove drops exactly one item and refreshes the counts (71.5464ms)
+✔ editing a clip with no plan is a 404 with guidance (56.9413ms)
+✔ a landscape photo becomes a 1080x1920 blurred-fill frame, never stretched (28704.5445ms)
+✔ a portrait photo becomes a 9:16 crop at the exact canvas size (12868.6197ms)
+✔ an oversized face box falls back to a valid fullscreen crop instead of crashing (15284.7934ms)
+✔ the card image is exactly 960x540 (8553.6334ms)
+✔ the vision thumbnail is ~512 px on its long edge (8936.8794ms)
+✔ prepared files land in the cache directory under their hash name (17090.089ms)
+✔ a truncated download is rejected with a readable reason (6.0125ms)
+[broll] autoBroll is off for this video - nothing to do.
+✔ a clip with no spoken words gets an explained empty plan, not a failure (221.5437ms)
+✔ the automatic chain leaves a clip alone when B-roll is switched off (71.1068ms)
+✔ a missing clip is a clear 404 rather than silent work (56.4334ms)
+[09:27:36]    ✓ B-roll ready (0 images, 0 full-screen) - render queued.
+[09:27:36]    B-roll ready for clip-manual; autoRender is off, so the render waits for you.
+✔ brollOptionsFor falls back to the defaults for a legacy pipeline snapshot (4.0551ms)
+✔ clips without a plan get a B-roll job; a clip that already has one does not (128.359ms)
+✔ continueAfterBroll queues the render only when autoRender is on (114.225ms)
+✔ a restart re-queues missing plans and does not render clips still waiting for one (111.8959ms)
+✔ with autoBroll off, recovery renders clips straight away (pre-B-roll behaviour) (79.3266ms)
+✔ a clip whose B-roll job already failed is not retried by a restart (110.0876ms)
+[broll] Analysis: 1 entit(ies), 0 keyword moment(s).
+[broll] Vision "Elon Musk" try 1/3 (context): pick=0 confidence=0.92 - It is the named person.
+[broll] Plan: 1 full-screen + 13 card(s) (target 10-15), 2 skipped.
+[broll] skipped (schedule): No free 2.5-4s slot for "word54".
+[broll] skipped (schedule): No free 2.5-4s slot for "word58".
+[broll] note: Topped up 15 keyword moment(s) from the transcript.
+[broll] note: No free 2.5s slot for landscape "card-word54" (mention 54.0-55.5s).
+[broll] note: No free 2.5s slot for landscape "card-word58" (mention 58.0-59.5s).
+[broll] Analysis: 1 entit(ies), 0 keyword moment(s).
+[broll] Vision "Some Person" try 1/3 (context): pick=0 confidence=0.30 - Possibly not the same person.
+[broll] Plan: 0 full-screen + 0 card(s) (target 10-15), 1 skipped.
+[broll] skipped (verify) "Some Person": Failed 1/3 verification attempt(s) - context: Not confident enough (0.30 < 0.6): Possibly not the same person. | name+portrait: no new candidate | name+headshot: no new candidate | name+photo: no new candidate
+[broll] note: Only 0 image(s) could be placed; the target minimum is 10. Full-screen slots are never filled with a stock image for a named entity.
+[broll] Analysis: 1 entit(ies), 0 keyword moment(s).
+[broll] Vision "Named Person" try 1/3 (context): pick=0 confidence=0.95 - Watermark across the face.
+[broll] Plan: 0 full-screen + 14 card(s) (target 10-15), 2 skipped.
+[broll] skipped (verify) "Named Person": Failed 1/3 verification attempt(s) - context: Heavy text or watermark: Watermark across the face. | name+portrait: no new candidate | name+headshot: no new candidate | name+photo: no new candidate
+[broll] skipped (schedule): No free 2.5-4s slot for "word58".
+[broll] note: Topped up 15 keyword moment(s) from the transcript.
+[broll] note: No free 2.5s slot for landscape "card-word58" (mention 58.0-59.5s).
+[broll] Analysis: 1 entit(ies), 0 keyword moment(s).
+[broll] Vision "Named Person" try 1/3 (context): pick=0 confidence=0.95 - A collage.
+[broll] Plan: 0 full-screen + 14 card(s) (target 10-15), 2 skipped.
+[broll] skipped (verify) "Named Person": Failed 1/3 verification attempt(s) - context: Unsafe/unsuitable image: A collage. | name+portrait: no new candidate | name+headshot: no new candidate | name+photo: no new candidate
+[broll] skipped (schedule): No free 2.5-4s slot for "word58".
+[broll] note: Topped up 15 keyword moment(s) from the transcript.
+[broll] note: No free 2.5s slot for landscape "card-word58" (mention 58.0-59.5s).
+[broll] Analysis: 1 entit(ies), 0 keyword moment(s).
+[broll] Vision "Named Person" try 1/3 (context): pick=null confidence=0.00 - Different person.
+[broll] Plan: 0 full-screen + 14 card(s) (target 10-15), 2 skipped.
+[broll] skipped (verify) "Named Person": Failed 1/3 verification attempt(s) - context: Different person. | name+portrait: no new candidate | name+headshot: no new candidate | name+photo: no new candidate
+[broll] skipped (schedule): No free 2.5-4s slot for "word58".
+[broll] note: Topped up 15 keyword moment(s) from the transcript.
+[broll] note: No free 2.5s slot for landscape "card-word58" (mention 58.0-59.5s).
+[broll] Analysis: 0 entit(ies), 12 keyword moment(s).
+[broll] Plan: 0 full-screen + 12 card(s) (target 10-15), 0 skipped.
+[broll] Analysis: 2 entit(ies), 10 keyword moment(s).
+[broll] Vision "Person A" try 1/3 (context): pick=0 confidence=0.92 - It is the named person.
+[broll] Vision "Place B" try 1/3 (context): pick=0 confidence=0.92 - It is the named person.
+[broll] Plan: 2 full-screen + 10 card(s) (target 10-15), 0 skipped.
+[broll] Plan: 0 full-screen + 14 card(s) (target 10-15), 2 skipped.
+[broll] skipped (analysis): LLM exploded
+[broll] skipped (schedule): No free 2.5-4s slot for "word58".
+[broll] note: AI analysis failed (LLM exploded); fell back to keywords from the transcript.
+[broll] note: No free 2.5s slot for landscape "card-word58" (mention 58.0-59.5s).
+[broll] Analysis: 1 entit(ies), 1 keyword moment(s).
+[broll] Plan: 0 full-screen + 14 card(s) (target 10-15), 2 skipped.
+[broll] skipped (verify) "Elon Musk": Gemini Vision is not configured; images cannot be verified.
+[broll] skipped (schedule): No free 2.5-4s slot for "word57".
+[broll] note: Topped up 14 keyword moment(s) from the transcript.
+[broll] note: No Gemini key is configured, so named entities are skipped: an unverified full-screen image is never shown.
+[broll] note: No Gemini key: stock cards were not checked for text or relevance.
+[broll] note: No free 2.5s slot for landscape "card-word57" (mention 57.0-58.5s).
+[broll] Analysis: 0 entit(ies), 0 keyword moment(s).
+[broll] Plan: 0 full-screen + 0 card(s) (target 10-15), 15 skipped.
+[broll] skipped (search): word2: provider down
+[broll] skipped (search): word6: provider down
+[broll] skipped (search): word10: provider down
+[broll] skipped (search): word14: provider down
+[broll] skipped (search): word18: provider down
+[broll] skipped (search): word22: provider down
+[broll] skipped (search): word26: provider down
+[broll] skipped (search): word30: provider down
+[broll] skipped (search): word34: provider down
+[broll] skipped (search): word38: provider down
+[broll] skipped (search): word42: provider down
+[broll] skipped (search): word46: provider down
+[broll] skipped (search): word50: provider down
+[broll] skipped (search): word54: provider down
+[broll] skipped (search): word58: provider down
+[broll] note: Topped up 15 keyword moment(s) from the transcript.
+[broll] note: Stock search failed for "word2": provider down
+[broll] note: Stock search failed for "word6": provider down
+[broll] note: Stock search failed for "word10": provider down
+[broll] note: Stock search failed for "word14": provider down
+[broll] note: Stock search failed for "word18": provider down
+[broll] note: Stock search failed for "word22": provider down
+[broll] note: Stock search failed for "word26": provider down
+[broll] note: Stock search failed for "word30": provider down
+[broll] note: Stock search failed for "word34": provider down
+[broll] note: Stock search failed for "word38": provider down
+[broll] note: Stock search failed for "word42": provider down
+[broll] note: Stock search failed for "word46": provider down
+[broll] note: Stock search failed for "word50": provider down
+[broll] note: Stock search failed for "word54": provider down
+[broll] note: Stock search failed for "word58": provider down
+[broll] note: Only 0 image(s) could be placed; the target minimum is 10. Full-screen slots are never filled with a stock image for a named entity.
+[broll] Analysis: 0 entit(ies), 20 keyword moment(s).
+[broll] Plan: 0 full-screen + 15 card(s) (target 10-15), 2 skipped.
+[broll] skipped (schedule): No free 2.5-4s slot for "scene 15".
+[broll] skipped (schedule): No free 2.5-4s slot for "scene 16".
+[broll] Analysis: 1 entit(ies), 1 keyword moment(s).
+[broll] Vision "Early Bird" try 1/3 (context): pick=0 confidence=0.92 - It is the named person.
+[broll] Plan: 1 full-screen + 14 card(s) (target 10-15), 1 skipped.
+[broll] skipped (schedule): No free 2.5-4s slot for "word57".
+[broll] note: Topped up 14 keyword moment(s) from the transcript.
+[broll] Analysis: 12 entit(ies), 12 keyword moment(s).
+[broll] Vision "Speaker 0" try 1/3 (context): pick=0 confidence=0.92 - It is the named person.
+[broll] Vision "Speaker 1" try 1/3 (context): pick=0 confidence=0.92 - It is the named person.
+[broll] Vision "Speaker 2" try 1/3 (context): pick=0 confidence=0.92 - It is the named person.
+[broll] Vision "Speaker 3" try 1/3 (context): pick=0 confidence=0.92 - It is the named person.
+[broll] Plan: 4 full-screen + 10 card(s) (target 10-15), 2 skipped.
+[broll] skipped (schedule): No free 2.5-4s slot for "conference hall 10".
+[broll] skipped (schedule): No free 2.5-4s slot for "conference hall 11".
+[broll] note: No free 2.5s slot for landscape "card-conference-hall-10" (mention 50.0-52.0s).
+[broll] note: No free 2.5s slot for landscape "card-conference-hall-11" (mention 54.5-56.5s).
+✔ an accepted entity becomes one full-screen item, after the hook window (131.9322ms)
+✔ a low-confidence verdict skips the mention and never falls back to stock (49.9985ms)
+✔ an unsafe or watermarked pick is rejected (43.7469ms)
+✔ words become landscape cards with a card rect clear of the captions (16.4278ms)
+✔ full-screen and landscape items never overlap (35.3449ms)
+✔ when the LLM fails, keyword moments are derived from the transcript (17.864ms)
+✔ with no Gemini key, entities are skipped with a reason and cards still work (17.3027ms)
+✔ a provider outage produces a plan with fewer items, not an error (2.7049ms)
+✔ the 60 s target budget is carried into the plan (30.5236ms)
+✔ a 3 s hook is excluded even when the first mention is inside it (34.3646ms)
+✔ a busy 60 s clip with plenty of material lands inside the 10-15 image target (51.0988ms)
+✔ Openverse candidates keep the original image separate from its thumbnail (3.789ms)
+✔ the Commons URL asks for File-namespace search with a 1080px thumb and metadata (0.9313ms)
+✔ Commons parsing keeps usable photos with full attribution and drops SVG/small files (3.8193ms)
+✔ Commons accepts both the v2 array and the legacy object page shape (0.674ms)
+✔ Commons results are ranked with portrait images first (1.1713ms)
+✔ searchCommons goes through the injected fetcher (3.8663ms)
+✔ Pexels results are parsed into landscape candidates with a license (2.3166ms)
+✔ Pixabay results keep the tags and the author (0.772ms)
+✔ Unsplash results carry the photographer, the link, and the download endpoint (0.8045ms)
+✔ the API URLs carry the landscape filter and the key (1.0831ms)
+✔ the stock chain skips providers without keys and falls through on quota (6.6111ms)
+✔ the stock chain reports a rejected key as a key problem only (3.3752ms)
+✔ a provider without a key is skipped without a request (0.3975ms)
+✔ 429 from fetchJson becomes a ProviderQuotaError (1.5696ms)
+✔ image usability rejects SVG/TIFF and small files (0.8964ms)
+✔ a provider URL never leaks its key into an error or a plan note (34.7548ms)
+[broll] Analysis: 1 entit(ies), 0 keyword moment(s).
+[broll] Vision "Alex Cooper" try 1/3 (context): pick=0 confidence=0.92 - Her.
+[broll] Plan: 1 full-screen + 0 card(s) (target 10-15), 15 skipped.
+[broll] skipped (search): No stock result for "word2".
+[broll] skipped (search): No stock result for "word6".
+[broll] skipped (search): No stock result for "word10".
+[broll] skipped (search): No stock result for "word14".
+[broll] skipped (search): No stock result for "word18".
+[broll] skipped (search): No stock result for "word22".
+[broll] skipped (search): No stock result for "word26".
+[broll] skipped (search): No stock result for "word30".
+[broll] skipped (search): No stock result for "word34".
+[broll] skipped (search): No stock result for "word38".
+[broll] skipped (search): No stock result for "word42".
+[broll] skipped (search): No stock result for "word46".
+[broll] skipped (search): No stock result for "word50".
+[broll] skipped (search): No stock result for "word54".
+[broll] skipped (search): No stock result for "word58".
+[broll] note: Topped up 15 keyword moment(s) from the transcript.
+[broll] note: Could not download a "Alex Cooper" candidate: Wikimedia Commons is rate-limited or out of quota.
+[broll] note: Only 1 image(s) could be placed; the target minimum is 10. Full-screen slots are never filled with a stock image for a named entity.
+[broll] Analysis: 1 entit(ies), 0 keyword moment(s).
+[broll] Vision "Alex Cooper" try 1/3 (context): pick=0 confidence=0.92 - Her.
+[broll] Plan: 1 full-screen + 0 card(s) (target 10-15), 15 skipped.
+[broll] skipped (search): No stock result for "word2".
+[broll] skipped (search): No stock result for "word6".
+[broll] skipped (search): No stock result for "word10".
+[broll] skipped (search): No stock result for "word14".
+[broll] skipped (search): No stock result for "word18".
+[broll] skipped (search): No stock result for "word22".
+[broll] skipped (search): No stock result for "word26".
+[broll] skipped (search): No stock result for "word30".
+[broll] skipped (search): No stock result for "word34".
+[broll] skipped (search): No stock result for "word38".
+[broll] skipped (search): No stock result for "word42".
+[broll] skipped (search): No stock result for "word46".
+[broll] skipped (search): No stock result for "word50".
+[broll] skipped (search): No stock result for "word54".
+[broll] skipped (search): No stock result for "word58".
+[broll] note: Topped up 15 keyword moment(s) from the transcript.
+[broll] note: Only 1 image(s) could be placed; the target minimum is 10. Full-screen slots are never filled with a stock image for a named entity.
+[broll] Analysis: 1 entit(ies), 0 keyword moment(s).
+[broll] Plan: 0 full-screen + 0 card(s) (target 10-15), 16 skipped.
+[broll] skipped (download) "Alex Cooper": Failed 0/3 verification attempt(s) - context: nothing could be downloaded | name+portrait: no new candidate | name+headshot: no new candidate | name+photo: no new candidate
+[broll] skipped (search): No stock result for "word2".
+[broll] skipped (search): No stock result for "word6".
+[broll] skipped (search): No stock result for "word10".
+[broll] skipped (search): No stock result for "word14".
+[broll] skipped (search): No stock result for "word18".
+[broll] skipped (search): No stock result for "word22".
+[broll] skipped (search): No stock result for "word26".
+[broll] skipped (search): No stock result for "word30".
+[broll] skipped (search): No stock result for "word34".
+[broll] skipped (search): No stock result for "word38".
+[broll] skipped (search): No stock result for "word42".
+[broll] skipped (search): No stock result for "word46".
+[broll] skipped (search): No stock result for "word50".
+[broll] skipped (search): No stock result for "word54".
+[broll] skipped (search): No stock result for "word58".
+[broll] note: Topped up 15 keyword moment(s) from the transcript.
+[broll] note: Could not download a "Alex Cooper" candidate: Wikimedia Commons is rate-limited or out of quota.
+[broll] note: Only 0 image(s) could be placed; the target minimum is 10. Full-screen slots are never filled with a stock image for a named entity.
+✔ Retry-After is read as seconds or as an HTTP date (4.0344ms)
+✔ a 429 on a download carries the server-requested wait (3.5707ms)
+✔ a 503 is not retried on the same Gemini model (15.6439ms)
+✔ a busy Gemini model is not replaced with another model (1.2606ms)
+✔ a rejected key is not retried (2.3159ms)
+✔ when no Openverse image downloads, the Wikimedia fallback is tried and still passes the vision gate (41.1763ms)
+✔ the fallback is not used when an Openverse image downloaded fine (6.0291ms)
+✔ an entity is skipped, never replaced, when the fallback has nothing either (15.4298ms)
+✔ image budget scales from the per-60s numbers (6.4256ms)
+✔ nothing is ever scheduled inside the hook replay window (10.2964ms)
+✔ a full-screen image beats a landscape card and they never overlap (1.2442ms)
+✔ items last between 2.5 and 4 seconds and keep the 1.5 second gap (5.8645ms)
+✔ a 60 second clip can host 10-15 images, and maxCount is a hard ceiling (28.3774ms)
+✔ longer mentions are trimmed to the 4 s maximum instead of being dropped (0.4809ms)
+✔ mentions shorter than one image duration are moved, not stretched into a wrong claim (7.5048ms)
+✔ an empty or too-short clip returns no items and says why (1.5351ms)
+✖ the scheduler never places two items on the same second (7.3174ms)
+✔ the output is ordered by time and carries the mention window for review (2.0615ms)
+✖ one cue enters and one exits per item, and they are ordered by time (15.2115ms)
+✖ cues too close together are dropped, so two images 3 s apart do not machine-gun (3.219ms)
+✔ nothing is scheduled after the clip ends, and disabling removes every cue (1.3285ms)
+✔ each effect is delayed to its own timestamp and padded, then mixed without normalising (2.4611ms)
+✔ no cues means no filter statements at all (autoBroll off is byte-identical) (0.6076ms)
+✖ the bundled effect files exist and are real WAV files (6.0668ms)
+✔ a clean verdict is accepted (14.8162ms)
+✔ a JSON code fence is tolerated, garbage is not (0.6202ms)
+✔ an out-of-range pick, missing confidence or a text flag rejects the image (3.9999ms)
+✔ percent-style confidence is normalised (0.8451ms)
+✔ the rejection reason says exactly why (4.3612ms)
+✔ the threshold constant is the brief’s 0.6 and is enforced (0.5205ms)
+✔ the prompt names the entity, the context and the JSON contract (1.1563ms)
+✔ verify sends the images with the key in the header, never the URL (4.0446ms)
+✔ a Gemini verification uses one key and one request even when more keys are configured (10.9287ms)
+✔ no configured key is a clear, actionable error (1.5916ms)
+✔ a person who sits still: ONE position, zero moves, whatever the detector jitter (29.3905ms)
+✔ nodding, swaying and gesturing inside the frame never move the camera (31.5467ms)
+✔ the lock is taken from the FIRST second, not from the whole clip (16.7992ms)
+✔ the head leaving the frame triggers ONE eased glide that re-centres them, then it locks again (4.3011ms)
+✔ while the camera glides, the head is never cut off by the window (13.6068ms)
+✔ standing up (vertical leave) moves the frame up; coming back down moves it back (2.6319ms)
+✔ a short burst of bad detections is NOT a reason to move (9.4916ms)
+✔ a head that pops outside the safe zone and comes back within 0.2s does not move the camera (2.3168ms)
+✔ a person at the very edge of the frame: the window is clamped and does not keep trying to move (3.8333ms)
+✔ someone pacing back and forth cannot make the camera restless: moves are capped (25.7229ms)
+✔ no detections at all: a centred static window (never a crash) (0.5393ms)
+✔ a person who appears late: the window is already on them from the first frame (1.2005ms)
+✔ headInsideSafeZone: margin, hair allowance and oversized heads (1.0846ms)
+✔ glideSeconds: quick for a hop, longer (but bounded) for a big move (0.3496ms)
+✔ smoothstep eases in and out (zero slope at both ends, 0.5 in the middle) (0.4519ms)
+✔ a time shift that makes a glide start BEFORE t=0 never produces a double minus (2.7598ms)
+✔ hook branch: only the glides that touch the hook window are kept (the rest fold into the start / drop out) (12.1341ms)
+✔ buildGlideExpression: a window that never moves is a plain constant (0.9551ms)
+✔ the FFmpeg expression reproduces the planned camera exactly (sampled over time) (185.6959ms)
+✔ even ten glides keep the crop expression tiny (Windows command-line safe) (31.6985ms)
+✖ legacy presets and empty rich styles resolve to the original four-word chunk and global style (16.6987ms)
+✔ rich chunks split words in order by maxWords and reuse the final line style on overflow (1.3213ms)
+✔ Remotion final chunks use rich line capacity but keep the legacy four-word chunking (8.1722ms)
+✔ layout bounds unsafe settings and shrinks very long rows without dropping words (3.1022ms)
+✔ theme-only seed keeps the shipped caption themes and preserves custom rows (97.038ms)
+✔ all caption themes are present in the typed catalog and vendor registry (11.9391ms)
+✔ ClipCraft caption words adapt to the theme data contract without changing masked text or timing (2.9544ms)
+✔ all remaining themes receive one active caption line (0.5386ms)
+✔ retired caption themes are absent from the catalog and registry (0.8574ms)
+✔ theme Hook/CTA styling follows the caption accent and preserves saved overlay geometry (12.4549ms)
+✔ caption themes reserve their own band; classic presets keep the classic band (2.9202ms)
+✔ clip name includes rank, title, and hashtags without spaces (4.8017ms)
+✔ clip name omits absent rank or hashtags and sanitizes unsafe title characters (0.5456ms)
+✔ clip name caps the complete filename at 80 characters (1.387ms)
+✔ inside one detection run the best rank comes first, whatever order the API returned (10.2416ms)
+✔ a newer run is listed before an older one, each in rank order (1.0804ms)
+✔ clips without a rank keep the order they arrived in, so existing dashboards look the same (1.4783ms)
+✔ ranked clips of a run come before unranked ones from the same moment, and the input is not mutated (0.5693ms)
+✔ resolveHookTiming uses the full detected start-to-end interval (9.2799ms)
+✔ resolveHookTiming keeps the hook disabled even when AI timestamps are present (0.5917ms)
+✔ resolveHookTiming falls back to the configured length when the analysis has no usable interval (0.5306ms)
+✔ a fallback intro can never be longer than the clip it replays (0.8582ms)
+✔ resolveHookTiming rejects a valid timestamp interval that cannot fit inside the selected clip (2.9552ms)
+✔ flattenAndDecimate: a jittering but straight pan collapses to a few keyframes (17.9801ms)
+✔ flattenAndDecimate: micro-jitter under the dead zone is dropped (no shake) (0.8208ms)
+✔ buildPanExpression: a static face becomes a clamped constant, not an if-chain (2.4498ms)
+✔ buildPanExpression: a moving face interpolates and stays clamped (1.1237ms)
+✔ speaker-focus plan follows the talking person and glides at the change (6.1887ms)
+✔ speaker-focus briefly shows another visible person then returns to the speaker (1.7909ms)
+✔ split-screen plan builds adaptive cells (one per person, no emphasis layer) (20.1042ms)
+✔ split filter graph draws NOTHING on top of the panes (no red frame) (5.6062ms)
+✔ split panes of people who sit still get CONSTANT crop expressions (no per-frame motion) (27.3641ms)
+✔ no usable tracks: speaker-focus falls back to a static centred crop (0.8042ms)
+✔ split grid size follows PEAK concurrent faces, not raw track count (14.5573ms)
+✔ two people co-existing still get two panes when only ONE is judged the speaker (2.3155ms)
+✔ 2-person split: the left person gets the TOP pane, the right person the bottom (stable) (10.3061ms)
+✔ split filter graph never consumes a pad label twice (FFmpeg rejects that) (3.7352ms)
+✔ small faces in a wide shot still get their panes (no silent centre crop) (1.598ms)
+✔ a 2-person conversation never becomes a 4-cell grid (11.5635ms)
+✔ regression: ONE detected person never becomes a one-cell 5x zoom "split" (1.0797ms)
+✔ split with no tracks at all: a static centred single window with a reason (never a crash) (0.4818ms)
+✔ speaker-focus never carries a split fallback reason (0.4959ms)
+✔ cellCropSize limits default enlargement, keeps pane aspect, and respects source bounds (2.8744ms)
+✔ split framing settings use defaults, parse overrides, and clamp unsafe values (12.5922ms)
+✔ configured split framing is consistent in 2-, 3-, and 4-cell grids (34.5526ms)
+✔ 1080p split panes respect the default zoom cap across face sizes and 2/3/4-cell grids (60.6829ms)
+✔ two ~100px faces avoid excessive enlargement and keep a stable left/right pane assignment (2.0566ms)
+✔ a tiny background face (poster / screen) does not steal the second pane from a real listener (3.0434ms)
+✔ split panes target face centres at 38% and keep head/overlay zones within each cell (2.2936ms)
+✔ two people who never share the screen (camera cuts): single window, and the reason says so (0.6882ms)
+✔ solid rgba parses and rebuilds (23.466ms)
+✔ hex colors parse (with #rrggbbaa alpha) and rebuild as rgba (3.1397ms)
+✔ gradient parses angle + both stops and rebuilds identically (1.3659ms)
+✔ unparseable custom CSS is preserved as raw (not clobbered) (2.5116ms)
+✔ speaker focus: captions keep their preset position (10.9778ms)
+✔ every layout: hook and CTA are stacked directly above the captions (36.8328ms)
+✔ split-screen fallback to a single window (only one person found) still stacks the cards (1.2996ms)
+✔ split screen: captions dodge the faces, the cards stack above them (13.9424ms)
+✔ split screen: the caption preset position DID land on a face (so moving it was necessary) (13.8682ms)
+✔ split screen: captions go to the seam between the panes (7.6411ms)
+✔ a placement that is already stacked is KEPT (re-rendering an adapted clip changes nothing) (9.2305ms)
+✔ only positionY changes - fonts, colours and animation of every preset are preserved (6.5895ms)
+✔ positionY maths: hook / CTA are % from the TOP, the caption band matches the caption geometry (5.8975ms)
+✔ hook / CTA switched off: nothing is placed for them (19.676ms)
+✔ captions pinned very high: the cards clamp to the top margin instead of escaping the frame (1.2814ms)
+✔ three and four pane grids: captions clear of every face, cards stacked above them (6.8222ms)
+✔ faces so big that no free band exists: still valid, on-canvas positions (5.1307ms)
+✔ estimateLineCount: word wrap, monotonic in size, an over-long single word is one line (0.6359ms)
+✔ card-height estimates are never smaller than what Chrome really renders (and not wildly larger) (1.3309ms)
+✔ caption bands sit at the preset position (bottom-anchored) and cover the reserved height (9.6495ms)
+✔ cards stack exactly one gap above the caption band, clamped to the top margin (0.8692ms)
+✔ stackPositionPercent is % from the top, rounded to 0.1, inside 0..100 (1.559ms)
+✔ the hook and CTA never need the caption lift: their home is above the caption band (0.5226ms)
+✔ default overlay style presets cover hook + cta with unique ids (3.2933ms)
+✔ style presets keep hook/CTA text generation intact (styling only) (0.4913ms)
+✔ the shipped default styles retain their hook and CTA presentation (0.3905ms)
+✔ all animation styles are ones the overlays actually render (0.7163ms)
+[09:27:55]    ⚙ ffmpeg probe-first-frame: D:\Web Development\clipcraft-local\bin\ffmpeg\ffmpeg.exe -hide_banner -nostats -copyts -accurate_seek -ss 0.405 -i C:\Users\cnsta\AppData\Local\Temp\clipcraft-frames-split-screen-WdpS0E\source.mp4 -an -sn -frames:v 1 -vf showinfo -f null -
+✔ ffmpegFpsArg: NTSC rates are exact fractions, everything else is the plain number (4.6873ms)
+✔ speaker and split crops keep exact coordinates and use Lanczos for final scaling (2.2941ms)
+✔ split graph: the canvas is built from the first pane - no free-running black source (1.3749ms)
+✔ split graph: every pad label is produced once and consumed once (FFmpeg rejects anything else) (2.272ms)
+✔ hook branch: glides are shifted by the hook offset (it replays a later part of the clip) (1.3196ms)
+✔ speaker focus hook branch: keyframes outside the hook window are pruned, positions are unchanged (5.73ms)
+✔ final H.264 settings default to quality-first and accept safe env overrides (6.6877ms)
+✔ transparent overlays are composited into the base filter graph before the only final encode (1.587ms)
+✔ B-roll sequences are composited BEFORE the caption layer, whatever their start times (1.0009ms)
+✔ hook intervals outside the base segment fail instead of being clamped to a partial replay (5.6281ms)
+[09:27:56]    Pass 1/1 · 0.405s → 2.405s (dur=2.00s, fps=25, out=1080x1920, layout=split (2 cells), audio=source)
+[09:27:56]    ⚙ ffmpeg trim+mirror+crop+color+overlays+encode: D:\Web Development\clipcraft-local\bin\ffmpeg\ffmpeg.exe -y -hide_banner -loglevel warning -stats -accurate_seek -ss 0.4380 -t 2.000 -i C:\Users\cnsta\AppData\Local\Temp\clipcraft-frames-split-screen-WdpS0E\source.mp4 -filter_complex [0:v]setpts=PTS-STARTPTS,hflip,format=yuv420p,split=2[b_s0][b_s1];[b_s0]crop=540:480:'300.0':'200.0':exact=1,scale=1080:960:flags=lanczos,format=yuv420p,pad=1080:1920:0:0:color=black[b_o0];[b_s1]crop=540:480:'1100.0':'200.0':exact=1,scale=1080:960:flags=lanczos,format=yuv420p[b_c1];[b_o0][b_c1]overlay=0:960[vbase];[0:a]asetpts=PTS-STARTPTS,aresample=async=1000:first_pts=0,aformat=channel_layouts=stereo[a];[vbase]null[v] -map [v] -map [a] -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -profile:v high -r 25 -fps_mode cfr -movflags +faststart -flags +global_header -c:a aac -b:a 192k -ac 2 C:\Users\cnsta\AppData\Local\Temp\clipcraft-frames-split-screen-WdpS0E\out.mp4
+[09:28:00]    ✓ Processed clip ready: 1080x1920 @ 25fps, 2.00s, audio=yes
+[09:28:06]    ⚙ ffmpeg probe-first-frame: D:\Web Development\clipcraft-local\bin\ffmpeg\ffmpeg.exe -hide_banner -nostats -copyts -accurate_seek -ss 0.405 -i C:\Users\cnsta\AppData\Local\Temp\clipcraft-frames-split-screen-hook-xAB7xc\source.mp4 -an -sn -frames:v 1 -vf showinfo -f null -
+[09:28:06]    ⚙ ffmpeg probe-first-frame: D:\Web Development\clipcraft-local\bin\ffmpeg\ffmpeg.exe -hide_banner -nostats -copyts -accurate_seek -ss 1.405 -i C:\Users\cnsta\AppData\Local\Temp\clipcraft-frames-split-screen-hook-xAB7xc\source.mp4 -an -sn -frames:v 1 -vf showinfo -f null -
+✔ split screen: a mid-frame cut gives exactly the source's frames (no black/duplicated first or last frame) (11002.295ms)
+[09:28:07]    Pass 1/1 · 0.405s → 2.405s (dur=2.00s + 1.0s hook, fps=25, out=1080x1920, layout=split (2 cells), audio=source)
+[09:28:07]    ⚙ ffmpeg trim+mirror+crop+color+overlays+encode: D:\Web Development\clipcraft-local\bin\ffmpeg\ffmpeg.exe -y -hide_banner -loglevel warning -stats -accurate_seek -ss 1.4380 -t 1.000000 -i C:\Users\cnsta\AppData\Local\Temp\clipcraft-frames-split-screen-hook-xAB7xc\source.mp4 -accurate_seek -ss 0.4380 -t 2.000 -i C:\Users\cnsta\AppData\Local\Temp\clipcraft-frames-split-screen-hook-xAB7xc\source.mp4 -filter_complex [0:v]setpts=PTS-STARTPTS,hflip,format=yuv420p,split=2[h_s0][h_s1];[h_s0]crop=540:480:'300.0':'200.0':exact=1,scale=1080:960:flags=lanczos,format=yuv420p,pad=1080:1920:0:0:color=black[h_o0];[h_s1]crop=540:480:'1100.0':'200.0':exact=1,scale=1080:960:flags=lanczos,format=yuv420p[h_c1];[h_o0][h_c1]overlay=0:960[hv];[hv]fade=t=out:st=0.500:d=0.500,format=yuv420p[v0];[1:v]setpts=PTS-STARTPTS,hflip,format=yuv420p,split=2[b_s0][b_s1];[b_s0]crop=540:480:'300.0':'200.0':exact=1,scale=1080:960:flags=lanczos,format=yuv420p,pad=1080:1920:0:0:color=black[b_o0];[b_s1]crop=540:480:'1100.0':'200.0':exact=1,scale=1080:960:flags=lanczos,format=yuv420p[b_c1];[b_o0][b_c1]overlay=0:960[bv];[bv]fade=t=in:st=0:d=0.500[v1];[v0][v1]concat=n=2:v=1:a=0[vbase];[0:a]asetpts=PTS-STARTPTS,aresample=async=1000:first_pts=0,aformat=channel_layouts=stereo,afade=t=out:st=0.500:d=0.500[a0];[1:a]asetpts=PTS-STARTPTS,aresample=async=1000:first_pts=0,aformat=channel_layouts=stereo,afade=t=in:st=0:d=0.500[a1];[a0][a1]concat=n=2:v=0:a=1[a];[vbase]null[v] -map [v] -map [a] -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -profile:v high -r 25 -fps_mode cfr -movflags +faststart -flags +global_header -c:a aac -b:a 192k -ac 2 C:\Users\cnsta\AppData\Local\Temp\clipcraft-frames-split-screen-hook-xAB7xc\out.mp4
+[09:28:13]    ✓ Processed clip ready: 1080x1920 @ 25fps, 3.00s, audio=yes
+[09:28:21]    ⚙ ffmpeg probe-first-frame: D:\Web Development\clipcraft-local\bin\ffmpeg\ffmpeg.exe -hide_banner -nostats -copyts -accurate_seek -ss 0.405 -i C:\Users\cnsta\AppData\Local\Temp\clipcraft-frames-split-screen-timestamp-hook-2Mgaub\source.mp4 -an -sn -frames:v 1 -vf showinfo -f null -
+[09:28:21]    ⚙ ffmpeg probe-first-frame: D:\Web Development\clipcraft-local\bin\ffmpeg\ffmpeg.exe -hide_banner -nostats -copyts -accurate_seek -ss 0.805 -i C:\Users\cnsta\AppData\Local\Temp\clipcraft-frames-split-screen-timestamp-hook-2Mgaub\source.mp4 -an -sn -frames:v 1 -vf showinfo -f null -
+✔ split screen: with the hook intro the file is exactly hook + clip long, and ends on a real frame (15058.1572ms)
+[09:28:22]    Pass 1/1 · 0.405s → 2.405s (dur=2.00s + 1.2s hook, fps=25, out=1080x1920, layout=split (2 cells), audio=source)
+[09:28:22]    ⚙ ffmpeg trim+mirror+crop+color+overlays+encode: D:\Web Development\clipcraft-local\bin\ffmpeg\ffmpeg.exe -y -hide_banner -loglevel warning -stats -accurate_seek -ss 0.8380 -t 1.200000 -i C:\Users\cnsta\AppData\Local\Temp\clipcraft-frames-split-screen-timestamp-hook-2Mgaub\source.mp4 -accurate_seek -ss 0.4380 -t 2.000 -i C:\Users\cnsta\AppData\Local\Temp\clipcraft-frames-split-screen-timestamp-hook-2Mgaub\source.mp4 -filter_complex [0:v]setpts=PTS-STARTPTS,hflip,format=yuv420p,split=2[h_s0][h_s1];[h_s0]crop=540:480:'300.0':'200.0':exact=1,scale=1080:960:flags=lanczos,format=yuv420p,pad=1080:1920:0:0:color=black[h_o0];[h_s1]crop=540:480:'1100.0':'200.0':exact=1,scale=1080:960:flags=lanczos,format=yuv420p[h_c1];[h_o0][h_c1]overlay=0:960[hv];[hv]fade=t=out:st=0.700:d=0.500,format=yuv420p[v0];[1:v]setpts=PTS-STARTPTS,hflip,format=yuv420p,split=2[b_s0][b_s1];[b_s0]crop=540:480:'300.0':'200.0':exact=1,scale=1080:960:flags=lanczos,format=yuv420p,pad=1080:1920:0:0:color=black[b_o0];[b_s1]crop=540:480:'1100.0':'200.0':exact=1,scale=1080:960:flags=lanczos,format=yuv420p[b_c1];[b_o0][b_c1]overlay=0:960[bv];[bv]fade=t=in:st=0:d=0.500[v1];[v0][v1]concat=n=2:v=1:a=0[vbase];[0:a]asetpts=PTS-STARTPTS,aresample=async=1000:first_pts=0,aformat=channel_layouts=stereo,afade=t=out:st=0.700:d=0.500[a0];[1:a]asetpts=PTS-STARTPTS,aresample=async=1000:first_pts=0,aformat=channel_layouts=stereo,afade=t=in:st=0:d=0.500[a1];[a0][a1]concat=n=2:v=0:a=1[a];[vbase]null[v] -map [v] -map [a] -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -profile:v high -r 25 -fps_mode cfr -movflags +faststart -flags +global_header -c:a aac -b:a 192k -ac 2 C:\Users\cnsta\AppData\Local\Temp\clipcraft-frames-split-screen-timestamp-hook-2Mgaub\out.mp4
+[09:28:29]    ✓ Processed clip ready: 1080x1920 @ 25fps, 3.20s, audio=yes
+[09:28:36]    ⚙ ffmpeg probe-first-frame: D:\Web Development\clipcraft-local\bin\ffmpeg\ffmpeg.exe -hide_banner -nostats -copyts -accurate_seek -ss 0.405 -i C:\Users\cnsta\AppData\Local\Temp\clipcraft-frames-speaker-focus-Il2LWX\source.mp4 -an -sn -frames:v 1 -vf showinfo -f null -
+✔ split screen: a timestamp-length hook (1.2s) is not shortened to the old 1s value (14450.6445ms)
+[09:28:37]    Pass 1/1 · 0.405s → 2.405s (dur=2.00s, fps=25, out=1080x1920, layout=single, audio=source)
+[09:28:37]    ⚙ ffmpeg trim+mirror+crop+color+overlays+encode: D:\Web Development\clipcraft-local\bin\ffmpeg\ffmpeg.exe -y -hide_banner -loglevel warning -stats -accurate_seek -ss 0.4380 -t 2.000 -i C:\Users\cnsta\AppData\Local\Temp\clipcraft-frames-speaker-focus-Il2LWX\source.mp4 -filter_complex [0:v]setpts=PTS-STARTPTS,hflip,crop=606:1080:'657':'0':exact=1,scale=1080:1920:flags=lanczos,format=yuv420p[vbase];[0:a]asetpts=PTS-STARTPTS,aresample=async=1000:first_pts=0,aformat=channel_layouts=stereo[a];[vbase]null[v] -map [v] -map [a] -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -profile:v high -r 25 -fps_mode cfr -movflags +faststart -flags +global_header -c:a aac -b:a 192k -ac 2 C:\Users\cnsta\AppData\Local\Temp\clipcraft-frames-speaker-focus-Il2LWX\out.mp4
+[09:28:41]    ✓ Processed clip ready: 1080x1920 @ 25fps, 2.00s, audio=yes
+[09:28:46]    ⚙ ffmpeg probe-first-frame: D:\Web Development\clipcraft-local\bin\ffmpeg\ffmpeg.exe -hide_banner -nostats -copyts -accurate_seek -ss 0.405 -i C:\Users\cnsta\AppData\Local\Temp\clipcraft-frames-speaker-focus-hook-NB9re9\source.mp4 -an -sn -frames:v 1 -vf showinfo -f null -
+[09:28:46]    ⚙ ffmpeg probe-first-frame: D:\Web Development\clipcraft-local\bin\ffmpeg\ffmpeg.exe -hide_banner -nostats -copyts -accurate_seek -ss 1.405 -i C:\Users\cnsta\AppData\Local\Temp\clipcraft-frames-speaker-focus-hook-NB9re9\source.mp4 -an -sn -frames:v 1 -vf showinfo -f null -
+✔ speaker focus: a mid-frame cut gives exactly the source's frames (no black/duplicated first or last frame) (10200.8303ms)
+[09:28:47]    Pass 1/1 · 0.405s → 2.405s (dur=2.00s + 1.0s hook, fps=25, out=1080x1920, layout=single, audio=source)
+[09:28:47]    ⚙ ffmpeg trim+mirror+crop+color+overlays+encode: D:\Web Development\clipcraft-local\bin\ffmpeg\ffmpeg.exe -y -hide_banner -loglevel warning -stats -accurate_seek -ss 1.4380 -t 1.000000 -i C:\Users\cnsta\AppData\Local\Temp\clipcraft-frames-speaker-focus-hook-NB9re9\source.mp4 -accurate_seek -ss 0.4380 -t 2.000 -i C:\Users\cnsta\AppData\Local\Temp\clipcraft-frames-speaker-focus-hook-NB9re9\source.mp4 -filter_complex [0:v]setpts=PTS-STARTPTS,hflip,crop=606:1080:'657':'0':exact=1,scale=1080:1920:flags=lanczos,format=yuv420p[hv];[hv]fade=t=out:st=0.500:d=0.500,format=yuv420p[v0];[1:v]setpts=PTS-STARTPTS,hflip,crop=606:1080:'657':'0':exact=1,scale=1080:1920:flags=lanczos,format=yuv420p[bv];[bv]fade=t=in:st=0:d=0.500[v1];[v0][v1]concat=n=2:v=1:a=0[vbase];[0:a]asetpts=PTS-STARTPTS,aresample=async=1000:first_pts=0,aformat=channel_layouts=stereo,afade=t=out:st=0.500:d=0.500[a0];[1:a]asetpts=PTS-STARTPTS,aresample=async=1000:first_pts=0,aformat=channel_layouts=stereo,afade=t=in:st=0:d=0.500[a1];[a0][a1]concat=n=2:v=0:a=1[a];[vbase]null[v] -map [v] -map [a] -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -profile:v high -r 25 -fps_mode cfr -movflags +faststart -flags +global_header -c:a aac -b:a 192k -ac 2 C:\Users\cnsta\AppData\Local\Temp\clipcraft-frames-speaker-focus-hook-NB9re9\out.mp4
+[09:28:56]    ✓ Processed clip ready: 1080x1920 @ 25fps, 3.00s, audio=yes
+[09:29:02]    ⚙ ffmpeg probe-first-frame: D:\Web Development\clipcraft-local\bin\ffmpeg\ffmpeg.exe -hide_banner -nostats -copyts -accurate_seek -ss 0.405 -i C:\Users\cnsta\AppData\Local\Temp\clipcraft-frames-speaker-focus-timestamp-hook-rfpdG5\source.mp4 -an -sn -frames:v 1 -vf showinfo -f null -
+[09:29:02]    ⚙ ffmpeg probe-first-frame: D:\Web Development\clipcraft-local\bin\ffmpeg\ffmpeg.exe -hide_banner -nostats -copyts -accurate_seek -ss 0.805 -i C:\Users\cnsta\AppData\Local\Temp\clipcraft-frames-speaker-focus-timestamp-hook-rfpdG5\source.mp4 -an -sn -frames:v 1 -vf showinfo -f null -
+✔ speaker focus: with the hook intro the file is exactly hook + clip long, and ends on a real frame (15923.5948ms)
+[09:29:03]    Pass 1/1 · 0.405s → 2.405s (dur=2.00s + 1.2s hook, fps=25, out=1080x1920, layout=single, audio=source)
+[09:29:03]    ⚙ ffmpeg trim+mirror+crop+color+overlays+encode: D:\Web Development\clipcraft-local\bin\ffmpeg\ffmpeg.exe -y -hide_banner -loglevel warning -stats -accurate_seek -ss 0.8380 -t 1.200000 -i C:\Users\cnsta\AppData\Local\Temp\clipcraft-frames-speaker-focus-timestamp-hook-rfpdG5\source.mp4 -accurate_seek -ss 0.4380 -t 2.000 -i C:\Users\cnsta\AppData\Local\Temp\clipcraft-frames-speaker-focus-timestamp-hook-rfpdG5\source.mp4 -filter_complex [0:v]setpts=PTS-STARTPTS,hflip,crop=606:1080:'657':'0':exact=1,scale=1080:1920:flags=lanczos,format=yuv420p[hv];[hv]fade=t=out:st=0.700:d=0.500,format=yuv420p[v0];[1:v]setpts=PTS-STARTPTS,hflip,crop=606:1080:'657':'0':exact=1,scale=1080:1920:flags=lanczos,format=yuv420p[bv];[bv]fade=t=in:st=0:d=0.500[v1];[v0][v1]concat=n=2:v=1:a=0[vbase];[0:a]asetpts=PTS-STARTPTS,aresample=async=1000:first_pts=0,aformat=channel_layouts=stereo,afade=t=out:st=0.700:d=0.500[a0];[1:a]asetpts=PTS-STARTPTS,aresample=async=1000:first_pts=0,aformat=channel_layouts=stereo,afade=t=in:st=0:d=0.500[a1];[a0][a1]concat=n=2:v=0:a=1[a];[vbase]null[v] -map [v] -map [a] -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -profile:v high -r 25 -fps_mode cfr -movflags +faststart -flags +global_header -c:a aac -b:a 192k -ac 2 C:\Users\cnsta\AppData\Local\Temp\clipcraft-frames-speaker-focus-timestamp-hook-rfpdG5\out.mp4
+[09:29:08]    ✓ Processed clip ready: 1080x1920 @ 25fps, 3.20s, audio=yes
+✔ speaker focus: a timestamp-length hook (1.2s) is not shortened to the old 1s value (11020.7018ms)
+✔ empty input still produces a complete, valid pipeline configuration (12.8847ms)
+✔ b-roll options are clamped, de-duplicated and provider-filtered (1.2055ms)
+✔ a pipeline document from before B-roll existed still gets valid b-roll defaults (0.6897ms)
+✔ garbage and out-of-range numbers are clamped, never trusted (1.1916ms)
+✔ a nested { options } body is unwrapped the way the dashboard sends it (0.4797ms)
+✔ clip edits are validated and the empty-hook convention is enforced (1.1903ms)
+✔ a non-empty hook text without an explicit duration re-enables the hook intro (0.4132ms)
+✔ hook timestamps are sanitized and applied to the existing AI analysis (0.8451ms)
+✔ hook timestamps must be a complete increasing pair, or both may be cleared (10.5579ms)
+✔ impossible clip windows are rejected with an actionable error (1.3759ms)
+✔ a fresh upload is queued for transcription, not "failed" and not "ready" (15.2603ms)
+✔ a finished transcript moves the chain into viral detection (1.849ms)
+✔ clips detected and renders running is the rendering stage (6.9342ms)
+✔ every clip finished is the ready stage at 100% (0.5552ms)
+✔ one failed clip among finished ones stays ready (the failure is per clip) (3.1095ms)
+✔ a failed detection run surfaces the job error on the analysis step (0.5862ms)
+✔ a failed transcription surfaces on the transcript step (1.3135ms)
+✔ autoRender off leaves detected clips awaiting a manual render (1.1066ms)
+✔ detection paused (autoDetect off) is awaiting-detection, never "ready" (1.7938ms)
+✔ the newest job of a type wins, so an old failure cannot shadow a newer run (9.8045ms)
+✔ media URLs encode output path segments containing URL delimiters (115.2759ms)
+✔ schema v2 keeps user presets and migrates duplicate legacy defaults to one recent default per category (371.9153ms)
+✔ caption, hook, and CTA defaults switch independently and saving edits never changes default status (132.8002ms)
+✔ new clips snapshot current defaults while existing and manually selected clip IDs remain stable (96.1539ms)
+✔ server-side deletion protection is transactional and allows deletion after switching defaults (74.9673ms)
+✔ database startup seeds each separate theme card into a pre-existing database (243.1709ms)
+✔ reset replaces all caption rows with shipped defaults and restores the shipped default (69.9927ms)
+✔ reset does not resurrect retired caption themes from an older database (122.7661ms)
+✔ reset promotes the shipped default only when nothing is marked default (76.0885ms)
+✔ reset re-syncs the built-in hook and CTA overlay styles too (64.5255ms)
+✔ parse FFprobe rational rates and classify CFR versus VFR with a rounding tolerance (3.0046ms)
+✔ structured FFprobe metadata retains per-stream starts/durations and bitrate (1.445ms)
+✔ VFR normalization emits an explicit fps filter and timestamp reset (12.6237ms)
+✔ accurate seek phase is calculated against the stream start time (0.6077ms)
+✔ audio timestamps retain the stream offset and reset each concat segment to zero (99.5609ms)
+✔ CAPTION_OFFSET_MS shifts caption words only, with positive = later and safe invalid fallbacks (0.7608ms)
+✔ the built-in caption catalogue only ships current theme presets (9.9227ms)
+✔ every font used by every preset line is a bundled font whose file exists in public/fonts (4.6987ms)
+✔ each theme preset uses the default three-word line capacity unless it has a specific override (3.5948ms)
+✔ deepgram probe authenticates with the documented key check, not a management call (38.8374ms)
+✔ deepgram probe reports a key that authenticates but cannot transcribe (23.4022ms)
+✔ a 401 from the key check is the only thing that calls a key rejected (2.2538ms)
+✔ a 404 from the key check falls back instead of blaming a valid key (2.3088ms)
+✔ when neither endpoint answers the probe says it cannot judge the key (0.7948ms)
+✔ a network failure stays a network failure (2.7633ms)
+✔ an unrecognised model id is a note, never a failure (1.4716ms)
+✔ pexels probe accepts a key and reports the remaining quota (9.7103ms)
+✔ pixabay probe reports its 400 "invalid key" answer as a rejected key (2.4375ms)
+✔ unsplash probe uses the Client-ID header and a per_page=1 request (1.2077ms)
+✔ a 5xx is never worded as a rejected key (1.7978ms)
+✔ a network failure is reported as unreachable, with the host (1.8228ms)
+✔ a rate-limited provider says "limited", not "broken" (1.5158ms)
+✔ single visible person is always the active speaker (20.5628ms)
+✔ audio-correlated face motion picks the talking speaker, then follows the change (15.7654ms)
+✔ covered mouths (no mouth cue, flat motion): size + continuity decide, no flip-flop (8.2354ms)
+✔ mouth-open cue drives the decision when it is available (second method) (7.0898ms)
+✔ reactive turn change: a new speaker takes the frame within ~1.5s of starting (10.2596ms)
+✔ hysteresis: a marginal challenger cannot flip the frame every window (3.0233ms)
+✔ no faces: the timeline is a single null segment (framing falls back) (0.5721ms)
+✔ SQLite schema is versioned, indexed, WAL-enabled, and has a five-second busy timeout (130.2726ms)
+✔ video and clip CRUD preserves public _id records and cascades clip deletion (78.4857ms)
+✔ large transcript and clip JSON values round-trip without truncation (204.249ms)
+✔ seeded caption/overlay presets and prompt templates plus text CRUD stay editable (100.0572ms)
+✔ the B-roll plan lives in its own column and survives unrelated clip updates (123.9485ms)
+✔ two SQLite connections atomically claim each queued job at most once (182.9925ms)
+✔ job progress, completion, retry count, and exponential backoff are persisted (362.1255ms)
+✔ large job payload JSON round-trips without truncation (171.3471ms)
+✔ startup recovery requeues running jobs for another worker claim (63.1657ms)
+✔ render queue uniqueness is per clip, and enqueue resets its visible clip state atomically (441.4094ms)
+✔ deleting a clip or video cleans up its queued jobs in SQLite (90.2141ms)
+✔ detectViralSegments reads { clips: [...] }: raw JSON is requested and the clips are kept exactly as sent (940.7026ms)
+✔ the output budget grows with the clip count and stays under the model limit (0.7343ms)
+✔ clips are ordered by the AI rank (not score) and ranks stay gap-free after an overlap is dropped (202.7301ms)
+✔ top-up clips are appended after the first pass, never replacing it (regression) (119.0346ms)
+✔ a top-up answer that is not valid is ignored with a warning; the first pass survives (68.5723ms)
+✔ responses that are not the new schema are rejected with a clear error - there is no fallback (107.6779ms)
+✔ one invalid clip rejects the run and the error names the clip and the field (113.0163ms)
+✔ the clip-length rules still apply (short extended, long trimmed) (62.9215ms)
+✔ detect-viral stores the AI clip unchanged on the record; hook text and CTA feed the existing editable fields (448.0934ms)
+✔ includeHookText / includeCta off: the clip renders without them but the AI suggestions stay in the analysis (112.5376ms)
+✔ hook and CTA fall back to the dedicated templates only for clips where the AI left them empty (232.8163ms)
+✔ on a fresh database the hook/CTA fallback still works, using the built-in prompts (325.9023ms)
+✔ if the fallback cannot produce text the run still completes: that overlay is left empty, nothing else is lost (335.6521ms)
+✔ a detected clip renders and deletes like any other: same job payload, analysis untouched (271.0698ms)
+✔ detect-viral answers 502 with the clear validation error and creates nothing when the response is invalid (104.6293ms)
+✔ hook moment picker selects a later timestamped moment and rejects the clip opening (95.1799ms)
+✔ a hook picker that returns the clip opening disables the hook intro instead of replaying the opening (129.6713ms)
+✔ parseTimestamp reads seconds (the transcript style) and clocks (4.3873ms)
+✔ parseTimestamp has no other formats: everything else is null (0.55ms)
+✔ a valid response gives numeric windows and the clips exactly as the AI sent them (3.8919ms)
+✔ an end a little past the video is clamped to it (0.5549ms)
+✔ anything but a JSON object with a clips array is rejected with a clear message (23.9458ms)
+✔ invalid fields are rejected by path, with the value that was received (7.6731ms)
+✔ enum fields accept only the project values, spelled exactly - placeholders and wrong case are errors (1.217ms)
+✔ one bad clip rejects the whole response and the message says which clip (0.7901ms)
+✔ the window must be readable, start before it ends and lie inside the video (13.8375ms)
+✔ the prompt schema, the ViralClip type (via the typed fixture) and the parser cover the same fields (14.1418ms)
+✔ a model that echoes the prompt schema verbatim is rejected, not turned into data (0.5446ms)
+✔ decodes YuNet v2 outputs into boxes and landmarks (stride-8 cell) (604.7589ms)
+✔ decoded boxes are rescaled from 640x640 model space to the frame space (95.6475ms)
+✔ pre-processing is NCHW RGB planes (swapRB), no normalization (91.7766ms)
+✔ confidence gate: score = sqrt(cls*obj) must reach 0.6 (273.253ms)
+✔ regression: hosts that are only ~34px wide in a 640px sample are KEPT (the old 40px filter deleted them) (91.3962ms)
+✔ specks narrower than ~1.4% of the frame width are dropped (relative to the frame, not a fixed pixel size) (212.2856ms)
+✔ frames are LETTERBOXED into the 640x640 input - never stretched (196.5194ms)
+✔ planDetectionRegions: square frames use one pass, wide frames add overlapping square tiles (5.0213ms)
+✔ a small face that ONLY a tile can see is found, at the right frame position (466.6309ms)
+✔ the same face seen by the full-frame pass AND a tile is reported once, with the best score (193.7978ms)
+✔ a face cut in half by an INNER tile seam is discarded; the neighbouring tile keeps it whole (336.5029ms)
+✔ a face touching the FRAME edge (not a seam) is never treated as cut (494.3101ms)
+[09:28:35]    ✓ YuNet face detection enabled (face_detection_yunet_2023mar.onnx + onnxruntime-node).
+✔ REAL YuNet model: every frame shape (16:9, ultra-wide, portrait, tiny) runs through the 640x640 contract (7125.3709ms)
+✔ greedy NMS keeps the stronger face of an overlapping pair (213.1689ms)
+✔ detections centred outside the frame are clipped away (104.8932ms)
+✔ multi-level detections are unioned and sorted by score (147.9245ms)
+ℹ tests 354
+ℹ suites 0
+ℹ pass 345
+ℹ fail 9
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 110433.6791
+
+✖ failing tests:
+
+test at tests\broll-animation.test.ts:38:1
+✖ a landscape card slides up into place and fades out at the end (50.4529ms)
+  AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:
+  
+    assert.ok(start.translateY > 20)
+  
+      at TestContext.<anonymous> (D:\Web Development\clipcraft-local\tests\broll-animation.test.ts:41:10)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }
+
+test at tests\broll-crop.test.ts:94:1
+✖ the card shrinks when the free space above the captions is small (36.5587ms)
+  AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:
+  
+    assert.ok(rect.height < CARD_HEIGHT)
+  
+      at TestContext.<anonymous> (D:\Web Development\clipcraft-local\tests\broll-crop.test.ts:96:10)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }
+
+test at tests\broll-crop.test.ts:118:1
+✖ a planned card is re-fitted when the caption preset moved after planning (1.1343ms)
+  AssertionError [ERR_ASSERTION]: card bottom 1100 vs top 900
+      at TestContext.<anonymous> (D:\Web Development\clipcraft-local\tests\broll-crop.test.ts:123:10)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }
+
+test at tests\broll-crop.test.ts:128:1
+✖ a card is shrunk at 16:9 when the new band leaves no room for it (2.3076ms)
+  AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:
+  
+    assert.ok(refitted.y + refitted.height <= 330)
+  
+      at TestContext.<anonymous> (D:\Web Development\clipcraft-local\tests\broll-crop.test.ts:131:10)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }
+
+test at tests\broll-scheduler.test.ts:165:1
+✖ the scheduler never places two items on the same second (7.3174ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  7 !== 4
+  
+      at TestContext.<anonymous> (D:\Web Development\clipcraft-local\tests\broll-scheduler.test.ts:190:10)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 7,
+    expected: 4,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at tests\broll-sfx.test.ts:20:1
+✖ one cue enters and one exits per item, and they are ordered by time (15.2115ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    [
+      [
+        4,
+        'in'
+      ],
+      [
+  -     6.88,
+  -     'out'
+  -   ],
+  -   [
+        20,
+        'in'
+      ],
+  -   [
+  -     22.88,
+  -     'out'
+  -   ]
+    ]
+  
+      at TestContext.<anonymous> (D:\Web Development\clipcraft-local\tests\broll-sfx.test.ts:28:10)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.start (node:internal/test_runner/test:1096:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:385:17) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ [ 4, 'in' ], [ 20, 'in' ] ],
+    expected: [ [ 4, 'in' ], [ 6.88, 'out' ], [ 20, 'in' ], [ 22.88, 'out' ] ],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at tests\broll-sfx.test.ts:40:1
+✖ cues too close together are dropped, so two images 3 s apart do not machine-gun (3.219ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  2 !== 1
+  
+      at TestContext.<anonymous> (D:\Web Development\clipcraft-local\tests\broll-sfx.test.ts:50:10)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 2,
+    expected: 1,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at tests\broll-sfx.test.ts:91:1
+✖ the bundled effect files exist and are real WAV files (6.0668ms)
+  AssertionError [ERR_ASSERTION]: the brief pins the effect gain to 0.2-0.35
+      at TestContext.<anonymous> (D:\Web Development\clipcraft-local\tests\broll-sfx.test.ts:99:10)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }
+
+test at tests\caption-layout.test.ts:35:1
+✖ legacy presets and empty rich styles resolve to the original four-word chunk and global style (16.6987ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  
+  + 33.599999999999994
+  - 48
+  
+      at TestContext.<anonymous> (D:\Web Development\clipcraft-local\tests\caption-layout.test.ts:40:10)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.start (node:internal/test_runner/test:1096:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:385:17) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 33.599999999999994,
+    expected: 48,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
