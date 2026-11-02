@@ -21,11 +21,8 @@ export type VerifyStatus =
 
 export type StockVerifyTarget = "pexels" | "pixabay" | "unsplash";
 
-/** Key-free sources for named entities: only the connection is tested. */
-export type EntityVerifyTarget = "wikimedia" | "openverse";
-
 export interface VerifyProbeResult {
-  target: "gemini" | "deepgram" | StockVerifyTarget | EntityVerifyTarget;
+  target: "gemini" | "deepgram" | StockVerifyTarget;
   status: VerifyStatus;
   label: string;
   message: string;
@@ -86,7 +83,6 @@ export async function verifyGeminiKey(
   options: {
     model?: string;
     withGeneration?: boolean;
-    withVision?: boolean;
   } = {},
 ): Promise<VerifyProbeResult> {
   const model =
@@ -150,27 +146,14 @@ export async function verifyGeminiKey(
       generationMessage = "a 1-word completion came back";
     }
 
-    // Vision is what B-roll verification needs; a key can answer text prompts and
-    // still be refused for image input, so the two are probed separately.
-    let visionMessage = "";
-    if (options.withVision) {
-      const vision = await pingGeminiVision(apiKey, model);
-      if (vision.status !== "ok")
-        return { ...vision, latencyMs: Date.now() - startedAt };
-      visionMessage = "image input works";
-    }
-
     return {
       target: "gemini",
       status: "ok",
       label: `Google AI Studio · ${model}`,
       latencyMs,
       httpStatus: response.status,
-      message: [generationMessage, visionMessage].filter(Boolean).length
-        ? `Key accepted; ${[generationMessage, visionMessage].filter(Boolean).join(", and ")}. ` +
-          (visionMessage
-            ? "B-roll can verify images with this key."
-            : "Viral detection can use this key.")
+      message: generationMessage
+        ? `Key accepted; ${generationMessage}. Viral detection can use this key.`
         : models.includes(model)
           ? `Key accepted and ${model} is available. Viral detection can use this key.`
           : "Key accepted. The model list could not be read, so availability is unconfirmed.",
@@ -436,7 +419,7 @@ function networkDetail(error: unknown): string {
 }
 
 function unreachable(
-  target: "gemini" | "deepgram" | StockVerifyTarget | EntityVerifyTarget,
+  target: "gemini" | "deepgram" | StockVerifyTarget,
   label: string,
   error: unknown,
   host: string,
@@ -451,80 +434,6 @@ function unreachable(
       ? `The request to ${host} timed out after ${Math.round(VERIFY_TIMEOUT_MS / 1000)}s.`
       : `Could not reach ${host}: ${message}`,
   };
-}
-
-/**
- * A real image is sent, because Gemini models are not all multimodal: the text
- * completion can pass while `inline_data` is refused. A 1x1 white PNG is enough
- * to prove the path works and costs a handful of tokens.
- */
-const TINY_PNG_BASE64 =
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
-
-async function pingGeminiVision(
-  apiKey: string,
-  model: string,
-): Promise<VerifyProbeResult> {
-  const startedAt = Date.now();
-  const label = `Google AI Studio · ${model} (vision)`;
-  try {
-    const response = await fetchWithTimeout(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-goog-api-key": apiKey,
-        },
-        body: JSON.stringify({
-          contents: [
-            {
-              role: "user",
-              parts: [
-                { text: "Reply with exactly: OK" },
-                {
-                  inline_data: {
-                    mime_type: "image/png",
-                    data: TINY_PNG_BASE64,
-                  },
-                },
-              ],
-            },
-          ],
-          generationConfig: { temperature: 0, maxOutputTokens: 8 },
-        }),
-      },
-    );
-    const latencyMs = Date.now() - startedAt;
-    if (!response.ok) {
-      const detail = await readErrorDetail(response);
-      return {
-        target: "gemini",
-        status: classifyStatus(response.status),
-        label,
-        latencyMs,
-        httpStatus: response.status,
-        message:
-          response.status === 404
-            ? `This model does not accept images (${model}). B-roll verification needs a vision model.`
-            : detail || `The vision test failed with HTTP ${response.status}.`,
-      };
-    }
-    return {
-      target: "gemini",
-      status: "ok",
-      label,
-      latencyMs,
-      message: "vision ok",
-    };
-  } catch (error) {
-    return unreachable(
-      "gemini",
-      label,
-      error,
-      "https://generativelanguage.googleapis.com",
-    );
-  }
 }
 
 /**
@@ -655,133 +564,4 @@ export function verifyTarget(
   key: string,
 ): Promise<VerifyProbeResult> {
   return verifyStockProvider(target, key);
-}
-
-const ENTITY_PROBE_HEADERS = {
-  "user-agent": "clipcraft-local/0.1 (local video editor; connection check)",
-  accept: "application/json",
-};
-
-/**
- * Wikimedia Commons: no key, so this proves the connection. The search API and the
- * image host are different hostnames and a network can block one of them, so both
- * are asked - downloads need the image host.
- */
-export async function verifyWikimedia(): Promise<VerifyProbeResult> {
-  const label = "Wikimedia Commons";
-  const startedAt = Date.now();
-
-  try {
-    const api = await fetchWithTimeout(
-      "https://commons.wikimedia.org/w/api.php?action=query&format=json&meta=siteinfo",
-      { method: "GET", headers: ENTITY_PROBE_HEADERS },
-    );
-    if (!api.ok) {
-      return {
-        target: "wikimedia",
-        status: api.status === 429 ? "limited" : "error",
-        label,
-        latencyMs: Date.now() - startedAt,
-        httpStatus: api.status,
-        message: `Commons answered HTTP ${api.status}.`,
-      };
-    }
-  } catch (error) {
-    return {
-      ...unreachable(
-        "wikimedia",
-        label,
-        error,
-        "https://commons.wikimedia.org",
-      ),
-      notes: [
-        "If this network blocks Wikimedia, Openverse is used as the fallback for entity images.",
-      ],
-    };
-  }
-
-  try {
-    const image = await fetchWithTimeout(
-      "https://upload.wikimedia.org/wikipedia/commons/a/a9/Example.jpg",
-      {
-        method: "HEAD",
-        headers: ENTITY_PROBE_HEADERS,
-      },
-    );
-    const latencyMs = Date.now() - startedAt;
-    if (!image.ok) {
-      return {
-        target: "wikimedia",
-        status: "error",
-        label,
-        latencyMs,
-        httpStatus: image.status,
-        message: `The search works, but the image host (upload.wikimedia.org) answered HTTP ${image.status}.`,
-      };
-    }
-    return {
-      target: "wikimedia",
-      status: "ok",
-      label,
-      latencyMs,
-      httpStatus: image.status,
-      message:
-        "Commons search and the image host (upload.wikimedia.org) both answer.",
-    };
-  } catch (error) {
-    return {
-      ...unreachable("wikimedia", label, error, "https://upload.wikimedia.org"),
-      message:
-        "The Commons search works, but the image host is unreachable, so image downloads would fail.",
-    };
-  }
-}
-
-/** Openverse: one anonymous search. It counts against the small anonymous quota. */
-export async function verifyOpenverse(): Promise<VerifyProbeResult> {
-  const label = "Openverse";
-  const startedAt = Date.now();
-  try {
-    const response = await fetchWithTimeout(
-      "https://api.openverse.org/v1/images/?q=city&page_size=1",
-      {
-        method: "GET",
-        headers: ENTITY_PROBE_HEADERS,
-      },
-    );
-    const latencyMs = Date.now() - startedAt;
-    if (!response.ok) {
-      const limited = response.status === 429;
-      return {
-        target: "openverse",
-        status: limited ? "limited" : "error",
-        label,
-        latencyMs,
-        httpStatus: response.status,
-        message: limited
-          ? "Openverse is reachable, but the anonymous quota is used up right now (429). Try again later."
-          : `Openverse answered HTTP ${response.status}.`,
-      };
-    }
-    const payload = (await response.json().catch(() => null)) as {
-      results?: unknown[];
-    } | null;
-    const count = Array.isArray(payload?.results) ? payload.results.length : 0;
-    return {
-      target: "openverse",
-      status: "ok",
-      label,
-      latencyMs,
-      httpStatus: response.status,
-      message:
-        count > 0
-          ? "Openverse answers and the test search returned an image."
-          : "Openverse answers, but the test search found nothing.",
-      notes: [
-        "Anonymous access has a small quota; this test used one request.",
-      ],
-    };
-  } catch (error) {
-    return unreachable("openverse", label, error, "https://api.openverse.org");
-  }
 }

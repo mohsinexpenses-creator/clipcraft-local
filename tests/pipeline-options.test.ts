@@ -35,8 +35,8 @@ test('b-roll options are clamped, de-duplicated and provider-filtered', () => {
     minImages: 40,
     maxImages: 2,
     sfx: 'nope',
-    // Wikimedia is entity-only; duplicates and unknown ids are dropped.
-    providerOrder: ['unsplash', 'wikimedia', 'unsplash', 'bogus'],
+    // Entity providers and legacy IDs are filtered; duplicates are dropped.
+    providerOrder: ['unsplash', 'wikipedia', 'wikimedia', 'openverse', 'unsplash', 'bogus'],
   });
 
   assert.equal(resolved.autoBroll, false);
@@ -46,6 +46,11 @@ test('b-roll options are clamped, de-duplicated and provider-filtered', () => {
   assert.equal(resolved.maxImages, 30, 'max is never below min');
   assert.equal(resolved.sfx, true, 'unparsable flag keeps the default');
   assert.deepEqual(resolved.providerOrder, ['unsplash']);
+  assert.deepEqual(
+    resolveBrollOptions({ providerOrder: ['wikimedia', 'openverse'] }).providerOrder,
+    ['pexels', 'pixabay', 'unsplash'],
+    'legacy entity source IDs are filtered and default stock order is restored',
+  );
 
   assert.deepEqual(resolveBrollOptions({ providerOrder: [] }).providerOrder, [
     'pexels',

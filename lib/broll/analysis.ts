@@ -4,7 +4,7 @@
  * The prompt asks for one JSON document:
  *
  *   { "entities": [ { "type": "person|place|event", "name": "...",
- *                     "searchQuery": "...", "start": 12.4, "end": 15.2 } ],
+ *                     "wikipediaTitle": "...", "start": 12.4, "end": 15.2 } ],
  *     "broll":    [ { "visualKeywords": ["rocket launch", ...],
  *                     "start": 18.0, "end": 22.5 } ] }
  *
@@ -31,6 +31,7 @@ const MAX_KEYWORD_LENGTH = 48;
 export interface BrollEntity {
   type: BrollEntityType;
   name: string;
+  wikipediaTitle?: string;
   searchQuery: string;
   /** Name + what the speaker is talking about, e.g. "Elon Musk Tesla factory". */
   contextQuery?: string;
@@ -254,6 +255,10 @@ export function parseBrollAnalysis(
       );
     }
     const name = entry.name.trim().slice(0, MAX_NAME_LENGTH);
+    const wikipediaTitle =
+      typeof entry.wikipediaTitle === "string" && entry.wikipediaTitle.trim()
+        ? entry.wikipediaTitle.trim().slice(0, MAX_NAME_LENGTH)
+        : name;
     const query =
       typeof entry.searchQuery === "string" && entry.searchQuery.trim()
         ? entry.searchQuery.trim().slice(0, MAX_QUERY_LENGTH)
@@ -273,6 +278,7 @@ export function parseBrollAnalysis(
     entities.push({
       type: type as BrollEntityType,
       name,
+      wikipediaTitle,
       searchQuery: query,
       ...(contextQuery ? { contextQuery } : {}),
       ...(descriptor ? { descriptor } : {}),
@@ -316,8 +322,7 @@ export function parseBrollAnalysis(
 }
 
 /**
- * The words of the sentence around one moment, for the Gemini prompt ("does this
- * image fit what the speaker is saying"). Pure, and tolerant of messy timing.
+ * The words of the sentence around one moment. Pure, and tolerant of messy timing.
  */
 export function transcriptSentenceAt(
   words: readonly WordTimestamp[],
@@ -406,15 +411,16 @@ export function buildBrollPrompt(input: {
     `The clip is ${input.clipDuration.toFixed(1)} seconds long. The transcript lines look like "#index start-end word".`,
     "",
     "Return ONE JSON object, no markdown, no commentary:",
-    '{ "entities": [ { "type": "person" | "place" | "event", "name": "…", "searchQuery": "…", "contextQuery": "…", "wordIndex": 0 } ],',
+    '{ "entities": [ { "type": "person" | "place" | "event", "name": "…", "wikipediaTitle": "…", "searchQuery": "…", "contextQuery": "…", "wordIndex": 0 } ],',
     '  "broll": [ { "visualKeywords": ["…"], "wordIndex": 0 } ] }',
     "",
     "wordIndex is the #index of the exact transcript word where the thing is spoken. NEVER invent timestamps.",
     "",
     "entities:",
-    "- ONLY real, specific, named things a stock/Wikimedia photo could show: a public figure, a brand, a landmark, a city, a stadium, a named event.",
+    "- ONLY real, specific, named things a Wikipedia article image could show: a public figure, a brand, a landmark, a city, a stadium, a named event.",
     `- At most ${input.entityBudget}. Leave the array empty when nothing is named.`,
     '- searchQuery is the full name ONLY, e.g. "Elon Musk", "Eiffel Tower", "2024 Summer Olympics".',
+    '- wikipediaTitle is the exact English Wikipedia article title for the named thing, e.g. "Cristiano Ronaldo", "Eiffel Tower". If uncertain, use the full name.',
     '- contextQuery is the full name PLUS what is being said about it, 2-4 extra words, e.g. "Elon Musk Tesla factory", "Eiffel Tower at night", "Messi World Cup trophy". It must start with the full name.',
     '- descriptor is 3-8 words saying WHO or WHAT it is, so people with the same name are not confused, e.g. "American podcaster, host of Call Her Daddy", "landmark tower in Paris", "annual football tournament".',
     '- name and searchQuery MUST be the full, unambiguous name: "Alex Cooper", never just "Alex". If the speaker only says a first name, complete it from the rest of the transcript; if you cannot, leave that entity out.',

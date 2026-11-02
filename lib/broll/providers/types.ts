@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { BrollAttribution, BrollProviderId } from "../../types";
 
 /**
- * One image as a provider returned it - before any download, crop or verdict.
+ * One image as a provider returned it - before any download or crop.
  * The plan stores only what survives all three, plus this metadata.
  */
 export interface BrollCandidate {
@@ -11,7 +11,7 @@ export interface BrollCandidate {
   pageUrl: string;
   /** Direct image URL that is downloaded and cached. */
   imageUrl: string;
-  /** Smaller version (~512 px) used for the Gemini Vision check. */
+  /** Smaller version used when a provider exposes one. */
   thumbUrl: string;
   width: number;
   height: number;
@@ -58,7 +58,7 @@ export function attributionFor(candidate: BrollCandidate): BrollAttribution {
   };
 }
 
-/** Commons metadata is HTML ("<a href=...>Jane Doe</a>", "<i>CC BY-SA 4.0</i>"). */
+/** MediaWiki file metadata can contain HTML links and formatting. */
 export function stripHtml(value: string | undefined): string | undefined {
   if (!value) return undefined;
   const text = value
@@ -72,7 +72,7 @@ export function stripHtml(value: string | undefined): string | undefined {
   return text || undefined;
 }
 
-/** Commons `extmetadata` wraps every value in `{ value, source }`. */
+/** MediaWiki `extmetadata` wraps every value in `{ value, source }`. */
 export function extMetadataValue(
   metadata: Record<string, unknown> | undefined,
   key: string

@@ -15,8 +15,9 @@ import { Button } from "@/components/ui/button"
  */
 
 const PROVIDER_LABEL: Record<BrollItem["attribution"]["provider"], string> = {
-  wikimedia: "Wikimedia Commons",
-  openverse: "Openverse",
+  wikipedia: "Wikipedia",
+  wikimedia: "Wikipedia (legacy plan)",
+  openverse: "Legacy image source",
   pexels: "Pexels",
   pixabay: "Pixabay",
   unsplash: "Unsplash",

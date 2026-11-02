@@ -1,12 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  buildCommonsSearchUrl,
-  parseCommonsResponse,
-  rankCommonsCandidates,
-  searchCommons,
-} from '../lib/broll/providers/commons';
-import {
   buildPexelsUrl,
   buildPixabayUrl,
   buildUnsplashUrl,
@@ -15,9 +9,7 @@ import {
   parseUnsplashResponse,
   searchStockAcrossProviders,
 } from '../lib/broll/providers/stock';
-import { parseOpenverseResponse } from '../lib/broll/providers/openverse';
-import { attributionFor, cacheKeyFor, isUsableImage, stripHtml } from '../lib/broll/providers/types';
-import { ProviderQuotaError } from '../lib/broll/http';
+import { cacheKeyFor, isUsableImage, stripHtml } from '../lib/broll/providers/types';
 import type { BrollHttpResponse, BrollFetch } from '../lib/broll/http';
 
 /**
@@ -39,131 +31,6 @@ function jsonResponse(body: unknown, status = 200): BrollHttpResponse {
 function fakeFetch(handler: (url: string) => BrollHttpResponse | Promise<BrollHttpResponse>): BrollFetch {
   return (url) => Promise.resolve(handler(url));
 }
-
-test('Openverse candidates keep the original image separate from its thumbnail', () => {
-  const [candidate] = parseOpenverseResponse({
-    results: [
-      {
-        id: 'openverse-1',
-        url: 'https://upload.wikimedia.org/wikipedia/commons/full.jpg',
-        thumbnail: 'https://api.openverse.org/v1/images/openverse-1/thumb/',
-        width: 2400,
-        height: 1600,
-        filetype: 'jpg',
-      },
-    ],
-  });
-
-  assert.equal(candidate.imageUrl, 'https://upload.wikimedia.org/wikipedia/commons/full.jpg');
-  assert.equal(candidate.thumbUrl, 'https://api.openverse.org/v1/images/openverse-1/thumb/');
-});
-
-const COMMONS_SAMPLE = {
-  query: {
-    pages: [
-      {
-        pageid: 123,
-        title: 'File:Elon Musk Royal Society (crop2).jpg',
-        imageinfo: [
-          {
-            url: 'https://upload.wikimedia.org/wikipedia/commons/5/5e/Elon_Musk.jpg',
-            descriptionurl: 'https://commons.wikimedia.org/wiki/File:Elon_Musk.jpg',
-            thumburl: 'https://upload.wikimedia.org/thumb/1080px-Elon_Musk.jpg',
-            thumbwidth: 1080,
-            thumbheight: 1350,
-            width: 3000,
-            height: 3750,
-            mime: 'image/jpeg',
-            extmetadata: {
-              Artist: { value: '<a href="https://example.org">Royal Society</a>' },
-              LicenseShortName: { value: 'CC BY-SA 4.0' },
-              LicenseUrl: { value: 'https://creativecommons.org/licenses/by-sa/4.0/' },
-              ImageDescription: { value: 'Elon Musk in 2018' },
-              Categories: { value: 'Elon Musk|Portrait photographs' },
-            },
-          },
-        ],
-      },
-      {
-        pageid: 124,
-        title: 'File:Diagram of a rocket.svg',
-        imageinfo: [
-          {
-            url: 'https://upload.wikimedia.org/wikipedia/commons/x.svg',
-            width: 2000,
-            height: 2000,
-            mime: 'image/svg+xml',
-          },
-        ],
-      },
-      {
-        pageid: 125,
-        title: 'File:Tiny.jpg',
-        imageinfo: [
-          { url: 'https://upload.wikimedia.org/tiny.jpg', width: 320, height: 240, mime: 'image/jpeg' },
-        ],
-      },
-    ],
-  },
-};
-
-test('the Commons URL asks for File-namespace search with a 1080px thumb and metadata', () => {
-  const url = new URL(buildCommonsSearchUrl('Elon Musk', 10));
-  assert.equal(url.hostname, 'commons.wikimedia.org');
-  assert.equal(url.searchParams.get('generator'), 'search');
-  assert.equal(url.searchParams.get('gsrnamespace'), '6');
-  assert.equal(url.searchParams.get('gsrsearch'), 'Elon Musk');
-  assert.equal(url.searchParams.get('iiurlwidth'), '1080');
-  assert.match(url.searchParams.get('iiprop') ?? '', /extmetadata/);
-});
-
-test('Commons parsing keeps usable photos with full attribution and drops SVG/small files', () => {
-  const candidates = parseCommonsResponse(COMMONS_SAMPLE);
-  assert.equal(candidates.length, 1);
-  const [candidate] = candidates;
-  assert.equal(candidate.provider, 'wikimedia');
-  assert.equal(candidate.author, 'Royal Society', 'HTML is stripped from Artist');
-  assert.equal(candidate.license, 'CC BY-SA 4.0');
-  assert.equal(candidate.licenseUrl, 'https://creativecommons.org/licenses/by-sa/4.0/');
-  assert.equal(candidate.description, 'Elon Musk in 2018');
-  assert.deepEqual(candidate.categories, ['Elon Musk', 'Portrait photographs']);
-  assert.equal(candidate.title, 'Elon Musk Royal Society (crop2).jpg');
-  assert.equal(candidate.pageUrl, 'https://commons.wikimedia.org/wiki/File:Elon_Musk.jpg');
-
-  const attribution = attributionFor(candidate);
-  assert.equal(attribution.sourceUrl, candidate.pageUrl);
-  assert.equal(attribution.imageUrl, candidate.imageUrl);
-  assert.equal(attribution.license, 'CC BY-SA 4.0');
-});
-
-test('Commons accepts both the v2 array and the legacy object page shape', () => {
-  const legacy = {
-    query: {
-      pages: {
-        '42': COMMONS_SAMPLE.query.pages[0],
-      },
-    },
-  };
-  assert.equal(parseCommonsResponse(legacy).length, 1);
-});
-
-test('Commons results are ranked with portrait images first', () => {
-  const wide = { provider: 'wikimedia' as const, providerId: 'w', pageUrl: '', imageUrl: '', thumbUrl: '', width: 4000, height: 2000, mime: 'image/jpeg' };
-  const tall = { ...wide, providerId: 't', width: 2000, height: 3000 };
-  assert.deepEqual(rankCommonsCandidates([wide, tall]).map((item) => item.providerId), ['t', 'w']);
-});
-
-test('searchCommons goes through the injected fetcher', async () => {
-  let calledUrl = '';
-  const candidates = await searchCommons('Eiffel Tower', {
-    fetcher: fakeFetch((url) => {
-      calledUrl = url;
-      return jsonResponse(COMMONS_SAMPLE);
-    }),
-  });
-  assert.match(calledUrl, /Eiffel\+Tower/);
-  assert.equal(candidates.length, 1);
-});
 
 test('Pexels results are parsed into landscape candidates with a license', () => {
   const parsed = parsePexelsResponse({
@@ -307,16 +174,6 @@ test('a provider without a key is skipped without a request', async () => {
   assert.match(result.notes.join(' '), /no API key/);
 });
 
-test('429 from fetchJson becomes a ProviderQuotaError', async () => {
-  await assert.rejects(
-    () =>
-      searchCommons('anything', {
-        fetcher: fakeFetch(() => jsonResponse({ error: 'slow down' }, 429)),
-      }),
-    (error: unknown) => error instanceof ProviderQuotaError
-  );
-});
-
 test('image usability rejects SVG/TIFF and small files', () => {
   assert.equal(isUsableImage({ width: 1920, height: 1080, mime: 'image/jpeg' }), true);
   assert.equal(isUsableImage({ width: 1080, height: 1920, mime: 'image/png' }), true);
@@ -334,7 +191,7 @@ test('a provider URL never leaks its key into an error or a plan note', async ()
   const redacted = redactUrl(pixabayUrl);
   assert.equal(redacted.includes('SECRET123'), false);
   assert.match(redacted, /q=city/);
-  assert.equal(redactUrl('https://commons.wikimedia.org/w/api.php?action=query').includes('action=query'), true);
+  assert.equal(redactUrl('https://upload.wikimedia.org/image.jpg').includes('image.jpg'), true);
 
   // A 5xx detail carries the redacted URL, not the raw one.
   const result = await searchStockAcrossProviders('city', {

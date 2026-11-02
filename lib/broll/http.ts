@@ -30,7 +30,7 @@ export type BrollFetch = (
 ) => Promise<BrollHttpResponse>;
 
 /**
- * Wikimedia asks for a descriptive User-Agent that includes a way to contact the
+ * Wikipedia asks for a descriptive User-Agent that includes a way to contact the
  * operator (a URL or an e-mail) and throttles generic ones hard; the stock APIs do
  * not care but sending it everywhere is harmless.
  */
@@ -291,7 +291,7 @@ export async function withRetries<T>(
 }
 
 /**
- * Serialises provider calls with a minimum spacing. Wikimedia explicitly asks
+ * Serialises provider calls with a minimum spacing. Wikipedia explicitly asks
  * clients not to hammer the API, and the free stock tiers are rate-limited too.
  */
 export function createRateLimiter(options: {

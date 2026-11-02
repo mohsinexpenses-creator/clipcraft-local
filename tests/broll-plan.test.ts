@@ -7,8 +7,7 @@ import { DEFAULT_BROLL_OPTIONS, type WordTimestamp } from '../lib/types';
 /**
  * The orchestration, with every side effect faked. These are the rules that make
  * the feature trustworthy:
- *  - a full-screen image is ONLY used when Gemini picked it with enough confidence;
- *  - a rejected entity is skipped, never replaced by a stock lookalike;
+ *  - a named entity uses its Wikipedia image, never a stock lookalike;
  *  - nothing lands inside the hook replay window;
  *  - a full-screen image and a landscape card never overlap;
  *  - a provider outage degrades to fewer images, never to a failed clip.
@@ -38,21 +37,20 @@ function candidate(provider: BrollCandidate['provider'], id: string): BrollCandi
 }
 
 interface Options {
-  entities?: Array<{ type: 'person' | 'place' | 'event'; name: string; searchQuery: string; start: number; end: number }>;
+  entities?: Array<{ type: 'person' | 'place' | 'event'; name: string; wikipediaTitle?: string; searchQuery: string; start: number; end: number }>;
   keywords?: Array<{ visualKeywords: string[]; start: number; end: number }>;
   entityResults?: BrollCandidate[];
   stockResults?: Array<BrollCandidate[]>;
-  verdicts?: Array<{ pickIndex: number | null; confidence: number; reason: string; hasTextOrWatermark: boolean; isSafe: boolean }>;
   analyzeThrows?: boolean;
-  visionAvailable?: boolean;
+  entityMissing?: boolean;
+  entityThrows?: boolean;
   stockThrows?: boolean;
 }
 
 function makeDeps(options: Options = {}) {
-  const calls = { entity: 0, stock: 0, verify: 0, prepare: 0 };
+  const calls = { entity: 0, stock: 0, prepare: 0 };
   const deps: BrollPlanDeps & { calls: typeof calls } = {
     calls,
-    visionAvailable: options.visionAvailable ?? true,
     async analyze() {
       if (options.analyzeThrows) throw new Error('LLM exploded');
       return {
@@ -60,9 +58,11 @@ function makeDeps(options: Options = {}) {
         broll: options.keywords ?? [],
       };
     },
-    async searchEntity() {
+    async findEntityImage() {
       calls.entity += 1;
-      return options.entityResults ?? [candidate('wikimedia', 'file-1')];
+      if (options.entityThrows) throw new Error('Wikipedia unavailable');
+      if (options.entityMissing) return null;
+      return options.entityResults?.[0] ?? candidate('wikipedia', 'file-1');
     },
     async searchStock() {
       calls.stock += 1;
@@ -97,22 +97,6 @@ function makeDeps(options: Options = {}) {
       calls.prepare += 1;
       return { cacheKey, sourceFile: `${cacheKey}.jpg`, renderFile: `card-${cacheKey}.jpg` };
     },
-    async thumbnail() {
-      return { data: 'ZmFrZQ==', mime: 'image/jpeg' };
-    },
-    async verify() {
-      calls.verify += 1;
-      const verdict = options.verdicts?.[calls.verify - 1];
-      return (
-        verdict ?? {
-          pickIndex: 0,
-          confidence: 0.92,
-          reason: 'It is the named person.',
-          hasTextOrWatermark: false,
-          isSafe: true,
-        }
-      );
-    },
     now: () => new Date('2026-10-22T00:00:00.000Z'),
   };
   return deps;
@@ -127,7 +111,7 @@ const baseInput = {
   captionBand: { top: 1300, bottom: 1500 },
 };
 
-test('an accepted entity becomes one full-screen item, after the hook window', async () => {
+test('an entity becomes one full-screen Wikipedia item without verification', async () => {
   const deps = makeDeps({
     entities: [{ type: 'person', name: 'Elon Musk', searchQuery: 'Elon Musk', start: 10, end: 14 }],
   });
@@ -137,20 +121,17 @@ test('an accepted entity becomes one full-screen item, after the hook window', a
   assert.equal(fullscreen.length, 1);
   assert.ok(fullscreen[0].start >= 3, 'never inside the hook replay');
   assert.equal(fullscreen[0].entityName, 'Elon Musk');
-  assert.equal(fullscreen[0].attribution.provider, 'wikimedia');
+  assert.equal(fullscreen[0].attribution.provider, 'wikipedia');
   assert.equal(fullscreen[0].attribution.author, 'A Photographer');
   assert.equal(fullscreen[0].attribution.license, 'CC BY-SA 4.0');
-  assert.ok(fullscreen[0].verification && fullscreen[0].verification.confidence >= 0.9);
   assert.ok(fullscreen[0].renderFile.endsWith('.jpg'));
   assert.ok(fullscreen[0].crop);
 });
 
-test('a low-confidence verdict skips the mention and never falls back to stock', async () => {
+test('a missing Wikipedia image skips the entity and never falls back to stock', async () => {
   const deps = makeDeps({
     entities: [{ type: 'person', name: 'Some Person', searchQuery: 'Some Person', start: 10, end: 14 }],
-    verdicts: [
-      { pickIndex: 0, confidence: 0.3, reason: 'Possibly not the same person.', hasTextOrWatermark: false, isSafe: true },
-    ],
+    entityMissing: true,
   });
   const plan = await buildBrollPlan(
     { ...baseInput, options: { ...baseInput.options, enableLandscape: false } },
@@ -160,27 +141,11 @@ test('a low-confidence verdict skips the mention and never falls back to stock',
   assert.equal(plan.items.filter((item) => item.kind === 'fullscreen').length, 0);
   const skip = plan.skipped.find((entry) => entry.entity === 'Some Person');
   assert.ok(skip, 'the skip is recorded');
-  assert.equal(skip!.stage, 'verify');
-  assert.match(skip!.reason, /Not confident enough/);
+  assert.equal(skip!.stage, 'search');
+  assert.match(skip!.reason, /No usable Wikipedia image/);
   // No stock image was fetched to replace the entity.
   assert.equal(deps.calls.stock, 0);
-  assert.equal(deps.calls.prepare, 0, 'the rejected image was never prepared');
-});
-
-test('an unsafe or watermarked pick is rejected', async () => {
-  for (const bad of [
-    { pickIndex: 0, confidence: 0.95, reason: 'Watermark across the face.', hasTextOrWatermark: true, isSafe: true },
-    { pickIndex: 0, confidence: 0.95, reason: 'A collage.', hasTextOrWatermark: false, isSafe: false },
-    { pickIndex: null, confidence: 0, reason: 'Different person.', hasTextOrWatermark: false, isSafe: true },
-  ]) {
-    const deps = makeDeps({
-      entities: [{ type: 'person', name: 'Named Person', searchQuery: 'Named Person', start: 5, end: 9 }],
-      verdicts: [bad],
-    });
-    const plan = await buildBrollPlan(baseInput, deps);
-    assert.equal(plan.items.filter((item) => item.kind === 'fullscreen').length, 0, JSON.stringify(bad));
-    assert.ok(plan.skipped.some((entry) => entry.stage === 'verify'));
-  }
+  assert.equal(deps.calls.prepare, 0, 'a missing image is never prepared');
 });
 
 test('words become landscape cards with a card rect clear of the captions', async () => {
@@ -239,18 +204,15 @@ test('when the LLM fails, keyword moments are derived from the transcript', asyn
   assert.ok((plan.notes ?? []).some((note) => /fell back to keywords/i.test(note)));
 });
 
-test('with no Gemini key, entities are skipped with a reason and cards still work', async () => {
+test('entities work without a Gemini key and cards still work', async () => {
   const deps = makeDeps({
-    visionAvailable: false,
     entities: [{ type: 'person', name: 'Elon Musk', searchQuery: 'Elon Musk', start: 10, end: 14 }],
     keywords: [{ visualKeywords: ['city skyline'], start: 20, end: 24 }],
   });
   const plan = await buildBrollPlan(baseInput, deps);
 
-  assert.equal(deps.calls.entity, 0, 'no point searching an entity that cannot be verified');
-  assert.equal(deps.calls.verify, 0);
-  assert.equal(plan.items.filter((item) => item.kind === 'fullscreen').length, 0);
-  assert.ok(plan.skipped.some((entry) => /Gemini/.test(entry.reason)));
+  assert.equal(deps.calls.entity, 1);
+  assert.equal(plan.items.filter((item) => item.kind === 'fullscreen').length, 1);
   assert.ok(plan.items.some((item) => item.kind === 'landscape'));
 });
 
@@ -261,6 +223,13 @@ test('a provider outage produces a plan with fewer items, not an error', async (
   assert.ok(plan.skipped.length > 0);
   assert.ok((plan.notes ?? []).length > 0);
   assert.equal(plan.trigger, 'auto');
+});
+
+test('legacy provider IDs remain readable in stored plan-shaped data', () => {
+  const legacyPlan = JSON.parse('{"attribution":{"provider":"wikimedia"}}') as {
+    attribution: { provider: import('../lib/types').BrollAttribution['provider'] };
+  };
+  assert.equal(legacyPlan.attribution.provider, 'wikimedia');
 });
 
 test('the 60 s target budget is carried into the plan', async () => {

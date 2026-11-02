@@ -270,7 +270,7 @@ async function startWorker(): Promise<void> {
   const clipConcurrency = workerSettings.clipConcurrency;
   const transcriptionConcurrency = 1;
   const detectionConcurrency = workerSettings.viralConcurrency;
-  // One B-roll pass at a time: each one calls the LLM, Commons and Gemini, and the
+  // One B-roll pass at a time: each one calls the LLM, Wikipedia and stock providers, and the
   // free tiers are per-account, so parallel passes only compete with themselves.
   const brollConcurrency = 1;
 

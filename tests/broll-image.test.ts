@@ -5,7 +5,6 @@ import path from 'node:path';
 import test from 'node:test';
 import { Jimp } from 'jimp';
 import {
-  makeVisionThumbnail,
   prepareCard,
   prepareCardFile,
   prepareFullscreen,
@@ -68,16 +67,6 @@ test('the card image is exactly 960x540', async () => {
   const image = await readImage(card);
   assert.equal(image.bitmap.width, 960);
   assert.equal(image.bitmap.height, 540);
-});
-
-test('the vision thumbnail is ~512 px on its long edge', async () => {
-  const source = await jpegBytes(2000, 1500);
-  const thumb = await makeVisionThumbnail(source);
-  assert.equal(thumb.mime, 'image/jpeg');
-  const decoded = Buffer.from(thumb.data, 'base64');
-  const image = await readImage(decoded);
-  assert.equal(Math.max(image.bitmap.width, image.bitmap.height), 512);
-  assert.ok(decoded.length < source.length, 'the thumbnail is smaller than the original');
 });
 
 test('prepared files land in the cache directory under their hash name', async (t) => {

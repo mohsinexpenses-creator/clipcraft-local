@@ -125,7 +125,7 @@ export function sanitizeViralOptions(input: unknown): Required<ViralDetectionOpt
  */
 /**
  * B-roll automation for one video. The provider order is filtered to the stock
- * providers (Wikimedia is entity-only and needs no key), then de-duplicated; an
+ * providers (Wikipedia is entity-only and needs no key), then de-duplicated; an
  * empty result falls back to the shipped order so a landscape card can still be
  * fetched when someone saves `[]`.
  */

@@ -33,7 +33,7 @@ export interface PipelineOptions {
   /** Options for the detection run (clip count, clip length, hook/CTA text). */
   viral: Required<ViralDetectionOptions>;
   /**
-   * Automatic B-roll (images pulled from Wikimedia Commons / stock providers and
+  * Automatic B-roll (images pulled from Wikipedia / stock providers and
    * composited under the captions). Snapshotted per video at upload, exactly like
    * the detection options, so a running pipeline is never changed under the worker.
    */
@@ -44,10 +44,9 @@ export interface PipelineOptions {
  * B-roll (images fetched from public providers - never generated)
  * ========================================================================== */
 
-/** Where a B-roll image came from. `wikimedia` needs no key, the rest do. */
+/** Where a B-roll image came from. Wikipedia needs no key, the rest do. */
 export type BrollProviderId =
-  | "wikimedia"
-  | "openverse"
+  | "wikipedia"
   | "pexels"
   | "pixabay"
   | "unsplash";
@@ -74,7 +73,7 @@ export interface BrollOptions {
   maxImages: number;
   /** Mix the bundled whoosh/pop sound effects at each item's in/out. */
   sfx: boolean;
-  /** Stock provider order for landscape cards (Wikimedia is entities only). */
+  /** Stock provider order for landscape cards (Wikipedia is entities only). */
   providerOrder: BrollProviderId[];
 }
 
@@ -90,7 +89,8 @@ export const DEFAULT_BROLL_OPTIONS: BrollOptions = {
 
 /** Where an image came from - everything the UI and the licence require. */
 export interface BrollAttribution {
-  provider: BrollProviderId;
+  /** Legacy values remain readable from plans stored before the provider refactor. */
+  provider: BrollProviderId | "wikimedia" | "openverse";
   /** Human page for the image (the attribution link). */
   sourceUrl: string;
   /** Direct image URL that was downloaded; also the cache identity. */
@@ -99,7 +99,7 @@ export interface BrollAttribution {
   license?: string;
   licenseUrl?: string;
   title?: string;
-  /** Provider-specific id (Commons pageid, Pexels photo id, ...). */
+  /** Provider-specific id, such as a Wikipedia article title or stock photo id. */
   providerId?: string;
 }
 
@@ -121,12 +121,6 @@ export interface BrollCropPlan {
   faceCentered: boolean;
   outputWidth: number;
   outputHeight: number;
-}
-
-export interface BrollVerificationSummary {
-  confidence: number;
-  reason: string;
-  verifiedAt: string;
 }
 
 /** A landscape card's rectangle on the 1080x1920 canvas. */
@@ -157,16 +151,15 @@ export interface BrollItem {
   /** Downloaded original in the cache dir (thumbnail / re-crop). */
   sourceFile?: string;
   crop?: BrollCropPlan;
-  verification?: BrollVerificationSummary;
   /** Landscape only: where the card sits on the canvas. */
   card?: BrollCardRect;
-  /** Other verified/fetched candidates the review UI can swap to. */
+  /** Other fetched candidates the review UI can swap to. */
   alternatives?: BrollAttribution[];
 }
 
 /** One reason something was left out; surfaced in the clip tile and the log. */
 export interface BrollSkip {
-  stage: "analysis" | "search" | "download" | "verify" | "schedule";
+  stage: "analysis" | "search" | "download" | "schedule";
   entity?: string;
   reason: string;
 }
@@ -890,7 +883,7 @@ export interface ViralDetectionJobData {
 
 /**
  * Queued B-roll planning for ONE clip: entity/keyword extraction, provider fetch,
- * face-aware crop, Gemini verification and scheduling, written to
+ * face-aware crop and scheduling, written to
  * `clips.broll_json`. A queue row (not an inline promise) so a worker restart
  * resumes it, and so a single clip can be re-run without touching the others.
  */

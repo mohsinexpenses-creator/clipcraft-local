@@ -50,9 +50,9 @@ pauses the chain: it recovers at the step where it stopped.
      There is **no fallback detector**: if no face can be found, the render fails
      with a clear explanation instead of guessing.
 6. **Plan B-roll (optional)** — after detection, each clip gets a B-roll plan: named
-   people/places/events from **Wikimedia Commons** (full screen, and only when
-   **Gemini Vision** confirms the photo shows that exact thing) plus keyword photos
-   from **Pexels / Pixabay / Unsplash** (landscape cards beside the captions). A
+  people/places/events use their **Wikipedia article image** full screen, while
+  keyword photos from **Pexels / Pixabay / Unsplash** appear as landscape cards beside
+  the captions. A
    60 s clip targets 10–15 images, never inside the hook replay, never overlapping
    each other. **No image is ever AI-generated**; every one records its provider,
    source URL, author and licence. The plan is stored on the clip and shown on its
@@ -146,7 +146,7 @@ Old built-in caption presets are removed from existing databases on the next sta
 | Worker           | long-running `tsx worker/index.ts` process (not serverless)                                     |
 | Video            | `ffmpeg-static` + `child_process` (no fluent-ffmpeg), mirrored before face tracking             |
 | Speech-to-text   | whisper.cpp (local binary + ggml model; optional Deepgram override)                             |
-| Face detection   | OpenCV **YuNet** ONNX on `onnxruntime-node` (no face-api, no vision APIs)                       |
+| Face detection   | OpenCV **YuNet** ONNX on `onnxruntime-node` (no face-api or external AI APIs)                    |
 | LLM              | Google AI Studio only — a 5-slot Gemini fallback chain in `lib/llm.ts` (plain `fetch`, no SDKs) |
 | Caption overlays | Remotion transparent frames painted in headless Chrome       |
 
@@ -231,17 +231,17 @@ docs/                   feature guides (layouts, overlays, viral prompt)
   no cloud media services. The only paid-capable dependency is the Gemini key,
   which is free-tier.
 - **No `fluent-ffmpeg`.** `ffmpeg-static` + `child_process.spawn` directly.
-- **No generated imagery.** B-roll photos come from Wikimedia Commons and stock
-  providers, always with attribution; a full-screen image needs a passed Gemini
-  Vision verdict, and a rejected mention is skipped rather than filled with stock.
+- **No generated imagery.** Named people, places and events use their Wikipedia
+  article image; keyword cards use stock providers. Every image records attribution,
+  and a missing article image is skipped rather than filled with a stock lookalike.
 - **9:16 output, always** (1080×1920).
 - **Not for Vercel** — heavy processing needs a long-running local worker.
 
 ## Documentation
 
 - **[SETUP.md](./SETUP.md)** — install, env vars, running, troubleshooting
-- **[docs/BROLL.md](./docs/BROLL.md)** — auto B-roll: providers, the Gemini Vision
-  gate, the scheduler, rendering order, sound effects and caching
+- **[docs/BROLL.md](./docs/BROLL.md)** — auto B-roll: Wikipedia and stock providers,
+  the scheduler, rendering order, sound effects and caching
 - **[docs/LAYOUTS.md](./docs/LAYOUTS.md)** — speaker focus vs split screen + how
   active-speaker tracking works
 - **[docs/OVERLAYS.md](./docs/OVERLAYS.md)** — hook/CTA text, style presets, the

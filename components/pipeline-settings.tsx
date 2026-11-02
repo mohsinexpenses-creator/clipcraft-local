@@ -293,7 +293,7 @@ export function AutomationPanel({
               B-roll
             </h4>
             <span className="text-[10.5px] text-muted-foreground">
-              Wikimedia Commons + stock photos · never AI-generated
+              Wikipedia article images + stock photos · never AI-generated
             </span>
           </div>
 
@@ -311,7 +311,7 @@ export function AutomationPanel({
               id="broll-fullscreen"
               icon={<Images />}
               title="Full-screen entity images"
-              description="A named person, place or event takes the frame — only when Gemini Vision confirms the photo."
+              description="A named person, place or event uses its Wikipedia article image."
               checked={value.broll.enableFullscreen}
               onCheckedChange={(enableFullscreen) => patchBroll({ enableFullscreen })}
               disabled={busy || !value.broll.autoBroll}

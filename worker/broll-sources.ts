@@ -1,7 +1,7 @@
 /**
  * The real-world implementations of every side effect `buildBrollPlan` needs:
- * the LLM analysis, provider searches, downloads, image preparation, Gemini
- * verification - plus the disk caches that make a re-run cheap.
+ * the LLM analysis, provider searches, downloads and image preparation - plus
+ * the disk caches that make a re-run cheap.
  *
  * Keeping them here (and not in `lib/broll/plan.ts`) is what lets the
  * orchestration be tested with fakes while this file is the only one that
@@ -26,22 +26,15 @@ import {
   jsonCacheKey,
   readJsonCache,
   SEARCH_CACHE_TTL_MS,
-  VERDICT_CACHE_TTL_MS,
   writeJsonCache,
 } from "../lib/broll/cache";
 import {
   BrollHttpError,
   createRateLimiter,
   defaultBrollFetch,
-  fetchJson,
   ProviderQuotaError,
   type BrollFetch,
 } from "../lib/broll/http";
-import {
-  buildCommonsSearchUrl,
-  parseCommonsResponse,
-  rankCommonsCandidates,
-} from "../lib/broll/providers/commons";
 import {
   searchStockAcrossProviders,
   trackUnsplashDownload,
@@ -49,38 +42,29 @@ import {
   type StockProviderId,
   type StockSearchResult,
 } from "../lib/broll/providers/stock";
-import { searchOpenverse } from "../lib/broll/providers/openverse";
+import { findWikipediaImage } from "../lib/broll/providers/wikipedia";
 import type { BrollCandidate } from "../lib/broll/providers/types";
-import { mergeCandidates } from "../lib/broll/entity-attempts";
 import {
-  makeVisionThumbnail,
   prepareCardFile,
   prepareFullscreenFile,
 } from "../lib/broll/image";
-import {
-  verifyCardBatch,
-  verifyEntityImage,
-  type VisionVerdict,
-} from "../lib/broll/vision";
 import type {
   BrollPlanDeps,
-  CardVerdict,
   PreparedBrollImage,
 } from "../lib/broll/plan";
 
-/** Wikimedia asks clients not to hammer the API; one request per second is safe. */
-const commonsLimiter = createRateLimiter({ minIntervalMs: 1000 });
-const openverseLimiter = createRateLimiter({ minIntervalMs: 1000 });
+const wikipediaLimiter = createRateLimiter({ minIntervalMs: 250 });
 /**
  * upload.wikimedia.org throttles bursts and generic clients with HTTP 429, so image
  * downloads go one at a time with a small gap (the search limiter above only
  * covers the API, not the file host).
  */
-const commonsDownloadLimiter = createRateLimiter({ minIntervalMs: 400 });
+const wikimediaDownloadLimiter = createRateLimiter({ minIntervalMs: 400 });
 
-const COMMONS_DOWNLOAD_ATTEMPTS = 3;
-const COMMONS_BACKOFF_BASE_MS = 1500;
-const COMMONS_BACKOFF_MAX_MS = 15_000;
+const WIKIMEDIA_DOWNLOAD_ATTEMPTS = 3;
+const WIKIMEDIA_BACKOFF_BASE_MS = 1500;
+const WIKIMEDIA_BACKOFF_MAX_MS = 15_000;
+const WIKIPEDIA_MISS_CACHE_TTL_MS = 15 * 60 * 1000;
 
 /** A 429, a 5xx or a timeout is worth another try; anything else is final. */
 function isTransientDownloadError(error: unknown): boolean {
@@ -89,14 +73,14 @@ function isTransientDownloadError(error: unknown): boolean {
   return false;
 }
 
-/** Run one Commons download with spacing, `Retry-After` and exponential backoff. */
-async function downloadFromCommons<T>(run: () => Promise<T>): Promise<T> {
+/** Run one Wikimedia-hosted image download with spacing and exponential backoff. */
+async function downloadFromWikimedia<T>(run: () => Promise<T>): Promise<T> {
   for (let attempt = 0; ; attempt += 1) {
     try {
-      return await commonsDownloadLimiter(run);
+      return await wikimediaDownloadLimiter(run);
     } catch (error) {
       if (
-        attempt >= COMMONS_DOWNLOAD_ATTEMPTS - 1 ||
+        attempt >= WIKIMEDIA_DOWNLOAD_ATTEMPTS - 1 ||
         !isTransientDownloadError(error)
       ) {
         throw error;
@@ -104,27 +88,12 @@ async function downloadFromCommons<T>(run: () => Promise<T>): Promise<T> {
       const hinted =
         error instanceof ProviderQuotaError ? error.retryAfterMs : undefined;
       const delay = Math.min(
-        hinted ?? COMMONS_BACKOFF_BASE_MS * 2 ** attempt,
-        COMMONS_BACKOFF_MAX_MS,
+        hinted ?? WIKIMEDIA_BACKOFF_BASE_MS * 2 ** attempt,
+        WIKIMEDIA_BACKOFF_MAX_MS,
       );
       await new Promise<void>((resolve) => setTimeout(resolve, delay));
     }
   }
-}
-
-async function withRetry<T>(run: () => Promise<T>, attempts = 2, baseMs = 800): Promise<T> {
-  for (let i = 0; ; i += 1) {
-    try {
-      return await run();
-    } catch (error) {
-      if (i >= attempts - 1) throw error;
-      await new Promise<void>((resolve) => setTimeout(resolve, baseMs * 2 ** i));
-    }
-  }
-}
-
-function describeError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 export interface BrollSourceOptions {
@@ -141,40 +110,15 @@ function stockKeys(ai: AiProviderSettings): StockKeys {
   };
 }
 
-/**
- * One provider-specific search with its own cached JSON answer. The cache key
- * includes the provider and the query, so switching either gives fresh results
- * while a re-run of the same clip is instant.
- */
-async function cachedProviderSearch(
-  provider: BrollProviderId,
-  query: string,
-  loader: () => Promise<BrollCandidate[]>,
-): Promise<BrollCandidate[]> {
-  const key = jsonCacheKey(["search", provider, query.toLowerCase().trim()]);
-  const cached = await readJsonCache<BrollCandidate[]>(key, {
-    ttlMs: SEARCH_CACHE_TTL_MS,
-  });
-  if (cached) return cached;
-  const fresh = await loader();
-  if (fresh.length > 0) await writeJsonCache(key, fresh);
-  return fresh;
-}
-
 export function createBrollDeps(options: BrollSourceOptions): BrollPlanDeps {
   const fetcher = options.fetcher ?? defaultBrollFetch;
   const keys = stockKeys(options.ai);
-  const geminiKeys = options.ai.geminiApiKeys
-    .map((key) => key.trim())
-    .filter(Boolean);
   const providerOrder = options.providerOrder.filter(
     (provider): provider is StockProviderId =>
-      provider !== "wikimedia" && provider !== "openverse",
+      provider !== "wikipedia",
   );
 
   return {
-    visionAvailable: geminiKeys.length > 0,
-
     async analyze(input: {
       clipDuration: number;
       words: WordTimestamp[];
@@ -215,91 +159,25 @@ export function createBrollDeps(options: BrollSourceOptions): BrollPlanDeps {
       return analysis;
     },
 
-    async searchEntityFallback(query: string): Promise<BrollCandidate[]> {
-      return cachedProviderSearch("wikimedia", query, async () => {
-        const payload = await commonsLimiter(() =>
-          fetchJson(buildCommonsSearchUrl(query, 10), {
-            fetcher,
-            provider: "Wikimedia Commons",
-          }),
-        );
-        return rankCommonsCandidates(parseCommonsResponse(payload));
+    async findEntityImage(title: string): Promise<BrollCandidate | null> {
+      const normalizedTitle = title.trim();
+      const cacheKey = jsonCacheKey(["wikipedia", normalizedTitle.toLowerCase()]);
+      const missCacheKey = jsonCacheKey(["wikipedia-miss", normalizedTitle.toLowerCase()]);
+      const cached = await readJsonCache<BrollCandidate>(cacheKey, {
+        ttlMs: SEARCH_CACHE_TTL_MS,
       });
-    },
+      if (cached) return cached;
+      const cachedMiss = await readJsonCache<boolean>(missCacheKey, {
+        ttlMs: WIKIPEDIA_MISS_CACHE_TTL_MS,
+      });
+      if (cachedMiss) return null;
 
-    async searchEntityAll(query: string): Promise<BrollCandidate[]> {
-      const [openverseResults, commonsResults] = await Promise.all([
-        withRetry(
-          () =>
-            cachedProviderSearch("openverse", query, () =>
-              openverseLimiter(() =>
-                searchOpenverse(query, { fetcher, limit: 20, timeoutMs: 25_000 }),
-              ),
-            ),
-          3,
-          1000,
-        ),
-        withRetry(
-          () =>
-            cachedProviderSearch("wikimedia", query, async () => {
-              const payload = await commonsLimiter(() =>
-                fetchJson(buildCommonsSearchUrl(query, 10), {
-                  fetcher,
-                  provider: "Wikimedia Commons",
-                }),
-              );
-              return rankCommonsCandidates(parseCommonsResponse(payload));
-            }),
-          3,
-          1000,
-        ),
-      ]);
-
-      return mergeCandidates(openverseResults, commonsResults);
-    },
-
-    async searchEntity(query: string): Promise<BrollCandidate[]> {
-      let openverseError: unknown;
-      try {
-        const fromOpenverse = await cachedProviderSearch(
-          "openverse",
-          query,
-          () => openverseLimiter(() => searchOpenverse(query, { fetcher })),
-        );
-        if (fromOpenverse.length > 0) return fromOpenverse;
-      } catch (error) {
-        openverseError = error;
-      }
-
-      // Openverse is unreachable (or had nothing usable): use Commons as fallback.
-      try {
-        const fromCommons = await cachedProviderSearch(
-          "wikimedia",
-          query,
-          async () => {
-            const payload = await commonsLimiter(() =>
-              fetchJson(buildCommonsSearchUrl(query, 10), {
-                fetcher,
-                provider: "Wikimedia Commons",
-              }),
-            );
-            return rankCommonsCandidates(parseCommonsResponse(payload));
-          },
-        );
-        if (fromCommons.length > 0) {
-          console.log(
-            `[broll] "${query}": using Wikimedia Commons (${fromCommons.length} candidate(s)).`,
-          );
-        }
-        return fromCommons;
-      } catch (error) {
-        if (openverseError) {
-          throw new Error(
-            `Openverse: ${describeError(openverseError)} | Wikimedia Commons: ${describeError(error)}`,
-          );
-        }
-        return []; // Openverse answered (empty); Commons failing just means no image.
-      }
+      const candidate = await wikipediaLimiter(() =>
+        findWikipediaImage(normalizedTitle, { fetcher }),
+      );
+      if (candidate) await writeJsonCache(cacheKey, candidate);
+      else await writeJsonCache(missCacheKey, true);
+      return candidate;
     },
 
     async searchStock(query: string): Promise<StockSearchResult> {
@@ -339,12 +217,12 @@ export function createBrollDeps(options: BrollSourceOptions): BrollPlanDeps {
     },
 
     async download(candidate: BrollCandidate) {
-      if (candidate.provider !== "wikimedia") {
+      if (candidate.provider !== "wikipedia") {
         return cacheImage(candidate, { fetcher, provider: candidate.provider });
       }
       const source = candidate.thumbUrl ? { ...candidate, imageUrl: candidate.thumbUrl } : candidate;
-      return downloadFromCommons(() =>
-        cacheImage(source, { fetcher, provider: "Wikimedia Commons" }),
+      return downloadFromWikimedia(() =>
+        cacheImage(source, { fetcher, provider: "Wikipedia image" }),
       );
     },
 
@@ -364,48 +242,6 @@ export function createBrollDeps(options: BrollSourceOptions): BrollPlanDeps {
       return prepareCardFile(bytes, { cacheKey });
     },
 
-    async thumbnail(bytes: Buffer) {
-      return makeVisionThumbnail(bytes);
-    },
-
-    async verify(input): Promise<VisionVerdict> {
-      const cacheKey = jsonCacheKey([
-        "verdict",
-        input.entityName.toLowerCase(),
-        input.entityDescriptor ?? "",
-        input.mode ?? "context",
-        input.images.length,
-        ...input.images.map((image) => image.data.length),
-        input.context.slice(0, 120),
-      ]);
-      const cached = await readJsonCache<VisionVerdict>(cacheKey, {
-        ttlMs: VERDICT_CACHE_TTL_MS,
-      });
-      if (cached) return cached;
-      const verdict = await verifyEntityImage(input, {
-        fetcher,
-        keys: geminiKeys,
-      });
-      await writeJsonCache(cacheKey, verdict);
-      return verdict;
-    },
-
-    async verifyCards(items): Promise<CardVerdict[]> {
-      const cacheKey = jsonCacheKey([
-        "cardverdict",
-        ...items.map((item) => `${item.keyword}:${item.image.data.length}`),
-      ]);
-      const cached = await readJsonCache<CardVerdict[]>(cacheKey, {
-        ttlMs: VERDICT_CACHE_TTL_MS,
-      });
-      if (cached) return cached;
-      const verdicts = await verifyCardBatch(items, {
-        fetcher,
-        keys: geminiKeys,
-      });
-      await writeJsonCache(cacheKey, verdicts);
-      return verdicts;
-    },
   };
 }
 

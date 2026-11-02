@@ -18,11 +18,8 @@ import { ProviderKeyError, ProviderQuotaError, fetchJson } from "../http";
 import type { BrollCandidate } from "./types";
 import { isUsableImage } from "./types";
 
-/** The providers that serve landscape cards (Commons and Openverse are entity-only). */
-export type StockProviderId = Exclude<
-  BrollProviderId,
-  "wikimedia" | "openverse"
->;
+/** The providers that serve landscape cards; Wikipedia is entity-only. */
+export type StockProviderId = Exclude<BrollProviderId, "wikipedia">;
 
 /** Minimum width/height ratio for a card: wider than 5:4. */
 export const MIN_LANDSCAPE_ASPECT = 1.25;
@@ -327,7 +324,7 @@ export async function searchStockAcrossProviders(
   const notes: string[] = [];
   const order = options.providerOrder.filter(
     (provider): provider is StockProviderId =>
-      provider !== "wikimedia" && provider !== "openverse",
+      provider !== "wikipedia",
   );
 
   for (const provider of order) {

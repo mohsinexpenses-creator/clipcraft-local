@@ -84,11 +84,6 @@ async function main(): Promise<void> {
     console.log(
       `   credit   : ${item.attribution.author ?? 'unknown author'}${item.attribution.license ? ` · ${item.attribution.license}` : ''}`
     );
-    if (item.verification) {
-      console.log(
-        `   vision   : confidence ${item.verification.confidence.toFixed(2)} — ${item.verification.reason}`
-      );
-    }
     if (item.crop) {
       console.log(
         `   crop     : ${item.crop.mode} ${item.crop.width}x${item.crop.height} of ${item.crop.sourceWidth}x${item.crop.sourceHeight}` +
@@ -112,10 +107,6 @@ async function main(): Promise<void> {
   const missing = plan.items.filter((item) => !fs.existsSync(cachedImagePath(item.renderFile)));
   if (missing.length > 0) {
     console.error(`\n${missing.length} prepared image(s) are missing from the cache.`);
-    process.exitCode = 1;
-  }
-  if (plan.items.some((item) => item.kind === 'fullscreen' && !item.verification)) {
-    console.error('\nA full-screen image has no Gemini verdict - this must never happen.');
     process.exitCode = 1;
   }
 }

@@ -156,9 +156,9 @@ export function getVideoEncodeSettings(
   const crf =
     Number.isFinite(rawCrf) && rawCrf >= 16 && rawCrf <= 18
       ? Math.round(rawCrf)
-      : 17;
+      : 18;
   const rawPreset = env.VIDEO_PRESET?.trim().toLowerCase();
-  const preset = rawPreset && VIDEO_PRESETS.has(rawPreset) ? rawPreset : "slow";
+  const preset = rawPreset && VIDEO_PRESETS.has(rawPreset) ? rawPreset : "veryfast";
   return { crf, preset };
 }
 

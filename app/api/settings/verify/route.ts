@@ -3,9 +3,7 @@ import { loadEffectiveSettings, maskSecret } from "@/lib/app-settings";
 import {
   verifyDeepgramKey,
   verifyGeminiKey,
-  verifyOpenverse,
   verifyStockProvider,
-  verifyWikimedia,
   type StockVerifyTarget,
   type VerifyProbeResult,
 } from "@/lib/settings-verify";
@@ -15,7 +13,7 @@ import { toErrorMessage, toErrorStatus } from "@/lib/errors";
 export const runtime = "nodejs";
 
 /**
- * POST /api/settings/verify   { target?, candidates?, withGeneration?, withVision?, keyIndex? }
+ * POST /api/settings/verify   { target?, candidates?, withGeneration?, keyIndex? }
  *
  * Targets: `gemini`, `deepgram`, `pexels`, `pixabay`, `unsplash`, or `all`.
  *
@@ -39,7 +37,6 @@ export async function POST(request: Request) {
     ) as Record<string, unknown>;
     const target = String(body.target ?? "all").trim();
     const withGeneration = body.withGeneration === true;
-    const withVision = body.withVision === true;
     const settings = await loadEffectiveSettings();
 
     const results: VerifyProbeResult[] = [];
@@ -82,7 +79,6 @@ export async function POST(request: Request) {
               ? { model: candidates.model }
               : {}),
             withGeneration,
-            withVision,
           });
           results.push({
             ...result,
@@ -144,9 +140,7 @@ export async function POST(request: Request) {
           status: "error",
           label: entry.label,
           message: `No ${entry.label} key to test - landscape B-roll cards skip this provider.`,
-          notes: [
-            "Wikimedia Commons (full-screen entity images) needs no key.",
-          ],
+          notes: ["Wikipedia images (full-screen named entities) need no key."],
         });
         continue;
       }
@@ -157,11 +151,6 @@ export async function POST(request: Request) {
           : result,
       );
     }
-
-    // Key-free entity sources: only on an explicit request, never as part of "all"
-    // (an Openverse test spends a request from its small anonymous quota).
-    if (target === "wikimedia") results.push(await verifyWikimedia());
-    if (target === "openverse") results.push(await verifyOpenverse());
 
     const chainModel = LLM_PROVIDER_CHAIN[0]?.model ?? "";
     return NextResponse.json({

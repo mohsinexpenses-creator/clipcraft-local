@@ -1,173 +1,47 @@
 # Auto B-roll
 
-B-roll puts photos from **Wikimedia Commons** and **stock providers** on top of the
-speaker, under the captions: a named person, place or event can take the whole
-9:16 frame, and the rest of the speech gets landscape cards framed beside the
-captions.
+B-roll adds real photos over the speaker and under captions. Named people, places and events use their Wikipedia article image as a full-screen image; keyword moments use landscape cards from stock providers. Images are downloaded locally and attribution is stored on each plan item. No stock lookalike is substituted when a named entity has no usable article image.
 
-**No image is ever generated.** Every picture is a real photo, downloaded once,
-stored with its provider, source URL, author and licence, and shown only after the
-rules below pass.
+## Pipeline
 
----
-
-## 1. Where it sits in the pipeline
-
-```
-upload → transcribe → viral detection → B-ROLL (this) → render → done
+```text
+upload -> transcribe -> viral detection -> B-roll planning -> render -> done
 ```
 
-- The step runs as its own job in the SQLite `jobs` queue (`type = 'broll'`, one
-  job per clip, id `broll:<clipId>`), so pressing "re-run" twice cannot stack
-  duplicates and a crash mid-step is retried with the queue's backoff.
-- `lib/pipeline.ts` owns the hand-off: with `autoBroll` on, detection queues B-roll
-  **instead of** the render, and the B-roll job queues the render when it finishes.
-- `recoverAutoPipelines()` re-queues a missing plan after a worker restart. A clip
-  that already has a plan is never re-planned automatically - only its render is.
-- The render **only reads** the stored plan; it never calls a provider, so
-  re-rendering is free and cannot change the images.
+B-roll planning is its own durable SQLite job. Detection queues this step when enabled, and the step queues rendering when it finishes. A worker restart can recover an interrupted job. Rendering only reads the stored plan and never contacts image providers.
 
-## 2. What a plan contains
+## Plan and scheduling
 
-One JSON document on the clip row (`clips.broll_json`, added by schema v6, a purely
-additive migration):
+Each clip stores a plan in `clips.broll_json`. A full-screen item includes its entity name/type, Wikipedia attribution, cache paths, and crop information. Landscape items include stock attribution and a card rectangle. Skips record a stage and reason. Existing plans that contain the retired `wikimedia` or `openverse` provider IDs remain readable; newly generated entity items use `wikipedia`.
 
-```jsonc
-{
-  "version": 1,
-  "clipDuration": 60, "hookDuration": 3, "totalDuration": 63,
-  "options": { "autoBroll": true, "enableFullscreen": true, ... },
-  "items": [
-    {
-      "id": "entity-eiffel-tower", "kind": "fullscreen",
-      "start": 18.5, "end": 22.5,          // FINAL timeline (hook already added)
-      "desiredStart": 15.5, "desiredEnd": 19.5,
-      "entityName": "Eiffel Tower", "entityType": "place",
-      "attribution": { "provider": "wikimedia", "sourceUrl": "…", "imageUrl": "…",
-                       "author": "Benh Lieu Song", "license": "CC BY-SA 3.0",
-                       "licenseUrl": "…" },
-      "verification": { "confidence": 0.91, "reason": "…", "verifiedAt": "…" },
-      "cacheKey": "img-…", "renderFile": "fs-….jpg", "crop": { … }
-    }
-  ],
-  "skipped": [ { "stage": "verify", "entity": "…", "reason": "…" } ],
-  "counts": { "targetMin": 10, "targetMax": 15, "fullscreen": 3, "landscape": 9 }
-}
-```
+The scheduler scales the configured 10-15 images per minute to the clip length, keeps items 2.5-4 seconds long, leaves at least 1.5 seconds between items, avoids the hook replay, and gives full-screen entities priority over cards. The target minimum is not a quota: the plan does not invent an image to reach it.
 
-The clip tile shows this plan: thumbnails, type, time range and attribution, with
-per-item **swap** / **remove** and a per-clip **re-run**. The grid is the only review
-surface on purpose - there is no page-level "render everything" dialog.
+## Named entities
 
-## 3. How many images
+1. The analysis model returns the entity name and, when known, the exact English Wikipedia article title. Missing titles fall back to the entity name.
+2. The worker requests the Wikipedia REST summary. If the title is missing or ambiguous, it resolves one title through Wikipedia OpenSearch and requests that summary once.
+3. The summary's `originalimage` is required. File metadata supplies MIME and license information; known non-free files and unsupported formats are skipped. A thumbnail of up to about 1600 pixels is downloaded when available, otherwise the original is used.
+4. The image is downloaded and passed to `prepareFullscreen`, which handles small and landscape images with face-aware crop or blurred fill. There is no AI image verification step.
 
-`brollImageBudget()` scales the configured "images per 60 s" (default **10–15**) to
-the clip length. `lib/broll/scheduler.ts` then places them:
+Wikipedia lookups are serialized through a 250 ms limiter. Successful results use the provider cache TTL; empty results are cached briefly. Wikimedia-hosted image downloads are serialized and retry transient 429/5xx failures with `Retry-After` and bounded exponential backoff.
 
-| Rule | Value |
-| --- | --- |
-| Item length | clamped to 2.5–4 s |
-| Gap between items | at least 1.5 s |
-| Hook replay window | nothing is scheduled inside it |
-| Full-screen vs card | a full-screen image always wins; cards never overlap or touch one |
-| Budget | never more than `maxImages`, and the plan reports when it could not reach the minimum |
+## Keyword cards
 
-The minimum is a target, not a quota: an image is never invented or made
-irrelevant just to hit it.
+Keyword moments use Pexels, Pixabay, and Unsplash in the configured order. Providers without keys are skipped; quota and provider errors fall through. Cards are prepared as 16:9 crops and placed away from the caption band and detected speaker faces. Unsplash's download endpoint is pinged when a photo is used.
 
-## 4. Entities (full screen)
+## Settings and manual review
 
-1. The LLM returns `entities[] {type, name, searchQuery, start, end}` and
-   `broll[] {visualKeywords[], start, end}` with `json: true`, validated by
-   `lib/broll/analysis.ts` (same strictness as the viral response; extra keywords
-   that are abstract ideas - "success", "growth" - are dropped).
-2. The entity is searched on **Wikimedia Commons only** (`generator=search`,
-   File namespace, `iiurlwidth=1080`, `extmetadata` for author/licence). A stock
-   lookalike is never used: a photo of a *different* person or place under a name
-   is worse than no photo.
-3. The best 3–4 candidates (~512 px) go to **Gemini Vision** in ONE request with the
-   entity name, Commons title/description/categories, and the sentence being
-   spoken. The model answers
-   `{pickIndex|null, confidence, reason, hasTextOrWatermark, isSafe}`.
-4. The image is shown only if `pickIndex` is set, `confidence ≥ 0.60`,
-   `hasTextOrWatermark` is false and `isSafe` is true. Otherwise the mention is
-   **skipped**, with the reason stored on the plan and printed in the worker log.
-5. Framing: a detected face (YuNet) centres a 9:16 window with head-room; a
-   landscape place/event keeps the whole photo on a blurred version of itself.
-   Images smaller than 1080×1280, SVG/TIFF/PDF, and unreadable files are rejected.
+Settings -> AI providers stores optional Pexels, Pixabay, and Unsplash keys. Named entity images need no key. Pipeline defaults control B-roll on/off, fullscreen and card toggles, sound effects, image count, and stock provider order. Settings are snapshotted per video at upload.
 
-## 5. Landscape cards
+The clip tile is the review surface: images can be swapped or removed, and B-roll can be rerun per clip. Manual render actions use the currently stored plan and do not start provider searches.
 
-- Every other keyword moment gets a 16:9 photo from the configured provider order
-  (**Pexels → Pixabay → Unsplash** by default). A missing key skips that provider,
-  429/quota falls through to the next, and only a 401/403 is ever reported as a
-  rejected key.
-- Cards are 16:9 crops inside a rounded frame, placed by `planCardRect()` between
-  the top of the frame and the caption band, avoiding the speaker's face (sampled
-  from the clip with YuNet) and shrinking rather than covering anything.
-- Unsplash's download endpoint is pinged when a photo is used, and the
-  photographer is stored in the attribution.
+## Rendering and cache
 
-## 6. Rendering
+Prepared B-roll frames are rendered as short transparent sequences before captions, hook, and CTA layers. Chromium reads local prepared files served by the worker; it never fetches provider URLs during a render.
 
-- `remotion/BrollComposition.tsx` paints each item as its own short transparent PNG
-  sequence (`prepareRemotionBrollOverlays`), so 4 s of B-roll costs 4 s of frames -
-  not the clip length. Each sequence gets its own `startAtSeconds`.
-- In the FFmpeg graph B-roll sequences are added **before** the caption/hook/CTA
-  sequence, so captions are always painted on top.
-- Card rects are re-fitted at render time (`fitCardRectToBand()`): if the caption
-  preset changed after the plan was made, the card moves up (or shrinks at 16:9)
-  instead of landing on the captions.
-- When a full-screen image is up, the B-roll layer paints a bottom scrim plus a soft
-  pill across the caption band, coloured from the caption text's luminance (dark for
-  light text, light for dark text). That is how white-on-white and dark-on-dark
-  never happen, without touching any caption preset.
-- Chromium never fetches a remote URL: the prepared JPEGs are served from a
-  throwaway loopback server (`worker/clip-http-server.ts`).
-- `whoosh.wav` / `pop.wav` (bundled, CC0, generated by
-  `scripts/generate-broll-sfx.mjs`) are delayed to each item's in/out and mixed
-  with `amix … normalize=0`, so the voice level never changes. Beeps for profanity
-  are already in the voice branch and coexist with them. The effects can be
-  switched off per video.
+The cache lives under `<data dir>/broll-cache/`:
 
-## 6b. Manual renders use the stored plan
+- `images/` stores downloaded originals and prepared frames.
+- `json/` stores provider results, including short-lived Wikipedia misses.
 
-"Render now", "Edit & re-render" and the render button in the clip editor render
-the plan that is already stored - they never start a provider search. To plan (or
-re-plan) B-roll for a clip, use **Re-run B-roll** on its tile; that job queues the
-render itself when the video's `autoRender` is on. A clip that has never been
-planned simply renders without B-roll, exactly like before the feature existed.
-
-## 7. Configuration
-
-| Where | What |
-| --- | --- |
-| Settings → **AI providers** | Pexels / Pixabay / Unsplash keys, each with **Test** (a live probe that reports latency and remaining quota) and **Save**. Masked values mean "keep the stored key". |
-| Settings → **Pipeline defaults** | B-roll on/off, full-screen and card toggles, sound effects, min/max images per 60 s, provider order. Snapshotted per video at upload. |
-| Per video (dashboard) | The same panel, so one video can run without B-roll. |
-
-Keys are only ever stored in SQLite, masked in every API response, and never sent
-to the browser in clear text or logged. Wikimedia Commons needs no key; **Gemini
-Vision uses the same key pool as viral detection**.
-
-## 8. Manual check
-
-```bash
-npm run verify:broll -- <clipId>          # human-readable plan
-npm run verify:broll -- <clipId> --json   # the exact stored JSON
-```
-
-It runs the same `runBrollJob` the worker runs, prints every image with its
-provider, author, licence, time range and vision verdict (plus every skip reason),
-and fails if a full-screen image has no verdict or a prepared file is missing.
-
-## 9. Cache
-
-`<data dir>/broll-cache/` (next to `clipcraft.db`, ignored by Git):
-
-- `images/` - downloaded originals (`img-<hash>.jpg`) and prepared frames
-  (`fs-<hash>.jpg`, `card-<hash>.jpg`);
-- `json/` - provider search results (7 days) and Gemini verdicts (30 days), keyed
-  by a hash of the query, so a re-run is fast and cannot silently differ.
-
-Deleting the directory is safe: the next B-roll run downloads again.
+Removing the directory is safe; the next B-roll run downloads and prepares images again. Use `npm run verify:broll -- <clipId>` to print the plan and check prepared image files.

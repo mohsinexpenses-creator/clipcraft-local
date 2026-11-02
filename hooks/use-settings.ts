@@ -15,9 +15,7 @@ export type VerifyTarget =
   | "deepgram"
   | "pexels"
   | "pixabay"
-  | "unsplash"
-  | "wikimedia"
-  | "openverse";
+  | "unsplash";
 
 export interface VerifyResult {
   target: VerifyTarget;
@@ -57,8 +55,6 @@ export type SettingsBusy =
   | "verify:pexels"
   | "verify:pixabay"
   | "verify:unsplash"
-  | "verify:wikimedia"
-  | "verify:openverse"
   | "verify:all"
   | null;
 
@@ -260,7 +256,6 @@ export function useSettings() {
       target: VerifyTarget | "all";
       candidates?: Record<string, string | undefined>;
       withGeneration?: boolean;
-      withVision?: boolean;
       keyIndex?: number;
     }) => {
       setBusy(`verify:${input.target}`);

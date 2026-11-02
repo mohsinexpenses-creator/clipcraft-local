@@ -20,7 +20,6 @@ import {
   planLandscapeCrop,
   type FaceRect,
 } from "./crop";
-import { VISION_IMAGE_SIZE } from "./vision";
 import { writeBrollImage } from "./cache";
 import type { BrollCropPlan, BrollEntityType } from "../types";
 
@@ -163,31 +162,6 @@ export async function prepareCard(bytes: Buffer, quality = CARD_JPEG_QUALITY): P
     .cover({ w: CARD_IMAGE_WIDTH, h: CARD_IMAGE_HEIGHT });
   const buffer = await rendered.getBuffer("image/jpeg", { quality });
   return Buffer.from(buffer);
-}
-
-export interface VisionThumbnail {
-  data: string;
-  mime: string;
-}
-
-/**
- * ~512 px longest edge, base64 - what Gemini sees. Sending the full 1080 px image
- * costs more tokens without improving the verdict.
- */
-export async function makeVisionThumbnail(
-  bytes: Buffer,
-  size = VISION_IMAGE_SIZE
-): Promise<VisionThumbnail> {
-  const image = await readImage(bytes);
-  const width = image.bitmap.width;
-  const height = image.bitmap.height;
-  const scale = Math.min(1, size / Math.max(width, height));
-  const resized =
-    scale < 1
-      ? image.clone().resize({ w: Math.round(width * scale), h: Math.round(height * scale) })
-      : image.clone();
-  const buffer = await resized.getBuffer("image/jpeg", { quality: 80 });
-  return { data: Buffer.from(buffer).toString("base64"), mime: "image/jpeg" };
 }
 
 export interface PreparedBrollFile {

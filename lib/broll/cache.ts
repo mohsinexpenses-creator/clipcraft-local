@@ -1,12 +1,12 @@
 /**
- * On-disk cache for B-roll: downloaded images and provider/Gemini JSON answers.
+ * On-disk cache for B-roll: downloaded images and provider JSON answers.
  *
  * Two reasons this exists:
  *  1. Chromium never fetches a remote URL during a render (it cannot be trusted
  *     with third-party hosts, and a slow host would stall the render), so every
  *     image is downloaded once to a hash-keyed file and served from loopback.
  *  2. Re-running B-roll for a clip must be fast and cheap: the same query gets
- *     the same search results, and the same image gets the same verdict.
+ *     the same provider results.
  *
  * Location: `<data dir>/broll-cache/` - next to clipcraft.db, ignored by git,
  * cleared by deleting the folder (the next B-roll run simply re-downloads).
@@ -21,8 +21,6 @@ import { cacheKeyFor } from "./providers/types";
 
 /** How long a cached provider answer is trusted. */
 export const SEARCH_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-/** Verdicts are stable (the same image, the same entity); a month is fine. */
-export const VERDICT_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 /** Files on disk older than this are pruned opportunistically. */
 export const IMAGE_CACHE_MAX_AGE_MS = 45 * 24 * 60 * 60 * 1000;
 

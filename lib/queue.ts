@@ -25,7 +25,7 @@ export const TRANSCRIPTION_QUEUE_NAME = 'transcription';
  */
 export const VIRAL_DETECTION_QUEUE_NAME = 'viral-detection';
 /**
- * B-roll planning is its own queue job: it calls the LLM, Wikimedia and the stock
+ * B-roll planning is its own queue job: it calls the LLM, Wikipedia and the stock
  * providers, downloads and crops images, and can take minutes on a slow network.
  * Keeping it out of the render means a retry re-fetches only what failed, and the
  * render itself never talks to a provider (it only reads the stored plan).

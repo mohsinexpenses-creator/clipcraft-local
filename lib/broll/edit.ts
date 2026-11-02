@@ -84,7 +84,7 @@ export async function swapBrollItem(
   const downloaded = await cacheImage(candidate, {
     fetcher,
     root: options.root,
-    provider: candidate.provider === "wikimedia" ? "Wikimedia Commons" : candidate.provider,
+    provider: candidate.provider === "wikipedia" ? "Wikipedia image" : candidate.provider,
   });
 
   const prepared =
@@ -113,14 +113,6 @@ export async function swapBrollItem(
     alternatives: [item.attribution, ...rest],
     // A swapped card keeps its position; only the picture changes.
     ...(item.kind === "fullscreen" && prepared.crop ? { crop: prepared.crop } : {}),
-    // A new image has no verdict yet. It came from the same verified search and is
-    // marked as such, but the plan must not pretend it was checked.
-    verification: item.verification
-      ? {
-          ...item.verification,
-          reason: `${item.verification.reason} (image swapped manually; the verdict belongs to the previous photo)`,
-        }
-      : undefined,
   };
 
   const nextPlan: BrollPlan = {

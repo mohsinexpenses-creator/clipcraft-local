@@ -19,7 +19,7 @@ test('a well-formed analysis is parsed and clamped to the clip', () => {
   const analysis = parseBrollAnalysis(
     JSON.stringify({
       entities: [
-        { type: 'person', name: 'Elon Musk', searchQuery: 'Elon Musk', start: 4.2, end: 6.8 },
+        { type: 'person', name: 'Elon Musk', wikipediaTitle: 'Elon Musk', searchQuery: 'Elon Musk', start: 4.2, end: 6.8 },
         { type: 'place', name: 'Eiffel Tower', start: 12, end: 14 },
         { type: 'event', name: 'Olympics', searchQuery: '2024 Summer Olympics', start: 40, end: 999 },
       ],
@@ -32,11 +32,24 @@ test('a well-formed analysis is parsed and clamped to the clip', () => {
   );
 
   assert.equal(analysis.entities.length, 3);
+  assert.equal(analysis.entities[0].wikipediaTitle, 'Elon Musk');
+  assert.equal(analysis.entities[1].wikipediaTitle, 'Eiffel Tower', 'missing title falls back to the entity name');
   assert.equal(analysis.entities[1].searchQuery, 'Eiffel Tower', 'a missing searchQuery falls back to the name');
   assert.equal(analysis.entities[2].end, 60, 'times past the clip end are clamped');
 
   // "success" and "motivation" are ideas, not photographs: dropped, not fatal.
   assert.deepEqual(analysis.broll.map((moment) => moment.visualKeywords), [['city skyline']]);
+});
+
+test('the B-roll prompt asks for an English Wikipedia title', () => {
+  const prompt = buildBrollPrompt({
+    clipDuration: 30,
+    words: [],
+    entityBudget: 2,
+    keywordBudget: 0,
+  });
+  assert.match(prompt, /wikipediaTitle/);
+  assert.match(prompt, /exact English Wikipedia article title/);
 });
 
 test('a zero-length or reversed mention gets a usable window instead of failing', () => {

@@ -1,19 +1,16 @@
 /**
  * Build one clip's B-roll plan.
  *
- * This is the orchestration layer: analysis -> provider search -> download ->
- * verification -> preparation -> scheduling. Every side effect (network, disk,
- * Gemini) is injected as a small function, so the whole flow - including the rule
- * that an unverified entity is never shown - is unit-tested offline.
+ * This is the orchestration layer: analysis -> Wikipedia/stock search -> download ->
+ * preparation -> scheduling. Every side effect is injected as a small function,
+ * so the whole flow is unit-tested offline.
  *
  * Order matters and follows the brief:
- *   1. named entities are searched on Wikimedia Commons ONLY (a stock lookalike
- *      would be a different person/place, so it is never substituted);
- *   2. every entity candidate is verified by Gemini Vision before it may take the
- *      full screen; a rejection skips the mention (never a fallback image);
- *   3. keyword moments are filled from stock providers, with the configured
+ *   1. named entities use their Wikipedia article image (a stock lookalike would
+ *      be a different person/place, so it is never substituted);
+ *   2. keyword moments are filled from stock providers, with the configured
  *      provider order and quota fall-through;
- *   4. the scheduler places what survived on the render timeline.
+ *   3. the scheduler places what survived on the render timeline.
  *
  * The renderer only ever reads the resulting plan.
  */
@@ -24,12 +21,10 @@ import type {
   BrollOptions,
   BrollPlan,
   BrollSkip,
-  BrollVerificationSummary,
   WordTimestamp,
 } from "../types";
 import {
   deriveFallbackKeywords,
-  transcriptSentenceAt,
   type BrollAnalysis,
 } from "./analysis";
 import { planCardRect, type FaceZoneRect } from "./card";
@@ -41,19 +36,6 @@ import {
 import type { BrollCandidate } from "./providers/types";
 import { attributionFor } from "./providers/types";
 import type { StockSearchResult } from "./providers/stock";
-import {
-  VISION_CANDIDATE_COUNT,
-  verdictAccepts,
-  verdictRejectionReason,
-  type VisionRequestInput,
-  type VisionVerdict,
-} from "./vision";
-import {
-  buildEntityAttempts,
-  candidateKey,
-  preferPortrait,
-  type EntityAttempt,
-} from "./entity-attempts";
 
 /** An image that is downloaded, prepared and ready to be painted. */
 export interface PreparedBrollImage {
@@ -68,12 +50,6 @@ export interface PreparedBrollImage {
   crop?: import("../types").BrollCropPlan;
 }
 
-export interface CardVerdict {
-  id: string;
-  relevant: boolean;
-  hasText: boolean;
-}
-
 export interface BrollPlanDeps {
   analyze(input: {
     clipDuration: number;
@@ -82,14 +58,7 @@ export interface BrollPlanDeps {
     keywordBudget: number;
     keywordMin: number;
   }): Promise<BrollAnalysis>;
-  searchEntity(query: string): Promise<BrollCandidate[]>;
-  /** Openverse + Commons in parallel, merged. Preferred over searchEntity when present. */
-  searchEntityAll?(query: string): Promise<BrollCandidate[]>;
-  /**
-   * Second source for an entity, tried only when every Commons candidate failed to
-   * download (rate limit / timeout). Absent = no second attempt.
-   */
-  searchEntityFallback?(query: string): Promise<BrollCandidate[]>;
+  findEntityImage(title: string): Promise<BrollCandidate | null>;
   searchStock(query: string): Promise<StockSearchResult>;
   download(
     candidate: BrollCandidate,
@@ -100,18 +69,6 @@ export interface BrollPlanDeps {
     cacheKey: string,
   ): Promise<PreparedBrollImage>;
   prepareCard(bytes: Buffer, cacheKey: string): Promise<PreparedBrollImage>;
-  thumbnail(bytes: Buffer): Promise<{ data: string; mime: string }>;
-  verify(input: VisionRequestInput): Promise<VisionVerdict>;
-  /** One batched vision request over every chosen card. Absent = cards are not checked. */
-  verifyCards?(
-    items: Array<{
-      id: string;
-      keyword: string;
-      image: { data: string; mime: string };
-    }>,
-  ): Promise<CardVerdict[]>;
-  /** False when no Gemini key is configured - entities are then skipped up front. */
-  visionAvailable: boolean;
   now?: () => Date;
 }
 
@@ -130,31 +87,14 @@ export interface BrollPlanInput {
 /** Full-screen images are worth more than a stock card (used for slot priority). */
 export const ENTITY_PRIORITY = 100;
 export const CARD_PRIORITY = 50;
-/** Never send more than this many entities per clip to Commons + Gemini. */
+/** Limit named-entity images per clip. */
 export const MAX_ENTITIES_PER_CLIP = 4;
-/** Candidate images checked per entity. */
-export const ENTITY_CANDIDATES_PER_SEARCH = 5; // was 6
-/** Gemini verifications per entity before the mention is skipped. */
-export const MAX_VERIFY_ATTEMPTS = 3;
 /** Stock candidates kept per keyword (the first is used, the rest are replacements). */
 export const CARD_CANDIDATES_PER_KEYWORD = 3;
 
-function toVerification(
-  verdict: VisionVerdict,
-  now: Date,
-): BrollVerificationSummary {
-  return {
-    confidence: verdict.confidence,
-    reason: verdict.reason,
-    verifiedAt: now.toISOString(),
-  };
-}
-
 /**
- * Build the plan. Never throws for a provider/Gemini failure: the affected
- * mentions become `skipped` entries with a reason and the rest of the clip still
- * gets its B-roll - except that a full-screen image without a passed verdict is
- * simply not used.
+ * Build the plan. Provider failures skip only the affected item; the rest of the
+ * clip still gets its B-roll.
  */
 export async function buildBrollPlan(
   input: BrollPlanInput,
@@ -236,220 +176,81 @@ export async function buildBrollPlan(
     candidate: BrollCandidate;
     alternatives?: import("../types").BrollAttribution[];
     prepared: PreparedBrollImage;
-    verification?: BrollVerificationSummary;
     entityName?: string;
     entityType?: BrollEntityType;
     query: string;
   }> = [];
 
-  if (entityBudget > 0 && !deps.visionAvailable) {
-    notes.push(
-      "No Gemini key is configured, so named entities are skipped: an unverified full-screen image is never shown.",
-    );
-    for (const entity of analysis.entities) {
-      skipped.push({
-        stage: "verify",
-        entity: entity.name,
-        reason: "Gemini Vision is not configured; images cannot be verified.",
-      });
-    }
-  }
-
   const seenEntities = new Set<string>();
-  const entities = deps.visionAvailable
-    ? analysis.entities
-      .filter((entity) => {
-        const key = entity.name.toLowerCase();
-        if (seenEntities.has(key)) return false;
-        seenEntities.add(key);
-        return true;
-      })
-      .slice(0, entityBudget)
-    : [];
-
-  const searchAll =
-    deps.searchEntityAll ??
-    (async (q: string) => {
-      const first = await deps.searchEntity(q);
-      if (first.length > 0 || !deps.searchEntityFallback) return first;
-      return deps.searchEntityFallback(q);
-    });
+  const entities = analysis.entities
+    .filter((entity) => {
+      const key = entity.name.toLowerCase();
+      if (seenEntities.has(key)) return false;
+      seenEntities.add(key);
+      return true;
+    })
+    .slice(0, entityBudget);
 
   const resolveEntity = async (
     entity: (typeof entities)[number],
   ): Promise<{ item?: (typeof prepared)[number]; skip?: BrollSkip }> => {
-    const context = transcriptSentenceAt(input.words, entity.start);
-    const attempts = buildEntityAttempts(entity);
-
-    // Searches are cheap JSON calls: the next attempt's search runs while this
-    // attempt downloads and waits for Gemini.
-    const searches = new Map<string, Promise<BrollCandidate[]>>();
-    const search = (attempt: EntityAttempt) => {
-      const key = attempt.query.toLowerCase();
-      let promise = searches.get(key);
-      if (!promise) {
-        promise = searchAll(attempt.query).catch((error) => {
-          notes.push(`Image search failed for "${entity.name}" (${attempt.label}): ${describe(error)}`);
-          failedSearches.add(key);
-          return [] as BrollCandidate[];
-        });
-        searches.set(key, promise);
-      }
-      return promise;
-    };
-
-    const downloadAll = async (list: BrollCandidate[]) => {
-      const settled = await Promise.all(
-        list.slice(0, VISION_CANDIDATE_COUNT).map(async (candidate) => {
-          try {
-            const file = await deps.download(candidate);
-            const thumb = await deps.thumbnail(file.bytes);
-            return {
-              candidate,
-              file,
-              bytes: file.bytes,
-              data: thumb.data,
-              mime: thumb.mime,
-            };
-          } catch (error) {
-            notes.push(`Could not download a "${entity.name}" candidate: ${describe(error)}`);
-            return null;
-          }
-        }),
-      );
-      return settled.filter((entry): entry is NonNullable<typeof entry> => entry !== null);
-    };
-
-    const failedSearches = new Set<string>();
-    const attemptedFallbacks = new Set<string>();
-    const seen = new Set<string>(); // never show Gemini the same image twice
-    const failures: string[] = [];
-    let verified = 0;
-
-    for (let i = 0; i < attempts.length && verified < MAX_VERIFY_ATTEMPTS; i += 1) {
-      const attempt = attempts[i];
-      const current = search(attempt);
-      if (attempts[i + 1]) void search(attempts[i + 1]); // prefetch next
-
-      const fresh = (await current).filter((c) => !seen.has(candidateKey(c)));
-      const pool = preferPortrait(fresh).slice(0, ENTITY_CANDIDATES_PER_SEARCH);
-      pool.forEach((c) => seen.add(candidateKey(c)));
-      if (pool.length === 0) {
-        failures.push(
-          `${attempt.label}: ${failedSearches.has(attempt.query.toLowerCase()) ? "search failed (network)" : "no new candidate"}`,
-        );
-        continue;
-      }
-
-      let downloaded = await downloadAll(pool);
-      if (downloaded.length === 0 && deps.searchEntityFallback && !attemptedFallbacks.has(attempt.query.toLowerCase())) {
-        attemptedFallbacks.add(attempt.query.toLowerCase());
-        const fallback = await deps.searchEntityFallback(attempt.query).catch((error) => {
-          notes.push(`Image search fallback failed for "${entity.name}" (${attempt.label}): ${describe(error)}`);
-          return [] as BrollCandidate[];
-        });
-        const fallbackPool = preferPortrait(
-          fallback.filter((c) => !seen.has(candidateKey(c))),
-        ).slice(0, ENTITY_CANDIDATES_PER_SEARCH);
-        fallbackPool.forEach((c) => seen.add(candidateKey(c)));
-        downloaded = await downloadAll(fallbackPool);
-        if (downloaded.length === 0) {
-          failures.push(`${attempt.label}: nothing could be downloaded`);
-          continue;
-        }
-      }
-      if (downloaded.length === 0) {
-        failures.push(`${attempt.label}: nothing could be downloaded`);
-        continue;
-      }
-
-      verified += 1;
-      let verdict: VisionVerdict | null = null;
-      let lastError = "";
-      for (let tryNo = 0; tryNo < 3 && !verdict; tryNo += 1) {
-        try {
-          verdict = await deps.verify({
-            entityName: entity.name,
-            entityDescriptor: entity.descriptor,
-            entityType: entity.type,
-            mode: attempt.mode,
-            context: attempt.mode === "context" ? context : "",
-            images: downloaded.map((item, index) => ({
-              index,
-              data: item.data,
-              mime: item.mime,
-              title: item.candidate.title,
-              description: item.candidate.description,
-              tags: item.candidate.categories,
-            })),
-          });
-        } catch (error) {
-          lastError = describe(error);
-          if (tryNo < 2) await new Promise<void>((resolve) => setTimeout(resolve, 3000 * (tryNo + 1)));
-        }
-      }
-      if (!verdict) {
-        // Gemini unreachable: this is NOT a rejection. Do not burn the attempt.
-        verified -= 1;
-        pool.forEach((c) => seen.delete(candidateKey(c)));
-        failures.push(`${attempt.label}: Gemini unavailable (not rejected) - ${lastError}`);
-        break;
-      }
-
-      console.log(
-        `[broll] Vision "${entity.name}" try ${verified}/${MAX_VERIFY_ATTEMPTS} (${attempt.label}): ` +
-        `pick=${verdict.pickIndex} confidence=${verdict.confidence.toFixed(2)} - ${verdict.reason}`,
-      );
-
-      const chosen = verdict.pickIndex === null ? undefined : downloaded[verdict.pickIndex];
-      if (!verdictAccepts(verdict) || !chosen) {
-        failures.push(`${attempt.label}: ${verdictRejectionReason(verdict)}`);
-        continue;
-      }
-
-      try {
-        const selected = chosen.file;
-        const preparedImage = {
-          ...(await deps.prepareFullscreen(selected.bytes, entity.type, selected.cacheKey)),
-          sourceFile: selected.sourceFile,
-        };
-        return {
-          item: {
-            id: `entity-${entity.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
-            kind: "fullscreen",
-            priority: ENTITY_PRIORITY,
-            desiredStart: entity.start,
-            desiredEnd: entity.end,
-            candidate: chosen.candidate,
-            alternatives: downloaded
-              .filter((_e, index) => index !== verdict.pickIndex)
-              .map((e) => attributionFor(e.candidate)),
-            prepared: preparedImage,
-            verification: toVerification(verdict, now()),
-            entityName: entity.name,
-            entityType: entity.type,
-            query: attempt.query,
-          },
-        };
-      } catch (error) {
-        failures.push(`${attempt.label}: prepare failed - ${describe(error)}`);
-      }
+    const query = entity.wikipediaTitle ?? entity.name;
+    let candidate: BrollCandidate | null;
+    try {
+      candidate = await deps.findEntityImage(query);
+    } catch (error) {
+      return {
+        skip: {
+          stage: "search",
+          entity: entity.name,
+          reason: `Wikipedia image lookup failed: ${describe(error)}`.slice(0, 600),
+        },
+      };
+    }
+    if (!candidate) {
+      return { skip: { stage: "search", entity: entity.name, reason: "No usable Wikipedia image." } };
     }
 
-    const stage =
-      verified === 0 && failures.some((failure) => failure.includes("nothing could be downloaded"))
-        ? "download"
-        : verified === 0
-          ? "search"
-          : "verify";
-
-    return {
-      skip: {
-        stage,
-        entity: entity.name,
-        reason: `Failed ${verified}/${MAX_VERIFY_ATTEMPTS} verification attempt(s) - ${failures.join(" | ")}`.slice(0, 600),
-      },
-    };
+    let file: Awaited<ReturnType<BrollPlanDeps["download"]>>;
+    try {
+      file = await deps.download(candidate);
+    } catch (error) {
+      return {
+        skip: {
+          stage: "download",
+          entity: entity.name,
+          reason: `Could not download the Wikipedia image: ${describe(error)}`.slice(0, 600),
+        },
+      };
+    }
+    try {
+      const preparedImage = {
+        ...(await deps.prepareFullscreen(file.bytes, entity.type, file.cacheKey)),
+        sourceFile: file.sourceFile,
+      };
+      return {
+        item: {
+          id: `entity-${entity.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+          kind: "fullscreen",
+          priority: ENTITY_PRIORITY,
+          desiredStart: entity.start,
+          desiredEnd: entity.end,
+          candidate,
+          prepared: preparedImage,
+          entityName: entity.name,
+          entityType: entity.type,
+          query,
+        },
+      };
+    } catch (error) {
+      return {
+        skip: {
+          stage: "download",
+          entity: entity.name,
+          reason: `Could not prepare the Wikipedia image: ${describe(error)}`.slice(0, 600),
+        },
+      };
+    }
   };
 
   // All entities in parallel (the limiters in broll-sources.ts keep the APIs polite).
@@ -473,8 +274,6 @@ export async function buildBrollPlan(
       candidates: BrollCandidate[];
       cursor: number;
       file?: { cacheKey: string; sourceFile: string; bytes: Buffer };
-      thumb?: { data: string; mime: string };
-      flagged: boolean;
     }
     const entries: CardEntry[] = [];
 
@@ -518,7 +317,6 @@ export async function buildBrollPlan(
         end: moment.end,
         candidates: result.candidates.slice(0, CARD_CANDIDATES_PER_KEYWORD),
         cursor: 0,
-        flagged: false,
       });
     }
 
@@ -528,7 +326,6 @@ export async function buildBrollPlan(
         try {
           const file = await deps.download(entry.candidates[entry.cursor]);
           entry.file = file;
-          entry.thumb = await deps.thumbnail(file.bytes);
           return true;
         } catch (error) {
           const reason = error instanceof Error ? error.message : String(error);
@@ -541,7 +338,7 @@ export async function buildBrollPlan(
       return false;
     };
     await Promise.all(entries.map((entry) => load(entry)));
-    const loaded = entries.filter((entry) => entry.file && entry.thumb);
+    const loaded = entries.filter((entry) => entry.file);
     for (const entry of entries) {
       if (!entry.file) {
         skipped.push({
@@ -551,60 +348,7 @@ export async function buildBrollPlan(
       }
     }
 
-    // 3c. ONE batched vision request; flagged cards (text / unrelated) get the next
-    //     candidate and are re-checked once. Nothing is ever skipped here.
-    if (deps.verifyCards && deps.visionAvailable && loaded.length > 0) {
-      try {
-        for (let round = 0; round < 2; round += 1) {
-          const pending = loaded.filter(
-            (entry) => round === 0 || entry.flagged,
-          );
-          if (pending.length === 0) break;
-          const verdicts = await deps.verifyCards(
-            pending.map((entry) => ({
-              id: entry.id,
-              keyword: entry.query,
-              image: entry.thumb as { data: string; mime: string },
-            })),
-          );
-          const byId = new Map(
-            verdicts.map((verdict) => [verdict.id, verdict]),
-          );
-          for (const entry of pending) {
-            const verdict = byId.get(entry.id);
-            entry.flagged = verdict
-              ? verdict.hasText || !verdict.relevant
-              : false;
-          }
-          if (round === 1) break;
-          for (const entry of pending.filter(
-            (candidate) => candidate.flagged,
-          )) {
-            const before = {
-              cursor: entry.cursor,
-              file: entry.file,
-              thumb: entry.thumb,
-            };
-            entry.cursor += 1;
-            if (!(await load(entry))) {
-              Object.assign(entry, before); // nothing better: keep the current image
-              entry.flagged = false;
-            }
-          }
-        }
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
-        notes.push(
-          `Card check failed (${reason}); using the top result for each keyword.`,
-        );
-      }
-    } else if (loaded.length > 0 && !deps.visionAvailable) {
-      notes.push(
-        "No Gemini key: stock cards were not checked for text or relevance.",
-      );
-    }
-
-    // 3d. Prepare the final pick of every entry.
+    // 3c. Prepare the final pick of every entry.
     for (const entry of loaded) {
       const file = entry.file;
       if (!file) continue;
@@ -681,7 +425,6 @@ export async function buildBrollPlan(
       ...(source.alternatives && source.alternatives.length > 0
         ? { alternatives: source.alternatives }
         : {}),
-      ...(source.verification ? { verification: source.verification } : {}),
       ...(source.entityName ? { entityName: source.entityName } : {}),
       ...(source.entityType ? { entityType: source.entityType } : {}),
     };

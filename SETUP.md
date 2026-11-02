@@ -46,7 +46,7 @@ npm install
 - `@remotion/bundler` + `@remotion/renderer` → the headless browser Remotion needs
   to paint transparent caption / hook / CTA frames (first render downloads Chromium automatically)
 - `onnxruntime-node` → the ONNX runtime that runs the committed YuNet face model
-  (fully local, no vision API)
+  (fully local, no external API)
 
 ---
 
@@ -220,10 +220,9 @@ tracking design (audio↔motion fusion, hysteresis, the locked split-screen pane
 
 ## 6b. B-roll (optional, no setup needed)
 
-Every clip gets a B-roll plan after detection: entity photos from **Wikimedia
-Commons** (which needs no key) and landscape cards from stock providers. It works
-out of the box once a Gemini key is saved, because Gemini Vision verifies every
-full-screen image.
+Every clip gets a B-roll plan after detection. Named people, places and events use
+their Wikipedia article image as a full-screen image; keyword moments use landscape
+cards from stock providers. Named-entity images need no API key.
 
 To make landscape cards available, save any of these on **Settings → AI providers**
 (one card per provider, each with **Test** and **Save**):
