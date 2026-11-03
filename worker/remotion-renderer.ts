@@ -17,7 +17,6 @@ export interface PreparedCaptionOverlays {
 
 export interface PrepareRemotionOverlaysOptions {
   fps: number;
-  totalDuration: number;
   hookText: string;
   hookDuration: number;
   hookStart: number;
@@ -30,6 +29,8 @@ export interface PrepareRemotionOverlaysOptions {
   ctaStyle: OverlayStylePreset;
   captionLiftScale?: number;
   onProgress?: (progress: number) => void;
+  /** Final clip length (incl. hook). The merged layer is padded to this. */
+  totalDuration?: number;
   isCancelled?: () => boolean;
 }
 
@@ -126,7 +127,7 @@ export async function prepareRemotionCaptionOverlays(
   options: PrepareRemotionOverlaysOptions,
 ): Promise<PreparedCaptionOverlays> {
   const fps = normalizeFps(options.fps);
-  const totalDuration = Math.max(0.1, options.totalDuration);
+  const totalDuration = Math.max(0.1, options.totalDuration ?? 0.1);
   const durationInFrames = Math.max(1, Math.round(totalDuration * fps));
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "clipcraft-remotion-"));
   const outputDir = path.join(workDir, "frames");
@@ -249,6 +250,8 @@ export interface PrepareBrollOverlaysOptions {
   captionTextColor?: string;
   captionBand?: { top: number; bottom: number };
   onProgress?: (progress: number) => void;
+  /** Final clip length (incl. hook). The merged B-roll layer is padded to this. */
+  totalDuration?: number;
   isCancelled?: () => boolean;
 }
 
@@ -303,10 +306,12 @@ function mergeBrollPieces(
   workDir: string,
   pieces: BrollPiece[],
   fps: number,
+  totalFrames: number,
 ): OverlayFrameSequence {
   if (pieces.length === 0) throw new Error("No B-roll frames were rendered.");
-  const first = Math.min(...pieces.map((piece) => piece.startFrame));
+  const first = 0; // always start at frame 0 and run to the very end
   const last = Math.max(
+    totalFrames,
     ...pieces.map((piece) => piece.startFrame + piece.count),
   );
   const mergedDir = path.join(workDir, "merged");
@@ -453,7 +458,14 @@ export async function prepareRemotionBrollOverlays(
       options.onProgress?.(Math.round(((index + 1) / total) * 100));
     }
 
-    const sequences = [mergeBrollPieces(workDir, pieces, fps)];
+    const sequences = [
+      mergeBrollPieces(
+        workDir,
+        pieces,
+        fps,
+        Math.ceil((options.totalDuration ?? 0) * fps),
+      ),
+    ];
     log.ok(
       `Remotion B-roll ready: ${options.items.length} item(s) merged into 1 layer`,
     );

@@ -618,6 +618,7 @@ export async function processClipJob(
               : [];
           preparedBroll = await prepareRemotionBrollOverlays({
             fps: renderFps,
+            totalDuration,
             items: usable.map(({ item }, index) => ({
               id: item.id,
               kind: item.kind,
