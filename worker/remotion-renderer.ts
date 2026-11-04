@@ -1,11 +1,11 @@
 import fs from "fs";
 import os from "os";
 import path from "path";
-import zlib from "zlib";
 import { AppError, RenderCancelledError, toErrorMessage } from "../lib/errors";
 import { CaptionPreset, OverlayStylePreset, WordTimestamp } from "../lib/types";
 import { maskProfanity } from "../lib/profanity";
 import { log } from "../lib/logger";
+import { brollFramePhases } from "../lib/broll/animation";
 import { CaptionOverlayCompositionProps } from "../remotion/OverlayCompositions";
 import { OverlayFrameSequence } from "./ffmpeg-pipeline";
 import { normalizeFps } from "./ffmpeg-pipeline";
@@ -97,30 +97,33 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   });
 }
 
-function normalizePngSequence(outputDir: string): string {
+function normalizeFrameSequence(
+  outputDir: string,
+  extension: "png" | "jpeg",
+): string {
   const files = fs
     .readdirSync(outputDir)
-    .filter((file) => file.toLowerCase().endsWith(".png"))
+    .filter((file) => file.toLowerCase().endsWith(`.${extension}`))
     .map((file) => ({ file, index: Number(file.match(/(\d+)/)?.[1] ?? -1) }))
     .filter(({ index }) => Number.isFinite(index) && index >= 0)
     .sort((a, b) => a.index - b.index);
   if (files.length === 0)
-    throw new Error(`Remotion produced no PNG frames in ${outputDir}`);
+    throw new Error(`Remotion produced no ${extension.toUpperCase()} frames in ${outputDir}`);
 
   // Rename in two phases to avoid a collision if the renderer already happens
   // to use the ov_00001.png pattern.
   const temporary = files.map(({ file }, index) => {
-    const tempName = `__normalized_${String(index + 1).padStart(6, "0")}.png`;
+    const tempName = `__normalized_${String(index + 1).padStart(6, "0")}.${extension}`;
     fs.renameSync(path.join(outputDir, file), path.join(outputDir, tempName));
     return tempName;
   });
   temporary.forEach((file, index) => {
     fs.renameSync(
       path.join(outputDir, file),
-      path.join(outputDir, `ov_${String(index + 1).padStart(5, "0")}.png`),
+      path.join(outputDir, `ov_${String(index + 1).padStart(5, "0")}.${extension}`),
     );
   });
-  return path.join(outputDir, "ov_%05d.png");
+  return path.join(outputDir, `ov_%05d.${extension}`);
 }
 
 export async function prepareRemotionCaptionOverlays(
@@ -208,7 +211,7 @@ export async function prepareRemotionCaptionOverlays(
     );
     checkCancelled(options.isCancelled);
 
-    const inputPattern = normalizePngSequence(outputDir);
+    const inputPattern = normalizeFrameSequence(outputDir, "png");
     log.ok(`Remotion overlays ready: ${durationInFrames} transparent frames`);
     return {
       workDir,
@@ -260,98 +263,12 @@ export interface PreparedBrollOverlays {
   sequences: OverlayFrameSequence[];
 }
 
-function crc32(buf: Buffer): number {
-  let crc = 0xffffffff;
-  for (const byte of buf) {
-    let c = (crc ^ byte) & 0xff;
-    for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    crc = c ^ (crc >>> 8);
-  }
-  return (crc ^ 0xffffffff) >>> 0;
-}
-
-function pngChunk(type: string, data: Buffer): Buffer {
-  const length = Buffer.alloc(4);
-  length.writeUInt32BE(data.length);
-  const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
-  const crc = Buffer.alloc(4);
-  crc.writeUInt32BE(crc32(body));
-  return Buffer.concat([length, body, crc]);
-}
-
-/** Fully transparent RGBA PNG (used for the frames between two B-roll items). */
-function createBlankPng(width: number, height: number): Buffer {
-  const header = Buffer.alloc(13);
-  header.writeUInt32BE(width, 0);
-  header.writeUInt32BE(height, 4);
-  header[8] = 8; // bit depth
-  header[9] = 6; // RGBA
-  const raw = Buffer.alloc((width * 4 + 1) * height); // filter 0 + zero pixels
-  return Buffer.concat([
-    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-    pngChunk("IHDR", header),
-    pngChunk("IDAT", zlib.deflateSync(raw)),
-    pngChunk("IEND", Buffer.alloc(0)),
-  ]);
-}
-
-interface BrollPiece {
-  dir: string;
-  startFrame: number;
-  count: number;
-}
-
-/** One continuous ov_%05d.png sequence from all items; gaps are transparent frames. */
-function mergeBrollPieces(
-  workDir: string,
-  pieces: BrollPiece[],
-  fps: number,
-  totalFrames: number,
-): OverlayFrameSequence {
-  if (pieces.length === 0) throw new Error("No B-roll frames were rendered.");
-  const first = 0; // always start at frame 0 and run to the very end
-  const last = Math.max(
-    totalFrames,
-    ...pieces.map((piece) => piece.startFrame + piece.count),
-  );
-  const mergedDir = path.join(workDir, "merged");
-  fs.mkdirSync(mergedDir, { recursive: true });
-  const blank = path.join(workDir, "blank.png");
-  fs.writeFileSync(blank, createBlankPng(1080, 1920));
-
-  const owner = new Map<number, string>();
-  for (const piece of pieces) {
-    for (let i = 0; i < piece.count; i += 1) {
-      owner.set(
-        piece.startFrame + i,
-        path.join(piece.dir, `ov_${String(i + 1).padStart(5, "0")}.png`),
-      );
-    }
-  }
-  for (let frame = first; frame < last; frame += 1) {
-    const target = path.join(
-      mergedDir,
-      `ov_${String(frame - first + 1).padStart(5, "0")}.png`,
-    );
-    const source = owner.get(frame);
-    if (source) fs.renameSync(source, target);
-    else fs.copyFileSync(blank, target);
-  }
-  return {
-    name: "b-roll (merged)",
-    inputPattern: path.join(mergedDir, "ov_%05d.png"),
-    startAtSeconds: first / fps,
-  };
-}
-
 /**
- * Paint every B-roll item as its OWN short transparent PNG sequence.
+ * Paint every B-roll item as short image sequences.
  *
- * One sequence per item (instead of one clip-length layer) means 3 s of B-roll
- * costs 3 s of frames, and FFmpeg can place each sequence at its own start time -
- * which is also what keeps the overlay chain ordered: B-roll first, captions on
- * top. A single Chromium instance is reused for all items, because launching one
- * per item would dominate the render time.
+ * Fullscreen items use transparent PNGs for the enter/exit edges and opaque JPEGs
+ * for the animated hold. Cards retain a transparent PNG sequence. FFmpeg composites
+ * each sequence in order, with captions on top, and Chromium is reused across items.
  */
 export async function prepareRemotionBrollOverlays(
   options: PrepareBrollOverlaysOptions,
@@ -370,8 +287,9 @@ export async function prepareRemotionBrollOverlays(
       getRenderTimeoutMs(),
     );
     browser = await openBrowser("chrome", {});
+    const activeBrowser = browser;
 
-    const pieces: BrollPiece[] = [];
+    const sequences: OverlayFrameSequence[] = [];
     const total = Math.max(1, options.items.length);
     const totalFrames = options.items.reduce(
       (sum, item) =>
@@ -410,8 +328,16 @@ export async function prepareRemotionBrollOverlays(
       );
       checkCancelled(options.isCancelled);
 
-      await withTimeout(
-        renderFrames({
+      const renderRange = async (
+        label: string,
+        extension: "png" | "jpeg",
+        startFrame: number,
+        endFrame: number,
+      ): Promise<void> => {
+        const phaseDir = path.join(outputDir, label);
+        fs.mkdirSync(phaseDir, { recursive: true });
+        await withTimeout(
+          renderFrames({
           composition: {
             ...composition,
             width: 1080,
@@ -421,9 +347,11 @@ export async function prepareRemotionBrollOverlays(
           },
           serveUrl: bundleDir,
           inputProps,
-          outputDir,
-          imageFormat: "png",
-          puppeteerInstance: browser,
+          outputDir: phaseDir,
+          imageFormat: extension,
+          ...(extension === "jpeg" ? { jpegQuality: 88 } : {}),
+          frameRange: [startFrame, endFrame],
+          puppeteerInstance: activeBrowser,
           concurrency:
             Number(process.env.REMOTION_CONCURRENCY?.trim()) || undefined,
           onStart: () => undefined,
@@ -442,32 +370,34 @@ export async function prepareRemotionBrollOverlays(
               | "verbose"
               | "warn"
               | "error") || "info",
-        }),
-        getRenderTimeoutMs(),
-      );
-      checkCancelled(options.isCancelled);
+          }),
+          getRenderTimeoutMs(),
+        );
+        checkCancelled(options.isCancelled);
+        const inputPattern = normalizeFrameSequence(phaseDir, extension);
+        sequences.push({
+          name: `b-roll ${item.id} ${label}`,
+          inputPattern,
+          startAtSeconds: item.start + startFrame / fps,
+        });
+      };
 
-      normalizePngSequence(outputDir);
-      pieces.push({
-        dir: outputDir,
-        startFrame: Math.max(0, Math.round(item.start * fps)),
-        count: fs
-          .readdirSync(outputDir)
-          .filter((file) => /^ov_\d+\.png$/.test(file)).length,
-      });
+      if (item.kind === "fullscreen") {
+        for (const phase of brollFramePhases(durationInFrames, fps))
+          await renderRange(
+            phase.name,
+            phase.format,
+            phase.startFrame,
+            phase.endFrame,
+          );
+      } else {
+        await renderRange("card", "png", 0, durationInFrames - 1);
+      }
       options.onProgress?.(Math.round(((index + 1) / total) * 100));
     }
 
-    const sequences = [
-      mergeBrollPieces(
-        workDir,
-        pieces,
-        fps,
-        Math.ceil((options.totalDuration ?? 0) * fps),
-      ),
-    ];
     log.ok(
-      `Remotion B-roll ready: ${options.items.length} item(s) merged into 1 layer`,
+      `Remotion B-roll ready: ${options.items.length} item(s) in ${sequences.length} image sequence(s)`,
     );
     return { workDir, sequences };
   } catch (error) {

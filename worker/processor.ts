@@ -583,7 +583,7 @@ export async function processClipJob(
     let preparedBroll: PreparedBrollOverlays | null = null;
     let brollSequences: OverlayFrameSequence[] = [];
     let brollFileCount = 0;
-    let sfx: Array<{ filePath: string; atSeconds: number }> = [];
+    let sfx: Array<{ filePath: string; atSeconds: number; volume?: number }> = [];
     let brollMediaServer: ClipMediaServer | null = null;
     const brollPlan = clip.broll ?? null;
     if (brollPlan && brollPlan.items.length > 0) {
@@ -644,6 +644,7 @@ export async function processClipJob(
             ).map((cue) => ({
               filePath: path.join(process.cwd(), "public", "sfx", cue.file),
               atSeconds: cue.atSeconds,
+              volume: cue.volume,
             }));
             sfx = sfx.filter((cue) => fs.existsSync(cue.filePath));
           }

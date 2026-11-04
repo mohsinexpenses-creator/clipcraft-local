@@ -2,7 +2,6 @@ import React from "react";
 import {
   AbsoluteFill,
   Img,
-  interpolate,
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
@@ -101,7 +100,8 @@ export const BrollOverlayComposition: React.FC<
       <AbsoluteFill
         style={{
           opacity: style.opacity,
-          transform: `translateY(${style.translateY}px) scale(${style.scale})`,
+          transform: `scale(${style.scale})`,
+          transformOrigin: "center center",
         }}
       >
         <Img
@@ -113,31 +113,27 @@ export const BrollOverlayComposition: React.FC<
             transform: `scale(${style.mediaScale}) translateX(${style.mediaX}px)`,
           }}
         />
+        {/* Scrim and caption band scale with the image during the bounce. */}
+        <AbsoluteFill
+          style={{
+            background: `linear-gradient(180deg, rgba(0,0,0,0) ${Math.round((scrimTop / height) * 100)}%, ${
+              treatment.scrimColor
+            } 100%)`,
+          }}
+        />
+        <div
+          style={{
+            position: "absolute",
+            left: Math.round(width * 0.04),
+            top: pillTop,
+            width: Math.round(width * 0.92),
+            height: pillHeight,
+            borderRadius: Math.round(pillHeight * 0.22),
+            backgroundColor: treatment.pillColor,
+            opacity: 0.85,
+          }}
+        />
       </AbsoluteFill>
-
-      {/* Scrim: the caption's own colour decides whether it is dark or light. */}
-      <AbsoluteFill
-        style={{
-          opacity: interpolate(style.opacity, [0, 1], [0, 1], {
-            extrapolateRight: "clamp",
-          }),
-          background: `linear-gradient(180deg, rgba(0,0,0,0) ${Math.round((scrimTop / height) * 100)}%, ${
-            treatment.scrimColor
-          } 100%)`,
-        }}
-      />
-      <div
-        style={{
-          position: "absolute",
-          left: Math.round(width * 0.04),
-          top: pillTop,
-          width: Math.round(width * 0.92),
-          height: pillHeight,
-          borderRadius: Math.round(pillHeight * 0.22),
-          backgroundColor: treatment.pillColor,
-          opacity: style.opacity * 0.85,
-        }}
-      />
     </AbsoluteFill>
   );
 };

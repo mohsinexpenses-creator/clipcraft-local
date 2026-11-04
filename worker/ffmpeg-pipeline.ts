@@ -64,7 +64,7 @@ export interface ProcessSegmentOptions {
    * timeline position and mixed UNDER the voice with `normalize=0`, so the
    * speaker's level does not change when B-roll appears.
    */
-  sfx?: Array<{ filePath: string; atSeconds: number }>;
+  sfx?: Array<{ filePath: string; atSeconds: number; volume?: number }>;
   /** Effect gain (default 0.28 - audible, never competing with speech). */
   sfxVolume?: number;
   /** Original segment-relative words, used only for render-time profanity audio handling. */

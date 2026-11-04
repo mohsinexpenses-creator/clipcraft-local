@@ -4,6 +4,7 @@ import path from 'node:path';
 import test from 'node:test';
 import {
   BROLL_SFX_FILES,
+  BROLL_SFX_EXIT_VOLUME,
   BROLL_SFX_VOLUME,
   buildBrollSfxCues,
   buildSfxMixPlan,
@@ -35,6 +36,8 @@ test('one cue enters and one exits per item, and they are ordered by time', () =
     ]
   );
   assert.ok(cues.every((cue) => cue.file === BROLL_SFX_FILES.enter || cue.file === BROLL_SFX_FILES.exit));
+  assert.equal(cues.find((cue) => cue.kind === 'in')?.volume, BROLL_SFX_VOLUME);
+  assert.equal(cues.find((cue) => cue.kind === 'out')?.volume, BROLL_SFX_EXIT_VOLUME);
 });
 
 test('cues too close together are dropped, so two images 3 s apart do not machine-gun', () => {
@@ -71,10 +74,11 @@ test('each effect is delayed to its own timestamp and padded, then mixed without
   const plan = buildSfxMixPlan({
     baseLabel: '[a]',
     cueInputIndices: [5, 6],
-    cues: [{ atSeconds: 3 }, { atSeconds: 9 }],
+    cues: [{ atSeconds: 3 }, { atSeconds: 9, volume: 0.18 }],
     totalDuration: 63,
   });
   assert.equal(plan.statements.length, 3);
+  assert.match(plan.statements[1], /volume=0\.18/);
   const mix = plan.statements[2];
   assert.match(mix, /\[a\]\[sfx0\]\[sfx1\]amix=inputs=3/);
   assert.match(mix, /duration=first/);

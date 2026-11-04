@@ -14,7 +14,8 @@
  *  - nothing is scheduled outside the rendered timeline.
  */
 
-export const BROLL_SFX_VOLUME = 0.5;
+export const BROLL_SFX_VOLUME = 0.28;
+export const BROLL_SFX_EXIT_VOLUME = 0.18;
 /** Minimum spacing between two cues (s). */
 export const BROLL_SFX_MIN_SPACING = 0.35;
 
@@ -30,6 +31,7 @@ export interface BrollSfxCue {
   atSeconds: number;
   /** `in` on the item's first frame, `out` just before its last. */
   kind: "in" | "out";
+  volume: number;
 }
 
 /**
@@ -54,6 +56,14 @@ export function buildBrollSfxCues(
         file: BROLL_SFX_FILES.enter,
         atSeconds: item.start,
         kind: "in",
+        volume: BROLL_SFX_VOLUME,
+      });
+    if (Number.isFinite(item.end))
+      raw.push({
+        file: BROLL_SFX_FILES.exit,
+        atSeconds: item.end - 0.12,
+        kind: "out",
+        volume: BROLL_SFX_EXIT_VOLUME,
       });
   }
 
@@ -104,7 +114,7 @@ export interface SfxMixPlan {
 export function buildSfxMixPlan(input: {
   baseLabel: string;
   cueInputIndices: number[];
-  cues: Array<{ atSeconds: number }>;
+  cues: Array<{ atSeconds: number; volume?: number }>;
   totalDuration: number;
   volume?: number;
 }): SfxMixPlan {
@@ -115,7 +125,7 @@ export function buildSfxMixPlan(input: {
     buildSfxStreamStatement({
       cue: { atSeconds: input.cues[index]?.atSeconds ?? 0, inputIndex },
       totalDuration: input.totalDuration,
-      volume: input.volume ?? BROLL_SFX_VOLUME,
+      volume: input.cues[index]?.volume ?? input.volume ?? BROLL_SFX_VOLUME,
       index,
     }),
   );
