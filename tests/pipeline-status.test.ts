@@ -138,14 +138,14 @@ test('a failed detection run surfaces the job error on the analysis step', () =>
 
 test('a failed transcription surfaces on the transcript step', () => {
   const status = pipelineStatusForVideo(
-    video({ status: 'failed', error: 'whisper.cpp binary not found.' }),
+    video({ status: 'failed', error: 'Deepgram transcription failed.' }),
     [],
-    [{ type: 'transcription', status: 'failed', progress: 0, videoId: 'video-1', error: 'whisper.cpp binary not found.' }]
+    [{ type: 'transcription', status: 'failed', progress: 0, videoId: 'video-1', error: 'Deepgram transcription failed.' }]
   );
 
   assert.equal(status.stage, 'failed');
   assert.equal(status.steps[0].state, 'failed');
-  assert.match(status.steps[0].error ?? '', /whisper/);
+  assert.match(status.steps[0].error ?? '', /Deepgram|transcription/i);
 });
 
 test('autoRender off leaves detected clips awaiting a manual render', () => {

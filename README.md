@@ -8,8 +8,8 @@ the full detected hook timestamp range, on-screen hook/CTA text, and word-synced
 Everything heavy runs **on your own machine** (Node.js only, no Python). Videos,
 transcripts, presets, and job state live in a local SQLite file (`./data/clipcraft.db`)
 using `better-sqlite3`; no database service or Docker is needed. The existing viral
-segment and hook/CTA generation calls use Google AI Studio; speech-to-text and face
-detection run locally with whisper.cpp and OpenCV YuNet.
+segment and hook/CTA generation calls use Google AI Studio; Deepgram handles
+transcription and face detection remains local through the existing YuNet flow.
 
 ---
 
@@ -25,8 +25,8 @@ pauses the chain: it recovers at the step where it stopped.
    captures the automation you want (`autoDetect` / `autoRender` + AI clip options);
    it is saved on the video record (`videos.pipeline_json`) so later retries and
    re-runs use exactly the same settings.
-2. **Transcribe** — whisper.cpp (local) produces a transcript with **word-level
-   timestamps**, stored in SQLite. (Optional Deepgram override if you set a key.)
+2. **Transcribe** — Deepgram produces the transcript with **word-level
+   timestamps**, stored in SQLite.
 3. **Detect viral segments** — the Gemini LLM picks the most promising windows and
    writes `{start, end, hookText, ctaText, reason, score}`. If it returns fewer
    clips than requested, a **top-up pass** tops the list up to the exact count.
@@ -145,7 +145,7 @@ Old built-in caption presets are removed from existing databases on the next sta
 | Queue            | SQLite jobs table — separate polling loops for transcription and rendering                      |
 | Worker           | long-running `tsx worker/index.ts` process (not serverless)                                     |
 | Video            | `ffmpeg-static` + `child_process` (no fluent-ffmpeg), mirrored before face tracking             |
-| Speech-to-text   | whisper.cpp (local binary + ggml model; optional Deepgram override)                             |
+| Speech-to-text   | Deepgram (cloud transcription)                                                                    |
 | Face detection   | OpenCV **YuNet** ONNX on `onnxruntime-node` (no face-api or external AI APIs)                    |
 | LLM              | Google AI Studio only — a 5-slot Gemini fallback chain in `lib/llm.ts` (plain `fetch`, no SDKs) |
 | Caption overlays | Remotion transparent frames painted in headless Chrome       |
@@ -162,10 +162,7 @@ npm install
 # 2. configure (DATABASE_PATH is optional; this is the default)
 copy .env.example .env.local   # set DATABASE_PATH / paths here; keys live in the app
 
-# 3. whisper.cpp model (Windows build is committed; this fetches the ggml model)
-npm run setup:whisper
-
-# 4. worker + web (or just double-click start-clipcraft.bat)
+# 3. worker + web (or just double-click start-clipcraft.bat)
 npm run worker
 npm run dev
 ```
@@ -181,7 +178,7 @@ renderer, and tells you exactly what to fix.
 ```
 app/                    Next.js pages + API routes
   page.tsx              the studio: library sidebar, live pipeline, clip grid
-  upload/               upload page (resumable chunks, optional YouTube import)
+  upload/               upload page (resumable chunks, file upload only)
   caption-presets/      caption style preset manager (live preview)
   prompt-templates/     edit the LLM prompt templates
   startup-validation/   pre-flight checks UI
@@ -192,7 +189,7 @@ app/                    Next.js pages + API routes
 lib/                    shared server logic
   llm.ts                Gemini fallback chain (config array, plain fetch)
   ai.ts                 prompt templates, JSON parsing, exact-count top-up
-  whisper.ts            whisper.cpp discovery + transcription
+  deepgram.ts           Deepgram transcription client
   ffmpeg.ts             FFmpeg/ffprobe resolution, stream probing + spawn wrapper
   queue.ts              SQLite job queue (transcription + clip render)
   pipeline.ts           the automatic chain: transcript -> detection -> render
@@ -216,8 +213,7 @@ worker/                 the long-running SQLite queue consumer
   ffmpeg-pipeline.ts    crop/overlay graph and single final H.264 encode
   remotion-renderer.ts  transparent overlay-frame renderer (Remotion)
 remotion/               compositions: captions, hook overlay, CTA overlay
-scripts/                setup-whisper.{mjs,ps1}, setup-yunet.mjs, verify-clip.ts
-bin/whisper-win-x64/    committed Windows whisper.cpp build (whisper-cli + DLLs)
+scripts/                setup-yunet.mjs, verify-clip.ts
 models/yunet/           committed YuNet face-detection model (232 KB)
 tests/                  node:test unit tests (tsx --test)
 docs/                   feature guides (layouts, overlays, viral prompt)

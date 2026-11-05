@@ -209,7 +209,7 @@ export interface VideoRecord {
   fileSize: number;
   status: "uploaded" | "transcribing" | "transcribed" | "failed";
   transcript?: TranscriptData;
-  transcriptionProvider?: "deepgram" | "whisper.cpp";
+  transcriptionProvider?: "deepgram";
   transcriptionModel?: string;
   /** Automatic chain configured for this video (see `PipelineOptions`). */
   pipeline?: PipelineOptions;
@@ -350,7 +350,7 @@ export const DEFAULT_RENDER_SETTINGS: RenderDefaults = {
   ctaDuration: 2.5,
 };
 
-export type TranscriptionProviderChoice = "auto" | "deepgram" | "whisper";
+export type TranscriptionProviderChoice = "auto" | "deepgram";
 
 export interface AiProviderSettings {
   /**
@@ -366,14 +366,13 @@ export interface AiProviderSettings {
   pixabayApiKey: string;
   /** Unsplash stock photos (landscape B-roll cards). Empty = provider unavailable. */
   unsplashApiKey: string;
-  /** Empty means "no cloud transcription"; local whisper.cpp is used. */
+  /** Empty means "no cloud transcription"; Deepgram must be configured. */
   deepgramApiKey: string;
   /** Empty means `nova-2`. */
   deepgramModel: string;
   /**
-   * `auto` prefers Deepgram when a key is configured and falls back to local
-   * whisper.cpp. The other two force one engine (and a missing setup then
-   * surfaces as a real error, which is what "forced" should mean).
+   * `auto` prefers Deepgram when a key is configured. `deepgram` forces the
+   * cloud engine and surfaces a missing key as a real error.
    */
   transcriptionProvider: TranscriptionProviderChoice;
 }
@@ -424,11 +423,10 @@ export const DEFAULT_PROFANITY_SETTINGS: ProfanitySettings = {
 };
 
 /**
- * Filesystem locations and binaries the worker uses. An empty string means
- * "automatic": the built-in location (`./uploads`, `./generated-clips`) or the
- * auto-detected binary (bundled ffmpeg / whisper.cpp, then PATH). A saved value
- * wins over the automatic chain - including the matching `.env.local` variable -
- * and applies from the next upload/render onwards without a restart.
+ * Filesystem locations the worker uses. An empty string means "automatic": the
+ * built-in location (`./uploads`, `./generated-clips`) or the bundled ffmpeg
+ * resolution chain. A saved value wins over the automatic chain and applies from
+ * the next upload/render onwards without a restart.
  */
 export interface PathSettings {
   /** Where uploaded source videos are stored. */
@@ -437,15 +435,12 @@ export interface PathSettings {
   clipsDir: string;
   /** Absolute path to the ffmpeg executable. */
   ffmpegPath: string;
-  /** Absolute path to the whisper.cpp CLI (`whisper-cli`) executable. */
-  whisperCliPath: string;
 }
 
 export const DEFAULT_PATH_SETTINGS: PathSettings = {
   uploadDir: "",
   clipsDir: "",
   ffmpegPath: "",
-  whisperCliPath: "",
 };
 
 export interface AppSettings {
@@ -466,8 +461,6 @@ export interface ResolvedPaths {
   clipsDir: string;
   ffmpegPath: string;
   ffprobePath: string;
-  /** `''` when no whisper.cpp CLI could be found anywhere. */
-  whisperCliPath: string;
 }
 
 /** Per-key origin of every effective value, rendered as a chip on each row. */

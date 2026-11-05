@@ -28,7 +28,7 @@ export interface PipelineDetail {
     height: number
     fileSize: number
     status: "uploaded" | "transcribing" | "transcribed" | "failed"
-    transcriptionProvider?: "deepgram" | "whisper.cpp"
+    transcriptionProvider?: "deepgram"
     transcriptionModel?: string
     pipeline?: PipelineOptions
     error?: string

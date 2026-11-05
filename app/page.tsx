@@ -90,10 +90,7 @@ function formatTranscriptionEngine(video: {
   transcriptionModel?: string;
 }) {
   if (!video.transcriptionProvider) return "engine pending";
-  if (video.transcriptionProvider === "deepgram") {
-    return `Deepgram · ${video.transcriptionModel || "nova-2"}`;
-  }
-  return `whisper.cpp · ${video.transcriptionModel || "local model"}`;
+  return `Deepgram · ${video.transcriptionModel || "nova-2"}`;
 }
 
 /** Sidebar row: name, one status line, and a hairline progress bar when active. */

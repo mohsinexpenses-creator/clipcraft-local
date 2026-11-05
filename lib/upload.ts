@@ -13,7 +13,7 @@ import { getPlannedTranscriptionEngine } from './whisper';
 /**
  * Helpers shared by every upload endpoint:
  *
- *   POST /api/upload                    - small single-shot multipart upload (+ YouTube import)
+ *   POST /api/upload                    - small single-shot multipart upload
  *   POST /api/upload/session            - start a resumable chunked upload (no size limit)
  *   PUT  /api/upload/session/[id]       - append one chunk
  *   POST /api/upload/session/[id]       - finalise (probe + save + enqueue transcription)
@@ -268,7 +268,7 @@ export async function buildVideoRecord(
 /**
  * Queue the transcription (step 1 of the automatic chain) and persist the
  * outcome; never throws. An already queued/running pass is left alone, so a
- * retried finalize cannot stack two whisper runs for the same video.
+ * retried finalize cannot stack two transcription runs for the same video.
  */
 export async function queueTranscription(video: VideoRecord): Promise<boolean> {
   try {

@@ -599,8 +599,7 @@ function ProvidersCard({
             <p className="mt-1 text-[12px] leading-snug text-muted-foreground">
               Viral detection runs on Google AI Studio. Keys are tried in order
               and rotate on a 429, so a second free key is real redundancy.
-              Deepgram is optional: set a key only to transcribe in the cloud
-              instead of with local whisper.cpp.
+              Deepgram is optional: set a key only to transcribe in the cloud.
             </p>
           </div>
         </div>
@@ -908,10 +907,9 @@ function ProvidersCard({
               </div>
             ) : (
               <p className="text-[11px] leading-snug text-muted-foreground">
-                Nothing saved yet, so transcription runs on local whisper.cpp -
-                a key is only needed for cloud transcription. Test asks Deepgram
-                without storing anything; Save stores it for the next upload.
-              </p>
+                    Nothing saved yet, so Deepgram is not configured. Test asks Deepgram
+                    without storing anything; Save stores it for the next upload.
+                  </p>
             )}
           </div>
 
@@ -1293,25 +1291,24 @@ function EngineChoice({
   busy,
 }: {
   value: string;
-  save: (next: "auto" | "deepgram" | "whisper") => Promise<boolean>;
+  save: (next: "auto" | "deepgram") => Promise<boolean>;
   busy: boolean;
 }) {
   return (
     <Segmented
       ariaLabel="Transcription engine"
-      value={value as "auto" | "deepgram" | "whisper"}
+      value={value as "auto" | "deepgram"}
       disabled={busy}
       onChange={(next) => void save(next)}
       options={[
         {
           value: "auto",
           label: "Auto",
-          hint: "Deepgram when a key exists, otherwise whisper.cpp",
+          hint: "Deepgram when a key exists",
         },
-        { value: "whisper", label: "Local", hint: "Always whisper.cpp" },
         {
           value: "deepgram",
-          label: "Cloud",
+          label: "Deepgram",
           hint: "Always Deepgram - errors if no key",
         },
       ]}
@@ -1320,15 +1317,12 @@ function EngineChoice({
 }
 
 function ProviderSummary({ settings }: { settings: SettingsController }) {
-  const whisperOnly =
-    settings.effective?.ai.transcriptionProvider === "whisper";
   const hasKey = Boolean(settings.effective?.ai.deepgramApiKey);
-  if (whisperOnly || !hasKey) {
+  if (!hasKey) {
     return (
       <p className="flex items-start gap-1.5 rounded-lg bg-muted/30 px-2.5 py-2 text-[11px] leading-snug text-muted-foreground">
         <Cpu className="mt-0.5 size-3.5 shrink-0" />
-        Transcription runs locally with whisper.cpp - no audio leaves this
-        machine.
+        Add a Deepgram key before a transcript can be generated.
       </p>
     );
   }
@@ -1617,11 +1611,6 @@ const PATH_FIELDS = [
     label: "FFmpeg path",
     hint: "Absolute path to the ffmpeg executable. Leave empty to use the bundled binary (ffmpeg-static) or whatever is on PATH. ffprobe is looked up beside it.",
   },
-  {
-    key: "whisperCliPath" as const,
-    label: "Whisper CLI path",
-    hint: "Absolute path to the whisper.cpp CLI (whisper-cli / whisper-cli.exe) used for local transcription. Leave empty to auto-detect bin/ and the bundled locations. Not needed when you transcribe with Deepgram.",
-  },
 ];
 
 function PathsCard({
@@ -1646,12 +1635,12 @@ function PathsCard({
     <SettingsCard
       section="paths"
       title="Paths & binaries"
-      description="Default locations for uploads and rendered clips, and the FFmpeg / whisper.cpp binaries that do the work. Leave a field empty to keep the automatic value shown below it - a saved value takes over from the next upload or render, no restart needed."
+      description="Default locations for uploads and rendered clips, and the FFmpeg binary that does the work. Leave a field empty to keep the automatic value shown below it - a saved value takes over from the next upload or render, no restart needed."
       icon={<FolderCog className="size-4" />}
       settings={settings}
       dirty={Object.keys(draft).length > 0}
       onSave={() => void save()}
-      footnote="A saved value takes precedence over .env.local (UPLOAD_DIR, FFMPEG_PATH, WHISPER_CLI_PATH)"
+      footnote="A saved value takes precedence over .env.local (UPLOAD_DIR, FFMPEG_PATH)"
     >
       <div className="grid gap-3.5">
         {PATH_FIELDS.map((field) => {
@@ -1660,10 +1649,7 @@ function PathsCard({
               ? resolved?.uploadDir
               : field.key === "clipsDir"
                 ? resolved?.clipsDir
-                : field.key === "ffmpegPath"
-                  ? resolved?.ffmpegPath
-                  : resolved?.whisperCliPath ||
-                    "not found - local transcription unavailable";
+                : resolved?.ffmpegPath || "not found - ffmpeg path unavailable";
           return (
             <div key={field.key} className="space-y-1">
               <Row

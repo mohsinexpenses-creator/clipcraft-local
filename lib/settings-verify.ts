@@ -354,7 +354,7 @@ export async function verifyDeepgramKey(
   return {
     target: "deepgram",
     // An authenticating key with no usable scope is a real problem to surface here,
-    // because the failure would otherwise show up later as a silent fallback to whisper.
+    // because the failure would otherwise show up later as a silent fallback in older builds.
     status: canTranscribe ? "ok" : "limited",
     label,
     latencyMs,

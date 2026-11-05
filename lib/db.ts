@@ -464,7 +464,7 @@ function migrateSchemaV4(db: SqliteDatabase): void {
 
 /**
  * Schema v5: the Settings page gained a sixth section - `paths` (upload /
- * generated-clips directories, FFmpeg and whisper.cpp binaries). SQLite CHECK
+ * generated-clips directories, FFmpeg and related runtime paths). SQLite CHECK
  * constraints cannot be altered in place, so the table is rebuilt with the
  * widened key list and the existing rows are carried over unchanged.
  */

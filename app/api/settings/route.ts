@@ -3,7 +3,6 @@ import { APP_SETTINGS_SECTIONS, AppSettingsSection, ResolvedPaths } from '@/lib/
 import { buildAppSettingsSnapshot, clearSettingsSection, envAiSectionForImport, saveSettingsSection } from '@/lib/app-settings';
 import { getCaptionPreset, getOverlayStylePreset, listCaptionPresets, listOverlayStylePresets } from '@/lib/db';
 import { getFfmpegPath, getFfprobePath } from '@/lib/ffmpeg';
-import { getWhisperCliPath } from '@/lib/whisper';
 import { getUploadDirValue } from '@/lib/upload';
 import { getClipsDirValue } from '@/lib/paths';
 import { AppError, toErrorMessage, toErrorStatus } from '@/lib/errors';
@@ -22,10 +21,9 @@ function resolveCurrentPaths(): ResolvedPaths {
       clipsDir: getClipsDirValue(),
       ffmpegPath: getFfmpegPath(),
       ffprobePath: getFfprobePath(),
-      whisperCliPath: getWhisperCliPath() ?? '',
     };
   } catch {
-    return { uploadDir: '', clipsDir: '', ffmpegPath: '', ffprobePath: '', whisperCliPath: '' };
+    return { uploadDir: '', clipsDir: '', ffmpegPath: '', ffprobePath: '' };
   }
 }
 

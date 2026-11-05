@@ -36,9 +36,10 @@ export async function GET(
  * "Transcribe again" / retry endpoint.
  *
  * It now only ENQUEUES the job. The previous version awaited `transcribeVideo()`
- * inside the request, which held the HTTP connection open for the whole whisper run
- * (minutes on a long video) - any proxy timeout or page refresh left the video stuck
- * in `transcribing` with no way to recover except editing SQLite by hand.
+ * inside the request, which held the HTTP connection open for the whole
+ * transcription run (minutes on a long video) - any proxy timeout or page refresh
+ * left the video stuck in `transcribing` with no way to recover except editing
+ * SQLite by hand.
  */
 export async function POST(
   _request: Request,

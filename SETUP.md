@@ -18,8 +18,8 @@ opens the browser. The steps below are what it does, manually.
 | Tool | Why | Check |
 |---|---|---|
 | Node.js 20+ (LTS) | Next.js 16, the worker, and `better-sqlite3` | `node -v` |
-| **Microsoft Visual C++ Redistributable (x64)** | `whisper-cli.exe` is a native build and needs `vcruntime140.dll` / `msvcp140.dll` | Install once: <https://aka.ms/vs/17/release/vc_redist.x64.exe> |
 | Google AI Studio API key | Viral-segment detection + hook/CTA text — pasted into **Settings → AI providers**, not into `.env.local` | Free: <https://aistudio.google.com/app/apikey> |
+| Deepgram API key | Cloud transcription for uploaded videos | Optional but required for transcript generation unless you add another supported key later |
 
 FFmpeg is normally provided by `ffmpeg-static` during `npm install`. VFR detection
 and `verify:clip` also use **ffprobe**; `ffmpeg-static` does not bundle it, so install
@@ -77,11 +77,7 @@ Both `npm run dev` and `npm run worker` load `.env.local` (via `@next/env`'s
 | Variable | Default | Notes |
 |---|---|---|
 | `DATABASE_PATH` | `./data/clipcraft.db` | Path to the SQLite database, relative to the repository root unless absolute. Parent folders are created automatically. Web and worker processes must use the same path; restart both after changing it. The file is ignored by Git. |
-| **moved to /settings** | — | `GEMINI_API_KEY`, `DEEPGRAM_API_KEY`, `DEEPGRAM_MODEL`, `WORKER_CONCURRENCY`, `VIRAL_CONCURRENCY`, `REMOTION_CONCURRENCY` and `PROFANITY_AUDIO_MODE` are no longer read from this file. Their values live in the `app_settings` table and are edited on **Settings** — the page even points out any of those names still sitting unused in your `.env.local`. The Gemini chain itself is unchanged: 5 slots, newest-first (`gemini-3.8-flash` → `3.6-flash` → `3.5-flash-lite` → `3.1-flash-lite` → `2.5-flash-lite`), each model with its own free daily pool, and every key you save is tried on each model before the next model — so a second key is real 503-redundancy. Model order lives in `LLM_PROVIDER_CHAIN` in `lib/llm.ts`; the other free providers were removed after live testing (Groq 413 + 429s, Cerebras 402 paid, Mistral ~1 RPM, NVIDIA NIM 404/410 + timeouts). |
-| `WHISPER_CLI_PATH` | auto-detect | Overrides binary discovery (searches `.whisper/…`, `bin/whisper-win-x64/whisper-cli.exe`, `bin/whisper-cli`). |
-| `WHISPER_MODEL_PATH` | auto-detect | Overrides model discovery (`models/ggml-*.bin`). |
-| `WHISPER_LANGUAGE` | `auto` | e.g. `ur`, `hi`, `en`. `auto` detects the spoken language (needed for Urdu/Hindi/Punjabi). |
-| `WHISPER_THREADS` | half your cores (2–8) | CPU threads for whisper. |
+| **moved to /settings** | — | `GEMINI_API_KEY`, `DEEPGRAM_API_KEY`, `DEEPGRAM_MODEL`, `WORKER_CONCURRENCY`, `VIRAL_CONCURRENCY`, `REMOTION_CONCURRENCY` and `PROFANITY_AUDIO_MODE` are no longer read from this file. Their values live in the `app_settings` table and are edited on **Settings** — the page even points out any of those names still sitting unused in your `.env.local`. |
 | `FFMPEG_PATH` | `ffmpeg-static` | Point at your own FFmpeg binary if the npm download failed. Must be FFmpeg ≥ 5.1 (`-fps_mode` is used). |
 | `FFPROBE_PATH` | sibling / PATH | Full path to a local ffprobe if it is not beside FFmpeg or on PATH. Needed for VFR detection and clip verification. |
 | `VIDEO_CRF` | `17` | Final libx264 quality; accepted range is 16–18 (lower means larger, higher-quality files). |
@@ -95,9 +91,6 @@ Both `npm run dev` and `npm run worker` load `.env.local` (via `@next/env`'s
 | **worker limits** | on `/settings` | Clip concurrency, viral-detection concurrency and Chrome tabs per render are set on **Settings → Worker & limits**. Keep clips at 1 on a normal PC: each job runs FFmpeg plus transparent overlay-frame generation. |
 | `REMOTION_LOG_LEVEL` | `info` | `verbose` when debugging a render. |
 | `REMOTION_TIMEOUT_MINUTES` | `60` | Per-render ceiling. |
-
-
-| `ENABLE_YT_IMPORT` | off | Set `1` to re-enable the (fragile) YouTube download path on the upload page. |
 | **profanity audio mode** | on `/settings` | Chosen on **Settings → Profanity & masking**: `mute` (silence the word), `beep` (1 kHz tone), `off` (leave the audio alone). Captions and overlay text are masked **regardless**; the stored transcript keeps the original words, so changing this only needs a re-render. |
 | `UPLOAD_DIR` | `uploads` | Where source videos + in-progress upload sessions are stored. |
 | `MAX_UPLOAD_MB` | `0` (unlimited) | Optional guard rail for a single upload. Long podcasts need no limit — leave at 0. |
@@ -127,9 +120,7 @@ Practical consequences worth knowing:
   writes into the table.
 - **Deepgram has its own Test + Save** in that card, because it is optional and easy to
   leave half-configured. Test calls `GET /v1/auth/token`, the key check Deepgram documents -
-  it answers for any key, so a rejection there is about the key and nothing else. Removing the
-  key (Save with the field empty, or the **Remove** link) falls transcription back to
-  whisper.cpp by itself.
+  it answers for any key, so a rejection there is about the key and nothing else.
 - keys are returned **masked** (`AIza…9f3`) and never in full. Pasting a masked entry back
   and saving means "keep that stored key", so you can reorder or trim the pool without
   retyping. Secrets sit in the git-ignored SQLite file — the same trust boundary as
@@ -167,35 +158,16 @@ up and re-upload them if they are still needed.
 
 ---
 
-## 5. Download a whisper.cpp model
+## 5. Transcription and file uploads
 
-The repo ships a **Windows x64** whisper.cpp build at `bin/whisper-win-x64/`
-(`whisper-cli.exe` + its DLLs). The ggml *models* are 75 MB–1.5 GB and are
-deliberately **not** committed — download one:
+This build intentionally supports only:
 
-```powershell
-npm run setup:whisper        # Node script (Windows/macOS/Linux)
-npm run setup:whisper:ps     # pure PowerShell equivalent
+- file upload via the web app (`multipart/form-data` only)
+- Deepgram transcription in the cloud
 
-# options
-npm run setup:whisper -- --model small --force
-```
-
-The script:
-
-1. fetches a whisper.cpp release binary into `.whisper/` (skipped on Windows when
-   the committed `bin/whisper-win-x64/whisper-cli.exe` exists; on macOS/Linux it
-   prints build-from-source instructions),
-2. downloads a ggml model into `models/` (default **`small`** — much better for
-   Urdu/Hindi; `tiny` faster/rougher, `medium`/`large-v3` best/slowest), and
-3. writes `WHISPER_CLI_PATH` / `WHISPER_MODEL_PATH` into `.env.local`.
-
-For non-English audio use `small` or better, and set `WHISPER_LANGUAGE=ur` (or
-leave `auto`).
-
-> If your network blocks GitHub/Hugging Face, download `ggml-small.bin` manually
-> from <https://huggingface.co/ggerganov/whisper.cpp/tree/main> into `models/` and
-> set `WHISPER_MODEL_PATH=models/ggml-small.bin`.
+There is no local transcription engine, no YouTube import tab, and no legacy local
+transcription setup to configure. The app reads a saved Deepgram key from
+**Settings → AI providers**, then runs transcription in the worker queue.
 
 ---
 
@@ -290,8 +262,7 @@ provider chain, and the Remotion renderer, and tells you exactly what to fix.
    so the rest of the chain keeps running with those settings after a reload, a
    retry, or a worker restart. It is editable per video from the dashboard's
    **Pipeline** panel.
-3. The worker transcribes with whisper.cpp (or Deepgram, if you opted in) and
-   stores word-level timestamps in SQLite.
+3. The worker transcribes with Deepgram and stores word-level timestamps in SQLite.
 4. **Detect viral segments** asks the Gemini chain (5-slot fallback) for
    `{start, end, hookText, ctaText, reason, score}` — with an automatic **top-up
    pass** if it returns fewer than the requested count. It is queued by the worker as
@@ -360,14 +331,6 @@ re-enqueuing. A render already marked `running` returns HTTP 409; wait for it to
 before submitting that clip again. Different clips from the same source video may
 render concurrently.
 
-**`whisper-cli.exe` fails with "VCRUNTIME140.dll was not found"**
-Install the VC++ redistributable (§1).
-
-**Whisper complains about an unknown option (`-ojf`, `-sow`, `-wt`)**
-Those are newer whisper.cpp flags. The committed build supports them; if you point
-`WHISPER_CLI_PATH` at an older build, use one that accepts `-ojf` (or re-run
-`npm run setup:whisper --force`).
-
 **Upload fails with a size error**
 The UI's resumable path has **no limit**. Size errors mean an optional guard rail
 is set: `MAX_UPLOAD_MB` (unlimited unless you set it) or `MAX_MULTIPART_MB` for the
@@ -429,7 +392,6 @@ network blocks it, allow the Chrome-for-Testing CDN, or run
 npm run worker           # SQLite-backed worker (transcription + rendering)
 npm run dev              # Next.js dev server
 npm run studio           # Remotion Studio — inspect CaptionComposition frame by frame
-npm run setup:whisper    # whisper.cpp binary (non-Windows) + ggml model
 npm run setup:yunet      # (re)download + verify the YuNet face model
 npm run typecheck        # tsc --noEmit
 npm test                 # node:test unit tests (tsx --test tests/*.test.ts)
@@ -445,7 +407,7 @@ npm run build            # production build
 ```
 app/api/videos/            upload, list, probe; [id]/transcript + [id]/detect-viral
 app/api/clips/             list, create/render, [id] (status/file), [id]/cancel
-app/api/upload/            single-shot multipart (capped) + optional YouTube import
+app/api/upload/            single-shot multipart upload (file only)
 app/api/upload/session/    resumable chunked upload (no limit) + finalize/abort
 app/api/media/[...path]/   Range-enabled HTTP file server for uploads/ + generated-clips/
 app/api/{caption,overlay,text}-presets/ + prompt-templates/ + startup-validation/
@@ -456,8 +418,8 @@ lib/upload.ts              shared upload policy: names, sizes, video record, enq
 lib/upload-session.ts      resumable sessions on disk (append, finalize, TTL sweep)
 lib/upload-client.ts       browser chunking, progress, retry + resume
 lib/ffmpeg.ts              FFmpeg/ffprobe resolution + structured stream probe + spawn wrapper
-lib/whisper.ts             cross-platform whisper.cpp discovery & transcription
-lib/deepgram.ts            optional cloud STT override (REST, no SDK)
+lib/whisper.ts             deepgram-compatible transcription shim (legacy local engine removed)
+lib/deepgram.ts            cloud STT override (REST, no SDK)
 lib/queue.ts               prepared SQLite jobs: atomic claims, retries, and recovery
 lib/llm.ts                 Gemini fallback chain (config array + plain fetch, no SDKs)
 lib/ai.ts                  prompt templates + JSON parsing + exact-count top-up
@@ -476,11 +438,9 @@ worker/layout.ts           speaker-focus vs split-grid plans (peak-concurrent ce
 worker/camera-lock.ts      locked split-pane camera (hold still, re-centre only when the head leaves)
 worker/overlay-layout.ts   layout-aware caption / hook / CTA placement (off the faces in a split)
 worker/ffmpeg-pipeline.ts  One final FFmpeg graph: hflip → crop → colour → hook → overlays → H.264
-worker/remotion-renderer.ts  transparent full-timeline overlay PNG sequence (Remotion)
+worker/remotion-renderer.ts transparent full-timeline overlay PNG sequence (Remotion)
 remotion/                  CaptionComposition + AnimatedWord + Hook/CTA overlays
-scripts/setup-whisper.*    binary + ggml model downloader (.mjs and .ps1)
 scripts/setup-yunet.mjs    YuNet model downloader with SHA-256 verification
 scripts/verify-clip.ts     ffprobe report for resolution, rates, stream timing and bitrates
 models/yunet/              committed YuNet face-detection model (232 KB)
-bin/whisper-win-x64/       committed Windows x64 whisper.cpp build (whisper-cli + DLLs)
 ```

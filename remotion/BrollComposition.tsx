@@ -14,10 +14,10 @@ import type { BrollCardRect } from "../lib/types";
  *
  * FFmpeg composites this PNG sequence directly onto the crop BEFORE the caption
  * sequence, so captions always sit ON TOP of B-roll and stay readable: when a
- * full-screen image is visible the composition paints a bottom scrim (plus a soft
- * pill across the caption band) whose colour is chosen from the caption text's
- * luminance - dark scrim for light text, light scrim for dark text. No caption
- * preset is modified, and with B-roll off this composition is never used.
+ * full-screen image is visible the composition paints a subtle bottom scrim whose
+ * colour is chosen from the caption text's luminance - dark scrim for light text,
+ * light scrim for dark text. No caption preset is modified, and with B-roll off
+ * this composition is never used.
  */
 export interface BrollOverlayCompositionProps extends Record<string, unknown> {
   kind: "fullscreen" | "landscape";
@@ -29,7 +29,7 @@ export interface BrollOverlayCompositionProps extends Record<string, unknown> {
   durationSeconds: number;
   /** Caption colour, so the scrim can guarantee contrast. */
   captionTextColor?: string;
-  /** Caption block on the canvas (full-screen scrim + pill placement). */
+  /** Caption band on the canvas, used only for readable scrim placement. */
   captionBand?: { top: number; bottom: number };
 }
 
@@ -44,10 +44,11 @@ export const BrollOverlayComposition: React.FC<
   captionBand,
 }) => {
   const frame = useCurrentFrame();
-  const { fps, width, height } = useVideoConfig();
+  const { fps } = useVideoConfig();
   const elapsed = frame / fps;
   const style = brollFrameStyle(kind, elapsed, durationSeconds);
   const treatment = captionContrastTreatment(captionTextColor);
+  void captionBand;
 
   if (kind === "landscape" && card) {
     const mediaScale = style.mediaScale;
@@ -84,16 +85,7 @@ export const BrollOverlayComposition: React.FC<
   }
 
   // Full screen: the image fills the canvas, the scrim sits under the captions.
-  const band = captionBand ?? {
-    top: Math.round(height * 0.64),
-    bottom: Math.round(height * 0.75),
-  };
-  const scrimTop = Math.max(0, Math.round(height * 0.42));
-  const pillTop = Math.max(0, Math.min(height - 40, band.top + 8));
-  const pillHeight = Math.max(
-    40,
-    Math.min(height - pillTop, band.bottom - band.top + 56),
-  );
+  const gradientScrim = treatment.textIsLight ? "rgba(0,0,0,0.4)" : "rgba(255,255,255,0.4)";
 
   return (
     <AbsoluteFill style={{ backgroundColor: "transparent" }}>
@@ -113,24 +105,10 @@ export const BrollOverlayComposition: React.FC<
             transform: `scale(${style.mediaScale}) translateX(${style.mediaX}px)`,
           }}
         />
-        {/* Scrim and caption band scale with the image during the bounce. */}
+        {/* Keep the caption area readable without the oversized dark pill behind the text. */}
         <AbsoluteFill
           style={{
-            background: `linear-gradient(180deg, rgba(0,0,0,0) ${Math.round((scrimTop / height) * 100)}%, ${
-              treatment.scrimColor
-            } 100%)`,
-          }}
-        />
-        <div
-          style={{
-            position: "absolute",
-            left: Math.round(width * 0.04),
-            top: pillTop,
-            width: Math.round(width * 0.92),
-            height: pillHeight,
-            borderRadius: Math.round(pillHeight * 0.22),
-            backgroundColor: treatment.pillColor,
-            opacity: 0.85,
+            background: `linear-gradient(180deg, rgba(0,0,0,0) 0%, ${gradientScrim} 100%)`,
           }}
         />
       </AbsoluteFill>

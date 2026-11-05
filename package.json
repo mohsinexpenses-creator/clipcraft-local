@@ -10,8 +10,6 @@
     "lint": "eslint",
     "studio": "remotion studio",
     "test": "tsx --test tests/*.test.ts",
-    "setup:whisper": "node scripts/setup-whisper.mjs",
-    "setup:whisper:ps": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-whisper.ps1",
     "typecheck": "tsc --noEmit",
     "setup:yunet": "node scripts/setup-yunet.mjs",
     "test:worker": "tsx --test tests/*.test.ts",
@@ -21,7 +19,6 @@
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
-    "@distube/ytdl-core": "^4.16.12",
     "@next/env": "16.3.5",
     "@remotion/bundler": "^4.0.528",
     "@remotion/player": "^4.0.528",

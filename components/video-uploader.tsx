@@ -4,22 +4,17 @@ import React, { useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Upload,
-  Tv,
   Loader2,
   CheckCircle2,
   AlertCircle,
-  FileVideo,
   X,
   Sparkles,
   Captions,
   Clapperboard,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Progress } from '@/components/ui/progress';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { cn } from 'cn';
 import type { PipelineOptions } from '@/lib/types';
 import {
@@ -48,7 +43,7 @@ const PIPELINE_STEPS = [
   {
     icon: Captions,
     title: 'Transcribe',
-    text: 'Local whisper.cpp or Deepgram, with word-level timestamps.',
+    text: 'Deepgram transcription with word-level timestamps.',
   },
   {
     icon: Sparkles,
@@ -74,7 +69,6 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({ pipeline }) => {
 
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isDragActive, setIsDragActive] = useState(false);
-  const [youtubeUrl, setYoutubeUrl] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [phase, setPhase] = useState<UploadPhase | 'idle'>('idle');
   const [progress, setProgress] = useState<UploadFileProgress | null>(null);
@@ -169,35 +163,6 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({ pipeline }) => {
     if (id) void deleteUploadSession(id);
   };
 
-  const handleProcessYoutube = async () => {
-    if (!youtubeUrl.trim()) return;
-
-    setIsProcessing(true);
-    setStatusMessage('Fetching video from YouTube…');
-    setErrorMessage(null);
-
-    try {
-      const res = await fetch('/api/upload', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ youtubeUrl: youtubeUrl.trim(), pipeline }),
-      });
-
-      if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.error || 'YouTube download failed');
-      }
-
-      const data = await res.json();
-      setIsProcessing(false);
-      router.push(`/?videoId=${data.video._id}`);
-    } catch (err) {
-      console.error('YouTube error:', err);
-      setErrorMessage(err instanceof Error ? err.message : 'Failed to fetch YouTube video');
-      setIsProcessing(false);
-    }
-  };
-
   const uploadedBytes = progress?.uploadedBytes ?? 0;
   const totalBytes = progress?.totalBytes ?? selectedFile?.size ?? 0;
   const percent = totalBytes > 0 ? Math.min(100, Math.round((uploadedBytes / totalBytes) * 100)) : 0;
@@ -212,26 +177,13 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({ pipeline }) => {
 
   return (
     <div className="mx-auto w-full">
-      <Tabs defaultValue="file" onValueChange={() => setErrorMessage(null)}>
-        <TabsList className="w-full">
-          <TabsTrigger value="file" className="flex-1">
-            <FileVideo />
-            Video file
-          </TabsTrigger>
-          <TabsTrigger value="youtube" className="flex-1">
-            <Tv />
-            YouTube link
-          </TabsTrigger>
-        </TabsList>
-
-        {/* File upload */}
-        <TabsContent value="file" className="mt-4 space-y-4">
-          <div
-            role="button"
-            tabIndex={0}
-            onClick={() => {
-              if (!isProcessing) fileInputRef.current?.click();
-            }}
+      <div className="space-y-4">
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={() => {
+            if (!isProcessing) fileInputRef.current?.click();
+          }}
             onKeyDown={(e) => {
               if ((e.key === 'Enter' || e.key === ' ') && !isProcessing) {
                 e.preventDefault();
@@ -356,37 +308,7 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({ pipeline }) => {
               memory) and resume automatically if the connection drops.
             </p>
           )}
-        </TabsContent>
-
-        {/* YouTube */}
-        <TabsContent value="youtube" className="mt-4 space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="youtube-url">YouTube video URL</Label>
-            <Input
-              id="youtube-url"
-              type="url"
-              placeholder="https://www.youtube.com/watch?v=…"
-              value={youtubeUrl}
-              onChange={(e) => {
-                setYoutubeUrl(e.target.value);
-                setErrorMessage(null);
-              }}
-              disabled={isProcessing}
-            />
-            <p className="text-[11px] text-muted-foreground">
-              Disabled by default: set <code className="rounded bg-muted px-1">ENABLE_YT_IMPORT=1</code> in
-              .env.local. Direct uploads are faster and never break with YouTube.
-            </p>
-          </div>
-
-          {youtubeUrl.trim() && !isProcessing && (
-            <Button size="lg" className="w-full" onClick={handleProcessYoutube}>
-              <Tv />
-              Fetch YouTube video
-            </Button>
-          )}
-        </TabsContent>
-      </Tabs>
+        </div>
 
       {/* Feedback */}
       {errorMessage && (

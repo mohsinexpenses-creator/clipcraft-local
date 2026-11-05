@@ -59,7 +59,7 @@ export const RESTART_REQUIRED_PATHS = ['worker.clipConcurrency', 'worker.viralCo
 
 const FILTER_IDS = new Set(DEFAULT_FILTER_PRESETS.map((preset) => preset.id));
 const LAYOUTS = new Set(['speaker-focus', 'split-screen']);
-const PROVIDER_CHOICES = new Set(['auto', 'deepgram', 'whisper']);
+const PROVIDER_CHOICES = new Set(['auto', 'deepgram']);
 const AUDIO_MODES = new Set(['mute', 'beep', 'off']);
 
 /** A key long enough to be real; the `.env.example` placeholder is explicitly rejected. */
@@ -400,7 +400,7 @@ export function sanitizeSettingsSection(
     case 'paths': {
       const input = record(value, 'Paths & binaries');
       const out: Record<string, unknown> = {};
-      for (const field of ['uploadDir', 'clipsDir', 'ffmpegPath', 'whisperCliPath'] as const) {
+      for (const field of ['uploadDir', 'clipsDir', 'ffmpegPath'] as const) {
         if (!(field in input)) continue;
         out[field] = pathString(input[field], PATH_FIELD_LABELS[field]);
       }
@@ -416,7 +416,6 @@ const PATH_FIELD_LABELS: Record<keyof PathSettings, string> = {
   uploadDir: 'Upload directory',
   clipsDir: 'Generated clips directory',
   ffmpegPath: 'FFmpeg path',
-  whisperCliPath: 'Whisper CLI path',
 };
 
 /**
@@ -634,13 +633,11 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
     uploadDir: stringValue(pathsStored.uploadDir) ?? DEFAULT_PATH_SETTINGS.uploadDir,
     clipsDir: stringValue(pathsStored.clipsDir) ?? DEFAULT_PATH_SETTINGS.clipsDir,
     ffmpegPath: stringValue(pathsStored.ffmpegPath) ?? DEFAULT_PATH_SETTINGS.ffmpegPath,
-    whisperCliPath: stringValue(pathsStored.whisperCliPath) ?? DEFAULT_PATH_SETTINGS.whisperCliPath,
   };
   sources.paths = {
     uploadDir: paths.uploadDir ? 'app' : 'default',
     clipsDir: paths.clipsDir ? 'app' : 'default',
     ffmpegPath: paths.ffmpegPath ? 'app' : 'default',
-    whisperCliPath: paths.whisperCliPath ? 'app' : 'default',
   };
 
   const effective: AppSettings = {
@@ -689,7 +686,6 @@ export function getStoredPathSettings(): PathSettings {
       uploadDir: stringValue(stored.uploadDir) ?? '',
       clipsDir: stringValue(stored.clipsDir) ?? '',
       ffmpegPath: stringValue(stored.ffmpegPath) ?? '',
-      whisperCliPath: stringValue(stored.whisperCliPath) ?? '',
     };
   } catch {
     return { ...DEFAULT_PATH_SETTINGS };
@@ -796,7 +792,7 @@ const LIMITS: SettingsLimits = {
   filterPresets: DEFAULT_FILTER_PRESETS.map((preset) => ({ id: preset.id, name: preset.name, description: preset.description })),
   layouts: ['speaker-focus', 'split-screen'] as const,
   audioModes: ['mute', 'beep', 'off'] as const,
-  transcriptionProviders: ['auto', 'deepgram', 'whisper'] as const,
+  transcriptionProviders: ['auto', 'deepgram'] as const,
 };
 
 /**
@@ -908,7 +904,7 @@ export async function resolveDeepgram(): Promise<{ apiKey: string; model: string
   return { apiKey: settings.ai.deepgramApiKey, model: settings.ai.deepgramModel || 'nova-2' };
 }
 
-export async function resolveTranscriptionProviderChoice(): Promise<'auto' | 'deepgram' | 'whisper'> {
+export async function resolveTranscriptionProviderChoice(): Promise<'auto' | 'deepgram'> {
   const settings = await loadEffectiveSettings();
   return settings.ai.transcriptionProvider;
 }

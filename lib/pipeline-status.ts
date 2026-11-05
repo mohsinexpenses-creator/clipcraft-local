@@ -26,7 +26,7 @@ export const CLIP_JOB_TYPE = 'clip-processing';
 export type PipelineStage =
   /** Upload accepted; transcription queued but not started yet. */
   | 'queued'
-  /** whisper.cpp / Deepgram is running. */
+  /** Transcription is running. */
   | 'transcribing'
   /** Viral detection is running (the AI is picking the clip windows). */
   | 'analyzing'

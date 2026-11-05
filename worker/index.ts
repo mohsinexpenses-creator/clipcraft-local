@@ -59,7 +59,7 @@ async function transcribeVideoJob(
 
   try {
     const transcript = await transcribeVideo(data.filePath);
-    // A user may delete the source while whisper is running. Do not recreate its row.
+    // A user may delete the source while transcription is running. Do not recreate its row.
     const current = await getVideo(data.videoId);
     if (!current) return { status: 'cancelled', videoId: data.videoId };
 
@@ -74,7 +74,7 @@ async function transcribeVideoJob(
     // Step 2 of the automatic pipeline. The upload stored `pipeline.autoDetect`
     // on the record; queueing (instead of awaiting here) keeps one step per job,
     // so a crash in the LLM pass retries the detection alone and never re-runs
-    // whisper. Videos uploaded before this existed have no `pipeline` and stay
+    // transcription. Videos uploaded before this existed have no `pipeline` and stay
     // manual.
     const chained = await continueAfterTranscription(data.videoId);
     return { status: 'done', videoId: data.videoId, autoDetectQueued: chained };

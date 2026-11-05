@@ -106,7 +106,7 @@ export async function POST(request: Request) {
           status: "error",
           label: "Deepgram",
           message:
-            "No Deepgram key to test - cloud transcription is simply off, and local whisper.cpp is used instead.",
+            "No Deepgram key to test - cloud transcription is simply off.",
           notes: [
             "Set one only if you prefer cloud transcription; it is optional.",
           ],

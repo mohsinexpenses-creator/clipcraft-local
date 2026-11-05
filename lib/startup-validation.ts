@@ -12,7 +12,6 @@ import {
   getPlannedTranscriptionEngine,
   getWhisperCliPath,
   getWhisperModelPath,
-  getWhisperThreads,
 } from './whisper';
 
 export type StartupCheckStatus = 'ok' | 'warning' | 'error';
@@ -152,12 +151,8 @@ async function validateFfmpeg(): Promise<StartupCheck> {
 }
 
 /**
- * Uses the SAME discovery logic as the transcription code (lib/whisper.ts).
- *
- * The old check hard-coded `bin/whisper-cli` and `models/*.bin`, so on Windows it
- * reported a green check while the real run needed `bin/whisper-win-x64/whisper-cli.exe`
- * and failed later with a confusing error.
- */
+* This build only transcribes in the cloud with Deepgram.
+*/
 async function validateTranscription(): Promise<StartupCheck> {
   const binaryPath = getWhisperCliPath();
   const modelPath = getWhisperModelPath();
@@ -172,8 +167,8 @@ async function validateTranscription(): Promise<StartupCheck> {
         status: 'ok',
         summary: `Transcription will use ${engine.label} (${engine.model}).`,
         details:
-          'A Deepgram key is configured in Settings, so cloud transcription wins over local whisper.cpp. ' +
-          `Local whisper.cpp would use: ${binaryPath || 'not found'} • ${modelPath || 'no model'}`,
+          'A Deepgram key is configured in Settings, so cloud transcription is enabled. ' +
+          `Legacy local transcription helpers are disabled in this build (${binaryPath || 'not applicable'} • ${modelPath || 'not applicable'}).`,
       });
     }
 
@@ -182,39 +177,26 @@ async function validateTranscription(): Promise<StartupCheck> {
       label: 'Transcription engine',
       status: 'ok',
       summary: `Transcription will use ${engine.label} (${engine.model}).`,
-      details: [
-        `Binary: ${engine.binaryPath}`,
-        `Model: ${engine.modelPath}`,
-        `Language: ${engine.language || 'auto'}`,
-        `Threads: ${getWhisperThreads()}`,
-        `Platform: ${process.platform}/${process.arch}`,
-      ].join(' • '),
+      details: `Deepgram model: ${engine.model} • provider: ${engine.provider}`,
       resolution: 'Start the worker (`npm run worker`) - transcription runs in the queue now.',
     });
   } catch (error) {
-    const missing: string[] = [];
-    if (!binaryPath) missing.push('whisper.cpp binary');
-    if (!modelPath) missing.push('ggml model file');
-
     return createCheck({
       id: 'transcription',
       label: 'Transcription engine',
       status: 'error',
-      summary: `No usable transcription engine (${missing.join(' + ') || 'not configured'}).`,
+      summary: 'No usable transcription engine is configured.',
       details: [
         toErrorMessage(error),
-        `Binary search result: ${binaryPath || 'not found'}`,
-        `Model search result: ${modelPath || 'not found'}`,
-        `Looked for the binary at: WHISPER_CLI_PATH, ${path.join('bin', 'whisper-win-x64', 'whisper-cli.exe')}, ${path.join('bin', 'whisper-cli')}`,
-        `Looked for models in: WHISPER_MODEL_PATH, ${path.join(process.cwd(), 'models')}\\ggml-*.bin`,
+        'This build uses Deepgram only; no key was found in Settings.',
+        `Binary search result: ${binaryPath || 'not applicable'}`,
+        `Model search result: ${modelPath || 'not applicable'}`,
       ].join(' • '),
       resolution:
-        'Run `npm run setup:whisper` (or `npm run setup:whisper:ps` on Windows) to download a whisper.cpp build and a ggml model, ' +
-        'or add a Deepgram key under Settings -> AI providers to transcribe in the cloud instead.',
+        'Add a Deepgram key under Settings -> AI providers before uploading a video.',
     });
   }
 }
-
 async function validateAiProvider(): Promise<StartupCheck> {
   // Keys may live in the app settings instead of the env file, so the chain is asked
   // the same question the LLM layer asks at call time.

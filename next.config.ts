@@ -10,7 +10,6 @@ const nextConfig: NextConfig = {
     'better-sqlite3',
     'ffmpeg-static',
     'onnxruntime-node',
-    'ytdl-core',
   ],
 
   /**

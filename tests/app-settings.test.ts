@@ -375,8 +375,8 @@ test('the ai section round-trips its keys without ever returning one in full', a
  */
 test('paths settings: stored values win, empty means automatic, and resolveSettings stays pure', () => {
   const { effective, sources } = resolveSettings({});
-  assert.deepEqual(effective.paths, { uploadDir: '', clipsDir: '', ffmpegPath: '', whisperCliPath: '' });
-  assert.deepEqual(Object.values(sources.paths ?? {}), ['default', 'default', 'default', 'default']);
+  assert.deepEqual(effective.paths, { uploadDir: '', clipsDir: '', ffmpegPath: '' });
+  assert.deepEqual(Object.values(sources.paths ?? {}), ['default', 'default', 'default']);
 
   const stored = resolveSettings({
     paths: { clipsDir: '/data/clips', ffmpegPath: 'C:\\ffmpeg\\bin\\ffmpeg.exe' },
@@ -400,16 +400,14 @@ test('paths settings: sanitize trims, clears on empty/null and rejects control c
   });
 
   try {
-    await saveSettingsSection('paths', { uploadDir: '  /mnt/videos  ', whisperCliPath: '/opt/whisper-cli' });
+    await saveSettingsSection('paths', { uploadDir: '  /mnt/videos  ' });
     assert.equal(rows.get('paths')?.uploadDir, '/mnt/videos', 'paths are trimmed before storage');
-    assert.equal(rows.get('paths')?.whisperCliPath, '/opt/whisper-cli');
 
     // An empty value is the user switching back to the automatic chain.
     await saveSettingsSection('paths', { uploadDir: '' });
     const snapshot = await buildAppSettingsSnapshot();
     assert.equal(snapshot.effective.paths.uploadDir, '');
     assert.equal(snapshot.sources.paths?.uploadDir, 'default');
-    assert.equal(snapshot.effective.paths.whisperCliPath, '/opt/whisper-cli', 'untouched fields survive a partial save');
 
     await assert.rejects(
       () => saveSettingsSection('paths', { ffmpegPath: '/bad\u0000path' }),
