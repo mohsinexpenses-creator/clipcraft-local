@@ -9,6 +9,8 @@ import {
 import {
   BrollOverlayComposition,
   type BrollOverlayCompositionProps,
+  BrollTimelineComposition,
+  type BrollTimelineCompositionProps,
 } from './BrollComposition';
 import { DEFAULT_CAPTION_PRESETS as CAPTION_PRESETS_FOR_BROLL } from '../lib/presets';
 
@@ -75,6 +77,21 @@ export const RemotionRoot: React.FC = () => {
             captionTextColor: CAPTION_PRESETS_FOR_BROLL[0]?.textColor,
             captionBand: { top: 1230, bottom: 1440 },
           } satisfies BrollOverlayCompositionProps
+        }
+      />
+      <Composition
+        id="BrollTimelineComposition"
+        component={BrollTimelineComposition as unknown as React.ComponentType<Record<string, unknown>>}
+        durationInFrames={PREVIEW_FPS * PREVIEW_DURATION_SECONDS}
+        fps={PREVIEW_FPS}
+        width={1080}
+        height={1920}
+        defaultProps={
+          {
+            items: [],
+            captionTextColor: CAPTION_PRESETS_FOR_BROLL[0]?.textColor,
+            captionBand: { top: 1230, bottom: 1440 },
+          } satisfies BrollTimelineCompositionProps
         }
       />
       <Composition

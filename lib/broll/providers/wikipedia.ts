@@ -53,7 +53,12 @@ async function imageInfoFor(
   source: string,
   fetcher: BrollFetch,
 ): Promise<ImageInfo | undefined> {
-  const fileName = decodeURIComponent(new URL(source).pathname.split("/").pop() ?? "");
+  const pathParts = new URL(source).pathname.split("/").filter(Boolean);
+  const thumbIndex = pathParts.indexOf("thumb");
+  const filePart = thumbIndex >= 0
+    ? pathParts[pathParts.length - 2]
+    : pathParts[pathParts.length - 1];
+  const fileName = decodeURIComponent(filePart ?? "");
   const params = new URLSearchParams({
     action: "query",
     format: "json",

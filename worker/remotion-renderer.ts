@@ -5,7 +5,6 @@ import { AppError, RenderCancelledError, toErrorMessage } from "../lib/errors";
 import { CaptionPreset, OverlayStylePreset, WordTimestamp } from "../lib/types";
 import { maskProfanity } from "../lib/profanity";
 import { log } from "../lib/logger";
-import { brollFramePhases } from "../lib/broll/animation";
 import { CaptionOverlayCompositionProps } from "../remotion/OverlayCompositions";
 import { OverlayFrameSequence } from "./ffmpeg-pipeline";
 import { normalizeFps } from "./ffmpeg-pipeline";
@@ -41,15 +40,78 @@ export interface PrepareRemotionOverlaysOptions {
  */
 let cachedBundlePromise: Promise<string> | null = null;
 
+function renderMemoryUsage(): string {
+  const memory = process.memoryUsage();
+  const mb = (bytes: number): string => (bytes / 1024 / 1024).toFixed(1);
+  return `rss=${mb(memory.rss)}MB heap=${mb(memory.heapUsed)}MB external=${mb(memory.external)}MB`;
+}
+
+async function timedRenderStage<T>(
+  stage: string,
+  operation: () => Promise<T>,
+  details = "",
+): Promise<T> {
+  const startedAt = Date.now();
+  log.info(
+    `[RENDER-DIAG] stage=${stage} event=before ${details} ${renderMemoryUsage()}`.trim(),
+  );
+  try {
+    const result = await operation();
+    log.info(
+      `[RENDER-DIAG] stage=${stage} event=after time_taken_ms=${Date.now() - startedAt} ${details} ${renderMemoryUsage()}`.trim(),
+    );
+    return result;
+  } catch (error) {
+    log.error(
+      `[RENDER-DIAG] stage=${stage} event=failed time_taken_ms=${Date.now() - startedAt} error=${toErrorMessage(error)} ${details} ${renderMemoryUsage()}`.trim(),
+    );
+    throw error;
+  }
+}
+
+function frameOutputStats(outputDir: string): {
+  count: number;
+  bytes: number;
+  firstFrame: number | null;
+  lastFrame: number | null;
+} {
+  const frames = fs
+    .readdirSync(outputDir)
+    .filter((file) => /\.(?:png|jpe?g)$/i.test(file))
+    .map((file) => ({
+      index: Number(file.match(/(\d+)(?=\.[^.]+$)/)?.[1] ?? Number.NaN),
+      size: fs.statSync(path.join(outputDir, file)).size,
+    }));
+  const indices = frames
+    .map(({ index }) => index)
+    .filter(Number.isFinite)
+    .sort((a, b) => a - b);
+  return {
+    count: frames.length,
+    bytes: frames.reduce((sum, frame) => sum + frame.size, 0),
+    firstFrame: indices[0] ?? null,
+    lastFrame: indices.at(-1) ?? null,
+  };
+}
+
 export function getRemotionBundle(): Promise<string> {
-  if (cachedBundlePromise) return cachedBundlePromise;
+  if (cachedBundlePromise) {
+    log.info("[RENDER-DIAG] stage=remotion.bundle event=cache-hit");
+    return cachedBundlePromise;
+  }
 
   cachedBundlePromise = (async () => {
-    const { bundle } = await import("@remotion/bundler");
+    const { bundle } = await timedRenderStage("remotion.bundler-import", () =>
+      import("@remotion/bundler"),
+    );
     const entryPoint = path.join(process.cwd(), "remotion", "index.tsx");
 
     log.detail("Bundling the Remotion project (first clip only)...");
-    const bundled = await bundle({ entryPoint });
+    const bundled = await timedRenderStage(
+      "remotion.bundle-build",
+      () => bundle({ entryPoint }),
+      `entry_point=${entryPoint}`,
+    );
     log.ok(`Bundle ready: ${bundled}`);
     return bundled;
   })().catch((error) => {
@@ -75,11 +137,18 @@ function checkCancelled(isCancelled?: () => boolean): void {
   }
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  stage = "remotion.operation",
+): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(
-      () =>
+      () => {
+        log.error(
+          `[RENDER-DIAG] stage=${stage} event=timeout timeout_ms=${ms} underlying_promise_cancelled=false ${renderMemoryUsage()}`,
+        );
         reject(
           new AppError(
             `Remotion overlay rendering timed out after ${Math.round(ms / 60000)} minutes.`,
@@ -88,7 +157,8 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
                 "Close other heavy apps, lower REMOTION_CONCURRENCY, shorten the clip, or raise REMOTION_TIMEOUT_MINUTES.",
             },
           ),
-        ),
+        );
+      },
       ms,
     );
   });
@@ -101,6 +171,10 @@ function normalizeFrameSequence(
   outputDir: string,
   extension: "png" | "jpeg",
 ): string {
+  const startedAt = Date.now();
+  log.info(
+    `[RENDER-DIAG] stage=remotion.frame-normalization event=before format=${extension} output_dir=${outputDir} ${renderMemoryUsage()}`,
+  );
   const files = fs
     .readdirSync(outputDir)
     .filter((file) => file.toLowerCase().endsWith(`.${extension}`))
@@ -123,6 +197,10 @@ function normalizeFrameSequence(
       path.join(outputDir, `ov_${String(index + 1).padStart(5, "0")}.${extension}`),
     );
   });
+  const stats = frameOutputStats(outputDir);
+  log.info(
+    `[RENDER-DIAG] stage=remotion.frame-normalization event=after format=${extension} frame_range=${stats.firstFrame ?? "unknown"}-${stats.lastFrame ?? "unknown"} generated_frames=${stats.count} output_dir=${outputDir} total_file_size_bytes=${stats.bytes} time_taken_ms=${Date.now() - startedAt} ${renderMemoryUsage()}`,
+  );
   return path.join(outputDir, `ov_%05d.${extension}`);
 }
 
@@ -138,11 +216,13 @@ export async function prepareRemotionCaptionOverlays(
 
   try {
     checkCancelled(options.isCancelled);
-    const { renderFrames, selectComposition } =
-      await import("@remotion/renderer");
-    const bundleDir = await withTimeout(
-      getRemotionBundle(),
-      getRenderTimeoutMs(),
+    const { renderFrames, selectComposition } = await timedRenderStage(
+      "remotion.renderer-import",
+      () => import("@remotion/renderer"),
+    );
+    const bundleDir = await timedRenderStage(
+      "remotion.bundle-load",
+      () => withTimeout(getRemotionBundle(), getRenderTimeoutMs(), "remotion.bundle-load"),
     );
     const inputProps: CaptionOverlayCompositionProps = {
       hookText: maskProfanity(options.hookText),
@@ -162,14 +242,20 @@ export async function prepareRemotionCaptionOverlays(
       captionLiftScale: options.captionLiftScale ?? 1,
     };
 
-    const composition = await withTimeout(
-      selectComposition({
-        serveUrl: bundleDir,
-        id: "CaptionOverlayComposition",
-        inputProps,
-        logLevel: "error",
-      }),
-      getRenderTimeoutMs(),
+    const composition = await timedRenderStage(
+      "remotion.select-composition",
+      () =>
+        withTimeout(
+          selectComposition({
+            serveUrl: bundleDir,
+            id: "CaptionOverlayComposition",
+            inputProps,
+            logLevel: "error",
+          }),
+          getRenderTimeoutMs(),
+          "remotion.select-composition",
+        ),
+      `composition=CaptionOverlayComposition`,
     );
     checkCancelled(options.isCancelled);
 
@@ -177,8 +263,12 @@ export async function prepareRemotionCaptionOverlays(
       `Remotion overlay frames: ${durationInFrames} frames @ ${fps}fps, ` +
         `${totalDuration.toFixed(2)}s (transparent PNG; no source-video encode)`,
     );
-    await withTimeout(
-      renderFrames({
+    let lastLoggedFrames = 0;
+    const renderStartedAt = Date.now();
+    await timedRenderStage(
+      "remotion.render-frames",
+      () =>
+        withTimeout(renderFrames({
         composition: {
           ...composition,
           width: 1080,
@@ -192,8 +282,21 @@ export async function prepareRemotionCaptionOverlays(
         imageFormat: "png",
         concurrency:
           Number(process.env.REMOTION_CONCURRENCY?.trim()) || undefined,
-        onStart: () => undefined,
+        onStart: () =>
+          log.info(
+            `[RENDER-DIAG] stage=remotion.render-frames event=renderer-started image_format=png frame_range=0-${durationInFrames - 1} planned_frames=${durationInFrames} output_dir=${outputDir} ${renderMemoryUsage()}`,
+          ),
         onFrameUpdate: (framesRendered) => {
+          const progressInterval = Math.max(1, Math.ceil(durationInFrames / 10));
+          if (
+            framesRendered === durationInFrames ||
+            framesRendered - lastLoggedFrames >= progressInterval
+          ) {
+            lastLoggedFrames = framesRendered;
+            log.info(
+              `[RENDER-DIAG] stage=remotion.render-frames event=frame-progress frames=${framesRendered}/${durationInFrames} elapsed_ms=${Date.now() - renderStartedAt} ${renderMemoryUsage()}`,
+            );
+          }
           if (options.onProgress) {
             options.onProgress(
               Math.round((framesRendered / durationInFrames) * 100),
@@ -206,8 +309,8 @@ export async function prepareRemotionCaptionOverlays(
             | "verbose"
             | "warn"
             | "error") || "info",
-      }),
-      getRenderTimeoutMs(),
+      }), getRenderTimeoutMs(), "remotion.render-frames"),
+      `composition=CaptionOverlayComposition image_format=png frame_range=0-${durationInFrames - 1} planned_frames=${durationInFrames} output_dir=${outputDir}`,
     );
     checkCancelled(options.isCancelled);
 
@@ -264,11 +367,9 @@ export interface PreparedBrollOverlays {
 }
 
 /**
- * Paint every B-roll item as short image sequences.
- *
- * Fullscreen items use transparent PNGs for the enter/exit edges and opaque JPEGs
- * for the animated hold. Cards retain a transparent PNG sequence. FFmpeg composites
- * each sequence in order, with captions on top, and Chromium is reused across items.
+ * Paint all scheduled B-roll items together as one transparent timeline sequence.
+ * FFmpeg composites that single layer before captions, avoiding a long chain of
+ * independent image-sequence overlays.
  */
 export async function prepareRemotionBrollOverlays(
   options: PrepareBrollOverlaysOptions,
@@ -281,123 +382,147 @@ export async function prepareRemotionBrollOverlays(
 
   try {
     const { renderFrames, selectComposition, openBrowser } =
-      await import("@remotion/renderer");
-    const bundleDir = await withTimeout(
-      getRemotionBundle(),
-      getRenderTimeoutMs(),
+      await timedRenderStage("remotion.renderer-import", () =>
+        import("@remotion/renderer"),
+      );
+    const bundleDir = await timedRenderStage(
+      "remotion.bundle-load",
+      () => withTimeout(getRemotionBundle(), getRenderTimeoutMs(), "remotion.bundle-load"),
     );
-    browser = await openBrowser("chrome", {});
+    browser = await timedRenderStage(
+      "chromium.browser-initialization",
+      () => openBrowser("chrome", {}),
+      "browser=chrome",
+    );
     const activeBrowser = browser;
 
-    const sequences: OverlayFrameSequence[] = [];
-    const total = Math.max(1, options.items.length);
-    const totalFrames = options.items.reduce(
-      (sum, item) =>
-        sum + Math.max(1, Math.round((item.end - item.start) * fps)),
-      0,
+    checkCancelled(options.isCancelled);
+    const totalDuration = Math.max(
+      0.1,
+      options.totalDuration ?? Math.max(...options.items.map((item) => item.end)),
     );
-    let renderedFrames = 0;
-
-    for (const [index, item] of options.items.entries()) {
-      checkCancelled(options.isCancelled);
-      const durationSeconds = Math.max(0.1, item.end - item.start);
-      const durationInFrames = Math.max(1, Math.round(durationSeconds * fps));
-      const outputDir = path.join(
-        workDir,
-        `item-${String(index).padStart(2, "0")}`,
-      );
-      fs.mkdirSync(outputDir, { recursive: true });
-
-      const inputProps = {
-        kind: item.kind,
-        imageUrl: item.imageUrl,
-        card: item.card,
-        durationSeconds,
-        captionTextColor: options.captionTextColor,
-        captionBand: options.captionBand,
-      };
-
-      const composition = await withTimeout(
-        selectComposition({
-          serveUrl: bundleDir,
-          id: "BrollOverlayComposition",
-          inputProps,
-          logLevel: "error",
-        }),
-        getRenderTimeoutMs(),
-      );
-      checkCancelled(options.isCancelled);
-
-      const renderRange = async (
-        label: string,
-        extension: "png" | "jpeg",
-        startFrame: number,
-        endFrame: number,
-      ): Promise<void> => {
-        const phaseDir = path.join(outputDir, label);
-        fs.mkdirSync(phaseDir, { recursive: true });
-        await withTimeout(
-          renderFrames({
-          composition: {
-            ...composition,
-            width: 1080,
-            height: 1920,
-            fps,
-            durationInFrames,
-          },
-          serveUrl: bundleDir,
-          inputProps,
-          outputDir: phaseDir,
-          imageFormat: extension,
-          ...(extension === "jpeg" ? { jpegQuality: 88 } : {}),
-          frameRange: [startFrame, endFrame],
-          puppeteerInstance: activeBrowser,
-          concurrency:
-            Number(process.env.REMOTION_CONCURRENCY?.trim()) || undefined,
-          onStart: () => undefined,
-          onFrameUpdate: (framesRendered) => {
-            renderedFrames += 1;
-            if (options.onProgress && totalFrames > 0) {
-              options.onProgress(
-                Math.round((renderedFrames / totalFrames) * 100),
-              );
-            }
-            void framesRendered;
-          },
-          logLevel:
-            (process.env.REMOTION_LOG_LEVEL?.trim() as
-              | "info"
-              | "verbose"
-              | "warn"
-              | "error") || "info",
+    const durationInFrames = Math.max(1, Math.ceil(totalDuration * fps));
+    const outputDir = path.join(workDir, "frames");
+    fs.mkdirSync(outputDir, { recursive: true });
+    const inputProps = {
+      items: options.items,
+      captionTextColor: options.captionTextColor,
+      captionBand: options.captionBand,
+    };
+    const composition = await timedRenderStage(
+      "remotion.select-composition",
+      () =>
+        withTimeout(
+          selectComposition({
+            serveUrl: bundleDir,
+            id: "BrollTimelineComposition",
+            inputProps,
+            logLevel: "error",
           }),
           getRenderTimeoutMs(),
-        );
-        checkCancelled(options.isCancelled);
-        const inputPattern = normalizeFrameSequence(phaseDir, extension);
-        sequences.push({
-          name: `b-roll ${item.id} ${label}`,
-          inputPattern,
-          startAtSeconds: item.start + startFrame / fps,
-        });
-      };
+          "remotion.select-composition",
+        ),
+      `composition=BrollTimelineComposition items=${options.items.length} frame_range=0-${durationInFrames - 1}`,
+    );
+    checkCancelled(options.isCancelled);
 
-      if (item.kind === "fullscreen") {
-        for (const phase of brollFramePhases(durationInFrames, fps))
-          await renderRange(
-            phase.name,
-            phase.format,
-            phase.startFrame,
-            phase.endFrame,
-          );
-      } else {
-        await renderRange("card", "png", 0, durationInFrames - 1);
-      }
-      options.onProgress?.(Math.round(((index + 1) / total) * 100));
+    log.info(
+      `[RENDER-DIAG] stage=broll.phase-model event=active render_api=renderFrames renderRange=absent phase=combined-timeline image_format=png separate_enter_hold_exit=false fps=${fps} frame_range=0-${durationInFrames - 1} planned_frames=${durationInFrames} output_dir=${outputDir}`,
+    );
+    const itemPhaseRanges = options.items.map((item) => {
+      const startFrame = Math.max(0, Math.round(item.start * fps));
+      const itemFrames = Math.max(1, Math.round((item.end - item.start) * fps));
+      return {
+        item,
+        startFrame,
+        endFrame: startFrame + itemFrames - 1,
+        frameCount: itemFrames,
+      };
+    });
+    for (const phase of itemPhaseRanges) {
+      log.info(
+        `[RENDER-DIAG] stage=broll.item-render event=before item_id=${phase.item.id} type=${phase.item.kind} phase=combined-timeline image_format=png canvas=1080x1920 frame_range=${phase.startFrame}-${phase.endFrame} generated_frames=pending output_directory=${outputDir} total_generated_file_size_bytes=pending time_taken_ms=pending ${renderMemoryUsage()}`,
+      );
+    }
+    let lastLoggedFrames = 0;
+    const renderStartedAt = Date.now();
+    await timedRenderStage(
+      "broll.render-frames",
+      () =>
+        withTimeout(renderFrames({
+        composition: {
+          ...composition,
+          width: 1080,
+          height: 1920,
+          fps,
+          durationInFrames,
+        },
+        serveUrl: bundleDir,
+        inputProps,
+        outputDir,
+        imageFormat: "png",
+        puppeteerInstance: activeBrowser,
+        concurrency:
+          Number(process.env.REMOTION_CONCURRENCY?.trim()) || undefined,
+        onStart: () =>
+          log.info(
+            `[RENDER-DIAG] stage=broll.render-frames event=renderer-started image_format=png canvas=1080x1920 frame_range=0-${durationInFrames - 1} planned_frames=${durationInFrames} output_dir=${outputDir} ${renderMemoryUsage()}`,
+          ),
+        onFrameUpdate: (framesRendered) => {
+          const progressInterval = Math.max(1, Math.ceil(durationInFrames / 10));
+          if (
+            framesRendered === durationInFrames ||
+            framesRendered - lastLoggedFrames >= progressInterval
+          ) {
+            lastLoggedFrames = framesRendered;
+            log.info(
+              `[RENDER-DIAG] stage=broll.render-frames event=frame-progress frames=${framesRendered}/${durationInFrames} elapsed_ms=${Date.now() - renderStartedAt} ${renderMemoryUsage()}`,
+            );
+          }
+          if (options.onProgress) {
+            options.onProgress(
+              Math.round((framesRendered / durationInFrames) * 100),
+            );
+          }
+        },
+        logLevel:
+          (process.env.REMOTION_LOG_LEVEL?.trim() as
+            | "info"
+            | "verbose"
+            | "warn"
+            | "error") || "info",
+      }), getRenderTimeoutMs(), "broll.render-frames"),
+      `composition=BrollTimelineComposition image_format=png frame_range=0-${durationInFrames - 1} planned_frames=${durationInFrames} items=${options.items.length} output_dir=${outputDir}`,
+    );
+    checkCancelled(options.isCancelled);
+
+    const renderTimeMs = Date.now() - renderStartedAt;
+    const generatedStats = frameOutputStats(outputDir);
+    for (const phase of itemPhaseRanges) {
+      log.info(
+        `[RENDER-DIAG] stage=broll.item-render event=after item_id=${phase.item.id} type=${phase.item.kind} phase=combined-timeline image_format=png canvas=1080x1920 frame_range=${phase.startFrame}-${phase.endFrame} generated_frames=${phase.frameCount} output_directory=${outputDir} shared_timeline_generated_frames=${generatedStats.count} total_generated_file_size_bytes=${generatedStats.bytes} time_taken_ms=${renderTimeMs} ${renderMemoryUsage()}`,
+      );
     }
 
+    const normalizationStartedAt = Date.now();
+    const inputPattern = normalizeFrameSequence(outputDir, "png");
+    const normalizationStats = frameOutputStats(outputDir);
+    for (const phase of itemPhaseRanges) {
+      log.info(
+        `[RENDER-DIAG] stage=broll.frame-normalization event=after item_id=${phase.item.id} type=${phase.item.kind} phase=frame-normalization image_format=png canvas=1080x1920 frame_range=${phase.startFrame}-${phase.endFrame} generated_frames=${phase.frameCount} output_directory=${outputDir} shared_timeline_generated_frames=${normalizationStats.count} total_generated_file_size_bytes=${normalizationStats.bytes} time_taken_ms=${Date.now() - normalizationStartedAt} ${renderMemoryUsage()}`,
+      );
+    }
+
+    const sequences: OverlayFrameSequence[] = [
+      {
+        name: "b-roll timeline",
+        inputPattern,
+        startAtSeconds: 0,
+      },
+    ];
+
     log.ok(
-      `Remotion B-roll ready: ${options.items.length} item(s) in ${sequences.length} image sequence(s)`,
+      `Remotion B-roll ready: ${options.items.length} item(s) in one timeline layer`,
     );
     return { workDir, sequences };
   } catch (error) {
@@ -415,9 +540,19 @@ export async function prepareRemotionBrollOverlays(
     });
   } finally {
     if (browser) {
+      const closeStartedAt = Date.now();
+      log.info(
+        `[RENDER-DIAG] stage=chromium.browser-close event=before ${renderMemoryUsage()}`,
+      );
       try {
         await browser.close({ silent: true });
+        log.info(
+          `[RENDER-DIAG] stage=chromium.browser-close event=after time_taken_ms=${Date.now() - closeStartedAt} ${renderMemoryUsage()}`,
+        );
       } catch {
+        log.warn(
+          `[RENDER-DIAG] stage=chromium.browser-close event=failed time_taken_ms=${Date.now() - closeStartedAt} ${renderMemoryUsage()}`,
+        );
         /* the render already finished or failed */
       }
     }

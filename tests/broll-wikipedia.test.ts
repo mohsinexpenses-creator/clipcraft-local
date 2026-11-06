@@ -143,3 +143,23 @@ test('missing thumburl downloads the original image URL', async () => {
 
   assert.equal(result?.imageUrl, 'https://upload.wikimedia.org/image/original.jpg');
 });
+
+test('a REST summary thumbnail resolves the original Commons filename', async () => {
+  let metadataUrl = '';
+  const source = 'https://upload.wikimedia.org/wikipedia/commons/thumb/5/5a/Zendaya-byPhilipRomano.jpg/3840px-Zendaya-byPhilipRomano.jpg?width=3840';
+  const result = await findWikipediaImage('Zendaya', {
+    fetcher: fakeFetch((url) => {
+      if (url.includes('action=query')) {
+        metadataUrl = url;
+        return jsonResponse(imageInfo());
+      }
+      return jsonResponse({
+        ...summary('Zendaya'),
+        originalimage: { source, width: 4024, height: 6048 },
+      });
+    }),
+  });
+
+  assert.ok(result);
+  assert.equal(new URL(metadataUrl).searchParams.get('titles'), 'File:Zendaya-byPhilipRomano.jpg');
+});

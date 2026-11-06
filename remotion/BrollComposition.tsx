@@ -2,6 +2,7 @@ import React from "react";
 import {
   AbsoluteFill,
   Img,
+  Sequence,
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
@@ -112,6 +113,58 @@ export const BrollOverlayComposition: React.FC<
           }}
         />
       </AbsoluteFill>
+    </AbsoluteFill>
+  );
+};
+
+export interface BrollTimelineItem extends Record<string, unknown> {
+  id: string;
+  kind: "fullscreen" | "landscape";
+  start: number;
+  end: number;
+  imageUrl: string;
+  card?: BrollCardRect;
+}
+
+export interface BrollTimelineCompositionProps extends Record<string, unknown> {
+  items: BrollTimelineItem[];
+  captionTextColor?: string;
+  captionBand?: { top: number; bottom: number };
+}
+
+/** Paint all scheduled B-roll on one transparent timeline for FFmpeg. */
+export const BrollTimelineComposition: React.FC<
+  BrollTimelineCompositionProps
+> = ({ items, captionTextColor, captionBand }) => {
+  const { fps } = useVideoConfig();
+
+  return (
+    <AbsoluteFill style={{ backgroundColor: "transparent" }}>
+      {items.map((item) => {
+        const from = Math.max(0, Math.round(item.start * fps));
+        const durationInFrames = Math.max(
+          1,
+          Math.round((item.end - item.start) * fps),
+        );
+
+        return (
+          <Sequence
+            key={item.id}
+            from={from}
+            durationInFrames={durationInFrames}
+            layout="none"
+          >
+            <BrollOverlayComposition
+              kind={item.kind}
+              imageUrl={item.imageUrl}
+              card={item.card}
+              durationSeconds={item.end - item.start}
+              captionTextColor={captionTextColor}
+              captionBand={captionBand}
+            />
+          </Sequence>
+        );
+      })}
     </AbsoluteFill>
   );
 };

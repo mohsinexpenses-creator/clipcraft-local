@@ -182,7 +182,11 @@ export async function continueAfterBroll(clipId: string): Promise<boolean> {
     log.detail(`B-roll ready for ${clipId}; autoRender is off, so the render waits for you.`);
     return false;
   }
-  if (clip.status === 'processing' || findActiveJob(CLIP_QUEUE_NAME, { clipId })) return false;
+  if (
+    clip.status === 'processing' ||
+    clip.status === 'failed' ||
+    findActiveJob(CLIP_QUEUE_NAME, { clipId })
+  ) return false;
 
   await enqueueClipJob(await jobDataFromClip(clip));
   log.ok(
@@ -284,7 +288,7 @@ export async function runViralDetection(
       const stranded = pipeline.autoRender
         ? existing.filter(
             (clip) =>
-              (clip.status === 'pending' || clip.status === 'failed') &&
+              clip.status === 'pending' &&
               // A clip still waiting for its B-roll plan is rendered by
               // continueAfterBroll(), not now: the plan must exist first.
               (!brollOptions.autoBroll || clip.broll)

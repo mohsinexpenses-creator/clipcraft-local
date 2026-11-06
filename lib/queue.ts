@@ -367,7 +367,7 @@ export async function enqueueClipJob(jobData: JobData): Promise<void> {
     }
     enqueue(CLIP_QUEUE_NAME, jobData, {
       id: `clip:${jobData.clipId}`,
-      maxAttempts: DEFAULT_MAX_ATTEMPTS,
+      maxAttempts: 1,
       retryDelayMs: DEFAULT_RETRY_DELAY_MS,
       clipId: jobData.clipId,
       videoId: jobData.videoId,

@@ -8,8 +8,8 @@ import {
   BROLL_SFX_VOLUME,
   buildBrollSfxCues,
   buildSfxMixPlan,
-  buildSfxStreamStatement,
 } from '../lib/broll/sfx';
+import { buildBrollSfxWav } from '../worker/sfx-mixer';
 
 /**
  * The sound effects are the one part of B-roll that touches audio, which the rest of
@@ -60,34 +60,23 @@ test('nothing is scheduled after the clip ends, and disabling removes every cue'
   assert.deepEqual(buildBrollSfxCues([{ start: 1, end: 4 }], { totalDuration: 60, enabled: false }), []);
 });
 
-test('each effect is delayed to its own timestamp and padded, then mixed without normalising', () => {
-  const statement = buildSfxStreamStatement({
-    cue: { atSeconds: 12.5, inputIndex: 5 },
-    totalDuration: 63,
-    volume: 0.28,
-    index: 0,
-  });
-  assert.match(statement, /^\[5:a\]aformat=channel_layouts=stereo,adelay=12500:all=1,volume=0\.28/);
-  assert.match(statement, /apad=whole_dur=63\.000/);
-  assert.match(statement, /\[sfx0\]$/);
-
+test('one pre-mixed effect track is added to the voice without normalising', () => {
   const plan = buildSfxMixPlan({
     baseLabel: '[a]',
-    cueInputIndices: [5, 6],
-    cues: [{ atSeconds: 3 }, { atSeconds: 9, volume: 0.18 }],
-    totalDuration: 63,
+    sfxInputIndex: 5,
   });
-  assert.equal(plan.statements.length, 3);
-  assert.match(plan.statements[1], /volume=0\.18/);
-  const mix = plan.statements[2];
-  assert.match(mix, /\[a\]\[sfx0\]\[sfx1\]amix=inputs=3/);
+  assert.deepEqual(plan.statements, [
+    '[5:a]aformat=channel_layouts=stereo[sfx]',
+    '[a][sfx]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[amixed]',
+  ]);
+  const mix = plan.statements[1];
   assert.match(mix, /duration=first/);
   assert.match(mix, /normalize=0/, 'the voice must never be attenuated by the effects');
   assert.equal(plan.label, '[amixed]');
 });
 
 test('no cues means no filter statements at all (autoBroll off is byte-identical)', () => {
-  const plan = buildSfxMixPlan({ baseLabel: '[a]', cueInputIndices: [], cues: [], totalDuration: 30 });
+  const plan = buildSfxMixPlan({ baseLabel: '[a]', sfxInputIndex: null });
   assert.deepEqual(plan.statements, []);
   assert.equal(plan.label, '[a]');
 });
@@ -101,4 +90,18 @@ test('the bundled effect files exist and are real WAV files', () => {
     assert.equal(header.subarray(8, 12).toString(), 'WAVE');
   }
   assert.ok(BROLL_SFX_VOLUME > 0.2 && BROLL_SFX_VOLUME < 0.35, 'the brief pins the effect gain to 0.2-0.35');
+});
+
+test('pre-mixes cues into one timed PCM track without allocating delayed silence per cue', () => {
+  const filePath = path.join(process.cwd(), 'public', 'sfx', BROLL_SFX_FILES.enter);
+  const wav = buildBrollSfxWav([
+    { filePath, atSeconds: 0.25, volume: BROLL_SFX_VOLUME },
+    { filePath, atSeconds: 0.7, volume: BROLL_SFX_EXIT_VOLUME },
+  ], 1);
+
+  assert.equal(wav.toString('ascii', 0, 4), 'RIFF');
+  assert.equal(wav.readUInt32LE(24), 44100);
+  assert.equal(wav.readUInt32LE(40), 44100 * 2, 'one second of mono 16-bit PCM');
+  assert.ok(wav.subarray(44, 44 + 22050).every((sample) => sample === 0), 'silence before the first cue');
+  assert.ok(wav.subarray(44 + 22050, 44 + 44100).some((sample) => sample !== 0), 'cue audio appears at its scheduled time');
 });

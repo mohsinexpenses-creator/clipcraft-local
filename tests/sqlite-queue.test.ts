@@ -206,6 +206,27 @@ test('render queue uniqueness is per clip, and enqueue resets its visible clip s
   assert.equal(getJob(activeJob.id, db)?.status, 'running');
 });
 
+test('a failed render is terminal until an explicit enqueue resets it', async (t) => {
+  const { db } = createTemporaryDatabase(t);
+  const source = video('video-manual-retry');
+  const record = clip('clip-manual-retry', source._id);
+  await saveVideo(source);
+  await saveClip(record);
+
+  await enqueueClipJob(renderPayload(record));
+  const firstAttempt = claimNextJob(['clip-processing'], db);
+  assert.equal(firstAttempt?.maxAttempts, 1);
+  assert.equal(failJob(firstAttempt!.id, 'render failed', db), 'failed');
+  assert.equal(getJob(firstAttempt!.id, db)?.status, 'failed');
+  assert.equal(claimNextJob(['clip-processing'], db), null);
+
+  await enqueueClipJob(renderPayload(record));
+  const manuallyQueued = getJob(firstAttempt!.id, db);
+  assert.equal(manuallyQueued?.status, 'queued');
+  assert.equal(manuallyQueued?.attempts, 0);
+  assert.equal(claimNextJob(['clip-processing'], db)?.attempts, 1);
+});
+
 test('deleting a clip or video cleans up its queued jobs in SQLite', async (t) => {
   const { db } = createTemporaryDatabase(t);
   const source = video('video-delete-jobs');

@@ -162,7 +162,7 @@ export function createBrollDeps(options: BrollSourceOptions): BrollPlanDeps {
     async findEntityImage(title: string): Promise<BrollCandidate | null> {
       const normalizedTitle = title.trim();
       const cacheKey = jsonCacheKey(["wikipedia", normalizedTitle.toLowerCase()]);
-      const missCacheKey = jsonCacheKey(["wikipedia-miss", normalizedTitle.toLowerCase()]);
+      const missCacheKey = jsonCacheKey(["wikipedia-miss-v2", normalizedTitle.toLowerCase()]);
       const cached = await readJsonCache<BrollCandidate>(cacheKey, {
         ttlMs: SEARCH_CACHE_TTL_MS,
       });

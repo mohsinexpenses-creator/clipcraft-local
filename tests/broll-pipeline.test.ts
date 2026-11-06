@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { getClip, saveClip, saveClipBrollPlan, saveVideo } from '../lib/db';
 import { BROLL_QUEUE_NAME, CLIP_QUEUE_NAME, listJobs } from '../lib/queue';
-import { brollOptionsFor, continueAfterBroll, queueBrollForClips, recoverAutoPipelines } from '../lib/pipeline';
+import { brollOptionsFor, continueAfterBroll, queueBrollForClips, recoverAutoPipelines, runViralDetection } from '../lib/pipeline';
 import { DEFAULT_BROLL_OPTIONS, type ClipRecord, type PipelineOptions, type VideoRecord } from '../lib/types';
 import { createTemporaryDatabase } from './sqlite-test-helpers';
 
@@ -124,11 +124,15 @@ test('continueAfterBroll queues the render only when autoRender is on', async (t
 
   const autoClip = makeClip('clip-auto', auto._id);
   const manualClip = makeClip('clip-manual', manual._id);
+  const failedClip = makeClip('clip-failed', auto._id);
+  failedClip.status = 'failed';
   await saveClip(autoClip);
   await saveClip(manualClip);
+  await saveClip(failedClip);
 
   assert.equal(await continueAfterBroll(autoClip._id), true);
   assert.equal(await continueAfterBroll(manualClip._id), false);
+  assert.equal(await continueAfterBroll(failedClip._id), false);
 
   const clipJobs = () => listJobs().filter((job) => job.type === CLIP_QUEUE_NAME);
   assert.deepEqual(clipJobs().map((job) => job.clipId), ['clip-auto']);
@@ -136,6 +140,28 @@ test('continueAfterBroll queues the render only when autoRender is on', async (t
   // Calling it twice (a retried job) does not queue a second render.
   assert.equal(await continueAfterBroll(autoClip._id), false);
   assert.equal(clipJobs().length, 1);
+});
+
+test('automatic detection queues pending clips but leaves failed renders for manual retry', async (t) => {
+  createTemporaryDatabase(t);
+  const video = makeVideo('video-auto-existing', {
+    autoRender: true,
+    broll: { ...DEFAULT_BROLL_OPTIONS, autoBroll: false },
+  });
+  await saveVideo(video);
+
+  const pending = makeClip('clip-auto-pending', video._id);
+  const failed = makeClip('clip-auto-failed', video._id);
+  failed.status = 'failed';
+  await saveClip(pending);
+  await saveClip(failed);
+
+  const result = await runViralDetection(video._id, { mode: 'auto' });
+  assert.equal(result.reusedExistingClips, true);
+  assert.deepEqual(
+    listJobs().filter((job) => job.type === CLIP_QUEUE_NAME).map((job) => job.clipId),
+    [pending._id]
+  );
 });
 
 test('a restart re-queues missing plans and does not render clips still waiting for one', async (t) => {

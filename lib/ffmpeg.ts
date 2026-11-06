@@ -184,6 +184,16 @@ export interface RunFfmpegOptions {
   isCancelled?: () => boolean;
   /** Kill FFmpeg when it prints nothing (no -stats line) for this long. */
   stallTimeoutMs?: number;
+  /** Diagnostic milestones parsed from FFmpeg stderr. */
+  onDiagnostic?: (
+    event:
+      | "input-detected"
+      | "stream-mapping"
+      | "output-initialized"
+      | "first-frame"
+      | "frame-progress",
+    detail: string,
+  ) => void;
 }
 
 const DEFAULT_FFMPEG_TIMEOUT_MS = 30 * 60 * 1000;
@@ -220,6 +230,10 @@ export function runFfmpeg(
     let lastActivity = Date.now();
     let lastSeconds = -1;
     let stalled = false;
+    let diagnosticBuffer = "";
+    let sawStreamMapping = false;
+    let sawFirstFrame = false;
+    let lastDiagnosticFrame = 0;
     let stallTimer: NodeJS.Timeout | null = null;
     if (options?.stallTimeoutMs && options.stallTimeoutMs > 0) {
       const limit = options.stallTimeoutMs;
@@ -272,7 +286,36 @@ export function runFfmpeg(
 
     child.stderr?.on("data", (chunk) => {
       const text = chunk.toString();
+      lastActivity = Date.now();
       stderr += text;
+      if (options?.onDiagnostic) {
+        diagnosticBuffer += text;
+        const lines = diagnosticBuffer.split(/[\r\n]+/);
+        diagnosticBuffer = lines.pop() ?? "";
+        for (const line of lines) {
+          const inputMatch = line.match(/^Input #(\d+),/);
+          if (inputMatch) {
+            options.onDiagnostic("input-detected", line.trim());
+          } else if (/^Stream mapping:/i.test(line) && !sawStreamMapping) {
+            sawStreamMapping = true;
+            options.onDiagnostic("stream-mapping", line.trim());
+          } else if (/^Output #(\d+),/.test(line)) {
+            options.onDiagnostic("output-initialized", line.trim());
+          }
+
+          const frameMatch = line.match(/\bframe=\s*(\d+)/);
+          if (frameMatch) {
+            const frame = Number(frameMatch[1]);
+            if (frame > 0 && !sawFirstFrame) {
+              sawFirstFrame = true;
+              options.onDiagnostic("first-frame", line.trim());
+            } else if (frame >= lastDiagnosticFrame + 100) {
+              lastDiagnosticFrame = frame;
+              options.onDiagnostic("frame-progress", line.trim());
+            }
+          }
+        }
+      }
       const times = [...text.matchAll(/time=(\d+):(\d+):(\d+(?:\.\d+)?)/g)];
       const latest = times[times.length - 1];
       if (latest) {

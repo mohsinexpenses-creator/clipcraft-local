@@ -599,11 +599,18 @@ export async function processClipJob(
         });
       if (usable.length > 0) {
         try {
+          const mediaServerStartedAt = Date.now();
+          log.info(
+            `[RENDER-DIAG] stage=broll.media-server-start event=before images=${usable.length}`,
+          );
           brollMediaServer = await startMediaServer(
             usable.map(({ filePath }, index) => ({
               route: `broll-${index}${path.extname(filePath) || ".jpg"}`,
               filePath,
             })),
+          );
+          log.info(
+            `[RENDER-DIAG] stage=broll.media-server-start event=after time_taken_ms=${Date.now() - mediaServerStartedAt} images=${usable.length}`,
           );
           const mediaServer = brollMediaServer;
           const captionBand = captionReservedBand(captionPresetForRender);
@@ -616,6 +623,10 @@ export async function processClipJob(
                   bottom: cell.faceZone.bottom,
                 }))
               : [];
+          log.info(
+            `[RENDER-DIAG] stage=broll.remotion-prepare event=before items=${usable.map(({ item }) => `${item.id}:${item.kind}`).join(",")} fps=${renderFps} frame_range=0-${Math.max(0, Math.ceil(totalDuration * renderFps) - 1)}`,
+          );
+          const brollPrepareStartedAt = Date.now();
           preparedBroll = await prepareRemotionBrollOverlays({
             fps: renderFps,
             totalDuration,
@@ -635,6 +646,9 @@ export async function processClipJob(
             onProgress: overlayProgressSink,
             isCancelled: () => cancelFlag,
           });
+          log.info(
+            `[RENDER-DIAG] stage=broll.remotion-prepare event=after time_taken_ms=${Date.now() - brollPrepareStartedAt} sequence_count=${preparedBroll.sequences.length} output_directory=${preparedBroll.workDir}`,
+          );
           brollSequences = preparedBroll.sequences;
           brollFileCount = usable.length;
           if (brollPlan.options.sfx) {
@@ -655,7 +669,12 @@ export async function processClipJob(
           sfx = [];
         } finally {
           if (brollMediaServer) {
+            const mediaServerCloseStartedAt = Date.now();
+            log.info("[RENDER-DIAG] stage=broll.media-server-close event=before");
             await brollMediaServer.close();
+            log.info(
+              `[RENDER-DIAG] stage=broll.media-server-close event=after time_taken_ms=${Date.now() - mediaServerCloseStartedAt}`,
+            );
             brollMediaServer = null;
           }
         }
@@ -692,6 +711,10 @@ export async function processClipJob(
         void reportProgress(scaled);
       };
 
+      log.info(
+        `[RENDER-DIAG] stage=ffmpeg.process-video-segment event=before overlays=${[...brollSequences, ...preparedOverlays.sequences].length} broll_overlays=${brollSequences.length} output=${finalVideoPath}`,
+      );
+      const processVideoStartedAt = Date.now();
       await processVideoSegment({
         sourceVideoPath: video.filePath,
         outputPath: finalVideoPath,
@@ -720,8 +743,16 @@ export async function processClipJob(
         audioStartOffsetSeconds,
         onProgress: progressSink,
       });
+      log.info(
+        `[RENDER-DIAG] stage=ffmpeg.process-video-segment event=after time_taken_ms=${Date.now() - processVideoStartedAt} output=${finalVideoPath}`,
+      );
 
+      log.info("[RENDER-DIAG] stage=ffmpeg.output-probe event=before");
+      const outputProbeStartedAt = Date.now();
       const outputMeta = await getVideoMetadata(finalVideoPath);
+      log.info(
+        `[RENDER-DIAG] stage=ffmpeg.output-probe event=after time_taken_ms=${Date.now() - outputProbeStartedAt}`,
+      );
       renderResult = {
         fps: outputMeta.fps,
         width: outputMeta.width,

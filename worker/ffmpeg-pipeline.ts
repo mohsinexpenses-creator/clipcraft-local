@@ -1,4 +1,5 @@
 import fs from "fs";
+import os from "os";
 import path from "path";
 import { AppError, toErrorMessage } from "../lib/errors";
 import { DEFAULT_FILTER_PRESETS } from "../lib/presets";
@@ -10,6 +11,7 @@ import {
 import { getVideoMetadata, runFfmpeg } from "../lib/ffmpeg";
 import { log } from "../lib/logger";
 import { buildSfxMixPlan, BROLL_SFX_VOLUME } from "../lib/broll/sfx";
+import { buildBrollSfxWav } from "./sfx-mixer";
 import {
   LayoutPlan,
   OUTPUT_HEIGHT,
@@ -490,9 +492,27 @@ export async function processVideoSegment(
   const overlayInputIndices: number[] = [];
   for (const overlay of overlays) {
     overlayInputIndices.push(nextInput++);
+    const sequenceDir = path.dirname(overlay.inputPattern);
+    const extension = path.extname(overlay.inputPattern).replace(/^\./, "");
+    let generatedFrames = 0;
+    let generatedBytes = 0;
+    try {
+      for (const file of fs.readdirSync(sequenceDir)) {
+        if (!new RegExp(`\\.${extension}$`, "i").test(file)) continue;
+        generatedFrames += 1;
+        generatedBytes += fs.statSync(path.join(sequenceDir, file)).size;
+      }
+    } catch (error) {
+      log.warn(
+        `[RENDER-DIAG] stage=ffmpeg.overlay-sequence event=stat-failed name=${overlay.name} directory=${sequenceDir} error=${toErrorMessage(error)}`,
+      );
+    }
+    log.info(
+      `[RENDER-DIAG] stage=ffmpeg.overlay-sequence event=before-input name=${overlay.name} image_format=${extension} fps=${ffmpegFpsArg(fps)} frame_range=1-${generatedFrames} generated_frames=${generatedFrames} output_directory=${sequenceDir} total_generated_file_size_bytes=${generatedBytes} timeline_start_seconds=${overlay.startAtSeconds}`,
+    );
     inputArgs.push(
       "-thread_queue_size",
-      "64",
+      "2",
       "-framerate",
       ffmpegFpsArg(fps),
       "-start_number",
@@ -502,15 +522,21 @@ export async function processVideoSegment(
     );
   }
 
-  // Sound effects are ordinary inputs too; their indices are recorded so the
-  // filter graph can delay each one to its own timestamp.
-  const sfxInputIndices: number[] = [];
-  for (const effect of sfx) {
-    sfxInputIndices.push(nextInput++);
-    inputArgs.push("-i", effect.filePath);
-  }
-
+  let sfxInputIndex: number | null = null;
+  let sfxMixDir: string | null = null;
   try {
+    if (sfx.length > 0) {
+      const mixedSfx = buildBrollSfxWav(
+        sfx.map((cue) => ({ ...cue, volume: cue.volume ?? sfxVolume })),
+        totalDuration,
+      );
+      sfxMixDir = fs.mkdtempSync(path.join(os.tmpdir(), "clipcraft-sfx-"));
+      const sfxMixPath = path.join(sfxMixDir, "broll-sfx.wav");
+      fs.writeFileSync(sfxMixPath, mixedSfx);
+      sfxInputIndex = nextInput++;
+      inputArgs.push("-i", sfxMixPath);
+    }
+
     let colorFilterStr = filterPreset.ffmpegFilter.trim();
     if (colorFilterStr === "null" || colorFilterStr === "") colorFilterStr = "";
 
@@ -673,10 +699,7 @@ export async function processVideoSegment(
     // already inside the voice branch, and `normalize=0` keeps speech at its level.
     const sfxPlan = buildSfxMixPlan({
       baseLabel: audioPlan?.audioLabel ?? "[a]",
-      cueInputIndices: sfxInputIndices,
-      cues: sfx,
-      totalDuration,
-      volume: sfxVolume,
+      sfxInputIndex,
     });
     if (sfxPlan.statements.length > 0) statements.push(...sfxPlan.statements);
 
@@ -686,17 +709,29 @@ export async function processVideoSegment(
     if (debugOutputPath)
       statements.push(`${sourceAudioLabel}asplit=2[adebug][afinal]`);
 
+    const filterGraph = statements.join(";");
     const args = [
       "-y",
       "-hide_banner",
       "-loglevel",
-      "warning",
+      "info",
       "-stats",
       ...inputArgs,
       ...(audioPlan?.extraArgs ?? []),
       "-filter_complex",
-      statements.join(";"),
+      filterGraph,
     ];
+
+    log.info(
+      `[RENDER-DIAG] stage=ffmpeg.input-initialization event=before inputs=${nextInput} overlay_sequences=${overlays.length} total_duration_seconds=${totalDuration.toFixed(3)} fps=${ffmpegFpsArg(fps)} image_sequence_start_number=1`,
+    );
+    log.info(
+      `[RENDER-DIAG] stage=ffmpeg.filter-graph event=before statements=${statements.length} characters=${filterGraph.length} overlays=${overlays.length} overlay_statements=${overlays.length * 2} output=${outputPath}`,
+    );
+    const ffmpegStartedAt = Date.now();
+    log.info(
+      `[RENDER-DIAG] stage=ffmpeg.final-encoding event=before codec=libx264 preset=${encodeSettings.preset} crf=${encodeSettings.crf} size=${outWidth}x${outHeight} fps=${ffmpegFpsArg(fps)} output=${outputPath}`,
+    );
 
     // Optional diagnostic output is a side branch from the SAME filter graph.
     // The deliverable below is still encoded once from the original sources;
@@ -722,16 +757,56 @@ export async function processVideoSegment(
       outputPath,
     );
 
-    await runFfmpeg(args, {
+    try {
+      await runFfmpeg(args, {
       label: "trim+mirror+crop+color+overlays+encode",
       stallTimeoutMs: 180_000,
       totalDurationSeconds: totalDuration,
       isCancelled,
+      onDiagnostic: (event, detail) => {
+        const elapsedMs = Date.now() - ffmpegStartedAt;
+        if (event === "input-detected") {
+          log.info(
+            `[RENDER-DIAG] stage=ffmpeg.input-initialization event=input-detected elapsed_ms=${elapsedMs} ${detail}`,
+          );
+        } else if (event === "stream-mapping") {
+          log.info(
+            `[RENDER-DIAG] stage=ffmpeg.input-initialization event=complete elapsed_ms=${elapsedMs} ${detail}`,
+          );
+          log.info(
+            `[RENDER-DIAG] stage=ffmpeg.filter-graph event=execution-starting elapsed_ms=${elapsedMs}`,
+          );
+        } else if (event === "output-initialized") {
+          log.info(
+            `[RENDER-DIAG] stage=ffmpeg.filter-graph event=output-initialized elapsed_ms=${elapsedMs} ${detail}`,
+          );
+        } else if (event === "first-frame") {
+          log.info(
+            `[RENDER-DIAG] stage=ffmpeg.filter-graph event=first-frame-produced elapsed_ms=${elapsedMs} ${detail}`,
+          );
+          log.info(
+            `[RENDER-DIAG] stage=ffmpeg.final-encoding event=first-frame-encoded elapsed_ms=${elapsedMs} ${detail}`,
+          );
+        } else {
+          log.info(
+            `[RENDER-DIAG] stage=ffmpeg.final-encoding event=frame-progress elapsed_ms=${elapsedMs} ${detail}`,
+          );
+        }
+      },
       onProgress: (progress) => {
         if (onProgress && progress.percent)
           onProgress(10 + Math.floor(progress.percent * 0.68));
       },
-    });
+      });
+      log.info(
+        `[RENDER-DIAG] stage=ffmpeg.final-encoding event=after time_taken_ms=${Date.now() - ffmpegStartedAt} output=${outputPath}`,
+      );
+    } catch (error) {
+      log.error(
+        `[RENDER-DIAG] stage=ffmpeg.process event=failed time_taken_ms=${Date.now() - ffmpegStartedAt} error=${toErrorMessage(error)} output=${outputPath}`,
+      );
+      throw error;
+    }
 
     assertUsableFile(outputPath, "final rendered clip");
     if (debugOutputPath)
@@ -753,5 +828,7 @@ export async function processVideoSegment(
       resolution:
         "Inspect the FFmpeg command in the worker log, verify the source clip exists and the crop window is inside the frame, and retry.",
     });
+  } finally {
+    if (sfxMixDir) fs.rmSync(sfxMixDir, { recursive: true, force: true });
   }
 }

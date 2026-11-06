@@ -78,28 +78,6 @@ export function buildBrollSfxCues(
   return cues;
 }
 
-export interface SfxMixStatementInput {
-  cue: { atSeconds: number; inputIndex: number };
-  totalDuration: number;
-  volume: number;
-  index: number;
-}
-
-/**
- * FFmpeg statements that turn each delayed sound file into a stereo stream padded
- * to the full timeline. `adelay=<ms>:all=1` delays every channel; `apad` keeps a
- * short effect from ending the mix early.
- */
-export function buildSfxStreamStatement(input: SfxMixStatementInput): string {
-  const delayMs = Math.max(0, Math.round(input.cue.atSeconds * 1000));
-  const volume = Math.min(1, Math.max(0, input.volume));
-  return (
-    `[${input.cue.inputIndex}:a]aformat=channel_layouts=stereo,` +
-    `adelay=${delayMs}:all=1,volume=${volume.toFixed(2)},` +
-    `apad=whole_dur=${Math.max(0.1, input.totalDuration).toFixed(3)}[sfx${input.index}]`
-  );
-}
-
 export interface SfxMixPlan {
   statements: string[];
   /** Label (with brackets) holding the final mixed audio. */
@@ -113,27 +91,16 @@ export interface SfxMixPlan {
  */
 export function buildSfxMixPlan(input: {
   baseLabel: string;
-  cueInputIndices: number[];
-  cues: Array<{ atSeconds: number; volume?: number }>;
-  totalDuration: number;
-  volume?: number;
+  sfxInputIndex: number | null;
 }): SfxMixPlan {
-  if (input.cueInputIndices.length === 0) {
+  if (input.sfxInputIndex === null) {
     return { statements: [], label: input.baseLabel };
   }
-  const statements = input.cueInputIndices.map((inputIndex, index) =>
-    buildSfxStreamStatement({
-      cue: { atSeconds: input.cues[index]?.atSeconds ?? 0, inputIndex },
-      totalDuration: input.totalDuration,
-      volume: input.cues[index]?.volume ?? input.volume ?? BROLL_SFX_VOLUME,
-      index,
-    }),
-  );
-  const labels = [`${input.baseLabel}`];
-  for (let index = 0; index < input.cueInputIndices.length; index += 1)
-    labels.push(`[sfx${index}]`);
-  statements.push(
-    `${labels.join("")}amix=inputs=${labels.length}:duration=first:dropout_transition=0:normalize=0[amixed]`,
-  );
-  return { statements, label: "[amixed]" };
+  return {
+    statements: [
+      `[${input.sfxInputIndex}:a]aformat=channel_layouts=stereo[sfx]`,
+      `${input.baseLabel}[sfx]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[amixed]`,
+    ],
+    label: "[amixed]",
+  };
 }
