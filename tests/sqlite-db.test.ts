@@ -87,7 +87,7 @@ test('SQLite schema is versioned, indexed, WAL-enabled, and has a five-second bu
   const version = db.prepare('SELECT version FROM schema_version WHERE id = 1').get() as
     | { version: number }
     | undefined;
-  assert.deepEqual(version, { version: 6 });
+  assert.deepEqual(version, { version: 10 });
 
   // v3 is the additive pipeline column: the per-video automation settings
   // (auto-detect / auto-render + AI clip options) captured at upload time.
@@ -97,6 +97,9 @@ test('SQLite schema is versioned, indexed, WAL-enabled, and has a five-second bu
     )
   );
   assert.ok(videoColumns.has('pipeline_json'), 'videos.pipeline_json is missing');
+  // v7 adds stable queue ordering and a durable paused/cancelled pipeline marker.
+  assert.ok(videoColumns.has('queue_order'), 'videos.queue_order is missing');
+  assert.ok(videoColumns.has('pipeline_cancelled'), 'videos.pipeline_cancelled is missing');
 
   // v6 is the additive B-roll plan column. NULL means "no B-roll for this clip",
   // which is exactly what every clip created before the feature has.
@@ -104,6 +107,9 @@ test('SQLite schema is versioned, indexed, WAL-enabled, and has a five-second bu
     (db.prepare('PRAGMA table_info(clips)').all() as Array<{ name: string }>).map((row) => row.name)
   );
   assert.ok(clipColumns.has('broll_json'), 'clips.broll_json is missing');
+  // v10 keeps per-clip cancellation durable so an automatic hand-off cannot
+  // requeue work after the user cancels just that clip.
+  assert.ok(clipColumns.has('work_cancelled'), 'clips.work_cancelled is missing');
 
   // v4 is the Settings-page table: one JSON document per section, and only for
   // sections the user actually saved - so an empty table means "env + defaults".
@@ -144,7 +150,7 @@ test('SQLite schema is versioned, indexed, WAL-enabled, and has a five-second bu
     initializeSchema(legacy);
     assert.deepEqual(
       legacy.prepare('SELECT version FROM schema_version WHERE id = 1').get(),
-      { version: 6 }
+      { version: 10 }
     );
     assert.ok(
       legacy.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'app_settings'").get(),
@@ -181,6 +187,11 @@ test('SQLite schema is versioned, indexed, WAL-enabled, and has a five-second bu
       (row) => row.name
     )
   );
+  const jobColumns = new Set(
+    (db.prepare('PRAGMA table_info(jobs)').all() as Array<{ name: string }>).map((row) => row.name)
+  );
+  assert.ok(jobColumns.has('claim_token'), 'jobs.claim_token is missing');
+
   for (const index of [
     'videos_created_at_idx',
     'clips_video_created_at_idx',

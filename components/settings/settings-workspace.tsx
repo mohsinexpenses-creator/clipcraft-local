@@ -1499,6 +1499,7 @@ function SafetyCard({
 }) {
   const [draft, setDraft] = React.useState<{
     audioMode: "mute" | "beep" | "off";
+    contextPassEnabled: boolean;
   } | null>(null);
   const value = draft ?? effective.profanity;
 
@@ -1526,7 +1527,7 @@ function SafetyCard({
             <button
               key={mode.value}
               type="button"
-              onClick={() => setDraft({ audioMode: mode.value })}
+              onClick={() => setDraft({ ...value, audioMode: mode.value })}
               className={cn(
                 "flex items-start gap-2.5 rounded-xl border p-2.5 text-left transition-all outline-none",
                 "focus-visible:ring-2 focus-visible:ring-ring/40",
@@ -1562,6 +1563,35 @@ function SafetyCard({
           );
         })}
       </div>
+      <button
+        type="button"
+        onClick={() => setDraft({ ...value, contextPassEnabled: !value.contextPassEnabled })}
+        className={cn(
+          "flex w-full items-start gap-2.5 rounded-xl border p-2.5 text-left transition-all outline-none",
+          "focus-visible:ring-2 focus-visible:ring-ring/40",
+          value.contextPassEnabled
+            ? "border-primary/40 bg-primary/5"
+            : "hover:border-primary/20 hover:bg-muted/40",
+        )}
+      >
+        <span className={cn(
+          "mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border",
+          value.contextPassEnabled ? "border-primary bg-primary text-primary-foreground" : "border-input",
+        )}>
+          {value.contextPassEnabled ? <Check className="size-2.5" /> : null}
+        </span>
+        <span className="min-w-0">
+          <span className="flex items-center gap-1.5 text-[12.5px] font-medium">
+            Context moderation pass
+            {settings.sources.profanity?.contextPassEnabled === "app" && !draft ? <SourceChip source="app" /> : null}
+          </span>
+          <span className="mt-0.5 block text-[11px] leading-snug text-muted-foreground">
+            {value.contextPassEnabled
+              ? "Use the configured LLM as an extra review for policy language that static matching cannot recognize. Static safety matching stays on if the provider is unavailable."
+              : "Optional LLM review is off. Static phrase, inflection and obfuscation matching still protects every render."}
+          </span>
+        </span>
+      </button>
       <p className="text-[11px] leading-snug text-muted-foreground">
         Masking uses the word timestamps from the transcript, so changing this
         only needs a re-render - the stored text keeps the original words.

@@ -119,6 +119,14 @@ export function stageMeta(stage: PipelineStatus["stage"]): StageMeta {
         bar: "bg-sky-500/70",
         pulse: false,
       };
+    case "paused":
+      return {
+        label: "Paused",
+        hint: "Pipeline cancelled — resume when ready",
+        chip: "text-muted-foreground bg-muted ring-border",
+        bar: "bg-muted-foreground/50",
+        pulse: false,
+      };
     case "ready":
       return {
         label: "Ready",

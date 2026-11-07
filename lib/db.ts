@@ -49,6 +49,8 @@ interface VideoRow {
   transcription_provider: VideoRecord["transcriptionProvider"] | null;
   transcription_model: string | null;
   pipeline_json: string | null;
+  queue_order: number;
+  pipeline_cancelled: number;
   error: string | null;
   created_at: string;
   updated_at: string;
@@ -69,6 +71,8 @@ interface VideoSummaryRow {
   transcription_provider: VideoRecord["transcriptionProvider"] | null;
   transcription_model: string | null;
   pipeline_json: string | null;
+  queue_order: number;
+  pipeline_cancelled: number;
   error: string | null;
   created_at: string;
   updated_at: string;
@@ -90,6 +94,7 @@ interface ClipRow {
   output_path: string | null;
   status: ClipRecord["status"];
   progress: number | null;
+  work_cancelled: number;
   record_json: string;
   /** Additive column (schema v6); NULL until the B-roll job has run. */
   broll_json: string | null;
@@ -129,11 +134,11 @@ interface PromptTemplateRow {
 const VIDEO_COLUMNS = `
   id, original_name, file_name, file_base, file_path, duration, width, height,
   file_size, status, transcript_json, transcription_provider, transcription_model,
-  pipeline_json, error, created_at, updated_at
+  pipeline_json, queue_order, pipeline_cancelled, error, created_at, updated_at
 `;
 
 const CLIP_COLUMNS = `
-  id, video_id, start, end, output_path, status, progress, record_json, broll_json,
+  id, video_id, start, end, output_path, status, progress, work_cancelled, record_json, broll_json,
   created_at, updated_at
 `;
 
@@ -141,7 +146,7 @@ const CLIP_COLUMNS = `
 const VIDEO_SUMMARY_SELECT = `
   v.id, v.original_name, v.file_name, v.file_base, v.file_path, v.duration, v.width,
   v.height, v.file_size, v.status, v.transcription_provider, v.transcription_model,
-  v.pipeline_json, v.error, v.created_at, v.updated_at,
+  v.pipeline_json, v.queue_order, v.pipeline_cancelled, v.error, v.created_at, v.updated_at,
   (v.transcript_json IS NOT NULL) AS transcript_ready,
   CASE
     WHEN v.transcript_json IS NOT NULL AND json_valid(v.transcript_json)
@@ -158,7 +163,7 @@ const VIDEO_SUMMARY_SELECT = `
      FROM clips c WHERE c.video_id = v.id) AS clip_progress
 `;
 
-const CURRENT_SCHEMA_VERSION = 6;
+const CURRENT_SCHEMA_VERSION = 10;
 
 /** Absolute path used by the web process and the worker. */
 export function getDatabasePath(): string {
@@ -276,6 +281,7 @@ function migrateSchemaV1(db: SqliteDatabase): void {
       output_path TEXT,
       status TEXT NOT NULL CHECK (status IN ('pending', 'processing', 'done', 'failed')),
       progress INTEGER,
+      work_cancelled INTEGER NOT NULL DEFAULT 0,
       record_json TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -330,6 +336,8 @@ function migrateSchemaV1(db: SqliteDatabase): void {
       created_at TEXT NOT NULL,
       available_at TEXT NOT NULL,
       started_at TEXT,
+      /** Opaque UUID fencing one running attempt from a later claim of the same job id. */
+      claim_token TEXT,
       finished_at TEXT,
       retry_delay_ms INTEGER NOT NULL DEFAULT 2000,
       video_id TEXT,
@@ -508,6 +516,87 @@ function migrateSchemaV6(db: SqliteDatabase): void {
   }
 }
 
+/**
+ * Schema v7: registration ordering and a cancel marker that does not mutate a
+ * video's automation choices. Existing rows receive a deterministic order based
+ * on their historical creation time.
+ */
+function migrateSchemaV7(db: SqliteDatabase): void {
+  const exists = db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'videos'`).get();
+  if (!exists) return;
+  const columns = db.prepare(`PRAGMA table_info(videos)`).all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === 'queue_order')) {
+    db.exec(`ALTER TABLE videos ADD COLUMN queue_order INTEGER`);
+    db.exec(`
+      UPDATE videos AS current
+      SET queue_order = (
+        SELECT COUNT(*) + 1 FROM videos AS earlier
+        WHERE earlier.created_at < current.created_at
+           OR (earlier.created_at = current.created_at AND earlier.id < current.id)
+      )
+    `);
+  }
+  if (!columns.some((column) => column.name === 'pipeline_cancelled')) {
+    db.exec(`ALTER TABLE videos ADD COLUMN pipeline_cancelled INTEGER NOT NULL DEFAULT 0`);
+  }
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS videos_queue_order_idx ON videos(queue_order);`);
+  // Very old/minimal databases can contain the videos table before the queue
+  // schema existed. Do not make the additive video migration depend on jobs.
+  const jobsExists = db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'jobs'`).get();
+  if (jobsExists) {
+    db.exec(`CREATE INDEX IF NOT EXISTS jobs_render_order_idx ON jobs(status, type, video_id, created_at);`);
+  }
+}
+
+/**
+ * Schema v8: Windows can briefly keep an FFmpeg/Chromium file handle after a
+ * delete request. Persist failed removals so startup can retry rather than leaving
+ * an untracked, DB-less source or output file behind.
+ */
+function migrateSchemaV8(db: SqliteDatabase): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS file_cleanup (
+      id TEXT PRIMARY KEY,
+      path TEXT NOT NULL UNIQUE,
+      kind TEXT NOT NULL,
+      last_error TEXT,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS file_cleanup_created_idx ON file_cleanup(created_at);
+  `);
+}
+
+/**
+ * Schema v9: an opaque claim UUID fences an old worker attempt from a newer
+ * retry/re-render even when two claims happen inside the same millisecond.
+ */
+function migrateSchemaV9(db: SqliteDatabase): void {
+  const jobs = db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'jobs'`).get();
+  if (!jobs) return;
+  const columns = db.prepare(`PRAGMA table_info(jobs)`).all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === 'claim_token')) {
+    db.exec(`ALTER TABLE jobs ADD COLUMN claim_token TEXT`);
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS jobs_claim_token_idx ON jobs(id, status, claim_token);`);
+}
+
+/**
+ * Schema v10: a per-clip cancellation fence closes the hand-off race where an
+ * upstream automatic job finishes just after the user cancels that clip. The
+ * flag is physical (rather than presentation JSON) so queue claims can enforce
+ * it atomically; only an explicit manual action clears it.
+ */
+function migrateSchemaV10(db: SqliteDatabase): void {
+  const clips = db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'clips'`).get();
+  if (!clips) return;
+  const columns = db.prepare(`PRAGMA table_info(clips)`).all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === 'work_cancelled')) {
+    db.exec(`ALTER TABLE clips ADD COLUMN work_cancelled INTEGER NOT NULL DEFAULT 0`);
+  }
+}
+
 const SCHEMA_MIGRATIONS: Record<number, (db: SqliteDatabase) => void> = {
   1: migrateSchemaV1,
   2: migrateSchemaV2,
@@ -515,6 +604,10 @@ const SCHEMA_MIGRATIONS: Record<number, (db: SqliteDatabase) => void> = {
   4: migrateSchemaV4,
   5: migrateSchemaV5,
   6: migrateSchemaV6,
+  7: migrateSchemaV7,
+  8: migrateSchemaV8,
+  9: migrateSchemaV9,
+  10: migrateSchemaV10,
 };
 
 export function initializeSchema(db: SqliteDatabase): void {
@@ -787,6 +880,8 @@ function mapVideo(row: VideoRow): VideoRecord {
           ),
         }
       : {}),
+    queueOrder: row.queue_order,
+    pipelineCancelled: row.pipeline_cancelled === 1,
     ...(row.error !== null ? { error: row.error } : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -821,6 +916,8 @@ function mapVideoSummary(row: VideoSummaryRow): VideoListEntry {
             ),
           }
         : {}),
+      queueOrder: row.queue_order,
+      pipelineCancelled: row.pipeline_cancelled === 1,
       ...(row.error !== null ? { error: row.error } : {}),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -840,6 +937,10 @@ function mapVideoSummary(row: VideoSummaryRow): VideoListEntry {
 
 function mapClip(row: ClipRow): ClipRecord {
   const record = parseJson<Partial<ClipRecord>>(row.record_json, "clip record");
+  // Cancellation is an operational fence, not presentation JSON. Older generic
+  // record updates may have serialized this field, so the physical column is
+  // always authoritative (including a deliberate false after manual resume).
+  delete record.workCancelled;
   return {
     ...record,
     _id: row.id,
@@ -849,6 +950,7 @@ function mapClip(row: ClipRow): ClipRecord {
     ...(row.output_path !== null ? { outputPath: row.output_path } : {}),
     status: row.status,
     ...(row.progress !== null ? { progress: row.progress } : {}),
+    ...(row.work_cancelled === 1 ? { workCancelled: true } : {}),
     // The plan lives in its own column, never in record_json: it is written by a
     // different job than the render, and a render must not be able to drop it.
     ...(row.broll_json
@@ -1120,56 +1222,73 @@ export async function resetOverlayStylePresets(): Promise<
   return listOverlayStylePresets();
 }
 
+function nextQueueOrder(db: SqliteDatabase): number {
+  const row = db.prepare('SELECT COALESCE(MAX(queue_order), 0) AS value FROM videos').get() as { value: number };
+  return Math.max(1, Number(row.value) + 1);
+}
+
 export async function saveVideo(video: VideoRecord): Promise<VideoRecord> {
   const db = getDatabase();
   if (!video._id) video._id = randomUUID();
+  // Normalize the durable cancellation marker so callers that retain the object
+  // receive the same public shape that a subsequent read returns.
+  video.pipelineCancelled = Boolean(video.pipelineCancelled);
   video.updatedAt = new Date().toISOString();
   if (!video.createdAt) video.createdAt = video.updatedAt;
 
-  db.prepare(
-    `
-    INSERT INTO videos (
-      id, original_name, file_name, file_base, file_path, duration, width, height,
-      file_size, status, transcript_json, transcription_provider, transcription_model,
-      pipeline_json, error, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET
-      original_name = excluded.original_name,
-      file_name = excluded.file_name,
-      file_base = excluded.file_base,
-      file_path = excluded.file_path,
-      duration = excluded.duration,
-      width = excluded.width,
-      height = excluded.height,
-      file_size = excluded.file_size,
-      status = excluded.status,
-      transcript_json = COALESCE(excluded.transcript_json, videos.transcript_json),
-      transcription_provider = excluded.transcription_provider,
-      transcription_model = excluded.transcription_model,
-      pipeline_json = COALESCE(excluded.pipeline_json, videos.pipeline_json),
-      error = excluded.error,
-      created_at = videos.created_at,
-      updated_at = excluded.updated_at
-  `,
-  ).run(
-    video._id,
-    video.originalName,
-    video.fileName,
-    video.fileBase ?? null,
-    video.filePath,
-    video.duration,
-    video.width,
-    video.height,
-    video.fileSize,
-    video.status,
-    video.transcript ? serializeJson(video.transcript) : null,
-    video.transcriptionProvider ?? null,
-    video.transcriptionModel ?? null,
-    video.pipeline ? serializeJson(video.pipeline) : null,
-    video.error ?? null,
-    video.createdAt,
-    video.updatedAt,
-  );
+  db.transaction(() => {
+    const existing = db.prepare('SELECT queue_order FROM videos WHERE id = ?').get(video._id) as { queue_order: number } | undefined;
+    // Registration order is allocated under SQLite's write lock. An update preserves
+    // its original position even if its metadata is edited later.
+    video.queueOrder = existing?.queue_order ?? nextQueueOrder(db);
+    db.prepare(
+      `
+      INSERT INTO videos (
+        id, original_name, file_name, file_base, file_path, duration, width, height,
+        file_size, status, transcript_json, transcription_provider, transcription_model,
+        pipeline_json, queue_order, pipeline_cancelled, error, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        original_name = excluded.original_name,
+        file_name = excluded.file_name,
+        file_base = excluded.file_base,
+        file_path = excluded.file_path,
+        duration = excluded.duration,
+        width = excluded.width,
+        height = excluded.height,
+        file_size = excluded.file_size,
+        status = excluded.status,
+        transcript_json = COALESCE(excluded.transcript_json, videos.transcript_json),
+        transcription_provider = excluded.transcription_provider,
+        transcription_model = excluded.transcription_model,
+        pipeline_json = COALESCE(excluded.pipeline_json, videos.pipeline_json),
+        pipeline_cancelled = excluded.pipeline_cancelled,
+        error = excluded.error,
+        created_at = videos.created_at,
+        updated_at = excluded.updated_at
+    `,
+    ).run(
+      video._id,
+      video.originalName,
+      video.fileName,
+      video.fileBase ?? null,
+      video.filePath,
+      video.duration,
+      video.width,
+      video.height,
+      video.fileSize,
+      video.status,
+      video.transcript ? serializeJson(video.transcript) : null,
+      video.transcriptionProvider ?? null,
+      video.transcriptionModel ?? null,
+      video.pipeline ? serializeJson(video.pipeline) : null,
+      video.queueOrder,
+      video.pipelineCancelled ? 1 : 0,
+      video.error ?? null,
+      video.createdAt,
+      video.updatedAt,
+    );
+  }).immediate();
 
   return video;
 }
@@ -1189,6 +1308,7 @@ export function updateVideoRecordSync(
       transcript_json = COALESCE(?, transcript_json),
       transcription_provider = ?, transcription_model = ?,
       pipeline_json = COALESCE(?, pipeline_json),
+      pipeline_cancelled = ?,
       error = ?, updated_at = ?
     WHERE id = ?
   `,
@@ -1207,6 +1327,7 @@ export function updateVideoRecordSync(
       video.transcriptionProvider ?? null,
       video.transcriptionModel ?? null,
       video.pipeline ? serializeJson(video.pipeline) : null,
+      video.pipelineCancelled ? 1 : 0,
       video.error ?? null,
       video.updatedAt,
       video._id,
@@ -1217,6 +1338,68 @@ export function updateVideoRecordSync(
 /** Update-only variant for worker code; it must not resurrect a deleted video. */
 export async function updateVideo(video: VideoRecord): Promise<boolean> {
   return updateVideoRecordSync(getDatabase(), video);
+}
+
+/**
+ * Claim-fenced video update for a running transcription/detection attempt.
+ * A stable job id can be re-used after cancellation, so both the timestamp and
+ * opaque claim UUID must still match before a worker writes its result.
+ */
+export function updateVideoRecordForRunningJobSync(
+  db: SqliteDatabase,
+  video: VideoRecord,
+  jobId: string,
+  startedAt: string,
+  claimToken?: string,
+): boolean {
+  video.updatedAt = new Date().toISOString();
+  const result = db.prepare(`
+    UPDATE videos SET
+      original_name = ?, file_name = ?, file_base = ?, file_path = ?, duration = ?,
+      width = ?, height = ?, file_size = ?, status = ?,
+      transcript_json = COALESCE(?, transcript_json),
+      transcription_provider = ?, transcription_model = ?,
+      pipeline_json = COALESCE(?, pipeline_json),
+      pipeline_cancelled = ?, error = ?, updated_at = ?
+    WHERE id = ?
+      AND EXISTS (
+        SELECT 1 FROM jobs
+        WHERE id = ? AND status = 'running' AND started_at = ?
+          AND (? IS NULL OR claim_token = ?)
+      )
+  `).run(
+    video.originalName,
+    video.fileName,
+    video.fileBase ?? null,
+    video.filePath,
+    video.duration,
+    video.width,
+    video.height,
+    video.fileSize,
+    video.status,
+    video.transcript ? serializeJson(video.transcript) : null,
+    video.transcriptionProvider ?? null,
+    video.transcriptionModel ?? null,
+    video.pipeline ? serializeJson(video.pipeline) : null,
+    video.pipelineCancelled ? 1 : 0,
+    video.error ?? null,
+    video.updatedAt,
+    video._id,
+    jobId,
+    startedAt,
+    claimToken ?? null,
+    claimToken ?? null,
+  );
+  return result.changes > 0;
+}
+
+export async function updateVideoForRunningJob(
+  video: VideoRecord,
+  jobId: string,
+  startedAt: string,
+  claimToken?: string,
+): Promise<boolean> {
+  return updateVideoRecordForRunningJobSync(getDatabase(), video, jobId, startedAt, claimToken);
 }
 
 export async function getVideo(id: string): Promise<VideoRecord | null> {
@@ -1264,20 +1447,52 @@ export async function getVideoSummary(
 
 export async function deleteVideo(id: string): Promise<boolean> {
   const db = getDatabase();
-  db.transaction(() => {
-    removeJobsForRecord(db, "video_id", id);
-    db.prepare("DELETE FROM videos WHERE id = ?").run(id);
-  })();
-  return true;
+  return db.transaction(() => {
+    // Jobs can be older rows with only clip_id populated, so remove both forms
+    // before FK cascade deletes the clips and hides their relationship.
+    db.prepare(`DELETE FROM jobs WHERE video_id = ? OR clip_id IN (
+      SELECT id FROM clips WHERE video_id = ?
+    )`).run(id, id);
+    return db.prepare("DELETE FROM videos WHERE id = ?").run(id).changes > 0;
+  }).immediate();
 }
 
-export async function saveClip(clip: ClipRecord): Promise<ClipRecord> {
-  const db = getDatabase();
+interface RunningJobGuard {
+  jobId: string;
+  startedAt: string;
+  claimToken?: string;
+}
+
+/**
+ * Insert/update a clip while optionally fencing it to the exact running worker
+ * attempt. The immediate transaction makes the guard check and the write one
+ * SQLite critical section: a cancellation either happens first (no write) or
+ * happens after it (and sees/cancels this newly created clip).
+ */
+function saveClipRecordSync(
+  db: SqliteDatabase,
+  clip: ClipRecord,
+  guard?: RunningJobGuard,
+): boolean {
   if (!clip._id) clip._id = randomUUID();
   clip.updatedAt = new Date().toISOString();
   if (!clip.createdAt) clip.createdAt = clip.updatedAt;
 
+  let saved = false;
   db.transaction(() => {
+    if (guard) {
+      const current = db.prepare(`
+        SELECT 1 FROM jobs
+        WHERE id = ? AND status = 'running' AND started_at = ?
+          AND (? IS NULL OR claim_token = ?)
+      `).get(
+        guard.jobId,
+        guard.startedAt,
+        guard.claimToken ?? null,
+        guard.claimToken ?? null,
+      );
+      if (!current) return;
+    }
     if (!clip.captionPresetId?.trim()) {
       const preset = db
         .prepare("SELECT id FROM caption_presets WHERE is_default = 1 LIMIT 1")
@@ -1319,7 +1534,7 @@ export async function saveClip(clip: ClipRecord): Promise<ClipRecord> {
     db.prepare(
       `
       INSERT INTO clips (${CLIP_COLUMNS})
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         video_id = excluded.video_id,
         start = excluded.start,
@@ -1341,14 +1556,32 @@ export async function saveClip(clip: ClipRecord): Promise<ClipRecord> {
       clip.outputPath ?? null,
       clip.status,
       clip.progress ?? null,
+      clip.workCancelled ? 1 : 0,
       serializeClipRecord(clip),
       clip.broll ? serializeJson(clip.broll) : null,
       clip.createdAt,
       clip.updatedAt,
     );
+    saved = true;
   }).immediate();
 
+  return saved;
+}
+
+
+export async function saveClip(clip: ClipRecord): Promise<ClipRecord> {
+  saveClipRecordSync(getDatabase(), clip);
   return clip;
+}
+
+/** Save a detected clip only while the exact viral-detection claim is current. */
+export async function saveClipForRunningJob(
+  clip: ClipRecord,
+  jobId: string,
+  startedAt: string,
+  claimToken?: string,
+): Promise<boolean> {
+  return saveClipRecordSync(getDatabase(), clip, { jobId, startedAt, claimToken });
 }
 
 /** Synchronous update helper for composing an atomic queue + clip transaction. */
@@ -1388,6 +1621,115 @@ export async function updateClip(clip: ClipRecord): Promise<boolean> {
   return updateClipRecordSync(getDatabase(), clip);
 }
 
+/**
+ * Update a clip only while this exact worker claim remains current. Re-rendering
+ * reuses the stable job id, so `started_at` is the attempt token that stops an old
+ * FFmpeg process from writing over a freshly queued clip.
+ */
+export function updateClipRecordForRunningJobSync(
+  db: SqliteDatabase,
+  clip: ClipRecord,
+  jobId: string,
+  startedAt: string,
+  claimToken?: string,
+): boolean {
+  clip.updatedAt = new Date().toISOString();
+  const result = db.prepare(`
+    UPDATE clips SET
+      video_id = ?, start = ?, end = ?, output_path = ?, status = ?, progress = ?,
+      record_json = ?, broll_json = COALESCE(?, broll_json), updated_at = ?
+    WHERE id = ?
+      AND EXISTS (
+        SELECT 1 FROM jobs
+        WHERE id = ? AND status = 'running' AND started_at = ?
+          AND (? IS NULL OR claim_token = ?)
+      )
+  `).run(
+    clip.videoId,
+    clip.start,
+    clip.end,
+    clip.outputPath ?? null,
+    clip.status,
+    clip.progress ?? null,
+    serializeClipRecord(clip),
+    clip.broll ? serializeJson(clip.broll) : null,
+    clip.updatedAt,
+    clip._id,
+    jobId,
+    startedAt,
+    claimToken ?? null,
+    claimToken ?? null,
+  );
+  return result.changes > 0;
+}
+
+export async function updateClipForRunningJob(
+  clip: ClipRecord,
+  jobId: string,
+  startedAt: string,
+  claimToken?: string,
+): Promise<boolean> {
+  return updateClipRecordForRunningJobSync(getDatabase(), clip, jobId, startedAt, claimToken);
+}
+
+export interface CancelledWorkResult {
+  found: boolean;
+  jobsFailed: number;
+  clipsFailed: number;
+}
+
+function cancelledClipRecordJson(recordJson: string): string {
+  const record = parseJson<Partial<ClipRecord>>(recordJson, 'clip record');
+  record.error = 'Cancelled by user.';
+  record.cancelling = false;
+  return serializeJson(record);
+}
+
+/** Atomically terminally fail queued/running B-roll and render work for one clip. */
+export function cancelClipWorkSync(db: SqliteDatabase, clipId: string): CancelledWorkResult {
+  return db.transaction(() => {
+    const row = db.prepare('SELECT record_json FROM clips WHERE id = ?').get(clipId) as { record_json: string } | undefined;
+    if (!row) return { found: false, jobsFailed: 0, clipsFailed: 0 };
+    const now = new Date().toISOString();
+    const jobs = db.prepare(`
+      UPDATE jobs SET status = 'failed', error = 'Cancelled by user.', progress = 0,
+        finished_at = ?, started_at = NULL, claim_token = NULL
+      WHERE clip_id = ? AND type IN ('clip-processing', 'broll')
+        AND status IN ('queued', 'running')
+    `).run(now, clipId).changes;
+    const clips = db.prepare(`
+      UPDATE clips SET status = 'failed', progress = 0, work_cancelled = 1,
+        record_json = ?, updated_at = ?
+      WHERE id = ?
+    `).run(cancelledClipRecordJson(row.record_json), now, clipId).changes;
+    return { found: true, jobsFailed: jobs, clipsFailed: clips };
+  }).immediate();
+}
+
+/** Atomically cancel every queue step for one video without changing its saved automation options. */
+export function cancelVideoPipelineSync(db: SqliteDatabase, videoId: string): CancelledWorkResult {
+  return db.transaction(() => {
+    const video = db.prepare('SELECT id FROM videos WHERE id = ?').get(videoId) as { id: string } | undefined;
+    if (!video) return { found: false, jobsFailed: 0, clipsFailed: 0 };
+    const now = new Date().toISOString();
+    const jobs = db.prepare(`
+      UPDATE jobs SET status = 'failed', error = 'Cancelled by user.', progress = 0,
+        finished_at = ?, started_at = NULL, claim_token = NULL
+      WHERE (video_id = ? OR clip_id IN (SELECT id FROM clips WHERE video_id = ?))
+        AND type IN ('transcription', 'viral-detection', 'broll', 'clip-processing')
+        AND status IN ('queued', 'running')
+    `).run(now, videoId, videoId).changes;
+    const clipRows = db.prepare(`SELECT id, record_json FROM clips WHERE video_id = ? AND status IN ('pending', 'processing')`).all(videoId) as Array<{ id: string; record_json: string }>;
+    const updateClipCancelled = db.prepare(`
+      UPDATE clips SET status = 'failed', progress = 0, work_cancelled = 1,
+        record_json = ?, updated_at = ? WHERE id = ?
+    `);
+    for (const clip of clipRows) updateClipCancelled.run(cancelledClipRecordJson(clip.record_json), now, clip.id);
+    db.prepare(`UPDATE videos SET pipeline_cancelled = 1, error = 'Cancelled by user.', updated_at = ? WHERE id = ?`).run(now, videoId);
+    return { found: true, jobsFailed: jobs, clipsFailed: clipRows.length };
+  }).immediate();
+}
+
 export async function getClip(id: string): Promise<ClipRecord | null> {
   const row = getDatabase()
     .prepare(`SELECT ${CLIP_COLUMNS} FROM clips WHERE id = ?`)
@@ -1410,11 +1752,10 @@ export async function listClips(videoId?: string): Promise<ClipRecord[]> {
 
 export async function deleteClip(id: string): Promise<boolean> {
   const db = getDatabase();
-  db.transaction(() => {
+  return db.transaction(() => {
     removeJobsForRecord(db, "clip_id", id);
-    db.prepare("DELETE FROM clips WHERE id = ?").run(id);
-  })();
-  return true;
+    return db.prepare("DELETE FROM clips WHERE id = ?").run(id).changes > 0;
+  }).immediate();
 }
 
 /**
@@ -1462,6 +1803,72 @@ export async function saveClipBrollPlan(
   return saveClipBrollPlanSync(getDatabase(), clipId, plan, status, error);
 }
 
+/** B-roll equivalent of the render claim guard: stale planners cannot save a plan. */
+export function saveClipBrollPlanForRunningJobSync(
+  db: SqliteDatabase,
+  clipId: string,
+  plan: BrollPlan | null,
+  status: ClipRecord["brollStatus"],
+  error: string | undefined,
+  jobId: string,
+  startedAt: string,
+  claimToken?: string,
+): boolean {
+  return db.transaction(() => {
+    const row = db.prepare(`SELECT record_json FROM clips WHERE id = ? AND EXISTS (
+      SELECT 1 FROM jobs
+      WHERE id = ? AND status = 'running' AND started_at = ?
+        AND (? IS NULL OR claim_token = ?)
+    )`).get(clipId, jobId, startedAt, claimToken ?? null, claimToken ?? null) as { record_json: string } | undefined;
+    if (!row) return false;
+    const now = new Date().toISOString();
+    const updated = db.prepare(`UPDATE clips SET broll_json = ?, updated_at = ? WHERE id = ? AND EXISTS (
+      SELECT 1 FROM jobs
+      WHERE id = ? AND status = 'running' AND started_at = ?
+        AND (? IS NULL OR claim_token = ?)
+    )`).run(
+      plan ? serializeJson(plan) : null,
+      now,
+      clipId,
+      jobId,
+      startedAt,
+      claimToken ?? null,
+      claimToken ?? null,
+    );
+    if (updated.changes === 0) return false;
+    const record = parseJson<Partial<ClipRecord>>(row.record_json, 'clip record');
+    record.brollStatus = status;
+    if (error) record.brollError = error;
+    else delete record.brollError;
+    return db.prepare(`UPDATE clips SET record_json = ? WHERE id = ? AND EXISTS (
+      SELECT 1 FROM jobs
+      WHERE id = ? AND status = 'running' AND started_at = ?
+        AND (? IS NULL OR claim_token = ?)
+    )`).run(
+      serializeJson(record),
+      clipId,
+      jobId,
+      startedAt,
+      claimToken ?? null,
+      claimToken ?? null,
+    ).changes > 0;
+  })();
+}
+
+export async function saveClipBrollPlanForRunningJob(
+  clipId: string,
+  plan: BrollPlan | null,
+  status: ClipRecord["brollStatus"],
+  error: string | undefined,
+  jobId: string,
+  startedAt: string,
+  claimToken?: string,
+): Promise<boolean> {
+  return saveClipBrollPlanForRunningJobSync(
+    getDatabase(), clipId, plan, status, error, jobId, startedAt, claimToken,
+  );
+}
+
 /** The stored plan for one clip, without loading the whole record. */
 export async function getClipBrollPlan(clipId: string): Promise<BrollPlan | null> {
   const row = getDatabase()
@@ -1469,6 +1876,70 @@ export async function getClipBrollPlan(clipId: string): Promise<BrollPlan | null
     .get(clipId) as { broll_json: string | null } | undefined;
   if (!row?.broll_json) return null;
   return parseJson<BrollPlan>(row.broll_json, "clip broll plan");
+}
+
+export interface FileCleanupRecord {
+  id: string;
+  path: string;
+  kind: string;
+  lastError?: string;
+  attempts: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Persist a filesystem removal that Windows/AV/FFmpeg still has open. */
+export function enqueueFileCleanupSync(
+  db: SqliteDatabase,
+  filePath: string,
+  kind: string,
+  error?: string,
+): void {
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO file_cleanup (id, path, kind, last_error, attempts, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 1, ?, ?)
+    ON CONFLICT(path) DO UPDATE SET
+      kind = excluded.kind,
+      last_error = excluded.last_error,
+      attempts = file_cleanup.attempts + 1,
+      updated_at = excluded.updated_at
+  `).run(randomUUID(), filePath, kind, error ?? null, now, now);
+}
+
+export async function enqueueFileCleanup(filePath: string, kind: string, error?: string): Promise<void> {
+  enqueueFileCleanupSync(getDatabase(), filePath, kind, error);
+}
+
+export function listFileCleanupSync(db: SqliteDatabase, limit = 250): FileCleanupRecord[] {
+  const rows = db.prepare(`
+    SELECT id, path, kind, last_error, attempts, created_at, updated_at
+    FROM file_cleanup ORDER BY created_at ASC LIMIT ?
+  `).all(Math.max(1, Math.min(1000, Math.floor(limit)))) as Array<{
+    id: string; path: string; kind: string; last_error: string | null;
+    attempts: number; created_at: string; updated_at: string;
+  }>;
+  return rows.map((row) => ({
+    id: row.id,
+    path: row.path,
+    kind: row.kind,
+    ...(row.last_error ? { lastError: row.last_error } : {}),
+    attempts: row.attempts,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
+}
+
+export async function listFileCleanup(limit = 250): Promise<FileCleanupRecord[]> {
+  return listFileCleanupSync(getDatabase(), limit);
+}
+
+export function clearFileCleanupSync(db: SqliteDatabase, id: string): boolean {
+  return db.prepare('DELETE FROM file_cleanup WHERE id = ?').run(id).changes > 0;
+}
+
+export async function clearFileCleanup(id: string): Promise<boolean> {
+  return clearFileCleanupSync(getDatabase(), id);
 }
 
 export async function listPromptTemplates(): Promise<PromptTemplate[]> {

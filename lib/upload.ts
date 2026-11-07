@@ -1,9 +1,9 @@
 import fs from 'fs';
 import path from 'path';
 import { NextResponse } from 'next/server';
-import { saveVideo, updateVideo } from './db';
+import { getVideo, saveVideo, updateVideo } from './db';
 import { getStoredPathSettings } from './app-settings';
-import { AppError, getErrorResponse, toErrorMessage } from './errors';
+import { AppError, RenderCancelledError, getErrorResponse, toErrorMessage } from './errors';
 import { getVideoMetadata } from './ffmpeg';
 import { enqueueTranscriptionJob, findActiveJob, TRANSCRIPTION_QUEUE_NAME } from './queue';
 import { sanitizePipelineOptions } from './pipeline-defaults';
@@ -276,9 +276,15 @@ export async function queueTranscription(video: VideoRecord): Promise<boolean> {
     await enqueueTranscriptionJob({ videoId: video._id, filePath: video.filePath });
     return true;
   } catch (error) {
-    video.status = 'failed';
-    video.error = toErrorMessage(error, 'Could not queue the transcription job.');
-    await updateVideo(video).catch((saveError) =>
+    // A cancel route won the same enqueue transaction. Never write the stale
+    // caller-owned video object back here: doing so could clear its durable
+    // pipeline_cancelled marker after cancellation.
+    if (error instanceof RenderCancelledError) return false;
+    const current = await getVideo(video._id).catch(() => null);
+    if (!current || current.pipelineCancelled) return false;
+    current.status = 'failed';
+    current.error = toErrorMessage(error, 'Could not queue the transcription job.');
+    await updateVideo(current).catch((saveError) =>
       console.error('[Upload] Could not persist the queue failure:', saveError)
     );
     return false;

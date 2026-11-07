@@ -4,8 +4,10 @@ import {
   getVideo,
   listClips,
   saveClip,
+  saveClipForRunningJob,
   updateClip,
   updateVideo,
+  updateVideoForRunningJob,
 } from './db';
 import {
   detectViralSegments,
@@ -13,7 +15,7 @@ import {
   generateHookText,
   detectHookMoment,
 } from './ai';
-import { AppError, toErrorMessage } from './errors';
+import { AppError, RenderCancelledError, toErrorMessage } from './errors';
 import { log } from './logger';
 import {
   BROLL_QUEUE_NAME,
@@ -26,6 +28,8 @@ import {
   enqueueViralDetectionJob,
   findActiveJob,
   findLatestJob,
+  isJobClaimCurrent,
+  type PipelineEnqueueContext,
 } from './queue';
 import { resolveBrollOptions, sanitizePipelineOptions } from './pipeline-defaults';
 import { loadEffectiveSettings } from './app-settings';
@@ -56,6 +60,30 @@ import {
  * Nothing about the rendering itself lives here - `worker/processor.ts` and the
  * FFmpeg pipeline are unchanged and stay the single implementation of a render.
  */
+
+/**
+ * A worker's downstream enqueue carries its exact running claim. This closes the
+ * gap between a successful guarded write and the next queue insertion: a
+ * cancellation/reclaim can no longer create a fresh child job after it won.
+ */
+function handoffContextFor(input: Pick<DetectionRunInput, 'jobId' | 'startedAt' | 'claimToken'>): PipelineEnqueueContext {
+  if (!input.jobId || !input.startedAt) return {};
+  return {
+    sourceClaim: {
+      jobId: input.jobId,
+      startedAt: input.startedAt,
+      ...(input.claimToken ? { claimToken: input.claimToken } : {}),
+    },
+  };
+}
+
+/** True when a cancelled/reclaimed upstream worker must stop rather than skip one clip. */
+function sourceClaimWasLost(context: PipelineEnqueueContext): boolean {
+  const source = context.sourceClaim;
+  return Boolean(
+    source && !isJobClaimCurrent(source.jobId, source.startedAt, undefined, source.claimToken),
+  );
+}
 
 /**
  * Render configuration a clip gets when nobody has opened the editor yet:
@@ -119,11 +147,12 @@ export function resolvePipeline(
 
 /** Queue the detection step unless one is already queued/running for this video. */
 export async function queueViralDetection(
-  videoId: string
+  videoId: string,
+  context: PipelineEnqueueContext = {},
 ): Promise<'queued' | 'already-queued' | 'running'> {
   const active = findActiveJob(VIRAL_DETECTION_QUEUE_NAME, { videoId });
   if (active) return active.status === 'running' ? 'running' : 'already-queued';
-  await enqueueViralDetectionJob(videoId);
+  await enqueueViralDetectionJob(videoId, context);
   return 'queued';
 }
 
@@ -140,7 +169,7 @@ export function brollOptionsFor(video: Pick<VideoRecord, 'pipeline'>): BrollOpti
 export async function queueBrollForClips(
   clips: readonly ClipRecord[],
   trigger: 'auto' | 'manual' | 'recovered' = 'auto',
-  options: { skipWhenFailed?: boolean } = {}
+  options: { skipWhenFailed?: boolean; context?: PipelineEnqueueContext } = {},
 ): Promise<ClipRecord[]> {
   const queued: ClipRecord[] = [];
   for (const clip of clips) {
@@ -153,9 +182,20 @@ export async function queueBrollForClips(
       if (latest?.status === 'failed') continue;
     }
     try {
-      await enqueueBrollJob({ clipId: clip._id, videoId: clip.videoId, trigger });
+      await enqueueBrollJob(
+        { clipId: clip._id, videoId: clip.videoId, trigger },
+        options.context,
+      );
       queued.push(clip);
     } catch (error) {
+      // A lost upstream claim means the entire automatic hand-off was cancelled
+      // or reclaimed, so stop the old producer rather than letting it continue.
+      if (error instanceof RenderCancelledError && sourceClaimWasLost(options.context ?? {})) {
+        throw error;
+      }
+      // A specific clip may have been cancelled while a video-level detection
+      // pass is still valid. Leave that clip terminal and continue the batch.
+      if (error instanceof RenderCancelledError) continue;
       // A 409 (another pass is starting) is not a failure of this clip; anything
       // else is recorded on the clip without stopping the batch.
       const message = toErrorMessage(error, 'Could not queue B-roll.');
@@ -169,11 +209,14 @@ export async function queueBrollForClips(
  * Hand one clip to the render queue if the video's automation still wants that.
  * Called by the worker right after the B-roll job wrote its plan.
  */
-export async function continueAfterBroll(clipId: string): Promise<boolean> {
+export async function continueAfterBroll(
+  clipId: string,
+  context: PipelineEnqueueContext = {},
+): Promise<boolean> {
   const clip = await getClip(clipId);
   if (!clip) return false;
   const video = await getVideo(clip.videoId);
-  if (!video?.pipeline) return false;
+  if (!video?.pipeline || video.pipelineCancelled) return false;
 
   const options = brollOptionsFor(video);
   // `autoRender` alone decides whether a render follows; B-roll is a step *inside*
@@ -188,7 +231,7 @@ export async function continueAfterBroll(clipId: string): Promise<boolean> {
     findActiveJob(CLIP_QUEUE_NAME, { clipId })
   ) return false;
 
-  await enqueueClipJob(await jobDataFromClip(clip));
+  await enqueueClipJob(await jobDataFromClip(clip), context);
   log.ok(
     `B-roll ready (${clip.broll?.items.length ?? 0} image${clip.broll?.items.length === 1 ? '' : 's'}` +
       `${options.enableFullscreen ? `, ${clip.broll?.counts.fullscreen ?? 0} full-screen` : ''}) - render queued.`
@@ -208,6 +251,12 @@ export interface DetectionRunInput {
    * unrendered (so "transcribe again" does not double the grid).
    */
   mode?: 'auto' | 'manual';
+  /** Worker-only cancellation signal; HTTP callers omit it. */
+  signal?: AbortSignal;
+  /** Exact queue claim that owns worker-originated persistence. */
+  jobId?: string;
+  startedAt?: string;
+  claimToken?: string;
 }
 
 export interface DetectionRunResult {
@@ -236,12 +285,29 @@ export async function runViralDetection(
   videoId: string,
   input: DetectionRunInput = {}
 ): Promise<DetectionRunResult> {
+  if (input.signal?.aborted) throw new RenderCancelledError();
+  const hasClaimGuard = Boolean(input.jobId && input.startedAt);
+  const downstreamContext = handoffContextFor(input);
+  const persistVideo = async (candidate: VideoRecord): Promise<boolean> =>
+    hasClaimGuard
+      ? updateVideoForRunningJob(candidate, input.jobId!, input.startedAt!, input.claimToken)
+      : updateVideo(candidate);
+  const persistDetectedClip = async (candidate: ClipRecord): Promise<boolean> =>
+    hasClaimGuard
+      ? saveClipForRunningJob(candidate, input.jobId!, input.startedAt!, input.claimToken)
+      : (await saveClip(candidate), true);
   const video = await getVideo(videoId);
   if (!video) {
     throw new AppError('Video not found', {
       status: 404,
       resolution: 'Upload the source video again before detecting clips.',
     });
+  }
+
+  if (input.mode === 'manual' && video.pipelineCancelled) {
+    video.pipelineCancelled = false;
+    video.error = undefined;
+    await updateVideo(video);
   }
 
   if (!video.transcript) {
@@ -279,22 +345,30 @@ export async function runViralDetection(
       // The video was already analyzed (e.g. the transcript was regenerated).
       // Never stack a second identical batch on top of it - only make sure the
       // clips that exist get their missing B-roll plan and then a render.
+      const brollFailed = (clip: ClipRecord): boolean =>
+        findLatestJob(BROLL_QUEUE_NAME, { clipId: clip._id })?.status === 'failed';
       const missingBroll = brollOptions.autoBroll
-        ? existing.filter((clip) => !clip.broll)
+        ? existing.filter((clip) => !clip.broll && !brollFailed(clip))
         : [];
       const brollQueued = missingBroll.length
-        ? await queueBrollForClips(missingBroll, 'recovered')
+        ? await queueBrollForClips(missingBroll, 'recovered', {
+            skipWhenFailed: true,
+            context: downstreamContext,
+          })
         : [];
       const stranded = pipeline.autoRender
         ? existing.filter(
             (clip) =>
               clip.status === 'pending' &&
-              // A clip still waiting for its B-roll plan is rendered by
-              // continueAfterBroll(), not now: the plan must exist first.
-              (!brollOptions.autoBroll || clip.broll)
+              // A clip still waiting for B-roll waits for continueAfterBroll().
+              // A terminal B-roll failure is different: it deliberately renders
+              // without a plan so one provider outage cannot strand the clip.
+              (!brollOptions.autoBroll || clip.broll || brollFailed(clip))
           )
         : [];
-      const queued = stranded.length ? await queueRenders(stranded) : { queued: [], failed: [] };
+      const queued = stranded.length
+        ? await queueRenders(stranded, downstreamContext)
+        : { queued: [], failed: [] };
       log.detail(
         `Viral detection skipped - ${existing.length} clip(s) already exist for ${videoId}` +
           (brollQueued.length ? `, queued B-roll for ${brollQueued.length}.` : '') +
@@ -326,9 +400,11 @@ export async function runViralDetection(
   // restart, failed render) and the dashboard both show the same numbers.
   if (JSON.stringify(video.pipeline ?? null) !== JSON.stringify(pipeline)) {
     video.pipeline = pipeline;
-    await updateVideo(video).catch((error) =>
-      log.warn(`Could not persist the pipeline options for ${videoId}: ${toErrorMessage(error)}`)
-    );
+    const persisted = await persistVideo(video).catch((error) => {
+      log.warn(`Could not persist the pipeline options for ${videoId}: ${toErrorMessage(error)}`);
+      return false;
+    });
+    if (!persisted && hasClaimGuard) throw new RenderCancelledError();
   }
 
   log.detail(
@@ -337,7 +413,8 @@ export async function runViralDetection(
       `hook ${options.includeHookText ? 'on' : 'off'}, CTA ${options.includeCta ? 'on' : 'off'})...`
   );
 
-  const viralSegments = await detectViralSegments(video.transcript, video.duration, options);
+  const viralSegments = await detectViralSegments(video.transcript, video.duration, options, input.signal);
+  if (input.signal?.aborted) throw new RenderCancelledError();
 
   if (!viralSegments.length) {
     throw new AppError('AI analysis returned zero viral segments.', {
@@ -373,7 +450,7 @@ export async function runViralDetection(
     // only the fallback.
     const { hook_text_on_video, cta_text } = segment.clip.viral_packaging;
     const hookText = options.includeHookText
-      ? await resolveOverlayText(hook_text_on_video.toUpperCase(), () => generateHookText(overlayTranscript), 'hook')
+      ? await resolveOverlayText(hook_text_on_video.toUpperCase(), () => generateHookText(overlayTranscript, input.signal), 'hook')
       : '';
     let hookIntroEnabled = Boolean(options.includeHookText && hookText && render.hookDuration > 0);
 
@@ -390,6 +467,7 @@ export async function runViralDetection(
         words: hookWords,
         segmentDuration,
         hookDuration: Math.min(render.hookDuration, segmentDuration / 2),
+        signal: input.signal,
       });
 
       if (hookMoment) {
@@ -413,7 +491,7 @@ export async function runViralDetection(
     // Same idea for the CTA; when the switch is off the clip is marked with
     // ctaDuration 0 and the renderer skips the CTA overlay.
     const ctaText = options.includeCta
-      ? await resolveOverlayText(cta_text, () => generateCtaText(overlayTranscript), 'CTA')
+      ? await resolveOverlayText(cta_text, () => generateCtaText(overlayTranscript, input.signal), 'CTA')
       : '';
 
     const clipRecord: ClipRecord = {
@@ -446,7 +524,10 @@ export async function runViralDetection(
       updatedAt: runCreatedAt,
     };
 
-    await saveClip(clipRecord);
+    if (input.signal?.aborted) throw new RenderCancelledError();
+    if (!(await persistDetectedClip(clipRecord))) {
+      throw new RenderCancelledError('Viral detection claim was cancelled before its clip could be saved.');
+    }
     createdClips.push(clipRecord);
   }
 
@@ -458,7 +539,9 @@ export async function runViralDetection(
   // autoBroll off, this block does nothing at all and the pipeline behaves exactly
   // as it did before the feature existed.
   if (brollOptions.autoBroll) {
-    const queuedForBroll = await queueBrollForClips(createdClips, 'auto');
+    const queuedForBroll = await queueBrollForClips(createdClips, 'auto', {
+      context: downstreamContext,
+    });
     brollQueued = queuedForBroll.length;
     log.ok(
       brollQueued
@@ -471,7 +554,7 @@ export async function runViralDetection(
     // With B-roll on, the render is handed over by the B-roll job itself
     // (continueAfterBroll), so a render can never start against a missing plan.
     if (!brollOptions.autoBroll) {
-      renderQueued = (await queueRenders(createdClips)).queued.length;
+      renderQueued = (await queueRenders(createdClips, downstreamContext)).queued.length;
       log.ok(
         renderQueued
           ? `Auto-render queued for ${renderQueued}/${createdClips.length} clip(s).`
@@ -498,17 +581,24 @@ export async function runViralDetection(
  * reason and the rest of the batch continues - one bad clip never stops a run.
  */
 export async function queueRenders(
-  clips: readonly ClipRecord[]
+  clips: readonly ClipRecord[],
+  context: PipelineEnqueueContext = {},
 ): Promise<{ queued: ClipRecord[]; failed: Array<{ clipId: string; error: string }> }> {
   const queued: ClipRecord[] = [];
   const failed: Array<{ clipId: string; error: string }> = [];
 
   for (const clip of clips) {
     try {
-      await enqueueClipJob(await jobDataFromClip(clip));
+      await enqueueClipJob(await jobDataFromClip(clip), context);
       const withJob = await getClip(clip._id);
       queued.push(withJob ?? clip);
     } catch (error) {
+      if (error instanceof RenderCancelledError && sourceClaimWasLost(context)) {
+        throw error;
+      }
+      // A cancelled clip/pipeline is terminal until an explicit manual resume;
+      // do not overwrite its cancellation reason with a stale automatic hand-off.
+      if (error instanceof RenderCancelledError) continue;
       const message = toErrorMessage(error, 'Could not queue this render.');
       failed.push({ clipId: clip._id, error: message });
       log.warn(`Could not queue render for ${clip._id}: ${message}`);
@@ -529,7 +619,11 @@ export async function queueRenders(
 /** Queue every clip of a video that is not currently rendering. */
 export async function queueRendersForVideo(
   videoId: string,
-  options: { clipIds?: string[]; includeDone?: boolean } = {}
+  options: {
+    clipIds?: string[];
+    includeDone?: boolean;
+    context?: PipelineEnqueueContext;
+  } = {},
 ): Promise<{ queued: ClipRecord[]; skipped: string[]; failed: Array<{ clipId: string; error: string }> }> {
   const all = await listClips(videoId);
   const wanted = options.clipIds?.length
@@ -547,7 +641,7 @@ export async function queueRendersForVideo(
     .filter((clip) => !selected.includes(clip))
     .map((clip) => clip._id);
 
-  const result = await queueRenders(selected);
+  const result = await queueRenders(selected, options.context);
   return { queued: result.queued, skipped, failed: result.failed };
 }
 
@@ -555,10 +649,13 @@ export async function queueRendersForVideo(
  * Called by the worker right after a successful transcription: the automatic
  * pipeline keeps going on its own. Returns whether it did.
  */
-export async function continueAfterTranscription(videoId: string): Promise<boolean> {
+export async function continueAfterTranscription(
+  videoId: string,
+  context: PipelineEnqueueContext = {},
+): Promise<boolean> {
   const video = await getVideo(videoId);
-  if (!video || !video.pipeline?.autoDetect) return false;
-  const state = await queueViralDetection(videoId);
+  if (!video || video.pipelineCancelled || !video.pipeline?.autoDetect) return false;
+  const state = await queueViralDetection(videoId, context);
   if (state === 'queued') log.ok('Transcript ready - viral detection queued automatically.');
   return true;
 }
@@ -574,7 +671,7 @@ export async function recoverAutoPipelines(): Promise<{ resumed: string[] }> {
   const resumed: string[] = [];
 
   for (const video of videos) {
-    if (!video.pipeline?.autoDetect) continue;
+    if (!video.pipeline?.autoDetect || video.pipelineCancelled) continue;
     if (video.status === 'failed') continue;
 
     const clips = await listClips(video._id);
@@ -598,7 +695,11 @@ export async function recoverAutoPipelines(): Promise<{ resumed: string[] }> {
     }
 
     const brollOptions = brollOptionsFor(video);
-    const missingPlans = brollOptions.autoBroll ? clips.filter((clip) => !clip.broll) : [];
+    const brollFailed = (clip: ClipRecord): boolean =>
+      findLatestJob(BROLL_QUEUE_NAME, { clipId: clip._id })?.status === 'failed';
+    const missingPlans = brollOptions.autoBroll
+      ? clips.filter((clip) => !clip.broll && !brollFailed(clip))
+      : [];
 
     // Clips exist and renders were automatic: re-queue the ones left pending.
     if (video.pipeline.autoRender) {
@@ -606,8 +707,9 @@ export async function recoverAutoPipelines(): Promise<{ resumed: string[] }> {
         (clip) =>
           clip.status === 'pending' &&
           !findActiveJob(CLIP_QUEUE_NAME, { clipId: clip._id }) &&
-          // A clip whose B-roll is still being planned must wait for its plan.
-          (!brollOptions.autoBroll || clip.broll)
+          // A clip whose B-roll is still being planned must wait for its plan;
+          // an exhausted B-roll job intentionally falls through to plain render.
+          (!brollOptions.autoBroll || clip.broll || brollFailed(clip))
       );
       if (stranded.length) {
         await queueRenders(stranded);
@@ -645,6 +747,7 @@ async function resolveOverlayText(
   try {
     return (await generate()).trim();
   } catch (error) {
+    if (error instanceof RenderCancelledError) throw error;
     log.warn(
       `The AI left out the ${label} text and it could not be generated ` +
         `(${error instanceof AppError ? error.summary : toErrorMessage(error)}). ` +

@@ -10,7 +10,7 @@
  * claimed job, which is why there is deliberately no "only once" latch here.
  */
 import { loadEffectiveSettings } from '../lib/app-settings';
-import { setProfanityAudioModeOverride } from '../lib/profanity';
+import { setProfanityAudioModeOverride, setProfanityContextPassOverride } from '../lib/profanity';
 
 /**
  * `worker/remotion-renderer.ts` still reads `process.env.REMOTION_CONCURRENCY` at the
@@ -37,6 +37,7 @@ export async function applyStoredRuntimeSettings(): Promise<void> {
     const { worker, profanity } = await loadEffectiveSettings();
     syncRemotionSlot(worker.remotionConcurrency);
     setProfanityAudioModeOverride(profanity.audioMode);
+    setProfanityContextPassOverride(profanity.contextPassEnabled);
   } catch (error) {
     console.warn(
       `[worker] Could not load stored settings; continuing with .env.local values: ` +

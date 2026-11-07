@@ -1,11 +1,12 @@
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { AppError, toErrorMessage } from "../lib/errors";
+import { AppError, RenderCancelledError, toErrorMessage } from "../lib/errors";
 import { DEFAULT_FILTER_PRESETS } from "../lib/presets";
 import {
   buildProfanityAudioFilter,
   buildProfanityWindows,
+  buildProfanityWindowsFromIndexes,
   getProfanityAudioMode,
 } from "../lib/profanity";
 import { getVideoMetadata, runFfmpeg } from "../lib/ffmpeg";
@@ -71,11 +72,19 @@ export interface ProcessSegmentOptions {
   sfxVolume?: number;
   /** Original segment-relative words, used only for render-time profanity audio handling. */
   words?: Array<{ word: string; start: number; end: number }>;
+  /** Fully resolved static + optional contextual transcript indexes. */
+  censoredWordIndexes?: number[];
+  /** Compatibility input for callers that only have contextual indexes. */
+  additionalCensoredWordIndexes?: number[];
+  /** Final timeline fade, resolved from Settings -> Render. 0 disables it. */
+  fadeOutSeconds?: number;
   /** Keep a pre-caption/pre-overlay debug encode when SAVE_PRECAPTION_DEBUG=1. */
   debugOutputPath?: string;
   onProgress?: (progress: number) => void;
   /** Poll for a user-requested cancel; the running FFmpeg child is killed. */
   isCancelled?: () => boolean;
+  /** Immediate cancellation path shared by the worker job controller. */
+  signal?: AbortSignal;
 }
 
 /** The composition is 1080x1920; never upscale past it, never exceed it. */
@@ -90,6 +99,38 @@ const MAX_OUTPUT_HEIGHT = 1920;
  * this 1s window - import this constant instead of re-hard-coding 0.5.
  */
 export const HOOK_TRANSITION_SECONDS = 0.5;
+
+/**
+ * Clamp the final fade to the delivered timeline. A one-second setting should not
+ * consume a tiny hook/clip, and 0 is a deliberate opt-out.
+ */
+export function resolveFinalFadeDuration(totalDuration: number, requestedSeconds: number | undefined): number {
+  const requested = Number.isFinite(requestedSeconds) ? Math.max(0, requestedSeconds as number) : 1;
+  return Math.min(requested, Math.max(0, totalDuration) / 2);
+}
+
+/** Pure FFmpeg statements, kept exported so the graph contract is unit-testable. */
+export function buildFinalFadeFilters(
+  inputVideoLabel: string,
+  inputAudioLabel: string,
+  totalDuration: number,
+  requestedSeconds: number | undefined,
+): { videoLabel: string; audioLabel: string; duration: number; statements: string[] } {
+  const duration = resolveFinalFadeDuration(totalDuration, requestedSeconds);
+  if (duration <= 0) {
+    return { videoLabel: inputVideoLabel, audioLabel: inputAudioLabel, duration: 0, statements: [] };
+  }
+  const start = Math.max(0, totalDuration - duration);
+  return {
+    videoLabel: '[vfinal]',
+    audioLabel: '[afinalfade]',
+    duration,
+    statements: [
+      `${inputVideoLabel}fade=t=out:st=${start.toFixed(3)}:d=${duration.toFixed(3)}[vfinal]`,
+      `${inputAudioLabel}afade=t=out:st=${start.toFixed(3)}:d=${duration.toFixed(3)}[afinalfade]`,
+    ],
+  };
+}
 
 /** libx264 refuses odd widths/heights, and `crop` happily produces them. */
 export function evenSize(value: number, minimum = 2): number {
@@ -635,7 +676,21 @@ export async function processVideoSegment(
     // Audio profanity handling is part of the same output graph. It must not
     // trigger a later audio-only remux (or alter the video encode a second time).
     const profanityWindows = sourceHasAudio
-      ? buildProfanityWindows(words, hookOffset, actualHookDur, segmentDuration)
+      ? options.censoredWordIndexes
+        ? buildProfanityWindowsFromIndexes(
+            words,
+            hookOffset,
+            actualHookDur,
+            segmentDuration,
+            options.censoredWordIndexes,
+          )
+        : buildProfanityWindows(
+            words,
+            hookOffset,
+            actualHookDur,
+            segmentDuration,
+            options.additionalCensoredWordIndexes ?? [],
+          )
       : [];
     const profanityMode = getProfanityAudioMode();
     const audioPlan = sourceHasAudio
@@ -705,9 +760,22 @@ export async function processVideoSegment(
 
     const sourceAudioLabel = sfxPlan.label;
     const debugAudioLabel = debugOutputPath ? "[adebug]" : "";
-    const finalAudioLabel = debugOutputPath ? "[afinal]" : sourceAudioLabel;
+    const audioForFinalFade = debugOutputPath ? "[afinal]" : sourceAudioLabel;
     if (debugOutputPath)
       statements.push(`${sourceAudioLabel}asplit=2[adebug][afinal]`);
+
+    // The terminal fade belongs AFTER the fully composed visual layer and AFTER
+    // profanity/SFX audio mixing. That makes captions, CTA, B-roll and all sound
+    // reach black/silence together without introducing a second encode.
+    const finalFade = buildFinalFadeFilters(
+      "[v]",
+      audioForFinalFade,
+      totalDuration,
+      options.fadeOutSeconds,
+    );
+    if (finalFade.statements.length) statements.push(...finalFade.statements);
+    const finalVideoLabel = finalFade.videoLabel;
+    const finalAudioLabel = finalFade.audioLabel;
 
     const filterGraph = statements.join(";");
     const args = [
@@ -749,7 +817,7 @@ export async function processVideoSegment(
     }
     args.push(
       "-map",
-      "[v]",
+      finalVideoLabel,
       "-map",
       finalAudioLabel,
       ...videoArgs,
@@ -763,6 +831,7 @@ export async function processVideoSegment(
       stallTimeoutMs: 180_000,
       totalDurationSeconds: totalDuration,
       isCancelled,
+      signal: options.signal,
       onDiagnostic: (event, detail) => {
         const elapsedMs = Date.now() - ffmpegStartedAt;
         if (event === "input-detected") {
@@ -821,6 +890,13 @@ export async function processVideoSegment(
     if (onProgress) onProgress(80);
     return outputPath;
   } catch (error) {
+    if (error instanceof RenderCancelledError || options.signal?.aborted) {
+      for (const candidate of [outputPath, debugOutputPath]) {
+        if (!candidate) continue;
+        try { fs.rmSync(candidate, { force: true }); } catch { /* best effort */ }
+      }
+      throw new RenderCancelledError();
+    }
     if (error instanceof AppError) throw error;
 
     throw new AppError("FFmpeg video processing failed.", {

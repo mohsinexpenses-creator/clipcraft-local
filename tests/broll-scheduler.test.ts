@@ -187,7 +187,7 @@ test('the scheduler never places two items on the same second', () => {
   // space (or dropped), never stacked on top of it.
   const winner = result.items.find((item) => item.id === 'a');
   assert.ok(winner, 'the highest-priority candidate must be placed');
-  assert.equal(winner.start, 4);
+  assert.equal(winner.start, 7, 'final timeline includes the three-second hook replay');
 });
 
 test('the output is ordered by time and carries the mention window for review', () => {

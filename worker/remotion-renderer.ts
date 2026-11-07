@@ -3,7 +3,7 @@ import os from "os";
 import path from "path";
 import { AppError, RenderCancelledError, toErrorMessage } from "../lib/errors";
 import { CaptionPreset, OverlayStylePreset, WordTimestamp } from "../lib/types";
-import { maskProfanity } from "../lib/profanity";
+import { maskProfanity, maskTranscriptWords, maskTranscriptWordsFromIndexes } from "../lib/profanity";
 import { log } from "../lib/logger";
 import { CaptionOverlayCompositionProps } from "../remotion/OverlayCompositions";
 import { OverlayFrameSequence } from "./ffmpeg-pipeline";
@@ -23,6 +23,10 @@ export interface PrepareRemotionOverlaysOptions {
   ctaText: string;
   ctaDuration: number;
   words: WordTimestamp[];
+  /** Fully resolved static + optional context indexes, relative to `words`. */
+  censoredWordIndexes?: number[];
+  /** Compatibility input for callers that only have contextual indexes. */
+  additionalCensoredWordIndexes?: number[];
   preset: CaptionPreset;
   hookStyle: OverlayStylePreset;
   ctaStyle: OverlayStylePreset;
@@ -31,6 +35,8 @@ export interface PrepareRemotionOverlaysOptions {
   /** Final clip length (incl. hook). The merged layer is padded to this. */
   totalDuration?: number;
   isCancelled?: () => boolean;
+  /** Shared worker job signal: cancels Remotion and its Chromium work immediately. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -129,12 +135,27 @@ function getRenderTimeoutMs(): number {
     : 60 * 60_000;
 }
 
-function checkCancelled(isCancelled?: () => boolean): void {
+function checkCancelled(isCancelled?: () => boolean, signal?: AbortSignal): void {
   try {
-    if (isCancelled?.()) throw new RenderCancelledError();
+    if (signal?.aborted || isCancelled?.()) throw new RenderCancelledError();
   } catch (error) {
     if (error instanceof RenderCancelledError) throw error;
   }
+}
+
+async function remotionCancelBridge(signal?: AbortSignal): Promise<{
+  cancelSignal: import('@remotion/renderer').CancelSignal;
+  dispose: () => void;
+}> {
+  const { makeCancelSignal } = await import('@remotion/renderer');
+  const bridge = makeCancelSignal();
+  const abort = () => bridge.cancel();
+  if (signal?.aborted) abort();
+  else signal?.addEventListener('abort', abort, { once: true });
+  return {
+    cancelSignal: bridge.cancelSignal,
+    dispose: () => signal?.removeEventListener('abort', abort),
+  };
 }
 
 function withTimeout<T>(
@@ -213,13 +234,15 @@ export async function prepareRemotionCaptionOverlays(
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "clipcraft-remotion-"));
   const outputDir = path.join(workDir, "frames");
   fs.mkdirSync(outputDir, { recursive: true });
+  let cancelBridge: Awaited<ReturnType<typeof remotionCancelBridge>> | null = null;
 
   try {
-    checkCancelled(options.isCancelled);
+    checkCancelled(options.isCancelled, options.signal);
     const { renderFrames, selectComposition } = await timedRenderStage(
       "remotion.renderer-import",
       () => import("@remotion/renderer"),
     );
+    cancelBridge = await remotionCancelBridge(options.signal);
     const bundleDir = await timedRenderStage(
       "remotion.bundle-load",
       () => withTimeout(getRemotionBundle(), getRenderTimeoutMs(), "remotion.bundle-load"),
@@ -232,10 +255,9 @@ export async function prepareRemotionCaptionOverlays(
       ctaText: maskProfanity(options.ctaText),
       ctaDuration: options.ctaDuration,
       totalDuration,
-      words: options.words.map((word) => ({
-        ...word,
-        word: maskProfanity(word.word),
-      })),
+      words: options.censoredWordIndexes
+        ? maskTranscriptWordsFromIndexes(options.words, options.censoredWordIndexes)
+        : maskTranscriptWords(options.words, options.additionalCensoredWordIndexes ?? []),
       preset: options.preset,
       hookStyle: options.hookStyle,
       ctaStyle: options.ctaStyle,
@@ -257,7 +279,7 @@ export async function prepareRemotionCaptionOverlays(
         ),
       `composition=CaptionOverlayComposition`,
     );
-    checkCancelled(options.isCancelled);
+    checkCancelled(options.isCancelled, options.signal);
 
     log.detail(
       `Remotion overlay frames: ${durationInFrames} frames @ ${fps}fps, ` +
@@ -280,6 +302,7 @@ export async function prepareRemotionCaptionOverlays(
         inputProps,
         outputDir,
         imageFormat: "png",
+        cancelSignal: cancelBridge?.cancelSignal,
         concurrency:
           Number(process.env.REMOTION_CONCURRENCY?.trim()) || undefined,
         onStart: () =>
@@ -312,9 +335,11 @@ export async function prepareRemotionCaptionOverlays(
       }), getRenderTimeoutMs(), "remotion.render-frames"),
       `composition=CaptionOverlayComposition image_format=png frame_range=0-${durationInFrames - 1} planned_frames=${durationInFrames} output_dir=${outputDir}`,
     );
-    checkCancelled(options.isCancelled);
+    checkCancelled(options.isCancelled, options.signal);
 
     const inputPattern = normalizeFrameSequence(outputDir, "png");
+    cancelBridge?.dispose();
+    cancelBridge = null;
     log.ok(`Remotion overlays ready: ${durationInFrames} transparent frames`);
     return {
       workDir,
@@ -323,11 +348,13 @@ export async function prepareRemotionCaptionOverlays(
       ],
     };
   } catch (error) {
+    cancelBridge?.dispose();
     try {
       fs.rmSync(workDir, { recursive: true, force: true });
     } catch {
       /* best-effort */
     }
+    if (options.signal?.aborted) throw new RenderCancelledError();
     if (error instanceof RenderCancelledError || error instanceof AppError)
       throw error;
     throw new AppError("Remotion overlay rendering failed.", {
@@ -359,6 +386,8 @@ export interface PrepareBrollOverlaysOptions {
   /** Final clip length (incl. hook). The merged B-roll layer is padded to this. */
   totalDuration?: number;
   isCancelled?: () => boolean;
+  /** Shared worker job signal: cancels Remotion and closes Chromium. */
+  signal?: AbortSignal;
 }
 
 export interface PreparedBrollOverlays {
@@ -379,12 +408,14 @@ export async function prepareRemotionBrollOverlays(
   let browser: Awaited<
     ReturnType<typeof import("@remotion/renderer").openBrowser>
   > | null = null;
+  let cancelBridge: Awaited<ReturnType<typeof remotionCancelBridge>> | null = null;
 
   try {
     const { renderFrames, selectComposition, openBrowser } =
       await timedRenderStage("remotion.renderer-import", () =>
         import("@remotion/renderer"),
       );
+    cancelBridge = await remotionCancelBridge(options.signal);
     const bundleDir = await timedRenderStage(
       "remotion.bundle-load",
       () => withTimeout(getRemotionBundle(), getRenderTimeoutMs(), "remotion.bundle-load"),
@@ -396,7 +427,7 @@ export async function prepareRemotionBrollOverlays(
     );
     const activeBrowser = browser;
 
-    checkCancelled(options.isCancelled);
+    checkCancelled(options.isCancelled, options.signal);
     const totalDuration = Math.max(
       0.1,
       options.totalDuration ?? Math.max(...options.items.map((item) => item.end)),
@@ -424,7 +455,7 @@ export async function prepareRemotionBrollOverlays(
         ),
       `composition=BrollTimelineComposition items=${options.items.length} frame_range=0-${durationInFrames - 1}`,
     );
-    checkCancelled(options.isCancelled);
+    checkCancelled(options.isCancelled, options.signal);
 
     log.info(
       `[RENDER-DIAG] stage=broll.phase-model event=active render_api=renderFrames renderRange=absent phase=combined-timeline image_format=png separate_enter_hold_exit=false fps=${fps} frame_range=0-${durationInFrames - 1} planned_frames=${durationInFrames} output_dir=${outputDir}`,
@@ -461,6 +492,7 @@ export async function prepareRemotionBrollOverlays(
         inputProps,
         outputDir,
         imageFormat: "png",
+        cancelSignal: cancelBridge?.cancelSignal,
         puppeteerInstance: activeBrowser,
         concurrency:
           Number(process.env.REMOTION_CONCURRENCY?.trim()) || undefined,
@@ -494,7 +526,7 @@ export async function prepareRemotionBrollOverlays(
       }), getRenderTimeoutMs(), "broll.render-frames"),
       `composition=BrollTimelineComposition image_format=png frame_range=0-${durationInFrames - 1} planned_frames=${durationInFrames} items=${options.items.length} output_dir=${outputDir}`,
     );
-    checkCancelled(options.isCancelled);
+    checkCancelled(options.isCancelled, options.signal);
 
     const renderTimeMs = Date.now() - renderStartedAt;
     const generatedStats = frameOutputStats(outputDir);
@@ -524,13 +556,17 @@ export async function prepareRemotionBrollOverlays(
     log.ok(
       `Remotion B-roll ready: ${options.items.length} item(s) in one timeline layer`,
     );
+    cancelBridge?.dispose();
+    cancelBridge = null;
     return { workDir, sequences };
   } catch (error) {
+    cancelBridge?.dispose();
     try {
       fs.rmSync(workDir, { recursive: true, force: true });
     } catch {
       /* best-effort */
     }
+    if (options.signal?.aborted) throw new RenderCancelledError();
     if (error instanceof RenderCancelledError || error instanceof AppError)
       throw error;
     throw new AppError("Remotion B-roll rendering failed.", {

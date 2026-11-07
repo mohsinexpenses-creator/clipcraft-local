@@ -48,6 +48,7 @@ export async function sampleSegmentFrames(
   maxFrames: number,
   tmpPrefix = "frames",
   sampleWidth = DEFAULT_SAMPLE_WIDTH,
+  signal?: AbortSignal,
 ): Promise<SampledFrames> {
   const safeDuration = Math.max(0.5, duration);
   const fps = Math.max(0.5, Math.min(targetFps, maxFrames / safeDuration));
@@ -85,7 +86,7 @@ export async function sampleSegmentFrames(
     path.join(tempFramesDir, "frame_%03d.jpg"),
   ];
 
-  await runFfmpeg(frameArgs, { label: "sample-frames" });
+  await runFfmpeg(frameArgs, { label: "sample-frames", signal });
 
   const frames = fs
     .readdirSync(tempFramesDir)

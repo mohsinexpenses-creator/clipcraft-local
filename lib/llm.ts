@@ -31,7 +31,7 @@
  * is provider-agnostic.
  */
 
-import { AppError, toErrorMessage } from "./errors";
+import { AppError, RenderCancelledError, toErrorMessage } from "./errors";
 import { loadEffectiveSettings } from "./app-settings";
 
 export type LlmProviderKind = "openai-compatible" | "gemini-native";
@@ -113,6 +113,8 @@ export interface LlmCompletionRequest {
   temperature?: number;
   /** Ask the provider for a raw JSON answer (no markdown fences, no prose around it). */
   json?: boolean;
+  /** Worker cancellation is forwarded to every provider fetch. */
+  signal?: AbortSignal;
 }
 
 export interface LlmCompletionResult {
@@ -178,6 +180,15 @@ function describeHttpError(status: number, rawBody: string): string {
   return `${kind} (HTTP ${status}${detail ? `: ${detail.slice(0, 200)}` : ""})`;
 }
 
+function requestAbortSignal(signal?: AbortSignal): AbortSignal {
+  const timeout = AbortSignal.timeout(LLM_CALL_TIMEOUT_MS);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
+function throwIfCancelled(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new RenderCancelledError();
+}
+
 async function callOpenAiCompatible(
   entry: LlmProviderEntry,
   apiKey: string,
@@ -215,13 +226,15 @@ async function callOpenAiCompatible(
         temperature: request.temperature ?? 0.5,
         ...(request.json ? { response_format: { type: "json_object" } } : {}),
       }),
-      signal: AbortSignal.timeout(LLM_CALL_TIMEOUT_MS),
+      signal: requestAbortSignal(request.signal),
     });
   } catch (error) {
     // Network failure, DNS, TLS or the per-call timeout.
+    throwIfCancelled(request.signal);
     throw new LlmCallFailure(entry, toErrorMessage(error));
   }
 
+  throwIfCancelled(request.signal);
   const rawBody = await response.text();
   if (!response.ok) {
     throw new LlmCallFailure(
@@ -276,13 +289,15 @@ async function callGeminiNative(
             ...(request.json ? { responseMimeType: "application/json" } : {}),
           },
         }),
-        signal: AbortSignal.timeout(LLM_CALL_TIMEOUT_MS),
+        signal: requestAbortSignal(request.signal),
       },
     );
   } catch (error) {
+    throwIfCancelled(request.signal);
     throw new LlmCallFailure(entry, toErrorMessage(error));
   }
 
+  throwIfCancelled(request.signal);
   const rawBody = await response.text();
   if (!response.ok) {
     throw new LlmCallFailure(
@@ -384,6 +399,7 @@ export async function completeWithFallback(
   }
 
   for (const entry of chain) {
+    throwIfCancelled(request.signal);
     const label = `${entry.provider} (${entry.model})`;
     const keys = (keyPool.get(entry.apiKeyEnv) ?? []).slice(0, 1);
 
@@ -402,6 +418,9 @@ export async function completeWithFallback(
       console.log(`[LLM] ${label} handled "${request.task}" in ${tookMs}ms`);
       return { text, entry, tookMs };
     } catch (error) {
+      if (error instanceof RenderCancelledError || request.signal?.aborted) {
+        throw new RenderCancelledError();
+      }
       const failure =
         error instanceof LlmCallFailure
           ? error

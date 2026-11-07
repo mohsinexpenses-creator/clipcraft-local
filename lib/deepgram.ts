@@ -1,9 +1,13 @@
 import fs from 'fs';
 import { TranscriptData, TranscriptSegment, WordTimestamp } from './types';
-import { AppError, toErrorMessage } from './errors';
+import { AppError, RenderCancelledError, toErrorMessage } from './errors';
 import { resolveDeepgram } from './app-settings';
 
-export async function transcribeWithDeepgram(audioWavPath: string): Promise<TranscriptData> {
+export async function transcribeWithDeepgram(
+  audioWavPath: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<TranscriptData> {
+  if (options.signal?.aborted) throw new RenderCancelledError();
   // Key and model come from Settings -> AI providers, with `.env.local` underneath.
   const { apiKey, model } = await resolveDeepgram();
   if (!apiKey) {
@@ -26,6 +30,7 @@ export async function transcribeWithDeepgram(audioWavPath: string): Promise<Tran
         'Content-Type': 'audio/wav',
       },
       body: audioBuffer,
+      signal: options.signal,
     });
 
     if (!response.ok) {
@@ -117,6 +122,7 @@ export async function transcribeWithDeepgram(audioWavPath: string): Promise<Tran
       words,
     };
   } catch (error) {
+    if (error instanceof RenderCancelledError || options.signal?.aborted) throw new RenderCancelledError();
     if (error instanceof AppError) {
       throw error;
     }

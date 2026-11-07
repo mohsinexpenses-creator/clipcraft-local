@@ -1,19 +1,23 @@
-/** Build a filesystem-safe render name as rank_title_hashtags. */
+import { maskProfanity } from '../lib/profanity';
+
+/** Build a filesystem-safe, render-time-safe name as rank_title_hashtags. */
 export function buildClipFileName(
   rank: number | undefined,
   title: string | undefined,
   hashtags: string[] | undefined
 ): string {
-  const safeTitle = sanitizePart(title ?? '');
+  const safeTitle = sanitizePart(maskProfanity(title ?? ''));
   if (!safeTitle) return '';
 
   const safeHashtags = (hashtags ?? [])
-    .map((hashtag) => hashtag.replace(/\s+/g, ''))
+    .map((hashtag) => maskProfanity(hashtag).replace(/\s+/g, ''))
     .filter(Boolean)
     .join('');
   const prefix = Number.isFinite(rank) && rank! > 0 ? `${rank}_` : '';
   const suffix = safeHashtags ? `_${sanitizePart(safeHashtags)}` : '';
-  return `${prefix}${safeTitle}${suffix}`.replace(/[ ._-]+$/g, '');
+  // Keep room below common filesystem/component limits. This is the complete
+  // basename; the caller adds the output extension afterwards.
+  return `${prefix}${safeTitle}${suffix}`.slice(0, 80).replace(/[ ._-]+$/g, '');
 }
 
 function sanitizePart(value: string): string {

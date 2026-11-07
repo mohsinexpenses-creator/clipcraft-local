@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getVideo, listClips } from '@/lib/db';
+import { getVideo, listClips, updateVideo } from '@/lib/db';
 import { toErrorMessage, toErrorStatus } from '@/lib/errors';
 import { queueRendersForVideo } from '@/lib/pipeline';
 
@@ -28,6 +28,12 @@ export async function POST(
       return NextResponse.json({ error: 'Video not found' }, { status: 404 });
     }
 
+    if (video.pipelineCancelled) {
+      video.pipelineCancelled = false;
+      video.error = undefined;
+      await updateVideo(video);
+    }
+
     let body: Record<string, unknown> = {};
     try {
       body = (await request.json()) as Record<string, unknown>;
@@ -50,7 +56,11 @@ export async function POST(
       );
     }
 
-    const result = await queueRendersForVideo(id, { clipIds, includeDone });
+    const result = await queueRendersForVideo(id, {
+      clipIds,
+      includeDone,
+      context: { resumeCancelledClip: true },
+    });
 
     return NextResponse.json({
       success: true,

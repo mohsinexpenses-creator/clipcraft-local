@@ -311,9 +311,17 @@ function trackToPanPoints(track: Track, srcW: number, deadZonePx = 6): PanPoint[
 
 /** How long (s) the crop window glides from one speaker to the next. */
 const SPEAKER_GLIDE_SECONDS = 0.15;
-/** Time on the active speaker before a brief listener cutaway. */
-const SPEAKER_FOCUS_HOLD_SECONDS = 5;
-const LISTENER_CUTAWAY_SECONDS = 1;
+/**
+ * Actual time the camera holds a listener during a speaker-switch cutaway.
+ * Keep this named/exported: it is a visible product timing, not an incidental
+ * keyframe detail, and every listener cutaway must hold for exactly two seconds.
+ */
+export const SPEAKER_SWITCH_HOLD_SECONDS = 2;
+/** Keep listener-switch starts roughly six seconds apart during long monologues. */
+export const SPEAKER_SWITCH_CADENCE_SECONDS = 6;
+/** Time remaining on the active speaker between cutaways (6 - 2 = 4 seconds). */
+export const SPEAKER_FOCUS_HOLD_SECONDS =
+  SPEAKER_SWITCH_CADENCE_SECONDS - SPEAKER_SWITCH_HOLD_SECONDS;
 
 /** Median of a number array (unlike the mean, it rejects outlier sightings). */
 function median(values: number[]): number {
@@ -391,13 +399,13 @@ function buildSpeakerPath(asd: AsdResult, _srcW: number): PanPoint[] {
     let cursor = seg.t0 + SPEAKER_FOCUS_HOLD_SECONDS;
     let listenerIndex = 0;
     while (
-      cursor + LISTENER_CUTAWAY_SECONDS <= seg.t1 &&
+      cursor + SPEAKER_SWITCH_HOLD_SECONDS <= seg.t1 &&
       listeners.length > 0
     ) {
       const listener = listeners[listenerIndex % listeners.length];
       const cutawayStart = Math.max(cursor - SPEAKER_GLIDE_SECONDS * 2, listener.firstSeen);
       const listenerStart = cutawayStart + SPEAKER_GLIDE_SECONDS;
-      const listenerEnd = listenerStart + LISTENER_CUTAWAY_SECONDS;
+      const listenerEnd = listenerStart + SPEAKER_SWITCH_HOLD_SECONDS;
       const returnEnd = listenerEnd + SPEAKER_GLIDE_SECONDS;
       if (listener.lastSeen >= listenerEnd && returnEnd <= seg.t1) {
         points.push(

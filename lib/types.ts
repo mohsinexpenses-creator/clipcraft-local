@@ -213,6 +213,10 @@ export interface VideoRecord {
   transcriptionModel?: string;
   /** Automatic chain configured for this video (see `PipelineOptions`). */
   pipeline?: PipelineOptions;
+  /** Monotonic registration sequence used to keep B-roll/render queues in upload order. */
+  queueOrder?: number;
+  /** A user-requested pipeline stop; keeps automation choices intact for resume. */
+  pipelineCancelled?: boolean;
   error?: string;
   createdAt: string;
   updatedAt: string;
@@ -338,6 +342,8 @@ export interface RenderDefaults {
    */
   hookDuration: number;
   ctaDuration: number;
+  /** Final picture + mixed-audio fade length. 0 turns it off. */
+  fadeOutSeconds: number;
 }
 
 export const DEFAULT_RENDER_SETTINGS: RenderDefaults = {
@@ -348,6 +354,7 @@ export const DEFAULT_RENDER_SETTINGS: RenderDefaults = {
   ctaStylePresetId: null,
   hookDuration: 3,
   ctaDuration: 2.5,
+  fadeOutSeconds: 1,
 };
 
 export type TranscriptionProviderChoice = "auto" | "deepgram";
@@ -416,10 +423,13 @@ export const DEFAULT_WORKER_SETTINGS: WorkerSettings = {
 export interface ProfanitySettings {
   /** What happens to the AUDIO of a profane word; on-screen text is always masked. */
   audioMode: "mute" | "beep" | "off";
+  /** Optional provider-backed contextual review; static matching always remains on. */
+  contextPassEnabled: boolean;
 }
 
 export const DEFAULT_PROFANITY_SETTINGS: ProfanitySettings = {
   audioMode: "mute",
+  contextPassEnabled: false,
 };
 
 /**
@@ -827,6 +837,12 @@ export interface ClipRecord {
   error?: string;
   /** True once the user asked to stop a running render; the worker honours it. */
   cancelling?: boolean;
+  /**
+   * Durable per-clip cancellation fence. Automatic hand-offs must not requeue a
+   * clip after its current work was cancelled; an explicit manual render/B-roll
+   * request clears this flag inside the enqueue transaction.
+   */
+  workCancelled?: boolean;
   createdAt: string;
   updatedAt: string;
 }

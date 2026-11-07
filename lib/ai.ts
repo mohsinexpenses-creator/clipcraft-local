@@ -20,7 +20,7 @@
  */
 
 import { getPromptTemplate } from './db';
-import { AppError, toErrorMessage } from './errors';
+import { AppError, RenderCancelledError, toErrorMessage } from './errors';
 import { log } from './logger';
 import { completeWithFallback } from './llm';
 import {
@@ -183,8 +183,10 @@ function byRank(a: ViralSegment, b: ViralSegment): number {
 export async function detectViralSegments(
   transcript: TranscriptData,
   videoDuration: number,
-  options?: Partial<ViralDetectionOptions> | null
+  options?: Partial<ViralDetectionOptions> | null,
+  signal?: AbortSignal,
 ): Promise<ViralSegment[]> {
+  if (signal?.aborted) throw new RenderCancelledError();
   const resolved = resolveViralOptions(options);
 
   if (!transcript.segments.length) {
@@ -244,10 +246,12 @@ export async function detectViralSegments(
         maxTokens: detectionMaxTokens(clipBudget),
         temperature: 0.5,
         json: true,
+        signal,
       });
       console.log(`[AI] Raw response (${result.entry.provider}/${result.entry.model})${label}:`, result.text);
       return parseViralResponse(result.text, videoDuration);
     } catch (error) {
+      if (error instanceof RenderCancelledError || signal?.aborted) throw new RenderCancelledError();
       if (soft) {
         log.warn(`Top-up viral pass${label} failed: ${toErrorMessage(error)}`);
         return [];
@@ -314,23 +318,25 @@ export async function detectViralSegments(
   return valid;
 }
 
-export async function generateHookText(clipTranscriptText: string): Promise<string> {
+export async function generateHookText(clipTranscriptText: string, signal?: AbortSignal): Promise<string> {
   return generateShortOverlayText({
     transcriptText: clipTranscriptText,
     templateType: 'hook_generation',
     logLabel: 'hook text generation',
     invalidResponseSummary: 'The model returned an invalid hook text response.',
     failureSummary: 'Hook text generation failed.',
+    signal,
   });
 }
 
-export async function generateCtaText(clipTranscriptText: string): Promise<string> {
+export async function generateCtaText(clipTranscriptText: string, signal?: AbortSignal): Promise<string> {
   return generateShortOverlayText({
     transcriptText: clipTranscriptText,
     templateType: 'cta_generation',
     logLabel: 'CTA generation',
     invalidResponseSummary: 'The model returned an invalid CTA response.',
     failureSummary: 'CTA generation failed.',
+    signal,
   });
 }
 
@@ -341,7 +347,9 @@ async function generateShortOverlayText(options: {
   logLabel: string;
   invalidResponseSummary: string;
   failureSummary: string;
+  signal?: AbortSignal;
 }): Promise<string> {
+  if (options.signal?.aborted) throw new RenderCancelledError();
   const normalizedTranscript = options.transcriptText.trim();
   if (!normalizedTranscript) {
     throw new AppError('Cannot generate overlay text from an empty clip transcript.', {
@@ -373,10 +381,12 @@ async function generateShortOverlayText(options: {
       prompt: userPrompt,
       maxTokens: 100,
       temperature: 0.7,
+      signal: options.signal,
     });
     contentText = result.text;
     console.log(`[AI] Raw ${options.logLabel} response (${result.entry.provider}/${result.entry.model}):`, contentText);
   } catch (error) {
+    if (error instanceof RenderCancelledError || options.signal?.aborted) throw new RenderCancelledError();
     if (error instanceof AppError) throw error;
     throw new AppError(options.failureSummary, {
       status: 502,
@@ -402,6 +412,7 @@ export interface HookMomentInput {
   words: WordTimestamp[];
   segmentDuration: number;
   hookDuration: number;
+  signal?: AbortSignal;
 }
 
 export interface HookMoment {
@@ -415,6 +426,7 @@ const MIN_HOOK_OFFSET_SECONDS = 3;
 
 export async function detectHookMoment(input: HookMomentInput): Promise<HookMoment | null> {
   const { words, segmentDuration, hookDuration } = input;
+  if (input.signal?.aborted) throw new RenderCancelledError();
   if (
     words.length === 0 ||
     !Number.isFinite(segmentDuration) ||
@@ -453,12 +465,14 @@ export async function detectHookMoment(input: HookMomentInput): Promise<HookMome
         prompt,
         maxTokens: 150,
         temperature: 0.4,
+        signal: input.signal,
       }).then((result) => result.text),
       new Promise<never>((_resolve, reject) => {
         timeout = setTimeout(() => reject(new Error('hook moment detection timed out')), HOOK_MOMENT_TIMEOUT_MS);
       }),
     ]);
   } catch (error) {
+    if (error instanceof RenderCancelledError || input.signal?.aborted) throw new RenderCancelledError();
     log.detail(`Hook moment detection skipped: ${toErrorMessage(error)}`);
     return null;
   } finally {

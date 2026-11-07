@@ -17,6 +17,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { getFfmpegPath, getVideoMetadata } from '../lib/ffmpeg';
 import {
+  buildFinalFadeFilters,
   buildOverlayFilterStatements,
   ffmpegFpsArg,
   getVideoEncodeSettings,
@@ -151,9 +152,26 @@ test('final H.264 settings default to quality-first and accept safe env override
     preset: 'medium',
   });
   assert.deepEqual(getVideoEncodeSettings({ VIDEO_CRF: '30', VIDEO_PRESET: 'unknown' }), {
-    crf: 17,
-    preset: 'slow',
+    crf: 18,
+    preset: 'veryfast',
   });
+});
+
+test('final fade is applied to the completed video and mixed audio together', () => {
+  const fade = buildFinalFadeFilters('[v]', '[amixed]', 12, 1.25);
+  assert.equal(fade.duration, 1.25);
+  assert.equal(fade.videoLabel, '[vfinal]');
+  assert.equal(fade.audioLabel, '[afinalfade]');
+  assert.deepEqual(fade.statements, [
+    '[v]fade=t=out:st=10.750:d=1.250[vfinal]',
+    '[amixed]afade=t=out:st=10.750:d=1.250[afinalfade]',
+  ]);
+
+  const disabled = buildFinalFadeFilters('[v]', '[a]', 2, 0);
+  assert.equal(disabled.duration, 0);
+  assert.deepEqual(disabled.statements, []);
+  const capped = buildFinalFadeFilters('[v]', '[a]', 1, 9);
+  assert.equal(capped.duration, 0.5, 'tiny clips never spend more than half on fade');
 });
 
 test('transparent overlays are composited into the base filter graph before the only final encode', () => {

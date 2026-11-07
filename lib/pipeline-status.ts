@@ -36,6 +36,8 @@ export type PipelineStage =
   | 'rendering'
   /** Clips detected but their renders were left to the user. */
   | 'awaiting-render'
+  /** A user stopped the pipeline; saved automation choices can be resumed. */
+  | 'paused'
   /** Nothing is running and at least one clip is finished. */
   | 'ready'
   /** The active step failed. */
@@ -93,6 +95,7 @@ export interface PipelineFacts {
   clipError?: string;
   jobs?: readonly PipelineJobLike[];
   pipeline?: PipelineOptions;
+  pipelineCancelled?: boolean;
 }
 
 export interface PipelineStatus {
@@ -259,6 +262,7 @@ export function derivePipelineStatus(facts: PipelineFacts): PipelineStatus {
     jobs,
     videoError,
     clipError,
+    pipelineCancelled = false,
   } = facts;
   const pipeline = facts.pipeline ?? DEFAULT_PIPELINE_OPTIONS;
 
@@ -289,7 +293,8 @@ export function derivePipelineStatus(facts: PipelineFacts): PipelineStatus {
   const awaitingRender = counts.queued > 0 && !pipeline.autoRender;
 
   let stage: PipelineStage;
-  if (transcriptionActive) stage = 'transcribing';
+  if (pipelineCancelled) stage = 'paused';
+  else if (transcriptionActive) stage = 'transcribing';
   else if (transcriptionFailed) stage = 'failed';
   else if (detectionActive) stage = 'analyzing';
   else if (detectionFailed) stage = 'failed';
@@ -365,6 +370,17 @@ export function derivePipelineStatus(facts: PipelineFacts): PipelineStatus {
     );
   }
 
+  if (pipelineCancelled) {
+    for (const entry of steps) {
+      if (entry.state !== 'done') {
+        entry.state = 'paused';
+        entry.progress = 0;
+        entry.detail = 'Cancelled — resume when ready';
+        delete entry.error;
+      }
+    }
+  }
+
   const error = stage === 'failed' ? clipError ?? videoError : undefined;
 
   // Per-step and overall wall time, straight from the queue timestamps. `now`
@@ -380,6 +396,7 @@ export function derivePipelineStatus(facts: PipelineFacts): PipelineStatus {
   // detection the next 20%, rendering the last 30%.
   let progress: number;
   if (stage === 'ready') progress = 100;
+  else if (stage === 'paused') progress = Math.max(0, counts.done ? 70 + (counts.done / Math.max(1, counts.clips)) * 30 : transcriptReady ? 50 : 0);
   else if (stage === 'transcribing') progress = 5 + (transcriptionJob?.progress ?? 0) * 0.45;
   else if (stage === 'analyzing') progress = 50 + (detectionJob?.progress ?? 0) * 0.2;
   else if (stage === 'rendering') progress = 70 + counts.progress * 0.3;
@@ -413,6 +430,7 @@ export function pipelineStatusForVideo(
     transcriptReady: Boolean(video.transcript),
     transcriptSegmentCount: video.transcript?.segments?.length,
     ...(video.error ? { videoError: video.error } : {}),
+    pipelineCancelled: video.pipelineCancelled === true,
     counts,
     ...(clips.find((clip) => clip.error)?.error
       ? { clipError: clips.find((clip) => clip.error)!.error }
@@ -433,6 +451,7 @@ export function pipelineStatusForSummary(
     transcriptReady: video.transcriptReady,
     transcriptSegmentCount: video.transcriptSegmentCount,
     ...(video.error ? { videoError: video.error } : {}),
+    pipelineCancelled: video.pipelineCancelled === true,
     counts,
     jobs,
     ...(video.pipeline ? { pipeline: video.pipeline } : {}),

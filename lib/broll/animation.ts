@@ -25,13 +25,13 @@ export const BROLL_ANIMATION = {
     enterSlidePx: 0,
   },
   landscape: {
-    enterSeconds: 0.15,
-    exitSeconds: 0.15,
-    enterScaleFrom: 0,
-    exitScaleTo: 0,
-    enterSlidePx: 0,
-    kenBurnsZoom: 0,
-    kenBurnsPanPx: 0,
+    enterSeconds: 0.25,
+    exitSeconds: 0.2,
+    enterScaleFrom: 0.94,
+    exitScaleTo: 0.94,
+    enterSlidePx: 32,
+    kenBurnsZoom: 0.015,
+    kenBurnsPanPx: 4,
   },
 } as const;
 
@@ -119,8 +119,10 @@ export function brollFrameStyle(
     } else {
       const p = easeOutCubic(linear);
       opacity = p;
-      // Sticker: pops in place with a bounce (0 -> ~1.1 -> 1), no slide.
-      scale = easeOutBack(linear);
+      // Landscape cards rise gently from below their resting position instead
+      // of popping in place, leaving the caption band visually stable.
+      scale = config.enterScaleFrom + (1 - config.enterScaleFrom) * p;
+      translateY = config.enterSlidePx * (1 - p);
     }
   } else if (t > holdEnd) {
     const linear = clamp01(exit > 0 ? (t - holdEnd) / exit : 1);
@@ -140,7 +142,8 @@ export function brollFrameStyle(
               BROLL_ANIMATION.fullscreen.exitScalePeak) *
               easeOutCubic(exitSettleProgress);
     } else {
-      scale = 1 - p;
+      scale = 1 + (config.exitScaleTo - 1) * p;
+      translateY = config.enterSlidePx * p;
     }
   }
 

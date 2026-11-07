@@ -177,11 +177,13 @@ export interface RunFfmpegOptions {
   /** Working directory for the process (used to feed libass a plain file name). */
   cwd?: string;
   /**
-   * Poll for a user-requested cancellation (checked at most once per second
+   * Poll for a user-requested cancellation (checked at most every 350ms
    * while FFmpeg is running). When it returns true the child is killed and the
    * promise rejects with RenderCancelledError.
    */
   isCancelled?: () => boolean;
+  /** Immediate shared cancellation signal for worker jobs. */
+  signal?: AbortSignal;
   /** Kill FFmpeg when it prints nothing (no -stats line) for this long. */
   stallTimeoutMs?: number;
   /** Diagnostic milestones parsed from FFmpeg stderr. */
@@ -203,6 +205,10 @@ export function runFfmpeg(
   options?: RunFfmpegOptions,
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
+    if (options?.signal?.aborted) {
+      reject(new RenderCancelledError());
+      return;
+    }
     const ffmpegBin = getFfmpegPath();
     const label = options?.label ? ` ${options.label}` : "";
     log.detail(`⚙ ffmpeg${label}: ${ffmpegBin} ${args.join(" ")}`);
@@ -220,8 +226,23 @@ export function runFfmpeg(
 
     const child = spawn(ffmpegBin, args, {
       windowsHide: true,
+      // A process group lets cancellation reap FFmpeg descendants on Unix instead
+      // of leaving a writer holding the partially rendered MP4 open.
+      ...(process.platform !== "win32" ? { detached: true } : {}),
       ...(options?.cwd ? { cwd: options.cwd } : {}),
     });
+    const terminate = (): void => {
+      if (child.killed) return;
+      try {
+        if (process.platform !== "win32" && child.pid) {
+          process.kill(-child.pid, "SIGKILL");
+          return;
+        }
+      } catch {
+        // The process can exit between the status check and group kill.
+      }
+      try { child.kill("SIGKILL"); } catch { /* best effort */ }
+    };
     let stdout = "";
     let stderr = "";
     let timedOut = false;
@@ -241,14 +262,14 @@ export function runFfmpeg(
         if (settled) return;
         if (Date.now() - lastActivity < limit) return;
         stalled = true;
-        child.kill("SIGKILL");
+        terminate();
       }, 5000);
     }
 
     const timeoutMs = options?.timeoutMs ?? DEFAULT_FFMPEG_TIMEOUT_MS;
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGKILL");
+      terminate();
     }, timeoutMs);
 
     // Cancellation: poll at most once per second; when the user asked to stop,
@@ -267,17 +288,27 @@ export function runFfmpeg(
         if (!wantsCancel) return;
         cancelled = true;
         settled = true;
-        clearTimeout(timer);
-        if (cancelTimer) clearInterval(cancelTimer);
-        child.kill("SIGKILL");
+        finishSettled();
+        terminate();
         reject(new RenderCancelledError());
-      }, 1000);
+      }, 350);
     }
+
+    const abortListener = (): void => {
+      if (settled || cancelled) return;
+      cancelled = true;
+      settled = true;
+      finishSettled();
+      terminate();
+      reject(new RenderCancelledError());
+    };
+    options?.signal?.addEventListener("abort", abortListener, { once: true });
 
     const finishSettled = () => {
       clearTimeout(timer);
       if (cancelTimer) clearInterval(cancelTimer);
       if (stallTimer) clearInterval(stallTimer);
+      options?.signal?.removeEventListener("abort", abortListener);
     };
 
     child.stdout?.on("data", (chunk) => {
@@ -778,6 +809,7 @@ export async function getVideoMetadata(
 export async function extractAudio16kMono(
   inputVideoPath: string,
   outputWavPath: string,
+  options: Pick<RunFfmpegOptions, 'signal' | 'isCancelled'> = {},
 ): Promise<string> {
   const outputDir = path.dirname(outputWavPath);
   if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
@@ -802,7 +834,7 @@ export async function extractAudio16kMono(
     outputWavPath,
   ];
 
-  await runFfmpeg(args, { label: "extract-audio-16k-mono" });
+  await runFfmpeg(args, { label: "extract-audio-16k-mono", ...options });
 
   if (!fs.existsSync(outputWavPath) || fs.statSync(outputWavPath).size < 1024) {
     throw new AppError("Audio extraction produced an empty WAV file.", {

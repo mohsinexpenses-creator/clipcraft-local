@@ -50,7 +50,10 @@ export async function POST(
       clip.brollStatus = 'pending';
       clip.brollError = undefined;
       await updateClip(clip);
-      await enqueueBrollJob({ clipId: clip._id, videoId: clip.videoId, trigger: 'manual' });
+      await enqueueBrollJob(
+        { clipId: clip._id, videoId: clip.videoId, trigger: 'manual' },
+        { resumePipeline: true, resumeCancelledClip: true },
+      );
       return NextResponse.json({ queued: true, status: 'pending' });
     }
 
@@ -73,7 +76,10 @@ export async function POST(
     let note: string | undefined;
     if (clip.status !== 'processing') {
       try {
-        await enqueueClipJob(await jobDataFromClip(clip));
+        await enqueueClipJob(await jobDataFromClip(clip), {
+          resumePipeline: true,
+          resumeCancelledClip: true,
+        });
         renderQueued = true;
       } catch (queueError) {
         note = toErrorMessage(queueError, 'The render could not be queued.');

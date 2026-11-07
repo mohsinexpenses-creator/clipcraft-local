@@ -191,6 +191,25 @@ test('detection paused (autoDetect off) is awaiting-detection, never "ready"', (
   assert.equal(status.steps[1].state, 'paused');
 });
 
+test('a user-cancelled pipeline is visibly paused and preserves completed steps', () => {
+  const status = pipelineStatusForVideo(
+    video({
+      status: 'transcribed',
+      transcript: TRANSCRIPT,
+      pipelineCancelled: true,
+      error: 'Cancelled by user.',
+    }),
+    [clip({ _id: 'finished', status: 'done', progress: 100 }), clip({ _id: 'stopped', status: 'failed' })],
+  );
+
+  assert.equal(status.stage, 'paused');
+  assert.equal(status.error, undefined);
+  assert.equal(status.steps[0].state, 'done');
+  assert.equal(status.steps[1].state, 'done');
+  assert.equal(status.steps[2].state, 'paused');
+  assert.match(status.steps[2].detail ?? '', /Cancelled/i);
+});
+
 test('the newest job of a type wins, so an old failure cannot shadow a newer run', () => {
   const status = pipelineStatusForVideo(video({ status: 'transcribed', transcript: TRANSCRIPT }), [], [
     { type: 'viral-detection', status: 'failed', progress: 0, error: 'old timeout' },

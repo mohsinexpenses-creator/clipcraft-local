@@ -345,6 +345,9 @@ export function sanitizeSettingsSection(
       if (input.ctaDuration !== undefined) {
         out.ctaDuration = numberIn(input.ctaDuration, { min: 0, max: 30, precision: 1, label: 'CTA duration' });
       }
+      if (input.fadeOutSeconds !== undefined) {
+        out.fadeOutSeconds = numberIn(input.fadeOutSeconds, { min: 0, max: 30, precision: 1, label: 'Fade-out duration' });
+      }
       return out;
     }
 
@@ -394,6 +397,12 @@ export function sanitizeSettingsSection(
       const input = record(value, 'Profanity settings');
       const out: Record<string, unknown> = {};
       if (input.audioMode !== undefined) out.audioMode = enumOf(input.audioMode, AUDIO_MODES, 'Profanity audio mode');
+      if (input.contextPassEnabled !== undefined) {
+        if (typeof input.contextPassEnabled !== 'boolean') {
+          throw badRequest('Context moderation must be on or off.', 'Choose either enabled or disabled.');
+        }
+        out.contextPassEnabled = input.contextPassEnabled;
+      }
       return out;
     }
 
@@ -540,6 +549,7 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
     ctaStylePresetId: renderStored.ctaStylePresetId !== undefined ? 'app' : 'default',
     hookDuration: numberValue(renderStored.hookDuration) !== undefined ? 'app' : 'default',
     ctaDuration: numberValue(renderStored.ctaDuration) !== undefined ? 'app' : 'default',
+    fadeOutSeconds: numberValue(renderStored.fadeOutSeconds) !== undefined ? 'app' : 'default',
   };
 
   const render: RenderDefaults = {
@@ -550,6 +560,7 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
     ctaStylePresetId: idValue(renderStored.ctaStylePresetId) ?? null,
     hookDuration: clampDuration(renderStored.hookDuration, DEFAULT_RENDER_SETTINGS.hookDuration),
     ctaDuration: clampDuration(renderStored.ctaDuration, DEFAULT_RENDER_SETTINGS.ctaDuration),
+    fadeOutSeconds: clampDuration(renderStored.fadeOutSeconds, DEFAULT_RENDER_SETTINGS.fadeOutSeconds),
   };
 
   /* ai - keys exist only if they were put here, never inherited from the env file */
@@ -625,7 +636,13 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
   const audioMode = AUDIO_MODES.has(storedMode)
     ? (storedMode as ProfanitySettings['audioMode'])
     : DEFAULT_PROFANITY_SETTINGS.audioMode;
-  sources.profanity = { audioMode: AUDIO_MODES.has(storedMode) ? 'app' : 'default' };
+  const contextPassEnabled = typeof profanityStored.contextPassEnabled === 'boolean'
+    ? profanityStored.contextPassEnabled
+    : DEFAULT_PROFANITY_SETTINGS.contextPassEnabled;
+  sources.profanity = {
+    audioMode: AUDIO_MODES.has(storedMode) ? 'app' : 'default',
+    contextPassEnabled: typeof profanityStored.contextPassEnabled === 'boolean' ? 'app' : 'default',
+  };
 
   /* paths - an empty string is the built-in "automatic" value, not a path */
   const pathsStored = stored.paths ?? {};
@@ -648,7 +665,7 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
     render,
     ai,
     worker,
-    profanity: { audioMode },
+    profanity: { audioMode, contextPassEnabled },
     paths,
   };
 

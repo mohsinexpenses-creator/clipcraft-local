@@ -1,6 +1,6 @@
 import path from 'path';
 import { Jimp } from 'jimp';
-import { AppError, toErrorMessage } from '../../lib/errors';
+import { AppError, RenderCancelledError, toErrorMessage } from '../../lib/errors';
 import { log } from '../../lib/logger';
 import {
   cleanupSampledFrames,
@@ -70,6 +70,8 @@ export interface AsdOptions {
   maxSampleFps?: number;
   /** Upper bound on sampled frames (default 480). */
   maxFrames?: number;
+  /** Worker-owned cancellation signal forwarded to frame/audio extraction. */
+  signal?: AbortSignal;
 }
 
 const DEFAULT_MAX_SAMPLE_FPS = 8;
@@ -213,6 +215,7 @@ export async function detectSpeakerTimeline(
     });
   }
 
+  if (options.signal?.aborted) throw new RenderCancelledError();
   const maxFps = options.maxSampleFps ?? DEFAULT_MAX_SAMPLE_FPS;
   const maxFrames = options.maxFrames ?? DEFAULT_MAX_FRAMES;
 
@@ -226,19 +229,25 @@ export async function detectSpeakerTimeline(
 
     // 1) Frames and audio can be extracted independently - run them together.
     const sampleWidth = Math.max(160, Math.min(ASD_SAMPLE_WIDTH, Math.floor(videoWidth / 2) * 2));
-    const sampled = await sampleSegmentFrames(
-      videoPath,
-      start,
-      duration,
-      maxFps,
-      maxFrames,
-      'frames',
-      sampleWidth
-    );
+    const [sampled, pcm] = await Promise.all([
+      sampleSegmentFrames(
+        videoPath,
+        start,
+        duration,
+        maxFps,
+        maxFrames,
+        'frames',
+        sampleWidth,
+        options.signal,
+      ),
+      options.hasAudio
+        ? extractPcmMono(videoPath, start, duration, 16000, options.signal)
+        : Promise.resolve(new Int16Array(0)),
+    ]);
+    if (options.signal?.aborted) throw new RenderCancelledError();
     frames = sampled.frames;
     sampleFps = sampled.fps;
 
-    const pcm = options.hasAudio ? await extractPcmMono(videoPath, start, duration) : new Int16Array(0);
     const voice =
       pcm.length > 0 ? computeVoiceEnvelope(pcm, 16000, sampleFps).voice : new Array(frames.length).fill(0);
 
@@ -265,6 +274,7 @@ export async function detectSpeakerTimeline(
     let prevThumbs: Array<{ cx: number; cy: number; w: number; full: number[]; mouth: number[] }> = [];
 
     for (let i = 0; i < frames.length; i += 1) {
+      if (options.signal?.aborted) throw new RenderCancelledError();
       const framePath = frames[i];
       const t = i / sampleFps;
 
@@ -428,6 +438,7 @@ export async function detectSpeakerTimeline(
       sampleWidth,
     };
   } catch (error) {
+    if (error instanceof RenderCancelledError || options.signal?.aborted) throw new RenderCancelledError();
     if (error instanceof AppError) throw error;
     throw new AppError('Speaker detection failed.', {
       details: toErrorMessage(error),

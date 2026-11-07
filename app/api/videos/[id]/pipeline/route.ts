@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getVideo, listClips } from '@/lib/db';
+import { getVideo, listClips, updateVideo } from '@/lib/db';
 import { toErrorMessage, toErrorStatus } from '@/lib/errors';
 import { listVideoPipelineJobs } from '@/lib/queue';
 import { pipelineStatusForVideo } from '@/lib/pipeline-status';
@@ -76,6 +76,14 @@ export async function POST(
       return NextResponse.json({ error: 'Video not found' }, { status: 404 });
     }
 
+    // Resume preserves the saved automation choices; it only clears the
+    // cancellation marker that keeps crash/startup recovery from restarting it.
+    if (video.pipelineCancelled) {
+      video.pipelineCancelled = false;
+      video.error = undefined;
+      await updateVideo(video);
+    }
+
     if (!video.transcript) {
       const queued = await queueTranscription(video);
       return NextResponse.json({
@@ -95,6 +103,7 @@ export async function POST(
       clipIds: clips
         .filter((clip) => clip.status === 'pending' || clip.status === 'failed')
         .map((clip) => clip._id),
+      context: { resumeCancelledClip: true },
     });
 
     return NextResponse.json({

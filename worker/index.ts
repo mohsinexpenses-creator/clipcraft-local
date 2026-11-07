@@ -5,10 +5,13 @@ import {
   getDatabasePath,
   getVideo,
   saveClipBrollPlan,
+  saveClipBrollPlanForRunningJob,
   updateClip,
   updateVideo,
+  updateVideoForRunningJob,
 } from '../lib/db';
-import { toErrorMessage } from '../lib/errors';
+import { RenderCancelledError, toErrorMessage } from '../lib/errors';
+import { sweepDeferredFileCleanup } from '../lib/file-cleanup';
 import { loadEffectiveSettings } from '../lib/app-settings';
 import { applyStoredRuntimeSettings } from './runtime-settings';
 import {
@@ -21,10 +24,13 @@ import {
   claimNextJob,
   completeJob,
   failJob,
+  isJobClaimCurrent,
   recoverRunningJobs,
   updateJobProgress,
+  watchJobClaim,
+  type JobExecutionControl,
 } from '../lib/queue';
-import { BrollJobData, JobData, TranscriptionJobData, ViralDetectionJobData } from '../lib/types';
+import { BrollJobData, JobData, TranscriptionJobData, ViralDetectionJobData, VideoRecord } from '../lib/types';
 import { transcribeVideo } from '../lib/whisper';
 import {
   continueAfterBroll,
@@ -45,8 +51,13 @@ import { color, log } from '../lib/logger';
  * fallback for these two, so there is deliberately no second reader here.
  */
 async function transcribeVideoJob(
-  data: TranscriptionJobData
+  data: TranscriptionJobData,
+  control: JobExecutionControl & { jobId?: string; startedAt?: string; claimToken?: string },
 ): Promise<{ status: string; videoId: string; autoDetectQueued?: boolean }> {
+  const persistVideo = async (candidate: VideoRecord): Promise<boolean> =>
+    control.jobId && control.startedAt
+      ? updateVideoForRunningJob(candidate, control.jobId, control.startedAt, control.claimToken)
+      : updateVideo(candidate);
   const video = await getVideo(data.videoId);
   if (!video) {
     throw new Error(`Video ${data.videoId} no longer exists in SQLite - nothing to transcribe.`);
@@ -55,10 +66,12 @@ async function transcribeVideoJob(
   log.section(`Transcribe ${color.bold(data.videoId)}` + color.gray(`  ·  ${video.originalName}`));
   video.status = 'transcribing';
   video.error = undefined;
-  if (!(await updateVideo(video))) return { status: 'cancelled', videoId: data.videoId };
+  if (!(await persistVideo(video))) return { status: 'cancelled', videoId: data.videoId };
 
   try {
-    const transcript = await transcribeVideo(data.filePath);
+    if (control.signal.aborted) throw new RenderCancelledError();
+    const transcript = await transcribeVideo(data.filePath, { signal: control.signal });
+    if (control.signal.aborted) throw new RenderCancelledError();
     // A user may delete the source while transcription is running. Do not recreate its row.
     const current = await getVideo(data.videoId);
     if (!current) return { status: 'cancelled', videoId: data.videoId };
@@ -66,7 +79,7 @@ async function transcribeVideoJob(
     current.transcript = transcript;
     current.status = 'transcribed';
     current.error = undefined;
-    await updateVideo(current);
+    if (!(await persistVideo(current))) throw new RenderCancelledError();
     log.ok(
       `Transcription done: ${transcript.segments.length} segments, ${transcript.words.length} words.`
     );
@@ -76,14 +89,27 @@ async function transcribeVideoJob(
     // so a crash in the LLM pass retries the detection alone and never re-runs
     // transcription. Videos uploaded before this existed have no `pipeline` and stay
     // manual.
-    const chained = await continueAfterTranscription(data.videoId);
+    const chained = await continueAfterTranscription(data.videoId, {
+      ...(control.jobId && control.startedAt
+        ? {
+            sourceClaim: {
+              jobId: control.jobId,
+              startedAt: control.startedAt,
+              ...(control.claimToken ? { claimToken: control.claimToken } : {}),
+            },
+          }
+        : {}),
+    });
     return { status: 'done', videoId: data.videoId, autoDetectQueued: chained };
   } catch (error) {
+    if (error instanceof RenderCancelledError || control.signal.aborted) {
+      throw new RenderCancelledError();
+    }
     const current = await getVideo(data.videoId);
     if (current) {
       current.status = 'failed';
       current.error = toErrorMessage(error, 'Transcription failed.');
-      await updateVideo(current);
+      await persistVideo(current);
     }
     throw error;
   }
@@ -96,7 +122,8 @@ async function transcribeVideoJob(
  * entry points.
  */
 async function viralDetectionJob(
-  data: ViralDetectionJobData
+  data: ViralDetectionJobData,
+  control: JobExecutionControl & { jobId?: string; startedAt?: string; claimToken?: string },
 ): Promise<{ status: string; videoId: string; clips: number; renderQueued: number }> {
   const video = await getVideo(data.videoId);
   if (!video) {
@@ -110,6 +137,10 @@ async function viralDetectionJob(
       // Chained run: never duplicates a detection that already happened.
       mode: 'auto',
       ...(data.autoRender === undefined ? {} : { autoRender: data.autoRender }),
+      signal: control.signal,
+      jobId: control.jobId,
+      startedAt: control.startedAt,
+      claimToken: control.claimToken,
     });
     log.ok(
       `Detection done: ${result.clips.length} clip(s)` +
@@ -122,12 +153,19 @@ async function viralDetectionJob(
       renderQueued: result.renderQueued,
     };
   } catch (error) {
+    if (error instanceof RenderCancelledError || control.signal.aborted) {
+      throw new RenderCancelledError();
+    }
     // The transcript itself is still fine, so only the error is recorded - the
     // dashboard shows it on the analysis step and offers a retry.
     const current = await getVideo(data.videoId);
     if (current) {
       current.error = toErrorMessage(error, 'Viral detection failed.');
-      await updateVideo(current);
+      if (control.jobId && control.startedAt) {
+        await updateVideoForRunningJob(current, control.jobId, control.startedAt, control.claimToken);
+      } else {
+        await updateVideo(current);
+      }
     }
     throw error;
   }
@@ -140,20 +178,57 @@ async function viralDetectionJob(
  */
 async function brollJob(
   data: BrollJobData,
-  progress: (value: number) => void
+  progress: (value: number) => void,
+  control: { signal: AbortSignal; jobId?: string; startedAt?: string; claimToken?: string },
 ): Promise<BrollJobResult> {
   try {
-    const result = await runBrollJob(data, progress);
+    if (control.signal.aborted) throw new RenderCancelledError();
+    const result = await runBrollJob(data, progress, control);
     if (result.status === 'done') {
+      // A late planner must not hand work to render after its claim was
+      // cancelled/replaced, even during the watcher's 400 ms polling window.
+      if (
+        control.jobId &&
+        control.startedAt &&
+        !isJobClaimCurrent(control.jobId, control.startedAt, getDatabase(), control.claimToken)
+      ) {
+        throw new RenderCancelledError();
+      }
       // The hand-off lives in lib/pipeline.ts, like every other step boundary.
-      await continueAfterBroll(data.clipId);
+      // It carries the same claim fence as the plan write, so cancellation cannot
+      // insert a render between this check and the downstream enqueue.
+      await continueAfterBroll(data.clipId, {
+        ...(control.jobId && control.startedAt
+          ? {
+              sourceClaim: {
+                jobId: control.jobId,
+                startedAt: control.startedAt,
+                ...(control.claimToken ? { claimToken: control.claimToken } : {}),
+              },
+            }
+          : {}),
+      });
     }
     return result;
   } catch (error) {
+    if (error instanceof RenderCancelledError || control.signal.aborted) {
+      throw new RenderCancelledError();
+    }
     // Recorded even when the queue will retry: the clip tile must never claim a
     // plan is coming when the pass is already failing.
     const message = toErrorMessage(error);
-    await saveClipBrollPlan(data.clipId, null, 'failed', message).catch(() => undefined);
+    const persisted = control.jobId && control.startedAt
+      ? saveClipBrollPlanForRunningJob(
+          data.clipId,
+          null,
+          'failed',
+          message,
+          control.jobId,
+          control.startedAt,
+          control.claimToken,
+        )
+      : saveClipBrollPlan(data.clipId, null, 'failed', message);
+    await persisted.catch(() => undefined);
     throw error;
   }
 }
@@ -162,7 +237,11 @@ interface LoopState {
   stopping: boolean;
 }
 
-type JobHandler = (job: QueueJob, onProgress: (progress: number) => void) => Promise<unknown>;
+type JobHandler = (
+  job: QueueJob,
+  onProgress: (progress: number) => void,
+  control: JobExecutionControl,
+) => Promise<unknown>;
 
 async function markRecordRetrying(job: QueueJob): Promise<void> {
   try {
@@ -206,16 +285,29 @@ async function markRecordRetrying(job: QueueJob): Promise<void> {
 async function executeJob(job: QueueJob, label: string, handler: JobHandler): Promise<void> {
   log.detail(`Received ${label} job ${job.id} (attempt ${job.attempts}/${job.maxAttempts}).`);
   await applyStoredRuntimeSettings();
+  const control = watchJobClaim(job);
   try {
+    if (control.signal.aborted) throw new RenderCancelledError();
     const result = await handler(job, (progress) => {
-      updateJobProgress(job.id, progress);
-    });
-    if (completeJob(job.id, result)) {
+      if (!control.signal.aborted) updateJobProgress(job.id, progress, undefined, job.startedAt, job.claimToken);
+    }, control);
+    // The cancel route has already terminally failed this row. Do not overwrite
+    // it with a late success from a network/renderer promise that settled after
+    // the abort signal.
+    if (control.signal.aborted) {
+      log.warn(`${label} job ${job.id} stopped after its claim was cancelled.`);
+      return;
+    }
+    if (completeJob(job.id, result, undefined, job.startedAt, job.claimToken)) {
       log.ok(`${label} job ${job.id} completed.`);
     }
   } catch (error) {
+    if (control.signal.aborted || error instanceof RenderCancelledError) {
+      log.warn(`${label} job ${job.id} cancelled.`);
+      return;
+    }
     const message = toErrorMessage(error);
-    const outcome = failJob(job.id, message);
+    const outcome = failJob(job.id, message, undefined, job.startedAt, job.claimToken);
     if (outcome === 'retry') {
       await markRecordRetrying(job);
       log.warn(
@@ -223,8 +315,20 @@ async function executeJob(job: QueueJob, label: string, handler: JobHandler): Pr
         `queued for retry: ${message}`
       );
     } else if (outcome === 'failed') {
+      // A B-roll plan is optional. Its terminal failure must hand the original
+      // clip to the render queue (without a plan), never block later work.
+      if (job.type === BROLL_QUEUE_NAME && job.clipId) {
+        try {
+          const handedOff = await continueAfterBroll(job.clipId);
+          if (handedOff) log.warn(`B-roll failed permanently for ${job.clipId}; queued its render without B-roll.`);
+        } catch (handoffError) {
+          log.error(`Could not hand ${job.clipId} to render after B-roll failure: ${toErrorMessage(handoffError)}`);
+        }
+      }
       log.error(`${label} job ${job.id} failed permanently: ${message}`);
     }
+  } finally {
+    control.dispose();
   }
 }
 
@@ -262,6 +366,10 @@ async function startWorker(): Promise<void> {
   // Opening the database applies the schema and enables WAL + the five-second busy wait.
   getDatabase();
   const recovered = recoverRunningJobs();
+  const cleanup = await sweepDeferredFileCleanup().catch((error) => {
+    log.warn(`Could not sweep deferred file cleanup: ${toErrorMessage(error)}`);
+    return { removed: 0, remaining: 0 };
+  });
   await applyStoredRuntimeSettings();
   // Settings win, `.env.local` is the fallback, and both are folded together there.
   // Loop counts cannot change while the loops are running, so this is the one value
@@ -281,6 +389,9 @@ async function startWorker(): Promise<void> {
   log.detail(`Viral detection concurrency: ${detectionConcurrency}`);
   log.detail(`B-roll concurrency: ${brollConcurrency} (network-bound)`);
   if (recovered > 0) log.warn(`Recovered ${recovered} job(s) left running by a previous worker process.`);
+  if (cleanup.removed > 0 || cleanup.remaining > 0) {
+    log.detail(`Deferred file cleanup: removed=${cleanup.removed}, remaining=${cleanup.remaining}.`);
+  }
 
   // A worker that died between two pipeline steps would otherwise leave a video
   // stuck mid-chain (transcribed but never analyzed, analyzed but never
@@ -300,8 +411,13 @@ async function startWorker(): Promise<void> {
       CLIP_QUEUE_NAME,
       'clip',
       clipConcurrency,
-      async (job, onProgress) => {
-        return processClipJob(job.payload as JobData, async (progress) => onProgress(progress));
+      async (job, onProgress, control) => {
+        return processClipJob(job.payload as JobData, async (progress) => onProgress(progress), {
+          jobId: job.id,
+          startedAt: job.startedAt,
+          claimToken: job.claimToken,
+          signal: control.signal,
+        });
       },
       state
     ),
@@ -309,14 +425,24 @@ async function startWorker(): Promise<void> {
       TRANSCRIPTION_QUEUE_NAME,
       'transcription',
       transcriptionConcurrency,
-      async (job) => transcribeVideoJob(job.payload as TranscriptionJobData),
+      async (job, _onProgress, control) => transcribeVideoJob(job.payload as TranscriptionJobData, {
+        ...control,
+        jobId: job.id,
+        startedAt: job.startedAt,
+        claimToken: job.claimToken,
+      }),
       state
     ),
     runQueueLoop(
       VIRAL_DETECTION_QUEUE_NAME,
       'viral detection',
       detectionConcurrency,
-      async (job) => viralDetectionJob(job.payload as ViralDetectionJobData),
+      async (job, _onProgress, control) => viralDetectionJob(job.payload as ViralDetectionJobData, {
+        ...control,
+        jobId: job.id,
+        startedAt: job.startedAt,
+        claimToken: job.claimToken,
+      }),
       state
     ),
     // B-roll is network-bound (LLM + image providers), so one job at a time is
@@ -325,8 +451,13 @@ async function startWorker(): Promise<void> {
       BROLL_QUEUE_NAME,
       'b-roll',
       brollConcurrency,
-      async (job, onProgress) =>
-        brollJob(job.payload as BrollJobData, onProgress),
+      async (job, onProgress, control) =>
+        brollJob(job.payload as BrollJobData, onProgress, {
+          signal: control.signal,
+          jobId: job.id,
+          startedAt: job.startedAt,
+          claimToken: job.claimToken,
+        }),
       state
     ),
   ]);

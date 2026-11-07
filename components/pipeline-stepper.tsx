@@ -81,8 +81,8 @@ export interface PipelineStepperProps {
 
 export function PipelineStepper({ status, busy, onResume, onRetryStep }: PipelineStepperProps) {
   const meta = stageMeta(status.stage)
-  const resumable = status.stage === "failed" || status.stage === "awaiting-detection" || status.stage === "awaiting-render";
-  const stuck = status.stage === "queued" || status.stage === "awaiting-detection" || status.stage === "failed";
+  const resumable = status.stage === "failed" || status.stage === "paused" || status.stage === "awaiting-detection" || status.stage === "awaiting-render";
+  const stuck = status.stage === "queued" || status.stage === "paused" || status.stage === "awaiting-detection" || status.stage === "failed";
 
   return (
     <div

@@ -264,7 +264,7 @@ export function RenderSettingsPanel({
         </Field>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid gap-3 sm:grid-cols-3">
         <Field
           label="Hook intro fallback (s)"
           hint="Only used when a clip has no usable hook interval from the AI - that interval normally decides the length. 0 turns the hook intro and hook text off."
@@ -288,6 +288,18 @@ export function RenderSettingsPanel({
             max={limits?.overlayDuration.max ?? 30}
             step={0.5}
             onCommit={(ctaDuration) => patch({ ctaDuration })}
+            disabled={disabled}
+          />
+        </Field>
+
+        <Field label="Final fade-out (s)" hint="Fades the completed picture and mixed audio together. 0 disables it; short clips cap it at half their length.">
+          <NumberField
+            id="default-fade-out-duration"
+            value={value.fadeOutSeconds}
+            min={limits?.overlayDuration.min ?? 0}
+            max={limits?.overlayDuration.max ?? 30}
+            step={0.1}
+            onCommit={(fadeOutSeconds) => patch({ fadeOutSeconds })}
             disabled={disabled}
           />
         </Field>

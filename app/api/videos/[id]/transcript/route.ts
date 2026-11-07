@@ -61,12 +61,14 @@ export async function POST(
     const engine = await getPlannedTranscriptionEngine();
 
     video.status = 'transcribing';
+    video.pipelineCancelled = false;
     video.transcriptionProvider = engine.provider;
     video.transcriptionModel = engine.model;
     video.error = undefined;
     await enqueueTranscriptionJob(
       { videoId: video._id, filePath: video.filePath, retry: true },
-      video
+      video,
+      { resumePipeline: true },
     );
 
     return NextResponse.json({

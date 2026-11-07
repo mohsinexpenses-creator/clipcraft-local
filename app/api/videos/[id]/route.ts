@@ -1,9 +1,9 @@
-import fs from 'fs';
 import path from 'path';
 import { NextResponse } from 'next/server';
 import { deleteVideo, getVideo, listClips, updateVideo } from '@/lib/db';
 import { getUploadDirValue } from '@/lib/upload';
 import { getClipsDirValue } from '@/lib/paths';
+import { outputPathToDiskPath, removePathOrDefer, resolveInside } from '@/lib/file-cleanup';
 import { toErrorMessage, toErrorStatus } from '@/lib/errors';
 import { pipelineStatusForVideo } from '@/lib/pipeline-status';
 import { sanitizePipelineOptions } from '@/lib/pipeline-defaults';
@@ -69,6 +69,9 @@ export async function PATCH(
     const next = sanitizePipelineOptions({ ...video.pipeline, ...body, viral: body.viral ?? body.options ?? video.pipeline?.viral });
 
     video.pipeline = next;
+    // An explicit edit is a deliberate restart of automation, not a permanent
+    // cancellation. Queuing still happens through the normal guarded paths.
+    video.pipelineCancelled = false;
     if (!(await updateVideo(video))) {
       return NextResponse.json({ error: 'Video not found' }, { status: 404 });
     }
@@ -98,27 +101,42 @@ export async function DELETE(
       return NextResponse.json({ error: 'Video not found' }, { status: 404 });
     }
 
+    const clips = await listClips(id);
+    // This removes queued/running jobs before the row cascade, so all active
+    // worker attempt tokens become invalid before any source/output deletion.
     await deleteVideo(id);
 
-    // The roots come from Settings -> Paths & binaries; per-video folder names
-    // inside them never change.
-    const uploadDir = path.join(getUploadDirValue(), id);
-    // Output folder: current convention names it after the stored file
-    // (001_my_recording); older uploads used the video id - clean up both.
-    const clipsDir = path.join(getClipsDirValue(), video.fileBase || id);
-    const legacyClipsDir = path.join(getClipsDirValue(), id);
+    const uploadRoot = getUploadDirValue();
+    const clipsRoot = getClipsDirValue();
+    const targets = new Map<string, string>();
+    // `filePath` is the authoritative flat upload path (it can predate a later
+    // Settings-root change), not the old incorrect `<uploads>/<video-id>` guess.
+    const sourcePath = path.resolve(video.filePath);
+    targets.set(sourcePath, 'uploaded-source');
 
-    if (fs.existsSync(uploadDir)) {
-      fs.rmSync(uploadDir, { recursive: true, force: true });
+    // Legacy deployments stored a directory per video; current uploads are flat,
+    // so cover both without mistakenly treating the configured root itself as a target.
+    for (const folder of [video.fileBase || id, id]) {
+      const candidate = resolveInside(uploadRoot, folder);
+      if (candidate) targets.set(candidate, 'legacy-video-upload-directory');
     }
-    if (fs.existsSync(clipsDir)) {
-      fs.rmSync(clipsDir, { recursive: true, force: true });
+    for (const folder of [video.fileBase || id, id]) {
+      const candidate = resolveInside(clipsRoot, folder);
+      if (candidate) targets.set(candidate, 'video-clips-directory');
     }
-    if (clipsDir !== legacyClipsDir && fs.existsSync(legacyClipsDir)) {
-      fs.rmSync(legacyClipsDir, { recursive: true, force: true });
+    for (const clip of clips) {
+      if (!clip.outputPath) continue;
+      const candidate = outputPathToDiskPath(clip.outputPath, clipsRoot);
+      if (candidate) targets.set(candidate, 'clip-output');
     }
 
-    return NextResponse.json({ success: true });
+    const removals = await Promise.all(
+      [...targets].map(async ([target, kind]) => ({ target, removed: await removePathOrDefer(target, kind) })),
+    );
+    return NextResponse.json({
+      success: true,
+      cleanupDeferred: removals.filter((result) => !result.removed).map((result) => result.target),
+    });
   } catch (error) {
     return NextResponse.json(
       { error: toErrorMessage(error, 'Failed to delete video.') },

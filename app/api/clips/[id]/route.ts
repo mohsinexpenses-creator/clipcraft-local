@@ -1,7 +1,7 @@
-import fs from 'fs';
-import path from 'path';
 import { NextResponse } from 'next/server';
 import { deleteClip, getClip, updateClip } from '@/lib/db';
+import { outputPathToDiskPath, removePathOrDefer } from '@/lib/file-cleanup';
+import { getClipsDirValue } from '@/lib/paths';
 import { toErrorMessage, toErrorStatus } from '@/lib/errors';
 import { applyClipEdits, sanitizeClipEdits } from '@/lib/clip-edits';
 
@@ -73,16 +73,17 @@ export async function DELETE(
       return NextResponse.json({ error: 'Clip not found' }, { status: 404 });
     }
 
+    // Deleting the DB row removes its job claim transactionally. The worker's
+    // 400ms token watcher sees that immediately and cannot recreate the clip.
     await deleteClip(id);
 
+    let outputRemoved = true;
     if (clip.outputPath) {
-      const fullPath = path.join(process.cwd(), clip.outputPath);
-      if (fs.existsSync(fullPath)) {
-        fs.unlinkSync(fullPath);
-      }
+      const diskPath = outputPathToDiskPath(clip.outputPath, getClipsDirValue());
+      if (diskPath) outputRemoved = await removePathOrDefer(diskPath, 'clip-output');
     }
 
-    return NextResponse.json({ success: true });
+    return NextResponse.json({ success: true, outputRemoved });
   } catch (error) {
     return NextResponse.json(
       { error: toErrorMessage(error, 'Failed to delete clip.') },

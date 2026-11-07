@@ -1,17 +1,33 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { deleteClip, deleteVideo, saveClip, saveVideo, getClip, updateClip } from '../lib/db';
+import {
+  cancelClipWorkSync,
+  cancelVideoPipelineSync,
+  deleteClip,
+  deleteVideo,
+  getClip,
+  getVideo,
+  saveClip,
+  saveClipForRunningJob,
+  saveVideo,
+  updateClip,
+  updateClipForRunningJob,
+  updateVideoForRunningJob,
+} from '../lib/db';
+import { RenderCancelledError } from '../lib/errors';
 import type { ClipRecord, JobData, VideoRecord } from '../lib/types';
 import {
   claimNextJob,
   completeJob,
   enqueue,
+  enqueueBrollJob,
   enqueueClipJob,
   enqueueTranscriptionJob,
   failJob,
   getJob,
   recoverRunningJobs,
   updateJobProgress,
+  watchJobClaim,
 } from '../lib/queue';
 import { createTemporaryDatabase } from './sqlite-test-helpers';
 
@@ -102,6 +118,190 @@ test('two SQLite connections atomically claim each queued job at most once', asy
   }
   assert.equal(claimedIds.size, 12);
   assert.equal(claimNextJob(['atomic-claim'], db), null);
+});
+
+test('render and B-roll claims honor video registration order and skip paused pipelines', async (t) => {
+  const { db } = createTemporaryDatabase(t);
+  const firstVideo = video('registered-first');
+  const secondVideo = video('registered-second');
+  await saveVideo(firstVideo);
+  await saveVideo(secondVideo);
+  assert.equal(firstVideo.queueOrder, 1);
+  assert.equal(secondVideo.queueOrder, 2);
+
+  // Enqueue in reverse order: the worker must still serve registration order.
+  enqueue('clip-processing', { videoId: secondVideo._id }, { id: 'render-second', videoId: secondVideo._id }, db);
+  enqueue('broll', { videoId: firstVideo._id }, { id: 'broll-first', videoId: firstVideo._id }, db);
+  const claimedFirst = claimNextJob(['clip-processing', 'broll'], db);
+  assert.equal(claimedFirst?.id, 'broll-first');
+
+  cancelVideoPipelineSync(db, secondVideo._id);
+  // Even a stale producer that manages to enqueue after the cancel transaction
+  // cannot get work claimed while the durable marker remains set.
+  enqueue('clip-processing', { videoId: secondVideo._id }, { id: 'render-after-cancel', videoId: secondVideo._id }, db);
+  assert.equal(claimNextJob(['clip-processing', 'broll'], db), null, 'cancelled video work is never claimable');
+});
+
+test('automatic downstream hand-offs cannot revive a cancelled pipeline or clip', async (t) => {
+  const { db } = createTemporaryDatabase(t);
+  const source = video('video-handoff-fence');
+  const record = clip('clip-handoff-fence', source._id);
+  await saveVideo(source);
+  await saveClip(record);
+
+  enqueue('viral-detection', { videoId: source._id }, {
+    id: 'detect-handoff-fence',
+    videoId: source._id,
+  }, db);
+  const cancelledSource = claimNextJob(['viral-detection'], db)!;
+  assert.ok(cancelledSource.startedAt);
+  assert.ok(cancelledSource.claimToken);
+  cancelVideoPipelineSync(db, source._id);
+
+  await assert.rejects(
+    () => enqueueBrollJob(
+      { clipId: record._id, videoId: source._id, trigger: 'auto' },
+      {
+        sourceClaim: {
+          jobId: cancelledSource.id,
+          startedAt: cancelledSource.startedAt!,
+          claimToken: cancelledSource.claimToken,
+        },
+      },
+    ),
+    RenderCancelledError,
+  );
+  assert.equal(getJob(`broll:${record._id}`, db), null, 'a stale detector cannot add B-roll after pipeline cancel');
+
+  const manualSource = video('video-clip-handoff-fence');
+  const manuallyCancelled = clip('clip-manual-handoff-fence', manualSource._id);
+  await saveVideo(manualSource);
+  await saveClip(manuallyCancelled);
+  enqueue('viral-detection', { videoId: manualSource._id }, {
+    id: 'detect-clip-handoff-fence',
+    videoId: manualSource._id,
+  }, db);
+  const stillCurrentSource = claimNextJob(['viral-detection'], db)!;
+  assert.ok(stillCurrentSource.startedAt);
+  cancelClipWorkSync(db, manuallyCancelled._id);
+  assert.equal((await getClip(manuallyCancelled._id))?.workCancelled, true);
+
+  await assert.rejects(
+    () => enqueueBrollJob(
+      { clipId: manuallyCancelled._id, videoId: manualSource._id, trigger: 'auto' },
+      {
+        sourceClaim: {
+          jobId: stillCurrentSource.id,
+          startedAt: stillCurrentSource.startedAt!,
+          claimToken: stillCurrentSource.claimToken,
+        },
+      },
+    ),
+    RenderCancelledError,
+  );
+  assert.equal(getJob(`broll:${manuallyCancelled._id}`, db), null);
+
+  // Even a malformed/stale raw enqueue cannot bypass the physical clip fence at
+  // claim time. The explicit manual request below replaces this audit row.
+  enqueue('broll', { clipId: manuallyCancelled._id, videoId: manualSource._id }, {
+    id: `broll:${manuallyCancelled._id}`,
+    clipId: manuallyCancelled._id,
+    videoId: manualSource._id,
+  }, db);
+  assert.equal(claimNextJob(['broll'], db), null);
+
+  // A deliberate user retry clears only the per-clip fence and creates normal
+  // work again; it does not require an upstream job to be current.
+  await enqueueBrollJob(
+    { clipId: manuallyCancelled._id, videoId: manualSource._id, trigger: 'manual' },
+    { resumeCancelledClip: true },
+  );
+  assert.equal((await getClip(manuallyCancelled._id))?.workCancelled, undefined);
+  assert.equal(claimNextJob(['broll'], db)?.id, `broll:${manuallyCancelled._id}`);
+});
+
+test('a stale claim cannot update, fail, or complete a newer claim with the same stable job id', (t) => {
+  const { db } = createTemporaryDatabase(t);
+  enqueue('fenced-claim', { value: 1 }, { id: 'stable-fenced-job', maxAttempts: 2, retryDelayMs: 0 }, db);
+
+  const first = claimNextJob(['fenced-claim'], db);
+  assert.ok(first?.startedAt);
+  assert.ok(first?.claimToken);
+  assert.equal(failJob(first!.id, 'retry this attempt', db, first!.startedAt, first!.claimToken), 'retry');
+
+  const second = claimNextJob(['fenced-claim'], db);
+  assert.ok(second?.startedAt);
+  assert.ok(second?.claimToken);
+  assert.notEqual(second!.claimToken, first!.claimToken, 'each claim must receive a fresh opaque fence');
+
+  assert.equal(updateJobProgress(first!.id, 97, db, first!.startedAt, first!.claimToken), false);
+  assert.equal(completeJob(first!.id, { stale: true }, db, first!.startedAt, first!.claimToken), false);
+  assert.equal(failJob(first!.id, 'late failure', db, first!.startedAt, first!.claimToken), 'ignored');
+  assert.equal(getJob(first!.id, db)?.status, 'running');
+  assert.equal(getJob(first!.id, db)?.progress, 0);
+
+  assert.equal(updateJobProgress(second!.id, 64, db, second!.startedAt, second!.claimToken), true);
+  assert.equal(completeJob(second!.id, { fresh: true }, db, second!.startedAt, second!.claimToken), true);
+  assert.deepEqual(getJob(second!.id, db)?.result, { fresh: true });
+});
+
+test('claim fences also block stale video and clip record persistence', async (t) => {
+  const { db } = createTemporaryDatabase(t);
+  const source = video('video-record-fence');
+  const record = clip('clip-record-fence', source._id);
+  await saveVideo(source);
+  await saveClip(record);
+  enqueue('viral-detection', { videoId: source._id }, { id: 'detect-record-fence', videoId: source._id, maxAttempts: 2, retryDelayMs: 0 }, db);
+  const first = claimNextJob(['viral-detection'], db)!;
+  assert.equal(failJob(first.id, 'retry', db, first.startedAt, first.claimToken), 'retry');
+  const second = claimNextJob(['viral-detection'], db)!;
+
+  const staleVideo = (await getVideo(source._id))!;
+  staleVideo.status = 'transcribed';
+  staleVideo.error = undefined;
+  assert.equal(
+    await updateVideoForRunningJob(staleVideo, first.id, first.startedAt!, first.claimToken),
+    false,
+  );
+  assert.equal((await getVideo(source._id))?.status, 'uploaded');
+
+  const staleClip = (await getClip(record._id))!;
+  staleClip.status = 'done';
+  staleClip.outputPath = '/generated-clips/should-not-exist.mp4';
+  assert.equal(
+    await updateClipForRunningJob(staleClip, first.id, first.startedAt!, first.claimToken),
+    false,
+  );
+  assert.equal((await getClip(record._id))?.outputPath, undefined);
+
+  const staleNewClip = clip('clip-created-by-stale-worker', source._id);
+  assert.equal(
+    await saveClipForRunningJob(staleNewClip, first.id, first.startedAt!, first.claimToken),
+    false,
+  );
+  assert.equal(await getClip(staleNewClip._id), null);
+
+  // The current attempt remains able to write, proving this is a fence rather
+  // than a broad lock on the record.
+  assert.equal(
+    await updateClipForRunningJob(staleClip, second.id, second.startedAt!, second.claimToken),
+    true,
+  );
+});
+
+test('claim watcher aborts promptly when its running job disappears', async (t) => {
+  const { db } = createTemporaryDatabase(t);
+  enqueue('watch-claim', { value: 1 }, { id: 'watched-job' }, db);
+  const job = claimNextJob(['watch-claim'], db);
+  assert.ok(job?.startedAt);
+  const control = watchJobClaim(job!, db, 300);
+  try {
+    db.prepare('DELETE FROM jobs WHERE id = ?').run(job!.id);
+    await new Promise((resolve) => setTimeout(resolve, 650));
+    assert.equal(control.signal.aborted, true);
+  } finally {
+    control.dispose();
+  }
 });
 
 test('job progress, completion, retry count, and exponential backoff are persisted', async (t) => {
@@ -225,6 +425,26 @@ test('a failed render is terminal until an explicit enqueue resets it', async (t
   assert.equal(manuallyQueued?.status, 'queued');
   assert.equal(manuallyQueued?.attempts, 0);
   assert.equal(claimNextJob(['clip-processing'], db)?.attempts, 1);
+});
+
+test('deleting a clip invalidates an active worker claim before it can persist again', async (t) => {
+  const { db } = createTemporaryDatabase(t);
+  const source = video('video-delete-active');
+  const record = clip('clip-delete-active', source._id);
+  await saveVideo(source);
+  await saveClip(record);
+  await enqueueClipJob(renderPayload(record));
+  const active = claimNextJob(['clip-processing'], db);
+  assert.ok(active?.startedAt);
+  const control = watchJobClaim(active!, db, 300);
+  try {
+    assert.equal(await deleteClip(record._id), true);
+    assert.equal(getJob(active!.id, db), null);
+    await new Promise((resolve) => setTimeout(resolve, 650));
+    assert.equal(control.signal.aborted, true, 'the active process sees its deleted claim within the watch interval');
+  } finally {
+    control.dispose();
+  }
 });
 
 test('deleting a clip or video cleans up its queued jobs in SQLite', async (t) => {

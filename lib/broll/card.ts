@@ -21,8 +21,8 @@ export const CARD_WIDTH = Math.round(
   OVERLAY_CANVAS_WIDTH * CARD_WIDTH_FRACTION,
 );
 export const CARD_HEIGHT = Math.round((CARD_WIDTH * 9) / 16);
-/** How far the card reaches into the caption band: 0.5 = the band's vertical middle. */
-export const CARD_CAPTION_OVERLAP = 1;
+/** Legacy export retained for saved plans; new cards never overlap captions. */
+export const CARD_CAPTION_OVERLAP = 0;
 /** Clear space between the card and a face box. */
 export const CARD_FACE_GAP = 28;
 /** Layouts a card can be anchored for. */
@@ -33,23 +33,28 @@ export const CARD_BOTTOM_ABOVE_CLIP_BOTTOM = 0.2;
 /** Split screen: card centre sits this fraction of the canvas height above (+) / below (-) the seam. */
 export const CARD_SEAM_OFFSET = 0;
 
-/** How far (px) a card may sink below the caption band to avoid a face. */
-export const CARD_MAX_CAPTION_SPILL = 200;
+/** Cards never spill into captions; when vertical space is scarce they scale down. */
+const CARD_ASPECT = 16 / 9;
 
-/** Lowest y a card of fixed height may take (band limit + allowed spill). */
-function cardLowestY(
-  bottomLimit: number,
-  cardHeight: number,
+/** Fit a 16:9 card inside the usable space above the caption band. */
+function cardSizeForBand(
+  canvasWidth: number,
   canvasHeight: number,
-): number {
-  const ideal = Math.max(OVERLAY_TOP_MARGIN, bottomLimit - cardHeight);
-  return Math.max(
-    OVERLAY_TOP_MARGIN,
-    Math.min(
-      canvasHeight - cardHeight - OVERLAY_TOP_MARGIN,
-      ideal + CARD_MAX_CAPTION_SPILL,
-    ),
-  );
+  bottomLimit: number,
+): { width: number; height: number } {
+  const maxWidth = Math.max(2, Math.min(CARD_WIDTH, canvasWidth - OVERLAY_TOP_MARGIN * 2));
+  const maxHeight = Math.max(2, Math.min(CARD_HEIGHT, bottomLimit - OVERLAY_TOP_MARGIN, canvasHeight - OVERLAY_TOP_MARGIN * 2));
+  // Preserve 16:9 even for very high caption bands. Width is rounded only after
+  // selecting the limiting dimension, so it never pushes the bottom into text.
+  let width = Math.max(2, Math.round(Math.min(maxWidth, maxHeight * CARD_ASPECT)));
+  let height = Math.max(2, Math.round(width / CARD_ASPECT));
+  // Rounding up can add one pixel past a tight height limit; correct it without
+  // ever letting the card overlap the caption band.
+  if (height > maxHeight) {
+    height = Math.max(2, Math.floor(maxHeight));
+    width = Math.max(2, Math.floor(height * CARD_ASPECT));
+  }
+  return { width, height };
 }
 
 export interface FaceZoneRect {
@@ -95,8 +100,9 @@ function expanded(zone: FaceZoneRect): FaceZoneRect {
 }
 
 /**
- * The card rectangle. Size is ALWAYS fixed (70% width, 16:9). Only y moves:
- * first choice is the ideal spot, then the nearest spot that keeps clear of faces.
+ * The card rectangle. It prefers the full 70% / 16:9 frame, but scales down
+ * rather than covering captions when the usable strip is smaller. Face avoidance
+ * only chooses among legal (caption-clear) positions.
  */
 export function planCardRect(input: CardPlacementInput): BrollCardRect {
   const canvasWidth = input.canvasWidth ?? OVERLAY_CANVAS_WIDTH;
@@ -104,24 +110,22 @@ export function planCardRect(input: CardPlacementInput): BrollCardRect {
   const top = OVERLAY_TOP_MARGIN;
   const bottom = cardBottomLimit(input.captionBand, canvasHeight);
   const faceZones = (input.faceZones ?? []).map(expanded);
-
-  const width = CARD_WIDTH;
-  const height = CARD_HEIGHT;
+  const { width, height } = cardSizeForBand(canvasWidth, canvasHeight, bottom);
   const x = Math.round((canvasWidth - width) / 2);
   const idealY = Math.max(top, bottom - height);
-  const lowestY = cardLowestY(bottom, height, canvasHeight);
+  const maxY = Math.max(top, bottom - height);
 
   let bestY = idealY;
   let bestScore = Number.POSITIVE_INFINITY;
-  for (let y = top; y <= lowestY + 0.5; y += 8) {
+  for (let y = top; y <= maxY + 0.5; y += 8) {
     const rect = { x, y, width, height };
     const covered = faceZones.reduce(
       (sum, zone) => sum + overlapArea(rect, zone),
       0,
     );
-    // Sinking into the caption band is tolerated, but only as a last resort.
-    const spill = Math.max(0, y + height - bottom);
-    const score = covered * 1000 + spill * width + Math.abs(y - idealY);
+    // Prefer the planned lower placement, but never trade caption clearance for
+    // face avoidance: this search range is already strictly above the band.
+    const score = covered * 1000 + Math.abs(y - idealY);
     if (score < bestScore) {
       bestScore = score;
       bestY = y;
@@ -132,9 +136,9 @@ export function planCardRect(input: CardPlacementInput): BrollCardRect {
 }
 
 /**
- * Re-fit a PLANNED card at RENDER time. Never resizes: the size is forced to
- * the fixed 70% / 16:9 frame (this also repairs old plans) and only y is
- * clamped. The planned y is kept, so face avoidance from planning survives.
+ * Re-fit a planned card at render time when the caption preset changed. A card
+ * that still fits keeps its dimensions; otherwise it shrinks 16:9 and moves up
+ * so it can never cover the new caption band.
  */
 export function fitCardRectToBand(
   rect: BrollCardRect,
@@ -144,11 +148,16 @@ export function fitCardRectToBand(
   const canvasWidth = canvas.width ?? OVERLAY_CANVAS_WIDTH;
   const canvasHeight = canvas.height ?? OVERLAY_CANVAS_HEIGHT;
   const limit = cardBottomLimit(captionBand, canvasHeight);
-
-  const width = CARD_WIDTH;
-  const height = CARD_HEIGHT;
+  const natural = cardSizeForBand(canvasWidth, canvasHeight, limit);
+  const existingAspect = rect.width > 0 && rect.height > 0 ? rect.width / rect.height : CARD_ASPECT;
+  const canKeepPlanned =
+    Math.abs(existingAspect - CARD_ASPECT) < 0.05 &&
+    rect.width <= natural.width &&
+    rect.height <= natural.height;
+  const width = canKeepPlanned ? rect.width : natural.width;
+  const height = canKeepPlanned ? rect.height : natural.height;
   const x = Math.round((canvasWidth - width) / 2);
-  const maxY = cardLowestY(limit, height, canvasHeight);
+  const maxY = Math.max(OVERLAY_TOP_MARGIN, limit - height);
   const y = Math.round(Math.min(maxY, Math.max(OVERLAY_TOP_MARGIN, rect.y)));
 
   return { x, y, width, height };

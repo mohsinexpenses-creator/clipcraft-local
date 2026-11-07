@@ -14,6 +14,8 @@ import {
   flattenAndDecimate,
   MAX_CELL_UPSCALE,
   PanPoint,
+  SPEAKER_SWITCH_CADENCE_SECONDS,
+  SPEAKER_SWITCH_HOLD_SECONDS,
 } from '../worker/layout';
 import { AsdResult } from '../worker/asd/index';
 import { Track } from '../worker/asd/tracker';
@@ -149,10 +151,12 @@ test('speaker-focus briefly shows another visible person then returns to the spe
 
   const hasPointNear = (time: number, x: number) =>
     plan.points.some((point) => Math.abs(point.t - time) < 0.001 && point.x === x);
-  assert.ok(hasPointNear(4.85, 1500), 'glides to listener before 5s');
-  assert.ok(hasPointNear(5.85, 1500), 'holds listener for 1s');
-  assert.ok(hasPointNear(6, 400), 'glides back to speaker by 6s');
-  assert.ok(hasPointNear(10.85, 1500), 'repeats after 5s on speaker');
+  assert.equal(SPEAKER_SWITCH_HOLD_SECONDS, 2, 'named switch hold is exactly two seconds');
+  assert.ok(hasPointNear(3.85, 1500), 'glides to listener after the speaker focus interval');
+  assert.ok(hasPointNear(5.85, 1500), 'holds listener for the full two seconds');
+  assert.ok(hasPointNear(6, 400), 'glides back to speaker after the hold');
+  assert.ok(hasPointNear(9.85, 1500), 'next listener switch starts roughly six seconds later');
+  assert.equal(9.85 - 3.85, SPEAKER_SWITCH_CADENCE_SECONDS);
 });
 
 test('split-screen plan builds adaptive cells (one per person, no emphasis layer)', () => {

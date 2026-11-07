@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { extractAudio16kMono } from './ffmpeg';
-import { AppError } from './errors';
+import { AppError, RenderCancelledError } from './errors';
 import { loadEffectiveSettings } from './app-settings';
 import { transcribeWithDeepgram } from './deepgram';
 import { TranscriptData } from './types';
@@ -42,15 +42,20 @@ export async function getPlannedTranscriptionEngine(): Promise<TranscriptionEngi
   });
 }
 
-export async function transcribeVideo(videoPath: string): Promise<TranscriptData> {
+export async function transcribeVideo(
+  videoPath: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<TranscriptData> {
+  if (options.signal?.aborted) throw new RenderCancelledError();
   const videoDir = path.dirname(videoPath);
   const audioWavPath = path.join(videoDir, 'audio_16k.wav');
 
-  await extractAudio16kMono(videoPath, audioWavPath);
+  await extractAudio16kMono(videoPath, audioWavPath, { signal: options.signal });
+  if (options.signal?.aborted) throw new RenderCancelledError();
 
   const engine = await getPlannedTranscriptionEngine();
   if (engine.provider === 'deepgram') {
-    return transcribeWithDeepgram(audioWavPath);
+    return transcribeWithDeepgram(audioWavPath, options);
   }
 
   throw new AppError('Unsupported transcription engine.', {

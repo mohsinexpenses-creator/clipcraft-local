@@ -1,6 +1,6 @@
 import { spawn } from 'child_process';
 import { getFfmpegPath } from '../../lib/ffmpeg';
-import { AppError } from '../../lib/errors';
+import { AppError, RenderCancelledError } from '../../lib/errors';
 
 /**
  * Audio side of Active Speaker Detection (ASD).
@@ -94,11 +94,16 @@ export function extractPcmMono(
   videoPath: string,
   start: number,
   duration: number,
-  sampleRate = 16000
+  sampleRate = 16000,
+  signal?: AbortSignal,
 ): Promise<Int16Array> {
   const ffmpegBin = getFfmpegPath();
 
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new RenderCancelledError());
+      return;
+    }
     const args = [
       '-y',
       '-hide_banner',
@@ -113,30 +118,48 @@ export function extractPcmMono(
       'pipe:1',
     ];
 
-    const child = spawn(ffmpegBin, args, { windowsHide: true });
+    const child = spawn(ffmpegBin, args, {
+      windowsHide: true,
+      ...(process.platform !== 'win32' ? { detached: true } : {}),
+    });
     const chunks: Buffer[] = [];
-    let stderr = '';
+    let settled = false;
+    const terminate = (): void => {
+      try {
+        if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, 'SIGKILL');
+        else child.kill('SIGKILL');
+      } catch {
+        try { child.kill('SIGKILL'); } catch { /* best effort */ }
+      }
+    };
+    const abort = (): void => {
+      if (settled) return;
+      settled = true;
+      terminate();
+      reject(new RenderCancelledError());
+    };
+    signal?.addEventListener('abort', abort, { once: true });
+    const cleanup = (): void => signal?.removeEventListener('abort', abort);
 
     child.stdout?.on('data', (chunk: Buffer) => chunks.push(chunk));
-    child.stderr?.on('data', (chunk: Buffer) => {
-      stderr += chunk.toString();
-      if (stderr.length > 4000) stderr = stderr.slice(-2000);
+    child.on('error', () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(new Int16Array(0));
     });
-
-    const finish = () => {
+    child.on('close', () => {
+      cleanup();
+      if (settled) return;
+      settled = true;
       const buf = Buffer.concat(chunks);
       // s16le -> Int16Array (little-endian on x86/ARM; drop a trailing odd byte).
       const usable = buf.length - (buf.length % 2);
       const out = new Int16Array(usable / 2);
       const dv = new DataView(buf.buffer, buf.byteOffset, usable);
-      for (let i = 0; i < out.length; i += 1) {
-        out[i] = dv.getInt16(i * 2, true);
-      }
+      for (let i = 0; i < out.length; i += 1) out[i] = dv.getInt16(i * 2, true);
       resolve(out);
-    };
-
-    child.on('error', () => resolve(new Int16Array(0)));
-    child.on('close', () => finish());
+    });
   });
 }
 
@@ -145,9 +168,10 @@ export async function computeVoiceEnvelopeForClip(
   videoPath: string,
   start: number,
   duration: number,
-  fps: number
+  fps: number,
+  signal?: AbortSignal,
 ): Promise<{ voice: number[]; frames: number; voicedRatio: number }> {
-  const pcm = await extractPcmMono(videoPath, start, duration);
+  const pcm = await extractPcmMono(videoPath, start, duration, 16000, signal);
   if (pcm.length === 0) {
     throw new AppError('No decodable audio track found in the clip window.', {
       status: 400,

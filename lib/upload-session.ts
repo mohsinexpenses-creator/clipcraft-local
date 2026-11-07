@@ -2,6 +2,7 @@ import { randomBytes } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { AppError, toErrorMessage } from './errors';
+import { removePathOrDefer } from './file-cleanup';
 import {
   assertUploadSizeAllowed,
   buildStoredFileName,
@@ -437,7 +438,7 @@ export async function abortUploadSession(id: string): Promise<void> {
 }
 
 async function removeSessionDir(id: string): Promise<void> {
-  await fs.promises.rm(sessionDir(id), { recursive: true, force: true });
+  await removePathOrDefer(sessionDir(id), 'upload-session');
 }
 
 /** Move a file, falling back to copy + unlink across filesystems (EXDEV). */
@@ -498,16 +499,14 @@ export async function cleanupStaleUploadSessions(force = false): Promise<number>
 
     if (now - lastTouched < ttlMs) continue;
 
-    try {
-      await fs.promises.rm(dir, { recursive: true, force: true });
+    const deleted = await removePathOrDefer(dir, 'stale-upload-session');
+    if (deleted) {
       removed += 1;
       console.log(
         `[Upload] Removed stale upload session ${entry.name} (no activity for ${(ttlMs / 3_600_000).toFixed(0)} h).`
       );
-    } catch (error) {
-      console.warn(
-        `[Upload] Could not remove stale session ${entry.name}: ${toErrorMessage(error)}`
-      );
+    } else {
+      console.warn(`[Upload] Deferred cleanup for stale upload session ${entry.name}.`);
     }
   }
 

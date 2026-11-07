@@ -8,13 +8,15 @@
  * change the images.
  */
 
-import { AppError } from "../lib/errors";
+import { AppError, RenderCancelledError } from "../lib/errors";
 import {
   getClip,
   getDefaultCaptionPreset,
   getVideo,
   saveClipBrollPlan,
+  saveClipBrollPlanForRunningJob,
   updateClip,
+  updateClipForRunningJob,
 } from "../lib/db";
 import { loadEffectiveSettings } from "../lib/app-settings";
 import { DEFAULT_BROLL_OPTIONS, type BrollJobData, type BrollPlan, type WordTimestamp } from "../lib/types";
@@ -56,9 +58,11 @@ function clipWordsFor(videoWords: readonly WordTimestamp[], start: number, end: 
 async function sampleFaceZones(
   videoPath: string,
   clipStart: number,
-  clipDuration: number
+  clipDuration: number,
+  signal?: AbortSignal,
 ): Promise<FaceZoneRect[]> {
   try {
+    if (signal?.aborted) throw new RenderCancelledError();
     const { sampleSegmentFrames, cleanupSampledFrames } = await import("./frame-sampler");
     const { loadYuNet, detectFacesYunet } = await import("./yunet-detector");
     const runtime = await loadYuNet();
@@ -70,12 +74,14 @@ async function sampleFaceZones(
       1,
       3,
       "broll-faces",
-      480
+      480,
+      signal,
     );
     try {
       const { Jimp } = await import("jimp");
       const zones: FaceZoneRect[] = [];
       for (const frame of sampled.frames) {
+        if (signal?.aborted) throw new RenderCancelledError();
         const image = await Jimp.read(frame);
         const faces = await detectFacesYunet(runtime, {
           data: Buffer.from(image.bitmap.data),
@@ -92,6 +98,7 @@ async function sampleFaceZones(
       if (sampled.frames[0]) cleanupSampledFrames(path.dirname(sampled.frames[0]));
     }
   } catch (error) {
+    if (error instanceof RenderCancelledError || signal?.aborted) throw new RenderCancelledError();
     console.warn(
       `[broll] Face zone sampling skipped: ${error instanceof Error ? error.message : String(error)}`
     );
@@ -105,8 +112,32 @@ async function sampleFaceZones(
  */
 export async function runBrollJob(
   data: BrollJobData,
-  onProgress: (percent: number) => void
+  onProgress: (percent: number) => void,
+  execution: { signal?: AbortSignal; jobId?: string; startedAt?: string; claimToken?: string } = {},
 ): Promise<BrollJobResult> {
+  const throwIfCancelled = (): void => {
+    if (execution.signal?.aborted) throw new RenderCancelledError();
+  };
+  const persistClip = async (candidate: Parameters<typeof updateClip>[0]): Promise<boolean> =>
+    execution.jobId && execution.startedAt
+      ? updateClipForRunningJob(candidate, execution.jobId, execution.startedAt, execution.claimToken)
+      : updateClip(candidate);
+  const persistPlan = async (
+    plan: BrollPlan | null,
+    status: NonNullable<Parameters<typeof saveClipBrollPlan>[2]>,
+    error?: string,
+  ): Promise<boolean> => execution.jobId && execution.startedAt
+    ? saveClipBrollPlanForRunningJob(
+      data.clipId,
+      plan,
+      status,
+      error,
+      execution.jobId,
+      execution.startedAt,
+      execution.claimToken,
+    )
+    : saveClipBrollPlan(data.clipId, plan, status, error);
+  throwIfCancelled();
   const clip = await getClip(data.clipId);
   if (!clip) throw new AppError("The clip for this B-roll job no longer exists.", { status: 404 });
   const video = await getVideo(clip.videoId ?? data.videoId ?? "");
@@ -132,7 +163,7 @@ export async function runBrollJob(
   // advertising a plan that no job is producing.
   clip.brollStatus = "running";
   clip.brollError = undefined;
-  await updateClip(clip);
+  if (!(await persistClip(clip))) throw new RenderCancelledError();
 
   const jobWords = (video.transcript?.words ?? []) as WordTimestamp[];
   const words = clipWordsFor(jobWords, clipStart, clipEnd);
@@ -150,7 +181,7 @@ export async function runBrollJob(
       counts: { targetMin: 0, targetMax: 0, fullscreen: 0, landscape: 0 },
       notes: ["The clip has no spoken words, so no B-roll was planned."],
     };
-    await saveClipBrollPlan(clip._id, plan);
+    if (!(await persistPlan(plan, "done"))) throw new RenderCancelledError();
     return { status: "done", plan };
   }
 
@@ -175,12 +206,14 @@ export async function runBrollJob(
     : { top: 1230, bottom: 1440 };
 
   onProgress(10);
-  const faceZones = await sampleFaceZones(video.filePath, clipStart, clipDuration);
+  const faceZones = await sampleFaceZones(video.filePath, clipStart, clipDuration, execution.signal);
+  throwIfCancelled();
   onProgress(20);
 
   const deps = createBrollDeps({
     ai: settings.ai,
     providerOrder: options.providerOrder,
+    signal: execution.signal,
   });
 
   let plan: BrollPlan;
@@ -194,19 +227,22 @@ export async function runBrollJob(
         trigger,
         captionBand,
         faceZones,
+        signal: execution.signal,
       },
       deps
     );
   } catch (error) {
+    if (error instanceof RenderCancelledError || execution.signal?.aborted) throw new RenderCancelledError();
     const message = error instanceof Error ? error.message : String(error);
-    await saveClipBrollPlan(clip._id, null, "failed", message);
+    if (!(await persistPlan(null, "failed", message))) throw new RenderCancelledError();
     throw error;
   }
 
   // Everything before this point is preparation; only now does the plan exist.
   onProgress(95);
-  const saved = await saveClipBrollPlan(clip._id, plan);
-  if (!saved) throw new AppError("The B-roll plan could not be saved to the clip.", { status: 500 });
+  throwIfCancelled();
+  const saved = await persistPlan(plan, "done");
+  if (!saved) throw new RenderCancelledError("The B-roll plan could not be saved because the job was cancelled.");
   onProgress(100);
   return { status: "done", plan };
 }

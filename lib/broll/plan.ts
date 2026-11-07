@@ -15,6 +15,7 @@
  * The renderer only ever reads the resulting plan.
  */
 
+import { RenderCancelledError } from "../errors";
 import type {
   BrollEntityType,
   BrollItem,
@@ -82,6 +83,8 @@ export interface BrollPlanInput {
   captionBand: { top: number; bottom: number };
   /** Face boxes on the canvas, so a card never covers one. */
   faceZones?: FaceZoneRect[];
+  /** Worker-owned cancellation signal for CPU/network planning stages. */
+  signal?: AbortSignal;
 }
 
 /** Full-screen images are worth more than a stock card (used for slot priority). */
@@ -100,6 +103,10 @@ export async function buildBrollPlan(
   input: BrollPlanInput,
   deps: BrollPlanDeps,
 ): Promise<BrollPlan> {
+  const throwIfCancelled = (): void => {
+    if (input.signal?.aborted) throw new RenderCancelledError();
+  };
+  throwIfCancelled();
   const now = deps.now ?? (() => new Date());
   const options = input.options;
   const notes: string[] = [];
@@ -131,6 +138,7 @@ export async function buildBrollPlan(
       `[broll] Analysis: ${analysis.entities.length} entit(ies), ${analysis.broll.length} keyword moment(s).`,
     );
   } catch (error) {
+    if (error instanceof RenderCancelledError || input.signal?.aborted) throw new RenderCancelledError();
     const message = error instanceof Error ? error.message : String(error);
     notes.push(
       `AI analysis failed (${message}); fell back to keywords from the transcript.`,
@@ -194,6 +202,7 @@ export async function buildBrollPlan(
   const resolveEntity = async (
     entity: (typeof entities)[number],
   ): Promise<{ item?: (typeof prepared)[number]; skip?: BrollSkip }> => {
+    throwIfCancelled();
     const query = entity.wikipediaTitle ?? entity.name;
     let candidate: BrollCandidate | null;
     try {
@@ -255,6 +264,7 @@ export async function buildBrollPlan(
 
   // All entities in parallel (the limiters in broll-sources.ts keep the APIs polite).
   const entityResults = await Promise.all(entities.map(resolveEntity));
+  throwIfCancelled();
   for (const result of entityResults) {
     if (result.item) prepared.push(result.item);
     if (result.skip) skipped.push(result.skip);
@@ -279,6 +289,7 @@ export async function buildBrollPlan(
 
     // 3a. Search every keyword (cached). No result -> retry with the last word only.
     for (const moment of moments) {
+      throwIfCancelled();
       const query = moment.visualKeywords.join(" ").trim();
       if (!query || usedQueries.has(query.toLowerCase())) continue;
       usedQueries.add(query.toLowerCase());
@@ -323,6 +334,7 @@ export async function buildBrollPlan(
     // 3b. Download the current candidate of each entry (next one on failure), in parallel.
     const load = async (entry: CardEntry): Promise<boolean> => {
       while (entry.cursor < entry.candidates.length) {
+        throwIfCancelled();
         try {
           const file = await deps.download(entry.candidates[entry.cursor]);
           entry.file = file;
@@ -338,6 +350,7 @@ export async function buildBrollPlan(
       return false;
     };
     await Promise.all(entries.map((entry) => load(entry)));
+    throwIfCancelled();
     const loaded = entries.filter((entry) => entry.file);
     for (const entry of entries) {
       if (!entry.file) {
@@ -350,6 +363,7 @@ export async function buildBrollPlan(
 
     // 3c. Prepare the final pick of every entry.
     for (const entry of loaded) {
+      throwIfCancelled();
       const file = entry.file;
       if (!file) continue;
       try {

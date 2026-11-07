@@ -16,6 +16,7 @@ import type {
   WordTimestamp,
 } from "../lib/types";
 import { completeWithFallback } from "../lib/llm";
+import { RenderCancelledError } from "../lib/errors";
 import {
   buildBrollPrompt,
   parseBrollAnalysis,
@@ -100,6 +101,8 @@ export interface BrollSourceOptions {
   ai: AiProviderSettings;
   providerOrder: BrollProviderId[];
   fetcher?: BrollFetch;
+  /** Worker cancellation is combined with each provider's own timeout signal. */
+  signal?: AbortSignal;
 }
 
 function stockKeys(ai: AiProviderSettings): StockKeys {
@@ -111,7 +114,18 @@ function stockKeys(ai: AiProviderSettings): StockKeys {
 }
 
 export function createBrollDeps(options: BrollSourceOptions): BrollPlanDeps {
-  const fetcher = options.fetcher ?? defaultBrollFetch;
+  const baseFetcher = options.fetcher ?? defaultBrollFetch;
+  const fetcher: BrollFetch = async (url, init) => {
+    if (options.signal?.aborted) throw new RenderCancelledError();
+    const signal = options.signal
+      ? init?.signal
+        ? AbortSignal.any([options.signal, init.signal])
+        : options.signal
+      : init?.signal;
+    const response = await baseFetcher(url, { ...init, ...(signal ? { signal } : {}) });
+    if (options.signal?.aborted) throw new RenderCancelledError();
+    return response;
+  };
   const keys = stockKeys(options.ai);
   const providerOrder = options.providerOrder.filter(
     (provider): provider is StockProviderId =>
@@ -149,6 +163,7 @@ export function createBrollDeps(options: BrollSourceOptions): BrollPlanDeps {
         json: true,
         temperature: 0.3,
         maxTokens: 1200,
+        signal: options.signal,
       });
       const analysis = parseBrollAnalysis(
         result.text,

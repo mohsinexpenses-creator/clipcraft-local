@@ -8,6 +8,7 @@ import {
   getOverlayStylePreset,
   getVideo,
   updateClip,
+  updateClipForRunningJob,
 } from "../lib/db";
 import { AppError, RenderCancelledError, toErrorMessage } from "../lib/errors";
 import { resolveClipsDir } from "../lib/paths";
@@ -47,6 +48,12 @@ import { anchoredCardRect } from "../lib/broll/card";
 import { buildBrollSfxCues } from "../lib/broll/sfx";
 import { captionReservedBand } from "../lib/overlay-stack";
 import { buildClipFileName } from "./clip-file-name";
+import { loadEffectiveSettings } from "../lib/app-settings";
+import {
+  findContextCensorWordIndexes,
+  getProfanityContextPassEnabled,
+  resolveCensoredWordIndexes,
+} from "../lib/profanity";
 
 /** How far either side of the window we still accept transcript words. */
 const WORD_SLACK_SECONDS = 0.5;
@@ -105,9 +112,20 @@ async function resolveOverlayStyle(
   return preset;
 }
 
+export interface ProcessClipJobOptions {
+  /** Queue job identity plus its claim token prevent a cancelled old worker write. */
+  jobId?: string;
+  startedAt?: string;
+  /** Opaque per-attempt fence, so a stale worker cannot write a re-claimed job. */
+  claimToken?: string;
+  /** Worker-owned cancellation signal, polled against the jobs table every 400ms. */
+  signal?: AbortSignal;
+}
+
 export async function processClipJob(
   jobData: JobData,
   onProgress?: (progress: number) => void,
+  execution: ProcessClipJobOptions = {},
 ): Promise<ClipRecord> {
   const {
     clipId,
@@ -131,7 +149,17 @@ export async function processClipJob(
     const clamped = Math.max(0, Math.min(100, Math.round(value)));
     if (onProgress) await onProgress(clamped);
   };
+  const checkCancelled = (): void => {
+    if (execution.signal?.aborted) throw new RenderCancelledError();
+  };
+  const persistClip = async (candidate: ClipRecord): Promise<boolean> => {
+    if (execution.jobId && execution.startedAt) {
+      return updateClipForRunningJob(candidate, execution.jobId, execution.startedAt, execution.claimToken);
+    }
+    return updateClip(candidate);
+  };
 
+  checkCancelled();
   const clip = await getClip(clipId);
   if (!clip) {
     throw new AppError(`Clip record ${clipId} was not found in SQLite.`, {
@@ -167,7 +195,7 @@ export async function processClipJob(
   // A re-render starts fresh: a stale cancelling flag (from a previous
   // cancelled render) must not abort this new job on its first poll.
   clip.cancelling = false;
-  if (!(await updateClip(clip))) {
+  if (!(await persistClip(clip))) {
     throw new RenderCancelledError(
       "Clip was deleted before rendering started.",
     );
@@ -194,25 +222,11 @@ export async function processClipJob(
     ) || clipId;
   const finalVideoPath = uniqueClipPath(outputDir, clipFileBase);
 
-  // Cancellation: the UI flips clip.cancelling (POST /api/clips/<id>/cancel).
-  // A watcher polls the DB every 2s; the FFmpeg passes check the flag
-  // continuously and each step boundary aborts immediately.
-  let cancelFlag = false;
-  let cancelWatcher: NodeJS.Timeout | null = null;
+  // `worker/index.ts` owns the job-token watcher. The signal is shared by
+  // speaker detection, Remotion and FFmpeg; no per-clip polling race can let a
+  // cancelled attempt write after a replacement job claims this clip.
   try {
-    cancelWatcher = setInterval(() => {
-      void getClip(clipId)
-        .then((fresh) => {
-          // A deleted clip is also a cancellation signal; updateClip() is update-only
-          // and prevents this worker from recreating its database row.
-          if (!fresh || fresh.cancelling) cancelFlag = true;
-        })
-        .catch(() => undefined);
-    }, 2000);
-    const checkCancelled = (): void => {
-      if (cancelFlag) throw new RenderCancelledError();
-    };
-
+    checkCancelled();
     if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
 
     /**
@@ -283,6 +297,20 @@ export async function processClipJob(
       );
     }
 
+    // Resolve safety exactly once for this render. The LLM review is opt-in and
+    // fail-open inside lib/profanity.ts; both Remotion captions and FFmpeg audio
+    // consume this same immutable-timestamp index set.
+    const contextualCensorIndexes = await findContextCensorWordIndexes(clipWords, {
+      enabled: getProfanityContextPassEnabled(),
+      signal: execution.signal,
+    });
+    const censoredWordIndexes = resolveCensoredWordIndexes(
+      clipWords,
+      contextualCensorIndexes,
+    );
+    const renderSettings = (await loadEffectiveSettings()).render;
+    checkCancelled();
+
     // hookDuration/ctaDuration are optional on the job payload; never pass undefined
     // into the FFmpeg/Remotion stages or the timeline maths silently breaks.
     // A positive hookDuration means "hook intro enabled". When viral analysis has
@@ -333,7 +361,7 @@ export async function processClipJob(
       segmentDuration,
       sourceMeta.width,
       sourceMeta.height,
-      { hasAudio: sourceMeta.hasAudio },
+      { hasAudio: sourceMeta.hasAudio, signal: execution.signal },
     );
     const splitFraming = getSplitFramingSettings();
     const plan = buildLayoutPlan(
@@ -381,7 +409,7 @@ export async function processClipJob(
       };
     }
     clip.progress = 20;
-    if (!(await updateClip(clip))) {
+    if (!(await persistClip(clip))) {
       throw new RenderCancelledError(
         "Clip was deleted while render planning was in progress.",
       );
@@ -491,7 +519,7 @@ export async function processClipJob(
     clip.captionPresetId = resolvedCaptionPresetId;
     clip.hookStylePresetId = hookStyle._id;
     clip.ctaStylePresetId = ctaStyle._id;
-    if (!(await updateClip(clip))) {
+    if (!(await persistClip(clip))) {
       throw new RenderCancelledError(
         "Clip was deleted while presets were being resolved.",
       );
@@ -545,7 +573,7 @@ export async function processClipJob(
     const overlayProgressSink = (progress: number): void => {
       const scaled = 20 + Math.max(0, Math.min(100, progress)) * 0.1;
       clip.progress = Math.max(clip.progress ?? 0, Math.round(scaled));
-      void updateClip(clip).catch((error) =>
+      void persistClip(clip).catch((error) =>
         log.warn("progress save failed: " + toErrorMessage(error)),
       );
       void reportProgress(scaled);
@@ -567,12 +595,14 @@ export async function processClipJob(
         ctaText: resolvedCtaText,
         ctaDuration: resolvedCtaDuration,
         words: captionWords,
+        censoredWordIndexes,
         preset: captionPresetForRender,
         hookStyle: hookStyleForRender,
         ctaStyle: ctaStyleForRender,
         captionLiftScale: overlayLayout.captionLiftScale,
         onProgress: overlayProgressSink,
-        isCancelled: () => cancelFlag,
+        isCancelled: () => Boolean(execution.signal?.aborted),
+        signal: execution.signal,
       });
 
     /**
@@ -644,7 +674,8 @@ export async function processClipJob(
             captionTextColor: captionPresetForRender.textColor,
             captionBand,
             onProgress: overlayProgressSink,
-            isCancelled: () => cancelFlag,
+            isCancelled: () => Boolean(execution.signal?.aborted),
+            signal: execution.signal,
           });
           log.info(
             `[RENDER-DIAG] stage=broll.remotion-prepare event=after time_taken_ms=${Date.now() - brollPrepareStartedAt} sequence_count=${preparedBroll.sequences.length} output_directory=${preparedBroll.workDir}`,
@@ -663,6 +694,7 @@ export async function processClipJob(
             sfx = sfx.filter((cue) => fs.existsSync(cue.filePath));
           }
         } catch (error) {
+          if (error instanceof RenderCancelledError || execution.signal?.aborted) throw new RenderCancelledError();
           // B-roll is an enhancement: a failure here must never lose the clip.
           log.warn(`B-roll rendering skipped: ${toErrorMessage(error)}`);
           brollSequences = [];
@@ -705,7 +737,7 @@ export async function processClipJob(
       const progressSink = (progress: number): void => {
         const scaled = 30 + Math.max(0, Math.min(80, progress)) * 0.85;
         clip.progress = Math.max(clip.progress ?? 0, Math.round(scaled));
-        void updateClip(clip).catch((error) =>
+        void persistClip(clip).catch((error) =>
           log.warn("progress save failed: " + toErrorMessage(error)),
         );
         void reportProgress(scaled);
@@ -733,11 +765,14 @@ export async function processClipJob(
         overlays: [...brollSequences, ...preparedOverlays.sequences],
         sfx,
         words: clipWords,
+        censoredWordIndexes,
+        fadeOutSeconds: renderSettings.fadeOutSeconds,
         debugOutputPath:
           process.env.SAVE_PRECAPTION_DEBUG?.trim() === "1"
             ? intermediateVideoPath
             : undefined,
-        isCancelled: () => cancelFlag,
+        isCancelled: () => Boolean(execution.signal?.aborted),
+        signal: execution.signal,
         sourceIsVariableFrameRate: sourceVariableFrameRate,
         videoStartTimeSeconds: sourceMeta.videoStartTime,
         audioStartOffsetSeconds,
@@ -788,7 +823,7 @@ export async function processClipJob(
     clip.outputFileSize = renderResult.fileSizeBytes;
     clip.outputFps = renderResult.fps;
     clip.error = undefined;
-    if (!(await updateClip(clip))) {
+    if (!(await persistClip(clip))) {
       throw new RenderCancelledError(
         "Clip was deleted while rendering was finishing.",
       );
@@ -803,14 +838,20 @@ export async function processClipJob(
     log.detail(`→ ${finalVideoPath}`);
     return clip;
   } catch (error) {
-    if (error instanceof RenderCancelledError) {
+    if (error instanceof RenderCancelledError || execution.signal?.aborted) {
+      // Never leave a playable-looking partial MP4 after a cancelled FFmpeg
+      // process. Windows may defer this deletion through the normal video/clip
+      // deletion sweep, but force removes it on every other platform.
+      for (const output of [finalVideoPath, intermediateVideoPath]) {
+        try { fs.rmSync(output, { force: true }); } catch { /* best effort */ }
+      }
       // A cancel is not a failure: persist the cancelled state, end the job
       // cleanly (no rethrow -> no retry).
       log.warn(`Render cancelled by user: ${color.bold(clipId)}`);
       clip.status = "failed";
       clip.error = "Cancelled by user.";
       clip.cancelling = false;
-      await updateClip(clip).catch((saveError) =>
+      await persistClip(clip).catch((saveError) =>
         log.error(
           "Could not persist the cancelled state: " + toErrorMessage(saveError),
         ),
@@ -823,14 +864,15 @@ export async function processClipJob(
     clip.status = "failed";
     clip.error = toErrorMessage(error);
     clip.cancelling = false;
-    await updateClip(clip).catch((saveError) =>
+    await persistClip(clip).catch((saveError) =>
       log.error(
         "Could not persist the failure state: " + toErrorMessage(saveError),
       ),
     );
     throw error;
   } finally {
-    if (cancelWatcher) clearInterval(cancelWatcher);
+    // Per-render frame/media work directories are removed by their producers;
+    // the shared queue controller is disposed by worker/index.ts.
   }
 }
 
