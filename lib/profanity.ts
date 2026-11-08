@@ -6,7 +6,7 @@
  * needs a re-transcription and the original evidence remains available for review.
  */
 
-import { DEFAULT_PROFANITY_SETTINGS } from './types';
+import { DEFAULT_PROFANITY_SETTINGS, type ViralClip } from './types';
 import {
   SAFETY_ALLOWLIST,
   SAFETY_LEXICON,
@@ -66,6 +66,67 @@ export function normalizeSafetyToken(value: string): string {
     .map((character) => LEET_NORMALIZATION[character] ?? character)
     .join('')
     .replace(/[^a-z0-9]/g, '');
+}
+
+/**
+ * The viral response already performed a full safety pass. Convert its human
+ * phrases to the same token representation as transcript matching, so the
+ * render can use that validated data without repeating a second LLM review.
+ */
+export function normalizeViralSafetyPhrase(value: string): string {
+  return (value.match(TOKEN_CHARS) ?? [])
+    .map(normalizeSafetyToken)
+    .filter(Boolean)
+    .join(' ');
+}
+
+export interface ViralSafetyIndexes {
+  /** Normalized, de-duplicated phrases carried by viral analysis. */
+  phrases: string[];
+  /** Every word index in a contiguous phrase match. */
+  indexes: number[];
+}
+
+/** The small subset of a viral response that the render-time matcher needs. */
+export interface ViralSafetySource {
+  safety_analysis?: Pick<ViralClip['safety_analysis'], 'risky_words'>;
+  viral_packaging?: Pick<ViralClip['viral_packaging'], 'words_to_change'>;
+}
+
+/**
+ * Reuse `risky_words` and `words_to_change` from a validated viral response.
+ * Matching is intentionally exact and contiguous after normalization: it never
+ * censors a phrase merely because its words appear separately in the clip.
+ */
+export function findViralSafetyWordIndexes(
+  words: readonly Pick<TranscriptSafetyWord, 'word'>[],
+  analysis: ViralSafetySource | null | undefined,
+): ViralSafetyIndexes {
+  const values = [
+    ...(analysis?.safety_analysis?.risky_words ?? []).map((entry) => entry.word_or_phrase),
+    ...(analysis?.viral_packaging?.words_to_change ?? []),
+  ];
+  const phrases = [...new Set(values.map(normalizeViralSafetyPhrase).filter(Boolean))];
+  if (phrases.length === 0 || words.length === 0) return { phrases, indexes: [] };
+
+  const tokens = words.map((word) => normalizeSafetyToken(word.word));
+  const indexes = new Set<number>();
+  for (const phrase of phrases) {
+    const phraseTokens = phrase.split(' ');
+    for (let start = 0; start <= tokens.length - phraseTokens.length; start += 1) {
+      if (tokens.slice(start, start + phraseTokens.length).join(' ') !== phrase) continue;
+      for (let index = start; index < start + phraseTokens.length; index += 1) {
+        indexes.add(index);
+      }
+    }
+  }
+
+  return { phrases, indexes: [...indexes].sort((a, b) => a - b) };
+}
+
+/** Explicit emergency override for auditing / policy changes. */
+export function getForceLlmSafetyReview(): boolean {
+  return /^(1|true|yes|on)$/i.test(process.env.FORCE_LLM_SAFETY_REVIEW?.trim() ?? '');
 }
 
 function phraseKey(words: readonly string[]): string {

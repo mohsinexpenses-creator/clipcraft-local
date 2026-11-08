@@ -32,6 +32,7 @@ import {
   type PipelineEnqueueContext,
 } from './queue';
 import { resolveBrollOptions, sanitizePipelineOptions } from './pipeline-defaults';
+import { parseTimestamp } from './viral-response';
 import { loadEffectiveSettings } from './app-settings';
 import {
   BrollOptions,
@@ -272,6 +273,40 @@ export interface DetectionRunResult {
   reusedExistingClips: boolean;
 }
 
+/** The hook intro must not replay the first spoken seconds of the clip. */
+const MIN_REUSABLE_HOOK_OFFSET_SECONDS = 3;
+
+interface ReusableHookInterval {
+  start: number;
+  end: number;
+}
+
+/**
+ * A viral response already contains a hook interval. Trust it when it is a
+ * complete, later-in-the-clip range; otherwise the dedicated picker remains the
+ * conservative fallback. This keeps the old "never replay the opening" rule.
+ */
+function reusableViralHookInterval(
+  timestamp: { start: string; end: string },
+  clipStart: number,
+  clipEnd: number,
+): ReusableHookInterval | null {
+  const start = parseTimestamp(timestamp.start);
+  const end = parseTimestamp(timestamp.end);
+  const clipDuration = clipEnd - clipStart;
+  if (
+    start === null ||
+    end === null ||
+    end <= start ||
+    start < clipStart + MIN_REUSABLE_HOOK_OFFSET_SECONDS ||
+    end > clipEnd ||
+    end - start > clipDuration / 2
+  ) {
+    return null;
+  }
+  return { start, end };
+}
+
 /**
  * One viral-detection run for one video: AI pass over the transcript, clip
  * records written with the analysis + default render config, then (by default)
@@ -456,29 +491,43 @@ export async function runViralDetection(
 
     if (hookIntroEnabled) {
       const segmentDuration = segment.end - segment.start;
-      const hookWords = video.transcript.words
-        .filter((word) => word.end >= segment.start && word.start <= segment.end)
-        .map((word) => ({
-          ...word,
-          start: Math.max(0, word.start - segment.start),
-          end: Math.min(segmentDuration, word.end - segment.start),
-        }));
-      const hookMoment = await detectHookMoment({
-        words: hookWords,
-        segmentDuration,
-        hookDuration: Math.min(render.hookDuration, segmentDuration / 2),
-        signal: input.signal,
-      });
+      const reusableHook = reusableViralHookInterval(
+        segment.clip.hook_line_analysis.hook_timestamp,
+        segment.start,
+        segment.end,
+      );
 
-      if (hookMoment) {
-        segment.clip.hook_line_analysis.hook_timestamp = {
-          start: `${(segment.start + hookMoment.start).toFixed(3)}s`,
-          end: `${(segment.start + hookMoment.end).toFixed(3)}s`,
-        };
-        segment.clip.hook_line_analysis.hook_moment_source = 'picker';
+      if (reusableHook) {
+        segment.clip.hook_line_analysis.hook_moment_source = 'viral';
+        log.info(
+          `[LLM] hook reuse clip_rank=${segment.clip.rank} source=viral-response ` +
+            `interval=${reusableHook.start.toFixed(3)}s-${reusableHook.end.toFixed(3)}s`,
+        );
       } else {
-        const aiHookStart = Number.parseFloat(segment.clip.hook_line_analysis.hook_timestamp.start);
-        if (!Number.isFinite(aiHookStart) || aiHookStart - segment.start < 3) {
+        log.info(
+          `[LLM] hook fallback clip_rank=${segment.clip.rank} reason=missing-or-invalid-viral-interval`,
+        );
+        const hookWords = video.transcript.words
+          .filter((word) => word.end >= segment.start && word.start <= segment.end)
+          .map((word) => ({
+            ...word,
+            start: Math.max(0, word.start - segment.start),
+            end: Math.min(segmentDuration, word.end - segment.start),
+          }));
+        const hookMoment = await detectHookMoment({
+          words: hookWords,
+          segmentDuration,
+          hookDuration: Math.min(render.hookDuration, segmentDuration / 2),
+          signal: input.signal,
+        });
+
+        if (hookMoment) {
+          segment.clip.hook_line_analysis.hook_timestamp = {
+            start: `${(segment.start + hookMoment.start).toFixed(3)}s`,
+            end: `${(segment.start + hookMoment.end).toFixed(3)}s`,
+          };
+          segment.clip.hook_line_analysis.hook_moment_source = 'picker';
+        } else {
           segment.clip.hook_line_analysis.hook_timestamp = { start: '', end: '' };
           hookIntroEnabled = false;
           log.warn(

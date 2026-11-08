@@ -5,6 +5,7 @@ import {
   buildProfanityWindowsFromIndexes,
   containsProfanity,
   findProfanityMatches,
+  findViralSafetyWordIndexes,
   maskProfanity,
   maskTranscriptWordsFromIndexes,
   resolveCensoredWordIndexes,
@@ -48,6 +49,23 @@ test('phrase ranges and contextual policy decisions resolve once for captions an
   // follows at +1.0. Its unsafe phrase therefore has both preview and main audio windows.
   const windows = buildProfanityWindowsFromIndexes(words, 1, 1, 3, indexes, 0);
   assert.deepEqual(windows, [[0, 0.55], [2, 2.55], [3.2, 3.5]]);
+});
+
+test('viral safety phrases are normalized and matched as contiguous transcript ranges', () => {
+  const viral = findViralSafetyWordIndexes(words, {
+    safety_analysis: {
+      risky_words: [
+        { word_or_phrase: 'Piece of sh!t', action: 'censor', safer_replacement: '' },
+        { word_or_phrase: 'PIECE OF SHIT', action: 'mute', safer_replacement: '' },
+      ],
+    },
+    viral_packaging: {
+      words_to_change: ['safe', 'unmatched phrase'],
+    },
+  });
+
+  assert.deepEqual(viral.phrases, ['piece of shit', 'safe', 'unmatched phrase']);
+  assert.deepEqual(viral.indexes, [3, 4, 5, 7]);
 });
 
 test('mute and beep audio plans use the same already-resolved windows', () => {

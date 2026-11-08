@@ -329,7 +329,7 @@ test('detect-viral stores the AI clip unchanged on the record; hook text and CTA
 
   assert.equal(status, 200);
   assert.equal(body.clips?.length, 3);
-  assert.equal(calls.length, 4, 'one detection call plus one separate hook-moment call per clip');
+  assert.equal(calls.length, 1, 'valid viral hook intervals are reused without separate hook-picker calls');
 
   const stored = sortClipsForDisplay(await listClips('vid'));
   assert.deepEqual(
@@ -339,11 +339,12 @@ test('detect-viral stores the AI clip unchanged on the record; hook text and CTA
   assert.equal(new Set(stored.map((clip) => clip.createdAt)).size, 1, 'one detection run shares one createdAt');
   stored.forEach((clip, index) => {
     assert.deepEqual(clip.aiAnalysis?.viral_packaging, clips[index].viral_packaging);
-    assert.deepEqual(clip.aiAnalysis?.hook_line_analysis.hook_timestamp, {
-      start: `${[75, 195, 315][index]}.000s`,
-      end: `${[78, 198, 318][index]}.000s`,
-    });
-    assert.equal(clip.aiAnalysis?.hook_line_analysis.hook_moment_source, 'picker');
+    assert.deepEqual(
+      clip.aiAnalysis?.hook_line_analysis.hook_timestamp,
+      (clips[index].hook_line_analysis as { hook_timestamp: unknown }).hook_timestamp,
+      'the valid viral interval is stored unchanged',
+    );
+    assert.equal(clip.aiAnalysis?.hook_line_analysis.hook_moment_source, 'viral');
   });
 
   const first = stored[0];
@@ -428,7 +429,7 @@ test('hook and CTA fall back to the dedicated templates only for clips where the
   assert.equal(withFallback.ctaText, 'FOLLOW FOR MORE');
   assert.equal(withAiText.hookText, 'HE HAD $400 LEFT');
   assert.equal(withAiText.ctaText, 'Would you have done it? 👇');
-  assert.equal(calls.length, 5, 'one detection call, two hook moments, one hook-text fallback, and one CTA fallback');
+  assert.equal(calls.length, 3, 'one detection call plus hook-text and CTA fallbacks; valid hook moments were reused');
   const fallbackCall = calls.find((call) => call.prompt.startsWith('HOOK PROMPT'));
   assert.ok(fallbackCall);
   assert.match(fallbackCall.prompt, /Segment 6 talks about money and risk\./, "the clip's own transcript is injected");
@@ -453,7 +454,7 @@ test('on a fresh database the hook/CTA fallback still works, using the built-in 
   assert.equal(clip.hookDuration, 3);
   assert.equal(clip.ctaText, 'COMMENT YOUR ANSWER BELOW');
   assert.equal(clip.ctaDuration, 2.5);
-  assert.equal(calls.length, 4);
+  assert.equal(calls.length, 3, 'one detection call plus the hook and CTA text fallbacks');
   const fallbackCall = calls.find((call) => call.prompt.includes('MAX 8 WORDS'));
   assert.ok(fallbackCall);
   assert.match(fallbackCall.prompt, /Segment 6 talks about money and risk\./, "the clip's own transcript is injected");
@@ -592,7 +593,16 @@ test('a hook picker that returns the clip opening disables the hook intro instea
   const { warnings } = fakeLlm(t, (call) =>
     call.system.includes('Pick the single strongest hook moment')
       ? '{"start":0,"end":3,"reason":"opening"}'
-      : aiResponse([clipAt(0)])
+      : aiResponse([
+          clipAt(0, {
+            hook_line_analysis: {
+              hook_line: 'Opening hook',
+              hook_timestamp: { start: '01:00', end: '01:03' },
+              why_it_works: 'This is intentionally invalid for reuse.',
+              place_before_clip: true,
+            },
+          }),
+        ])
   );
   await saveVideo(makeVideo('vid', VIDEO_SECONDS));
 

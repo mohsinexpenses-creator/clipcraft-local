@@ -188,7 +188,10 @@ the worker:
   route- and circuit-based model skip.
 
 Both are off by default and can be disabled independently without changing stored
-clips, captions, B-roll plans, or final encoding settings.
+clips, captions, B-roll plans, or final encoding settings. Render-time safety reuses
+normalized `risky_words` and `words_to_change` from viral analysis; the optional context
+review only runs when that data is absent. Set `FORCE_LLM_SAFETY_REVIEW=1` for an explicit
+audit pass.
 
 ## Project structure
 

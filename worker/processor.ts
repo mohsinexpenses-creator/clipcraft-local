@@ -52,6 +52,8 @@ import { buildClipFileName } from "./clip-file-name";
 import { loadEffectiveSettings } from "../lib/app-settings";
 import {
   findContextCensorWordIndexes,
+  findViralSafetyWordIndexes,
+  getForceLlmSafetyReview,
   getProfanityContextPassEnabled,
   resolveCensoredWordIndexes,
 } from "../lib/profanity";
@@ -306,19 +308,44 @@ export async function processClipJob(
       );
     }
 
-    // Resolve safety exactly once for this render. The LLM review is opt-in and
-    // fail-open inside lib/profanity.ts; both Remotion captions and FFmpeg audio
-    // consume this same immutable-timestamp index set.
-    const contextualCensorIndexes = await jobTimer.measure("safety-review", () =>
-      findContextCensorWordIndexes(clipWords, {
-        enabled: getProfanityContextPassEnabled(),
-        signal: execution.signal,
-      }),
-    );
-    const censoredWordIndexes = resolveCensoredWordIndexes(
-      clipWords,
-      contextualCensorIndexes,
-    );
+    // Resolve safety exactly once for this render. Viral detection already returns
+    // explicit risky phrases, so reuse its validated result first rather than
+    // paying for a second LLM moderation pass. The optional LLM pass remains a
+    // fail-open fallback for older clips / empty safety data, or an explicit audit.
+    const viralSafety = findViralSafetyWordIndexes(clipWords, clip.aiAnalysis);
+    const forceLlmSafetyReview = getForceLlmSafetyReview();
+    const contextualSafetyEnabled = getProfanityContextPassEnabled();
+    const shouldRunLlmSafetyReview =
+      forceLlmSafetyReview ||
+      (contextualSafetyEnabled && viralSafety.phrases.length === 0);
+    let contextualCensorIndexes: number[] = [];
+
+    if (viralSafety.phrases.length > 0) {
+      log.info(
+        `[LLM] safety reuse clip=${clipId} phrases=${viralSafety.phrases.length} ` +
+          `matched_word_indexes=${viralSafety.indexes.length}` +
+          (forceLlmSafetyReview ? " force_review=1" : ""),
+      );
+    }
+    if (shouldRunLlmSafetyReview) {
+      log.info(
+        `[LLM] safety fallback clip=${clipId} reason=` +
+          (forceLlmSafetyReview ? "FORCE_LLM_SAFETY_REVIEW" : "no-viral-safety-data"),
+      );
+      contextualCensorIndexes = await jobTimer.measure("safety-review", () =>
+        findContextCensorWordIndexes(clipWords, {
+          enabled: true,
+          signal: execution.signal,
+        }),
+      );
+    } else if (viralSafety.phrases.length === 0 && !contextualSafetyEnabled) {
+      log.detail("LLM safety review is disabled and viral analysis supplied no risky phrases.");
+    }
+
+    const censoredWordIndexes = resolveCensoredWordIndexes(clipWords, [
+      ...viralSafety.indexes,
+      ...contextualCensorIndexes,
+    ]);
     const renderSettings = (await loadEffectiveSettings()).render;
     checkCancelled();
 
