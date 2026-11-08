@@ -171,6 +171,32 @@ test('words become landscape cards with a card rect clear of the captions', asyn
   }
 });
 
+test('duplicate downloaded card sources share one preparation without changing scheduled items', async () => {
+  const sameImage = candidate('pexels', 'shared-photo');
+  const deps = makeDeps({
+    keywords: [
+      { visualKeywords: ['first shared scene'], start: 8, end: 11 },
+      { visualKeywords: ['second shared scene'], start: 28, end: 31 },
+    ],
+    stockResults: [[sameImage], [sameImage]],
+  });
+  const plan = await buildBrollPlan(
+    {
+      ...baseInput,
+      options: {
+        ...baseInput.options,
+        enableFullscreen: false,
+        minImages: 2,
+        maxImages: 2,
+      },
+    },
+    deps,
+  );
+
+  assert.equal(deps.calls.prepare, 1, 'same cache key is cropped/encoded once');
+  assert.equal(plan.items.filter((item) => item.kind === 'landscape').length, 2);
+});
+
 test('full-screen and landscape items never overlap', async () => {
   const deps = makeDeps({
     entities: [

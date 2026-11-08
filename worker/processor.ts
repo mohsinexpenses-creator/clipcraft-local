@@ -46,7 +46,10 @@ import {
 } from "./remotion-renderer";
 import { startMediaServer, type ClipMediaServer } from "./clip-http-server";
 import { runParallelRenderBranches } from "./parallel";
-import { getParallelBrollAsdEnabled } from "./render-options";
+import {
+  getParallelBrollAsdConcurrencyCap,
+  getParallelBrollAsdEnabled,
+} from "./render-options";
 import { cachedImagePath } from "../lib/broll/cache";
 import { anchoredCardRect } from "../lib/broll/card";
 import { buildBrollSfxCues } from "../lib/broll/sfx";
@@ -133,6 +136,8 @@ interface PrepareBrollForRenderOptions {
   cardLayout: "speaker-focus" | "split-screen";
   faceBands?: Array<{ top: number; bottom: number }>;
   onProgress: (progress: number) => void;
+  /** Cap Chrome tabs only when this render shares resources with ASD. */
+  remotionConcurrencyCap?: number;
   signal?: AbortSignal;
   isCancelled: () => boolean;
 }
@@ -208,6 +213,7 @@ async function prepareBrollForRender(
       captionTextColor: options.captionPreset.textColor,
       captionBand,
       onProgress: options.onProgress,
+      maxConcurrency: options.remotionConcurrencyCap,
       isCancelled: options.isCancelled,
       signal: options.signal,
     });
@@ -620,6 +626,7 @@ export async function processClipJob(
                 // writes. Remotion still emits detailed frame diagnostics; normal
                 // overlay progress resumes after the joined branches.
                 onProgress: () => undefined,
+                remotionConcurrencyCap: getParallelBrollAsdConcurrencyCap(),
                 signal,
                 isCancelled: () => signal.aborted,
               }),

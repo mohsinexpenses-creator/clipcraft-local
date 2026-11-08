@@ -6,6 +6,8 @@ import type {
   WordTimestamp,
 } from "../lib/types";
 import {
+  CAPTION_HOLD_AFTER_SECONDS,
+  CAPTION_LOOKAHEAD_SECONDS,
   fitCaptionFontSize,
   splitCaptionWordsIntoLines,
 } from "../lib/caption-layout";
@@ -85,8 +87,6 @@ export const AnimatedWord: React.FC<AnimatedWordProps> = ({
   const currentTime = frame / fps;
 
   // Keep the previous chunk on screen briefly so captions never strobe between words.
-  const HOLD_AFTER_SECONDS = 0.35;
-  const LOOKAHEAD_SECONDS = 0.06;
 
   // The FIRST matching chunk wins: the outgoing chunk keeps its 0.35s hold
   // and the next caption only pops in once that hold is over - no strobing
@@ -95,8 +95,8 @@ export const AnimatedWord: React.FC<AnimatedWordProps> = ({
   let active: CaptionChunk | null = null;
   for (const chunk of chunks) {
     if (
-      currentTime >= chunk.start - LOOKAHEAD_SECONDS &&
-      currentTime <= chunk.end + HOLD_AFTER_SECONDS
+      currentTime >= chunk.start - CAPTION_LOOKAHEAD_SECONDS &&
+      currentTime <= chunk.end + CAPTION_HOLD_AFTER_SECONDS
     ) {
       active = chunk;
       break;
@@ -106,7 +106,7 @@ export const AnimatedWord: React.FC<AnimatedWordProps> = ({
   // Nothing in range: show the next upcoming chunk slightly early rather than a gap.
   if (!active) {
     const upcoming = chunks.find((chunk) => chunk.start > currentTime);
-    if (upcoming && upcoming.start - currentTime <= LOOKAHEAD_SECONDS)
+    if (upcoming && upcoming.start - currentTime <= CAPTION_LOOKAHEAD_SECONDS)
       active = upcoming;
   }
 
@@ -141,7 +141,7 @@ export const AnimatedWord: React.FC<AnimatedWordProps> = ({
   );
   const fadeOut = interpolate(
     localTime,
-    [chunkDuration, chunkDuration + HOLD_AFTER_SECONDS],
+    [chunkDuration, chunkDuration + CAPTION_HOLD_AFTER_SECONDS],
     [1, 0],
     { extrapolateLeft: "clamp", extrapolateRight: "clamp" },
   );

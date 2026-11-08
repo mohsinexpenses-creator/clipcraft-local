@@ -53,22 +53,38 @@ export const CaptionOverlayComposition: React.FC<CaptionOverlayCompositionProps>
   const hookVisibleDuration = Math.max(0, hookDuration - transition);
   const transitionStart = hookDuration - transition;
   const transitionEnd = hookDuration + transition;
-  const chunks = buildFinalCaptionChunks(
-    words,
-    hookStart,
-    hookDuration,
-    getCaptionChunkWordLimit(preset)
-  ).filter((chunk) =>
-    transition <= 0 || chunk.end <= transitionStart || chunk.start >= transitionEnd
+  // Rendering hundreds of frames re-runs this component at each frame. Chunks
+  // and themed style variants are static for one render, so memoize the work
+  // without changing the frame-driven animation values below.
+  const chunks = React.useMemo(
+    () =>
+      buildFinalCaptionChunks(
+        words,
+        hookStart,
+        hookDuration,
+        getCaptionChunkWordLimit(preset),
+      ).filter((chunk) =>
+        transition <= 0 || chunk.end <= transitionStart || chunk.start >= transitionEnd,
+      ),
+    [
+      words,
+      hookStart,
+      hookDuration,
+      preset,
+      transition,
+      transitionStart,
+      transitionEnd,
+    ],
   );
   const captionLift =
     getCtaBottomLiftPercent(ctaDuration, totalDuration, currentTime) * Math.max(0, captionLiftScale);
-  const themedHookStyle = hookStyle
-    ? resolveCaptionThemeOverlayStyle(preset, hookStyle)
-    : hookStyle;
-  const themedCtaStyle = ctaStyle
-    ? resolveCaptionThemeOverlayStyle(preset, ctaStyle)
-    : ctaStyle;
+  const [themedHookStyle, themedCtaStyle] = React.useMemo(
+    () => [
+      hookStyle ? resolveCaptionThemeOverlayStyle(preset, hookStyle) : hookStyle,
+      ctaStyle ? resolveCaptionThemeOverlayStyle(preset, ctaStyle) : ctaStyle,
+    ],
+    [preset, hookStyle, ctaStyle],
+  );
 
   return (
     <AbsoluteFill>

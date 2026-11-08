@@ -1,12 +1,42 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { runParallelRenderBranches } from "../worker/parallel";
-import { getParallelBrollAsdEnabled } from "../worker/render-options";
+import {
+  getParallelBrollAsdConcurrencyCap,
+  getParallelBrollAsdEnabled,
+} from "../worker/render-options";
+import {
+  getCaptionActiveRangeRenderingEnabled,
+  getRemotionConcurrency,
+} from "../worker/remotion-options";
 
 test("B-roll/ASD overlap flag is opt-in", () => {
   assert.equal(getParallelBrollAsdEnabled({}), false);
   assert.equal(getParallelBrollAsdEnabled({ RENDER_PARALLEL_BROLL_ASD: "1" }), true);
   assert.equal(getParallelBrollAsdEnabled({ RENDER_PARALLEL_BROLL_ASD: "false" }), false);
+});
+
+test("parallel B-roll cap leaves capacity for ASD and respects a smaller manual tab count", () => {
+  assert.equal(getParallelBrollAsdConcurrencyCap({}), 2);
+  assert.equal(
+    getParallelBrollAsdConcurrencyCap({ RENDER_PARALLEL_BROLL_CONCURRENCY: "3" }),
+    3,
+  );
+  assert.equal(getRemotionConcurrency({}, { maxConcurrency: 2 }), 2);
+  assert.equal(
+    getRemotionConcurrency({ REMOTION_CONCURRENCY: "1" }, { maxConcurrency: 2 }),
+    1,
+  );
+  assert.equal(
+    getRemotionConcurrency({ REMOTION_CONCURRENCY: "8" }, { maxConcurrency: 2 }),
+    2,
+  );
+  assert.equal(getRemotionConcurrency({ REMOTION_CONCURRENCY: "8" }), 8);
+  assert.equal(getCaptionActiveRangeRenderingEnabled({}), false);
+  assert.equal(
+    getCaptionActiveRangeRenderingEnabled({ CAPTION_ACTIVE_RANGE_RENDERING: "yes" }),
+    true,
+  );
 });
 
 test("parallel render branches wait for sibling cleanup after a failure", async () => {

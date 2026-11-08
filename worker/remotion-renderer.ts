@@ -6,8 +6,18 @@ import { CaptionPreset, OverlayStylePreset, WordTimestamp } from "../lib/types";
 import { maskProfanity, maskTranscriptWords, maskTranscriptWordsFromIndexes } from "../lib/profanity";
 import { log } from "../lib/logger";
 import { CaptionOverlayCompositionProps } from "../remotion/OverlayCompositions";
+import { buildFinalCaptionChunks } from "../remotion/CaptionComposition";
+import {
+  CAPTION_HOLD_AFTER_SECONDS,
+  CAPTION_LOOKAHEAD_SECONDS,
+  getCaptionChunkWordLimit,
+} from "../lib/caption-layout";
 import { OverlayFrameSequence } from "./ffmpeg-pipeline";
 import { normalizeFps } from "./ffmpeg-pipeline";
+import {
+  getCaptionActiveRangeRenderingEnabled,
+  getRemotionConcurrency,
+} from "./remotion-options";
 
 export interface PreparedCaptionOverlays {
   workDir: string;
@@ -225,20 +235,200 @@ function normalizeFrameSequence(
   return path.join(outputDir, `ov_%05d.${extension}`);
 }
 
+/** A contiguous final-timeline interval whose transparent caption frames are needed. */
+export interface CaptionActiveFrameRange {
+  startFrame: number;
+  endFrame: number;
+  frameCount: number;
+  startAtSeconds: number;
+}
+
+/**
+ * Locate every frame that can contain a caption, hook, or CTA. The composition
+ * still renders against its complete clock, so animations and word timing stay
+ * bit-for-bit aligned with the legacy full-timeline renderer; only transparent
+ * idle spans are omitted and rebased by FFmpeg like B-roll active ranges.
+ */
+export function calculateCaptionActiveFrameRanges(
+  input: Pick<
+    CaptionOverlayCompositionProps,
+    | "hookText"
+    | "hookDuration"
+    | "hookStart"
+    | "hookTransitionDuration"
+    | "ctaText"
+    | "ctaDuration"
+    | "words"
+    | "preset"
+  >,
+  fpsInput: number,
+  totalDurationInput: number,
+): CaptionActiveFrameRange[] {
+  const fps = normalizeFps(fpsInput);
+  const totalDuration = Math.max(0.1, totalDurationInput);
+  const totalFrames = Math.max(1, Math.round(totalDuration * fps));
+  const intervals: Array<{ start: number; end: number }> = [];
+  const add = (start: number, end: number): void => {
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return;
+    const clippedStart = Math.max(0, Math.min(totalDuration, start));
+    const clippedEnd = Math.max(0, Math.min(totalDuration, end));
+    if (clippedEnd >= clippedStart) intervals.push({ start: clippedStart, end: clippedEnd });
+  };
+
+  const transition = input.hookDuration > 0
+    ? Math.max(0, Math.min(input.hookTransitionDuration, input.hookDuration / 2))
+    : 0;
+  const transitionStart = input.hookDuration - transition;
+  const transitionEnd = input.hookDuration + transition;
+  const chunks = buildFinalCaptionChunks(
+    input.words,
+    input.hookStart,
+    input.hookDuration,
+    getCaptionChunkWordLimit(input.preset),
+  ).filter((chunk) =>
+    transition <= 0 || chunk.end <= transitionStart || chunk.start >= transitionEnd,
+  );
+  for (const chunk of chunks) {
+    add(
+      chunk.start - CAPTION_LOOKAHEAD_SECONDS,
+      chunk.end + CAPTION_HOLD_AFTER_SECONDS,
+    );
+  }
+
+  const hookVisibleDuration = Math.max(0, input.hookDuration - transition);
+  if (hookVisibleDuration > 0.05 && input.hookText.trim()) {
+    add(0, hookVisibleDuration);
+  }
+  if (input.ctaDuration > 0 && input.ctaText.trim()) {
+    add(totalDuration - input.ctaDuration, totalDuration);
+  }
+
+  const frameIntervals = intervals
+    .map(({ start, end }) => ({
+      // Conservative floor/ceil bounds can render a harmless transparent edge
+      // frame but can never omit a visible fractional-frame animation.
+      startFrame: Math.max(0, Math.min(totalFrames - 1, Math.floor(start * fps))),
+      endFrame: Math.max(0, Math.min(totalFrames - 1, Math.ceil(end * fps))),
+    }))
+    .filter((range) => range.endFrame >= range.startFrame)
+    .sort((a, b) => a.startFrame - b.startFrame);
+  const merged: Array<{ startFrame: number; endFrame: number }> = [];
+  for (const range of frameIntervals) {
+    const previous = merged.at(-1);
+    if (previous && range.startFrame <= previous.endFrame + 1) {
+      previous.endFrame = Math.max(previous.endFrame, range.endFrame);
+    } else {
+      merged.push({ ...range });
+    }
+  }
+  return merged.map((range) => ({
+    ...range,
+    frameCount: range.endFrame - range.startFrame + 1,
+    startAtSeconds: range.startFrame / fps,
+  }));
+}
+
+/**
+ * Sparse ranges pay an extra renderFrames setup cost. Keep full rendering for
+ * dense speech or a fragmented timeline; opt-in saves work only when it should.
+ */
+export function shouldUseCaptionActiveFrameRanges(
+  enabled: boolean,
+  ranges: readonly CaptionActiveFrameRange[],
+  totalFrames: number,
+): boolean {
+  if (!enabled) return false;
+  if (ranges.length === 0) return true;
+  const activeFrames = ranges.reduce((sum, range) => sum + range.frameCount, 0);
+  return ranges.length <= 8 && activeFrames < totalFrames * 0.85;
+}
+
+interface CaptionRenderPhase {
+  name: string;
+  startFrame: number;
+  endFrame: number;
+  frameCount: number;
+  startAtSeconds: number;
+  outputDir: string;
+}
+
 export async function prepareRemotionCaptionOverlays(
   options: PrepareRemotionOverlaysOptions,
 ): Promise<PreparedCaptionOverlays> {
   const fps = normalizeFps(options.fps);
   const totalDuration = Math.max(0.1, options.totalDuration ?? 0.1);
   const durationInFrames = Math.max(1, Math.round(totalDuration * fps));
+  const inputProps: CaptionOverlayCompositionProps = {
+    hookText: maskProfanity(options.hookText),
+    hookDuration: options.hookDuration,
+    hookStart: Math.max(0, options.hookStart),
+    hookTransitionDuration: options.hookTransitionDuration,
+    ctaText: maskProfanity(options.ctaText),
+    ctaDuration: options.ctaDuration,
+    totalDuration,
+    words: options.censoredWordIndexes
+      ? maskTranscriptWordsFromIndexes(options.words, options.censoredWordIndexes)
+      : maskTranscriptWords(options.words, options.additionalCensoredWordIndexes ?? []),
+    preset: options.preset,
+    hookStyle: options.hookStyle,
+    ctaStyle: options.ctaStyle,
+    captionLiftScale: options.captionLiftScale ?? 1,
+  };
+  const activeRanges = calculateCaptionActiveFrameRanges(
+    inputProps,
+    fps,
+    totalDuration,
+  );
+  const activeRangeEnabled = getCaptionActiveRangeRenderingEnabled();
+  const useActiveRanges = shouldUseCaptionActiveFrameRanges(
+    activeRangeEnabled,
+    activeRanges,
+    durationInFrames,
+  );
+  const remotionConcurrency = getRemotionConcurrency();
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "clipcraft-remotion-"));
-  const outputDir = path.join(workDir, "frames");
-  fs.mkdirSync(outputDir, { recursive: true });
+  const phases: CaptionRenderPhase[] = useActiveRanges
+    ? activeRanges.map((range, index) => ({
+        name: `remotion overlays ${index + 1}`,
+        ...range,
+        outputDir: path.join(workDir, `range-${String(index + 1).padStart(3, "0")}`),
+      }))
+    : [
+        {
+          name: "remotion overlays",
+          startFrame: 0,
+          endFrame: durationInFrames - 1,
+          frameCount: durationInFrames,
+          startAtSeconds: 0,
+          outputDir: path.join(workDir, "frames"),
+        },
+      ];
   let cancelBridge: Awaited<ReturnType<typeof remotionCancelBridge>> | null = null;
+  let browser: Awaited<
+    ReturnType<typeof import("@remotion/renderer").openBrowser>
+  > | null = null;
 
   try {
     checkCancelled(options.isCancelled, options.signal);
-    const { renderFrames, selectComposition } = await timedRenderStage(
+    if (useActiveRanges && phases.length === 0) {
+      log.detail(
+        "Caption active-range rendering skipped all transparent idle frames (no caption, hook, or CTA visibility windows).",
+      );
+      return { workDir, sequences: [] };
+    }
+    const activeFrameCount = activeRanges.reduce(
+      (sum, range) => sum + range.frameCount,
+      0,
+    );
+    log.info(
+      `[RENDER-DIAG] stage=caption.phase-model event=active ` +
+        `mode=${useActiveRanges ? "sparse-active-ranges" : "full-timeline"} ` +
+        `requested=${activeRangeEnabled ? 1 : 0} active_sequences=${activeRanges.length} ` +
+        `active_frames=${activeFrameCount}/${durationInFrames} ` +
+        `concurrency=${remotionConcurrency ?? "auto"}`,
+    );
+
+    const { renderFrames, selectComposition, openBrowser } = await timedRenderStage(
       "remotion.renderer-import",
       () => import("@remotion/renderer"),
     );
@@ -247,22 +437,16 @@ export async function prepareRemotionCaptionOverlays(
       "remotion.bundle-load",
       () => withTimeout(getRemotionBundle(), getRenderTimeoutMs(), "remotion.bundle-load"),
     );
-    const inputProps: CaptionOverlayCompositionProps = {
-      hookText: maskProfanity(options.hookText),
-      hookDuration: options.hookDuration,
-      hookStart: Math.max(0, options.hookStart),
-      hookTransitionDuration: options.hookTransitionDuration,
-      ctaText: maskProfanity(options.ctaText),
-      ctaDuration: options.ctaDuration,
-      totalDuration,
-      words: options.censoredWordIndexes
-        ? maskTranscriptWordsFromIndexes(options.words, options.censoredWordIndexes)
-        : maskTranscriptWords(options.words, options.additionalCensoredWordIndexes ?? []),
-      preset: options.preset,
-      hookStyle: options.hookStyle,
-      ctaStyle: options.ctaStyle,
-      captionLiftScale: options.captionLiftScale ?? 1,
-    };
+    // A sparse render can have several discontinuous phases. Reuse one Chrome
+    // process so setup does not erase the transparent-frame savings. The legacy
+    // full-timeline path intentionally retains Remotion's existing behavior.
+    if (useActiveRanges) {
+      browser = await timedRenderStage(
+        "chromium.browser-initialization",
+        () => openBrowser("chrome", {}),
+        "browser=chrome",
+      );
+    }
 
     const composition = await timedRenderStage(
       "remotion.select-composition",
@@ -277,76 +461,107 @@ export async function prepareRemotionCaptionOverlays(
           getRenderTimeoutMs(),
           "remotion.select-composition",
         ),
-      `composition=CaptionOverlayComposition`,
+      "composition=CaptionOverlayComposition",
     );
     checkCancelled(options.isCancelled, options.signal);
 
+    const totalRenderedFrames = phases.reduce((sum, phase) => sum + phase.frameCount, 0);
     log.detail(
-      `Remotion overlay frames: ${durationInFrames} frames @ ${fps}fps, ` +
+      `Remotion overlay frames: ${totalRenderedFrames}/${durationInFrames} frames @ ${fps}fps, ` +
         `${totalDuration.toFixed(2)}s (transparent PNG; no source-video encode)`,
     );
-    let lastLoggedFrames = 0;
-    const renderStartedAt = Date.now();
-    await timedRenderStage(
-      "remotion.render-frames",
-      () =>
-        withTimeout(renderFrames({
-        composition: {
-          ...composition,
-          width: 1080,
-          height: 1920,
-          fps,
-          durationInFrames,
-        },
-        serveUrl: bundleDir,
-        inputProps,
-        outputDir,
-        imageFormat: "png",
-        cancelSignal: cancelBridge?.cancelSignal,
-        concurrency:
-          Number(process.env.REMOTION_CONCURRENCY?.trim()) || undefined,
-        onStart: () =>
-          log.info(
-            `[RENDER-DIAG] stage=remotion.render-frames event=renderer-started image_format=png frame_range=0-${durationInFrames - 1} planned_frames=${durationInFrames} output_dir=${outputDir} ${renderMemoryUsage()}`,
+    let completedFrames = 0;
+    const sequences: OverlayFrameSequence[] = [];
+    for (const phase of phases) {
+      checkCancelled(options.isCancelled, options.signal);
+      fs.mkdirSync(phase.outputDir, { recursive: true });
+      let lastLoggedFrames = 0;
+      const renderStartedAt = Date.now();
+      await timedRenderStage(
+        "remotion.render-frames",
+        () =>
+          withTimeout(
+            renderFrames({
+              composition: {
+                ...composition,
+                width: 1080,
+                height: 1920,
+                fps,
+                durationInFrames,
+              },
+              serveUrl: bundleDir,
+              inputProps,
+              outputDir: phase.outputDir,
+              imageFormat: "png",
+              ...(useActiveRanges
+                ? {
+                    frameRange: [phase.startFrame, phase.endFrame] as [number, number],
+                    puppeteerInstance: browser ?? undefined,
+                  }
+                : {}),
+              cancelSignal: cancelBridge?.cancelSignal,
+              concurrency: remotionConcurrency,
+              onStart: () =>
+                log.info(
+                  `[RENDER-DIAG] stage=remotion.render-frames event=renderer-started image_format=png ` +
+                    `frame_range=${phase.startFrame}-${phase.endFrame} planned_frames=${phase.frameCount} ` +
+                    `output_dir=${phase.outputDir} ${renderMemoryUsage()}`,
+                ),
+              onFrameUpdate: (framesRendered) => {
+                const progressInterval = Math.max(1, Math.ceil(phase.frameCount / 10));
+                if (
+                  framesRendered === phase.frameCount ||
+                  framesRendered - lastLoggedFrames >= progressInterval
+                ) {
+                  lastLoggedFrames = framesRendered;
+                  log.info(
+                    `[RENDER-DIAG] stage=remotion.render-frames event=frame-progress ` +
+                      `frames=${framesRendered}/${phase.frameCount} elapsed_ms=${Date.now() - renderStartedAt} ` +
+                      `${renderMemoryUsage()}`,
+                  );
+                }
+                options.onProgress?.(
+                  Math.round(((completedFrames + framesRendered) / totalRenderedFrames) * 100),
+                );
+              },
+              logLevel:
+                (process.env.REMOTION_LOG_LEVEL?.trim() as
+                  | "info"
+                  | "verbose"
+                  | "warn"
+                  | "error") || "info",
+            }),
+            getRenderTimeoutMs(),
+            "remotion.render-frames",
           ),
-        onFrameUpdate: (framesRendered) => {
-          const progressInterval = Math.max(1, Math.ceil(durationInFrames / 10));
-          if (
-            framesRendered === durationInFrames ||
-            framesRendered - lastLoggedFrames >= progressInterval
-          ) {
-            lastLoggedFrames = framesRendered;
-            log.info(
-              `[RENDER-DIAG] stage=remotion.render-frames event=frame-progress frames=${framesRendered}/${durationInFrames} elapsed_ms=${Date.now() - renderStartedAt} ${renderMemoryUsage()}`,
-            );
-          }
-          if (options.onProgress) {
-            options.onProgress(
-              Math.round((framesRendered / durationInFrames) * 100),
-            );
-          }
-        },
-        logLevel:
-          (process.env.REMOTION_LOG_LEVEL?.trim() as
-            | "info"
-            | "verbose"
-            | "warn"
-            | "error") || "info",
-      }), getRenderTimeoutMs(), "remotion.render-frames"),
-      `composition=CaptionOverlayComposition image_format=png frame_range=0-${durationInFrames - 1} planned_frames=${durationInFrames} output_dir=${outputDir}`,
-    );
-    checkCancelled(options.isCancelled, options.signal);
+        `composition=CaptionOverlayComposition image_format=png frame_range=${phase.startFrame}-${phase.endFrame} ` +
+          `planned_frames=${phase.frameCount} output_dir=${phase.outputDir}`,
+      );
+      checkCancelled(options.isCancelled, options.signal);
+      const generated = frameOutputStats(phase.outputDir);
+      if (generated.count !== phase.frameCount) {
+        throw new AppError(
+          `Caption renderer produced ${generated.count} frames for ${phase.name}; expected ${phase.frameCount}.`,
+          {
+            details: `frame_range=${phase.startFrame}-${phase.endFrame}, output=${phase.outputDir}`,
+            resolution: "Retry the render or set CAPTION_ACTIVE_RANGE_RENDERING=0 for the legacy full-timeline renderer.",
+          },
+        );
+      }
+      sequences.push({
+        name: phase.name,
+        inputPattern: normalizeFrameSequence(phase.outputDir, "png"),
+        startAtSeconds: phase.startAtSeconds,
+      });
+      completedFrames += phase.frameCount;
+    }
 
-    const inputPattern = normalizeFrameSequence(outputDir, "png");
     cancelBridge?.dispose();
     cancelBridge = null;
-    log.ok(`Remotion overlays ready: ${durationInFrames} transparent frames`);
-    return {
-      workDir,
-      sequences: [
-        { name: "remotion overlays", inputPattern, startAtSeconds: 0 },
-      ],
-    };
+    log.ok(
+      `Remotion overlays ready: ${totalRenderedFrames} transparent frame(s) in ${sequences.length} sequence(s)`,
+    );
+    return { workDir, sequences };
   } catch (error) {
     cancelBridge?.dispose();
     try {
@@ -362,6 +577,23 @@ export async function prepareRemotionCaptionOverlays(
       resolution:
         "Inspect the Remotion log, confirm Chromium is available, and retry the render.",
     });
+  } finally {
+    if (browser) {
+      const closeStartedAt = Date.now();
+      log.info(
+        `[RENDER-DIAG] stage=chromium.browser-close event=before ${renderMemoryUsage()}`,
+      );
+      try {
+        await browser.close({ silent: true });
+        log.info(
+          `[RENDER-DIAG] stage=chromium.browser-close event=after time_taken_ms=${Date.now() - closeStartedAt} ${renderMemoryUsage()}`,
+        );
+      } catch {
+        log.warn(
+          `[RENDER-DIAG] stage=chromium.browser-close event=failed time_taken_ms=${Date.now() - closeStartedAt} ${renderMemoryUsage()}`,
+        );
+      }
+    }
   }
 }
 
@@ -386,6 +618,8 @@ export interface PrepareBrollOverlaysOptions {
   captionTextColor?: string;
   captionBand?: { top: number; bottom: number };
   onProgress?: (progress: number) => void;
+  /** Upper bound for Chrome tabs when B-roll shares the host with another stage. */
+  maxConcurrency?: number;
   /** Final clip length (incl. hook), used to clamp every active range. */
   totalDuration?: number;
   isCancelled?: () => boolean;
@@ -492,6 +726,9 @@ export async function prepareRemotionBrollOverlays(
   let cancelBridge: Awaited<ReturnType<typeof remotionCancelBridge>> | null = null;
 
   const activeRanges = calculateBrollActiveFrameRanges(options.items, fps, totalDuration);
+  const remotionConcurrency = getRemotionConcurrency(process.env, {
+    maxConcurrency: options.maxConcurrency,
+  });
   const phases: BrollRenderPhase[] = activeRangeRendering
     ? activeRanges.map((range, index) => ({
         name: `b-roll ${range.item.kind} ${range.item.id}`,
@@ -565,7 +802,8 @@ export async function prepareRemotionBrollOverlays(
     log.info(
       `[RENDER-DIAG] stage=broll.phase-model event=active render_api=renderFrames ` +
         `mode=${activeRangeRendering ? "per-item-active-range" : "legacy-full-timeline"} ` +
-        `fps=${fps} total_frame_range=0-${totalFrames - 1} active_sequences=${phases.length}`,
+        `fps=${fps} total_frame_range=0-${totalFrames - 1} active_sequences=${phases.length} ` +
+        `concurrency=${remotionConcurrency ?? "auto"}`,
     );
 
     const totalRenderedFrames = phases.reduce((sum, phase) => sum + phase.frameCount, 0);
@@ -610,8 +848,7 @@ export async function prepareRemotionBrollOverlays(
               frameRange: [phase.startFrame, phase.endFrame],
               cancelSignal: cancelBridge?.cancelSignal,
               puppeteerInstance: activeBrowser,
-              concurrency:
-                Number(process.env.REMOTION_CONCURRENCY?.trim()) || undefined,
+              concurrency: remotionConcurrency,
               onStart: () =>
                 log.info(
                   `[RENDER-DIAG] stage=broll.render-frames event=renderer-started image_format=png ` +

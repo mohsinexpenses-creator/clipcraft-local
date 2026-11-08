@@ -201,7 +201,18 @@ card anchor, timing, images, caption colour, and final compositing order as the
 sequential path. Split-screen clips deliberately remain sequential because their
 face-safe card placement needs the final ASD face bands. If either concurrent branch
 fails or the job is cancelled, the sibling is aborted and awaited before cleanup; set
-the flag back to `0` on CPU- or RAM-constrained workers.
+the flag back to `0` on CPU- or RAM-constrained workers. That shared branch caps Chrome
+tabs at two by default so ASD keeps CPU/RAM; `RENDER_PARALLEL_BROLL_CONCURRENCY=1..32`
+changes that cap while still honoring a smaller Chrome-tab setting.
+
+B-roll card decoding/cropping/JPEG preparation now uses two bounded Jimp workers by
+default (`BROLL_IMAGE_PREP_CONCURRENCY=2`); set it to `1` for the prior serial path.
+`CAPTION_ACTIVE_RANGE_RENDERING=1` is an experimental sparse-caption benchmark: it keeps
+the full composition clock and re-bases only proven caption/hook/CTA windows in FFmpeg.
+It automatically stays on the legacy full transparent sequence for dense speech or a
+fragmented timeline, and `0` restores that path explicitly. Caption chunks and themed
+style variants are also memoized per Remotion render; neither change alters caption design,
+timing, output resolution, or final encoding.
 
 ## Project structure
 

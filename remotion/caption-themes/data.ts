@@ -1,5 +1,9 @@
 import type { CaptionChunk } from '../AnimatedWord';
 import type { CaptionThemeName, WordTimestamp } from '../../lib/types';
+import {
+  CAPTION_HOLD_AFTER_SECONDS,
+  CAPTION_LOOKAHEAD_SECONDS,
+} from '../../lib/caption-layout';
 
 export interface ThemeCaptionWord {
   text: string;
@@ -20,8 +24,8 @@ export interface SelectedThemeCaption {
   data: ThemeCaptionData;
 }
 
-export const THEME_CAPTION_HOLD_SECONDS = 0.35;
-export const THEME_CAPTION_LOOKAHEAD_SECONDS = 0.06;
+export const THEME_CAPTION_HOLD_SECONDS = CAPTION_HOLD_AFTER_SECONDS;
+export const THEME_CAPTION_LOOKAHEAD_SECONDS = CAPTION_LOOKAHEAD_SECONDS;
 
 function toThemeWord(word: WordTimestamp): ThemeCaptionWord {
   return { text: word.word, start: word.start, end: word.end };

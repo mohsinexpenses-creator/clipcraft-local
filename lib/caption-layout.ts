@@ -6,6 +6,10 @@ import type {
   WordTimestamp,
 } from './types';
 
+/** Shared visibility padding used by classic and themed caption renderers. */
+export const CAPTION_HOLD_AFTER_SECONDS = 0.35;
+export const CAPTION_LOOKAHEAD_SECONDS = 0.06;
+
 export interface ResolvedCaptionLineStyle {
   fontFamily: string;
   fontSize: number;

@@ -37,6 +37,10 @@ import {
 import type { BrollCandidate } from "./providers/types";
 import { attributionFor } from "./providers/types";
 import type { StockSearchResult } from "./providers/stock";
+import {
+  getBrollImagePreparationConcurrency,
+  mapWithConcurrency,
+} from "./preparation";
 
 /** An image that is downloaded, prepared and ready to be painted. */
 export interface PreparedBrollImage {
@@ -361,37 +365,69 @@ export async function buildBrollPlan(
       }
     }
 
-    // 3c. Prepare the final pick of every entry.
-    for (const entry of loaded) {
-      throwIfCancelled();
-      const file = entry.file;
-      if (!file) continue;
-      try {
-        const preparedImage = {
-          ...(await deps.prepareCard(file.bytes, file.cacheKey)),
-          sourceFile: file.sourceFile,
-        };
-        prepared.push({
-          id: entry.id,
-          kind: "landscape",
-          priority: CARD_PRIORITY,
-          desiredStart: entry.start,
-          desiredEnd: entry.end,
-          candidate: entry.candidates[entry.cursor],
-          alternatives: entry.candidates
-            .filter((_candidate, index) => index !== entry.cursor)
-            .slice(0, 2)
-            .map((candidate) => attributionFor(candidate)),
-          prepared: preparedImage,
-          query: entry.query,
-        });
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
-        skipped.push({
-          stage: "download",
-          reason: `${entry.query}: ${reason}`,
-        });
-      }
+    // 3c. Prepare final cards with bounded Jimp concurrency. Downloading is
+    // already parallel above, but serial decode/crop/JPEG encoding left a large
+    // gap on a 10–15-image plan. Keep result order deterministic for scheduling
+    // and share duplicate cache-key work so concurrent writes never collide.
+    const imagePrepConcurrency = getBrollImagePreparationConcurrency();
+    const preparedByCacheKey = new Map<string, Promise<PreparedBrollImage>>();
+    console.log(
+      `[broll] Preparing ${loaded.length} card image(s) with concurrency ${imagePrepConcurrency}.`,
+    );
+    const preparationResults = await mapWithConcurrency(
+      loaded,
+      imagePrepConcurrency,
+      async (entry) => {
+        throwIfCancelled();
+        const file = entry.file;
+        if (!file) return { entry, skip: undefined };
+        try {
+          let preparation = preparedByCacheKey.get(file.cacheKey);
+          if (!preparation) {
+            preparation = deps.prepareCard(file.bytes, file.cacheKey);
+            preparedByCacheKey.set(file.cacheKey, preparation);
+          }
+          const preparedImage = {
+            ...(await preparation),
+            sourceFile: file.sourceFile,
+          };
+          throwIfCancelled();
+          return {
+            entry,
+            item: {
+              id: entry.id,
+              kind: "landscape" as const,
+              priority: CARD_PRIORITY,
+              desiredStart: entry.start,
+              desiredEnd: entry.end,
+              candidate: entry.candidates[entry.cursor],
+              alternatives: entry.candidates
+                .filter((_candidate, index) => index !== entry.cursor)
+                .slice(0, 2)
+                .map((candidate) => attributionFor(candidate)),
+              prepared: preparedImage,
+              query: entry.query,
+            },
+          };
+        } catch (error) {
+          if (error instanceof RenderCancelledError || input.signal?.aborted) {
+            throw new RenderCancelledError();
+          }
+          const reason = error instanceof Error ? error.message : String(error);
+          return {
+            entry,
+            skip: {
+              stage: "download" as const,
+              reason: `${entry.query}: ${reason}`,
+            },
+          };
+        }
+      },
+      input.signal,
+    );
+    for (const result of preparationResults) {
+      if (result.item) prepared.push(result.item);
+      if (result.skip) skipped.push(result.skip);
     }
   }
 
