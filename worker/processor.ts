@@ -26,6 +26,7 @@ import {
 import { buildLayoutPlan, getSplitFramingSettings } from "./layout";
 import { adaptOverlaysToLayout, describePlacements } from "./overlay-layout";
 import { color, log } from "../lib/logger";
+import { JobTimer, type JobTimingOutcome } from "../lib/job-timing";
 import {
   HOOK_TRANSITION_SECONDS,
   normalizeFps,
@@ -145,6 +146,12 @@ export async function processClipJob(
       color.gray(`  ·  video ${videoId}  ·  ${start}s → ${end}s`),
   );
 
+  // This remains wall-clock based when stages overlap (for example B-roll and
+  // ASD in the opt-in parallel renderer). The final job-end summary makes a
+  // real baseline/re-run directly comparable without adding database writes.
+  const jobTimer = new JobTimer({ job: `clip-render:${clipId}` });
+  let jobTimingOutcome: JobTimingOutcome = "failed";
+
   const reportProgress = async (value: number): Promise<void> => {
     const clamped = Math.max(0, Math.min(100, Math.round(value)));
     if (onProgress) await onProgress(clamped);
@@ -234,7 +241,9 @@ export async function processClipJob(
      * the stream starts keep audio aligned to video, and fps selects the CFR
      * overlay/output cadence. Missing ffprobe is reported by getVideoMetadata().
      */
-    const sourceMeta = await getVideoMetadata(video.filePath);
+    const sourceMeta = await jobTimer.measure("source-probe", () =>
+      getVideoMetadata(video.filePath),
+    );
     const renderFps = normalizeFps(sourceMeta.fps);
     const sourceVariableFrameRate = sourceMeta.isVariableFrameRate === true;
     const audioStartOffsetSeconds =
@@ -300,10 +309,12 @@ export async function processClipJob(
     // Resolve safety exactly once for this render. The LLM review is opt-in and
     // fail-open inside lib/profanity.ts; both Remotion captions and FFmpeg audio
     // consume this same immutable-timestamp index set.
-    const contextualCensorIndexes = await findContextCensorWordIndexes(clipWords, {
-      enabled: getProfanityContextPassEnabled(),
-      signal: execution.signal,
-    });
+    const contextualCensorIndexes = await jobTimer.measure("safety-review", () =>
+      findContextCensorWordIndexes(clipWords, {
+        enabled: getProfanityContextPassEnabled(),
+        signal: execution.signal,
+      }),
+    );
     const censoredWordIndexes = resolveCensoredWordIndexes(
       clipWords,
       contextualCensorIndexes,
@@ -355,13 +366,15 @@ export async function processClipJob(
     // No fallbacks by design: detectSpeakerTimeline throws an informative
     // error when it finds no face in the window (or YuNet is unavailable),
     // and the render STOPS - no static-centre crop, no legacy skin track.
-    const asd = await detectSpeakerTimeline(
-      video.filePath,
-      start,
-      segmentDuration,
-      sourceMeta.width,
-      sourceMeta.height,
-      { hasAudio: sourceMeta.hasAudio, signal: execution.signal },
+    const asd = await jobTimer.measure("asd", () =>
+      detectSpeakerTimeline(
+        video.filePath,
+        start,
+        segmentDuration,
+        sourceMeta.width,
+        sourceMeta.height,
+        { hasAudio: sourceMeta.hasAudio, signal: execution.signal },
+      ),
     );
     const splitFraming = getSplitFramingSettings();
     const plan = buildLayoutPlan(
@@ -582,28 +595,30 @@ export async function processClipJob(
     checkCancelled();
     const totalDuration = segmentDuration + safeHookDuration;
     const preparedOverlays: PreparedCaptionOverlays =
-      await prepareRemotionCaptionOverlays({
-        fps: renderFps,
-        totalDuration,
-        hookText: resolvedHookText,
-        hookDuration: safeHookDuration,
-        hookStart,
-        hookTransitionDuration:
-          safeHookDuration > 0
-            ? Math.min(HOOK_TRANSITION_SECONDS, safeHookDuration / 2)
-            : 0,
-        ctaText: resolvedCtaText,
-        ctaDuration: resolvedCtaDuration,
-        words: captionWords,
-        censoredWordIndexes,
-        preset: captionPresetForRender,
-        hookStyle: hookStyleForRender,
-        ctaStyle: ctaStyleForRender,
-        captionLiftScale: overlayLayout.captionLiftScale,
-        onProgress: overlayProgressSink,
-        isCancelled: () => Boolean(execution.signal?.aborted),
-        signal: execution.signal,
-      });
+      await jobTimer.measure("caption-remotion", () =>
+        prepareRemotionCaptionOverlays({
+          fps: renderFps,
+          totalDuration,
+          hookText: resolvedHookText,
+          hookDuration: safeHookDuration,
+          hookStart,
+          hookTransitionDuration:
+            safeHookDuration > 0
+              ? Math.min(HOOK_TRANSITION_SECONDS, safeHookDuration / 2)
+              : 0,
+          ctaText: resolvedCtaText,
+          ctaDuration: resolvedCtaDuration,
+          words: captionWords,
+          censoredWordIndexes,
+          preset: captionPresetForRender,
+          hookStyle: hookStyleForRender,
+          ctaStyle: ctaStyleForRender,
+          captionLiftScale: overlayLayout.captionLiftScale,
+          onProgress: overlayProgressSink,
+          isCancelled: () => Boolean(execution.signal?.aborted),
+          signal: execution.signal,
+        }),
+      );
 
     /**
      * B-roll: the plan was made by the `broll` job (before this render) and this is
@@ -657,26 +672,28 @@ export async function processClipJob(
             `[RENDER-DIAG] stage=broll.remotion-prepare event=before items=${usable.map(({ item }) => `${item.id}:${item.kind}`).join(",")} fps=${renderFps} frame_range=0-${Math.max(0, Math.ceil(totalDuration * renderFps) - 1)}`,
           );
           const brollPrepareStartedAt = Date.now();
-          preparedBroll = await prepareRemotionBrollOverlays({
-            fps: renderFps,
-            totalDuration,
-            items: usable.map(({ item }, index) => ({
-              id: item.id,
-              kind: item.kind,
-              start: item.start,
-              end: item.end,
-              imageUrl: `${mediaServer.baseUrl}/broll-${index}${path.extname(usable[index].filePath) || ".jpg"}`,
-              // Fixed anchor per layout (CARD_* constants in lib/broll/card.ts).
-              ...(item.card
-                ? { card: anchoredCardRect(cardLayout, { faceBands }) }
-                : {}),
-            })),
-            captionTextColor: captionPresetForRender.textColor,
-            captionBand,
-            onProgress: overlayProgressSink,
-            isCancelled: () => Boolean(execution.signal?.aborted),
-            signal: execution.signal,
-          });
+          preparedBroll = await jobTimer.measure("broll-remotion", () =>
+            prepareRemotionBrollOverlays({
+              fps: renderFps,
+              totalDuration,
+              items: usable.map(({ item }, index) => ({
+                id: item.id,
+                kind: item.kind,
+                start: item.start,
+                end: item.end,
+                imageUrl: `${mediaServer.baseUrl}/broll-${index}${path.extname(usable[index].filePath) || ".jpg"}`,
+                // Fixed anchor per layout (CARD_* constants in lib/broll/card.ts).
+                ...(item.card
+                  ? { card: anchoredCardRect(cardLayout, { faceBands }) }
+                  : {}),
+              })),
+              captionTextColor: captionPresetForRender.textColor,
+              captionBand,
+              onProgress: overlayProgressSink,
+              isCancelled: () => Boolean(execution.signal?.aborted),
+              signal: execution.signal,
+            }),
+          );
           log.info(
             `[RENDER-DIAG] stage=broll.remotion-prepare event=after time_taken_ms=${Date.now() - brollPrepareStartedAt} sequence_count=${preparedBroll.sequences.length} output_directory=${preparedBroll.workDir}`,
           );
@@ -747,44 +764,48 @@ export async function processClipJob(
         `[RENDER-DIAG] stage=ffmpeg.process-video-segment event=before overlays=${[...brollSequences, ...preparedOverlays.sequences].length} broll_overlays=${brollSequences.length} output=${finalVideoPath}`,
       );
       const processVideoStartedAt = Date.now();
-      await processVideoSegment({
-        sourceVideoPath: video.filePath,
-        outputPath: finalVideoPath,
-        start,
-        end,
-        hookDuration: safeHookDuration,
-        hookStart,
-        filterPresetId: filterPreset,
-        plan,
-        sourceWidth: sourceMeta.width,
-        sourceHeight: sourceMeta.height,
-        targetFps: renderFps,
-        sourceHasAudio: sourceMeta.hasAudio,
-        // ORDER IS THE CONTRACT: B-roll sequences first, so the caption/hook/CTA
-        // layer is composited ON TOP of every image.
-        overlays: [...brollSequences, ...preparedOverlays.sequences],
-        sfx,
-        words: clipWords,
-        censoredWordIndexes,
-        fadeOutSeconds: renderSettings.fadeOutSeconds,
-        debugOutputPath:
-          process.env.SAVE_PRECAPTION_DEBUG?.trim() === "1"
-            ? intermediateVideoPath
-            : undefined,
-        isCancelled: () => Boolean(execution.signal?.aborted),
-        signal: execution.signal,
-        sourceIsVariableFrameRate: sourceVariableFrameRate,
-        videoStartTimeSeconds: sourceMeta.videoStartTime,
-        audioStartOffsetSeconds,
-        onProgress: progressSink,
-      });
+      await jobTimer.measure("ffmpeg-composite", () =>
+        processVideoSegment({
+          sourceVideoPath: video.filePath,
+          outputPath: finalVideoPath,
+          start,
+          end,
+          hookDuration: safeHookDuration,
+          hookStart,
+          filterPresetId: filterPreset,
+          plan,
+          sourceWidth: sourceMeta.width,
+          sourceHeight: sourceMeta.height,
+          targetFps: renderFps,
+          sourceHasAudio: sourceMeta.hasAudio,
+          // ORDER IS THE CONTRACT: B-roll sequences first, so the caption/hook/CTA
+          // layer is composited ON TOP of every image.
+          overlays: [...brollSequences, ...preparedOverlays.sequences],
+          sfx,
+          words: clipWords,
+          censoredWordIndexes,
+          fadeOutSeconds: renderSettings.fadeOutSeconds,
+          debugOutputPath:
+            process.env.SAVE_PRECAPTION_DEBUG?.trim() === "1"
+              ? intermediateVideoPath
+              : undefined,
+          isCancelled: () => Boolean(execution.signal?.aborted),
+          signal: execution.signal,
+          sourceIsVariableFrameRate: sourceVariableFrameRate,
+          videoStartTimeSeconds: sourceMeta.videoStartTime,
+          audioStartOffsetSeconds,
+          onProgress: progressSink,
+        }),
+      );
       log.info(
         `[RENDER-DIAG] stage=ffmpeg.process-video-segment event=after time_taken_ms=${Date.now() - processVideoStartedAt} output=${finalVideoPath}`,
       );
 
       log.info("[RENDER-DIAG] stage=ffmpeg.output-probe event=before");
       const outputProbeStartedAt = Date.now();
-      const outputMeta = await getVideoMetadata(finalVideoPath);
+      const outputMeta = await jobTimer.measure("output-probe", () =>
+        getVideoMetadata(finalVideoPath),
+      );
       log.info(
         `[RENDER-DIAG] stage=ffmpeg.output-probe event=after time_taken_ms=${Date.now() - outputProbeStartedAt}`,
       );
@@ -836,6 +857,7 @@ export async function processClipJob(
         `${(renderResult.fileSizeBytes / 1024 / 1024).toFixed(2)} MB`,
     );
     log.detail(`→ ${finalVideoPath}`);
+    jobTimingOutcome = "done";
     return clip;
   } catch (error) {
     if (error instanceof RenderCancelledError || execution.signal?.aborted) {
@@ -856,6 +878,7 @@ export async function processClipJob(
           "Could not persist the cancelled state: " + toErrorMessage(saveError),
         ),
       );
+      jobTimingOutcome = "cancelled";
       return clip;
     }
     log.error(
@@ -873,6 +896,7 @@ export async function processClipJob(
   } finally {
     // Per-render frame/media work directories are removed by their producers;
     // the shared queue controller is disposed by worker/index.ts.
+    jobTimer.logSummary(jobTimingOutcome);
   }
 }
 
