@@ -20,6 +20,7 @@ import {
   buildFinalFadeFilters,
   buildOverlayFilterStatements,
   ffmpegFpsArg,
+  getOverlayConcatEnabled,
   getVideoEncodeSettings,
   normalizeFps,
   processVideoSegment,
@@ -34,6 +35,14 @@ test('ffmpegFpsArg: NTSC rates are exact fractions, everything else is the plain
   assert.equal(ffmpegFpsArg(25), '25');
   assert.equal(ffmpegFpsArg(30), '30');
   assert.equal(ffmpegFpsArg(60), '60');
+});
+
+test('overlay concat defaults on and has an explicit direct-input rollback flag', () => {
+  assert.equal(getOverlayConcatEnabled({}), true);
+  for (const value of ['0', 'false', 'NO', ' off ']) {
+    assert.equal(getOverlayConcatEnabled({ FFMPEG_OVERLAY_CONCAT: value }), false);
+  }
+  assert.equal(getOverlayConcatEnabled({ FFMPEG_OVERLAY_CONCAT: '1' }), true);
 });
 
 function twoPanePlan(): SplitPlan {

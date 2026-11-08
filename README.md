@@ -219,6 +219,14 @@ fragmented timeline, and `0` restores that path explicitly. Caption chunks and t
 style variants are also memoized per Remotion render; neither change alters caption design,
 timing, output resolution, or final encoding.
 
+`FFMPEG_OVERLAY_CONCAT=1` (the default) then combines only verified, frame-aligned,
+non-overlapping 1080×1920 PNG ranges within the same semantic layer into one transparent
+FFconcat stream. This reduces image inputs and overlay stages while retaining B-roll below
+captions, the existing hook/CTA paint order, and the sole final H.264 encode. An invalid,
+incomplete, overlapping, or custom-timed sequence automatically keeps the prior direct
+input path. Set `FFMPEG_OVERLAY_CONCAT=0` to roll back every overlay range to direct
+per-sequence compositing when comparing a renderer or FFmpeg build.
+
 ## Project structure
 
 ```

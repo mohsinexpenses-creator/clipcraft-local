@@ -1,6 +1,7 @@
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { Jimp } from "jimp";
 import { AppError, RenderCancelledError, toErrorMessage } from "../lib/errors";
 import { DEFAULT_FILTER_PRESETS } from "../lib/presets";
 import {
@@ -13,6 +14,7 @@ import { getVideoMetadata, runFfmpeg } from "../lib/ffmpeg";
 import { log } from "../lib/logger";
 import { buildSfxMixPlan, BROLL_SFX_VOLUME } from "../lib/broll/sfx";
 import { buildBrollSfxWav } from "./sfx-mixer";
+import { buildOverlayConcatManifest, type OverlayConcatSource } from "./overlay-concat";
 import {
   LayoutPlan,
   OUTPUT_HEIGHT,
@@ -28,6 +30,13 @@ export interface OverlayFrameSequence {
   inputPattern: string;
   /** Time on the final output timeline where frame 1 appears. */
   startAtSeconds: number;
+  /**
+   * Known sparse layer. Consecutive non-overlapping sequences in the same layer
+   * can be joined into one concat-demuxer input before final compositing.
+   */
+  layer?: "broll" | "captions";
+  /** Expected numbered PNG frames; lets concat reject incomplete sequences safely. */
+  frameCount?: number;
 }
 
 export interface ProcessSegmentOptions {
@@ -257,6 +266,239 @@ export function buildOverlayFilterStatements(
   });
   if (overlays.length === 0) statements.push(`[${baseLabel}]null[v]`);
   return statements;
+}
+
+/**
+ * Join sparse, non-overlapping B-roll/caption ranges into one image stream per
+ * layer before the main graph. Set FFMPEG_OVERLAY_CONCAT=0 to restore one image2
+ * input and one overlay filter per range while comparing a renderer or FFmpeg.
+ */
+export function getOverlayConcatEnabled(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): boolean {
+  return !/^(0|false|no|off)$/i.test(env.FFMPEG_OVERLAY_CONCAT?.trim() ?? "");
+}
+
+interface OverlayFrameInspection {
+  framePaths: string[];
+  bytes: number;
+}
+
+interface OverlayInputSource {
+  sequence: OverlayFrameSequence;
+  inputPath: string;
+  kind: "image2" | "concat";
+  generatedFrames: number;
+  generatedBytes: number;
+  /** How many original Remotion sequences this one input replaces. */
+  sourceSequences: number;
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Keep concat's transparent canvas compatible with the rendered PNG frames. */
+function hasExpectedOverlayPngShape(framePath: string): boolean {
+  try {
+    const descriptor = fs.openSync(framePath, "r");
+    try {
+      const header = Buffer.alloc(26);
+      if (fs.readSync(descriptor, header, 0, header.length, 0) !== header.length) return false;
+      const pngSignature = "89504e470d0a1a0a";
+      if (header.subarray(0, 8).toString("hex") !== pngSignature) return false;
+      const chunk = header.subarray(12, 16).toString("ascii");
+      const width = header.readUInt32BE(16);
+      const height = header.readUInt32BE(20);
+      const colorType = header[25];
+      return (
+        chunk === "IHDR" &&
+        width === OUTPUT_WIDTH &&
+        height === OUTPUT_HEIGHT &&
+        // Greyscale+alpha or truecolor+alpha. Remotion emits the latter.
+        (colorType === 4 || colorType === 6)
+      );
+    } finally {
+      fs.closeSync(descriptor);
+    }
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * List only the numbered image2 frames addressed by a sequence pattern. The
+ * normalizer writes 1..N contiguously; anything else falls back to the proven
+ * direct inputs instead of risking a shifted concat timeline.
+ */
+function inspectOverlayFrames(sequence: OverlayFrameSequence): OverlayFrameInspection | null {
+  const directory = path.dirname(sequence.inputPattern);
+  const template = path.basename(sequence.inputPattern);
+  const templateMatch = /^(.*)%0?(\d*)d(.*)$/.exec(template);
+  if (!templateMatch) return null;
+  const [, prefix, widthText, suffix] = templateMatch;
+  const width = widthText ? Number(widthText) : 0;
+  const digits = width > 0 ? `\\d{${width}}` : "\\d+";
+  const matcher = new RegExp(`^${escapeRegex(prefix)}(${digits})${escapeRegex(suffix)}$`);
+
+  try {
+    const frames = fs.readdirSync(directory)
+      .flatMap((file) => {
+        const match = matcher.exec(file);
+        if (!match) return [];
+        const frameNumber = Number(match[1]);
+        if (!Number.isSafeInteger(frameNumber) || frameNumber < 1) return [];
+        const framePath = path.join(directory, file);
+        return [{
+          frameNumber,
+          framePath,
+          bytes: fs.statSync(framePath).size,
+          isExpectedOverlayPng: hasExpectedOverlayPngShape(framePath),
+        }];
+      })
+      .sort((a, b) => a.frameNumber - b.frameNumber);
+    if (
+      frames.length === 0 ||
+      frames.some(
+        (frame, index) =>
+          frame.frameNumber !== index + 1 || !frame.isExpectedOverlayPng,
+      ) ||
+      (sequence.frameCount !== undefined && sequence.frameCount !== frames.length)
+    ) {
+      return null;
+    }
+    return {
+      framePaths: frames.map((frame) => frame.framePath),
+      bytes: frames.reduce((total, frame) => total + frame.bytes, 0),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function directOverlayInput(
+  sequence: OverlayFrameSequence,
+  inspection: OverlayFrameInspection | null,
+): OverlayInputSource {
+  return {
+    sequence,
+    inputPath: sequence.inputPattern,
+    kind: "image2",
+    generatedFrames: inspection?.framePaths.length ?? 0,
+    generatedBytes: inspection?.bytes ?? 0,
+    sourceSequences: 1,
+  };
+}
+
+/**
+ * Make compact ffconcat inputs for contiguous same-layer sparse sequences. The
+ * concat demuxer turns many image2 readers and full-timeline blend stages into
+ * one timed transparent stream. Any uncertainty (missing/overlapping frames)
+ * retains the exact direct overlay path.
+ */
+async function prepareOverlayInputSources(
+  overlays: OverlayFrameSequence[],
+  fps: number,
+  concatEnabled: boolean,
+  getConcatDirectory: () => string,
+): Promise<OverlayInputSource[]> {
+  const inspected = overlays.map((sequence) => ({
+    sequence,
+    inspection: inspectOverlayFrames(sequence),
+  }));
+  if (!concatEnabled) {
+    return inspected.map(({ sequence, inspection }) => directOverlayInput(sequence, inspection));
+  }
+
+  let blankFramePath: string | null = null;
+  const getBlankFramePath = (): string => {
+    if (!blankFramePath) {
+      blankFramePath = path.join(getConcatDirectory(), "transparent-1080x1920.png");
+    }
+    return blankFramePath;
+  };
+  const ensureBlankFrame = async (): Promise<string> => {
+    const pathToBlankFrame = getBlankFramePath();
+    if (fs.existsSync(pathToBlankFrame)) return pathToBlankFrame;
+    // All Remotion overlays are 1080x1920 RGBA PNGs. A full-size transparent
+    // frame gives concat gap entries a stable format and never paints black.
+    await new Jimp({ width: OUTPUT_WIDTH, height: OUTPUT_HEIGHT, color: 0x00000000 }).write(
+      pathToBlankFrame as `${string}.png`,
+    );
+    return pathToBlankFrame;
+  };
+
+  const sources: OverlayInputSource[] = [];
+  let index = 0;
+  let manifestIndex = 0;
+  while (index < inspected.length) {
+    const first = inspected[index];
+    const layer = first.sequence.layer;
+    let end = index + 1;
+    if (layer) {
+      while (end < inspected.length && inspected[end].sequence.layer === layer) end += 1;
+    }
+    const group = inspected.slice(index, end);
+
+    if (
+      layer &&
+      group.length >= 2 &&
+      group.every(({ inspection }) => inspection !== null)
+    ) {
+      try {
+        const manifest = buildOverlayConcatManifest(
+          group.map(({ sequence, inspection }) => ({
+            name: sequence.name,
+            startAtSeconds: sequence.startAtSeconds,
+            framePaths: inspection!.framePaths,
+          } satisfies OverlayConcatSource)),
+          getBlankFramePath(),
+          fps,
+        );
+        if (manifest) {
+          await ensureBlankFrame();
+          manifestIndex += 1;
+          const manifestPath = path.join(
+            getConcatDirectory(),
+            `${layer}-${String(manifestIndex).padStart(3, "0")}.ffconcat`,
+          );
+          fs.writeFileSync(manifestPath, manifest);
+          sources.push({
+            sequence: {
+              name: `${layer} sparse overlay timeline`,
+              inputPattern: manifestPath,
+              startAtSeconds: 0,
+              layer,
+            },
+            inputPath: manifestPath,
+            kind: "concat",
+            generatedFrames: group.reduce(
+              (total, entry) => total + entry.inspection!.framePaths.length,
+              0,
+            ),
+            generatedBytes: group.reduce((total, entry) => total + entry.inspection!.bytes, 0),
+            sourceSequences: group.length,
+          });
+          index = end;
+          continue;
+        }
+      } catch (error) {
+        log.warn(
+          `[RENDER-DIAG] stage=ffmpeg.overlay-concat event=fallback layer=${layer} ` +
+            `reason=${toErrorMessage(error)}`,
+        );
+      }
+    }
+
+    // Either an untyped/custom layer or a conservative concat rejection: preserve
+    // direct input order and the existing per-sequence PTS shifts exactly.
+    for (const entry of group) {
+      sources.push(directOverlayInput(entry.sequence, entry.inspection));
+    }
+    index = end;
+  }
+
+  return sources;
 }
 
 /**
@@ -533,41 +775,68 @@ export async function processVideoSegment(
   );
 
   const overlayInputIndices: number[] = [];
-  for (const overlay of overlays) {
-    overlayInputIndices.push(nextInput++);
-    const sequenceDir = path.dirname(overlay.inputPattern);
-    const extension = path.extname(overlay.inputPattern).replace(/^\./, "");
-    let generatedFrames = 0;
-    let generatedBytes = 0;
-    try {
-      for (const file of fs.readdirSync(sequenceDir)) {
-        if (!new RegExp(`\\.${extension}$`, "i").test(file)) continue;
-        generatedFrames += 1;
-        generatedBytes += fs.statSync(path.join(sequenceDir, file)).size;
-      }
-    } catch (error) {
-      log.warn(
-        `[RENDER-DIAG] stage=ffmpeg.overlay-sequence event=stat-failed name=${overlay.name} directory=${sequenceDir} error=${toErrorMessage(error)}`,
-      );
-    }
-    log.info(
-      `[RENDER-DIAG] stage=ffmpeg.overlay-sequence event=before-input name=${overlay.name} image_format=${extension} fps=${ffmpegFpsArg(fps)} frame_range=1-${generatedFrames} generated_frames=${generatedFrames} output_directory=${sequenceDir} total_generated_file_size_bytes=${generatedBytes} timeline_start_seconds=${overlay.startAtSeconds}`,
-    );
-    inputArgs.push(
-      "-thread_queue_size",
-      "2",
-      "-framerate",
-      ffmpegFpsArg(fps),
-      "-start_number",
-      "1",
-      "-i",
-      overlay.inputPattern,
-    );
-  }
-
+  let overlayConcatDir: string | null = null;
+  let overlaySources: OverlayInputSource[] = [];
   let sfxInputIndex: number | null = null;
   let sfxMixDir: string | null = null;
   try {
+    overlaySources = await prepareOverlayInputSources(
+      overlays,
+      fps,
+      getOverlayConcatEnabled(),
+      () => {
+        if (!overlayConcatDir) {
+          overlayConcatDir = fs.mkdtempSync(path.join(os.tmpdir(), "clipcraft-overlay-concat-"));
+        }
+        return overlayConcatDir;
+      },
+    );
+
+    for (const source of overlaySources) {
+      overlayInputIndices.push(nextInput++);
+      if (source.kind === "concat") {
+        log.info(
+          `[RENDER-DIAG] stage=ffmpeg.overlay-concat event=before-input name=${source.sequence.name} ` +
+            `source_sequences=${source.sourceSequences} generated_frames=${source.generatedFrames} ` +
+            `total_generated_file_size_bytes=${source.generatedBytes} fps=${ffmpegFpsArg(fps)} ` +
+            `manifest=${source.inputPath}`,
+        );
+        // `-r` is an INPUT option for concat's image decoder. Without it, image
+        // files default to 25fps and sparse 30/29.97fps frame ranges can shift.
+        inputArgs.push(
+          "-r",
+          ffmpegFpsArg(fps),
+          "-f",
+          "concat",
+          "-safe",
+          "0",
+          "-i",
+          source.inputPath,
+        );
+        continue;
+      }
+
+      const sequenceDir = path.dirname(source.sequence.inputPattern);
+      const extension = path.extname(source.sequence.inputPattern).replace(/^\./, "");
+      log.info(
+        `[RENDER-DIAG] stage=ffmpeg.overlay-sequence event=before-input name=${source.sequence.name} ` +
+          `image_format=${extension} fps=${ffmpegFpsArg(fps)} frame_range=1-${source.generatedFrames} ` +
+          `generated_frames=${source.generatedFrames} output_directory=${sequenceDir} ` +
+          `total_generated_file_size_bytes=${source.generatedBytes} ` +
+          `timeline_start_seconds=${source.sequence.startAtSeconds}`,
+      );
+      inputArgs.push(
+        "-thread_queue_size",
+        "2",
+        "-framerate",
+        ffmpegFpsArg(fps),
+        "-start_number",
+        "1",
+        "-i",
+        source.inputPath,
+      );
+    }
+
     if (sfx.length > 0) {
       const mixedSfx = buildBrollSfxWav(
         sfx.map((cue) => ({ ...cue, volume: cue.volume ?? sfxVolume })),
@@ -746,7 +1015,7 @@ export async function processVideoSegment(
       statements.push("[vbase]split=2[vprecap][vforoverlay]");
     statements.push(
       ...buildOverlayFilterStatements(
-        overlays,
+        overlaySources.map((source) => source.sequence),
         overlayInputIndices,
         overlayBaseLabel,
       ),
@@ -792,11 +1061,17 @@ export async function processVideoSegment(
       filterGraph,
     ];
 
+    const concatOverlayInputs = overlaySources.filter((source) => source.kind === "concat").length;
     log.info(
-      `[RENDER-DIAG] stage=ffmpeg.input-initialization event=before inputs=${nextInput} overlay_sequences=${overlays.length} total_duration_seconds=${totalDuration.toFixed(3)} fps=${ffmpegFpsArg(fps)} image_sequence_start_number=1`,
+      `[RENDER-DIAG] stage=ffmpeg.input-initialization event=before inputs=${nextInput} ` +
+        `overlay_sequences=${overlays.length} overlay_inputs=${overlaySources.length} ` +
+        `concat_overlay_inputs=${concatOverlayInputs} total_duration_seconds=${totalDuration.toFixed(3)} ` +
+        `fps=${ffmpegFpsArg(fps)} image_sequence_start_number=1`,
     );
     log.info(
-      `[RENDER-DIAG] stage=ffmpeg.filter-graph event=before statements=${statements.length} characters=${filterGraph.length} overlays=${overlays.length} overlay_statements=${overlays.length * 2} output=${outputPath}`,
+      `[RENDER-DIAG] stage=ffmpeg.filter-graph event=before statements=${statements.length} ` +
+        `characters=${filterGraph.length} overlays=${overlaySources.length} ` +
+        `overlay_statements=${overlaySources.length * 2} output=${outputPath}`,
     );
     const ffmpegStartedAt = Date.now();
     log.info(
@@ -907,6 +1182,18 @@ export async function processVideoSegment(
         "Inspect the FFmpeg command in the worker log, verify the source clip exists and the crop window is inside the frame, and retry.",
     });
   } finally {
-    if (sfxMixDir) fs.rmSync(sfxMixDir, { recursive: true, force: true });
+    // Do not let a best-effort SFX cleanup failure strand concat manifests during
+    // success, error, or cancellation cleanup.
+    for (const temporaryDirectory of [sfxMixDir, overlayConcatDir]) {
+      if (!temporaryDirectory) continue;
+      try {
+        fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+      } catch (cleanupError) {
+        log.warn(
+          `[RENDER-DIAG] stage=ffmpeg.temporary-cleanup event=failed directory=${temporaryDirectory} ` +
+            `error=${toErrorMessage(cleanupError)}`,
+        );
+      }
+    }
   }
 }

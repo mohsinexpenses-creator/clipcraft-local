@@ -552,6 +552,8 @@ export async function prepareRemotionCaptionOverlays(
         name: phase.name,
         inputPattern: normalizeFrameSequence(phase.outputDir, "png"),
         startAtSeconds: phase.startAtSeconds,
+        layer: "captions",
+        frameCount: phase.frameCount,
       });
       completedFrames += phase.frameCount;
     }
@@ -904,6 +906,8 @@ export async function prepareRemotionBrollOverlays(
         name: phase.name,
         inputPattern,
         startAtSeconds: phase.startAtSeconds,
+        layer: "broll",
+        frameCount: phase.frameCount,
       });
       log.info(
         `[RENDER-DIAG] stage=broll.item-render event=after items=${itemDescription} ` +
