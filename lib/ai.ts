@@ -241,6 +241,7 @@ export async function detectViralSegments(
     try {
       const result = await completeWithFallback({
         task: 'viral segment detection',
+        taskKind: 'viral-detection',
         system: templateDoc.systemPrompt,
         prompt,
         maxTokens: detectionMaxTokens(clipBudget),
@@ -377,6 +378,7 @@ async function generateShortOverlayText(options: {
   try {
     const result = await completeWithFallback({
       task: options.logLabel,
+      taskKind: 'overlay-text',
       system: templateDoc.systemPrompt,
       prompt: userPrompt,
       maxTokens: 100,
@@ -461,6 +463,7 @@ export async function detectHookMoment(input: HookMomentInput): Promise<HookMome
     text = await Promise.race([
       completeWithFallback({
         task: 'hook moment detection',
+        taskKind: 'hook-moment',
         system,
         prompt,
         maxTokens: 150,

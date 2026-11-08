@@ -173,6 +173,23 @@ in `.env.local`), and start at **`/startup-validation`**: it checks SQLite read/
 access, WAL mode, FFmpeg, the transcription engine, the LLM chain, and the Remotion
 renderer, and tells you exactly what to fix.
 
+## Optional latency safeguards
+
+The conservative default keeps the original LLM fallback behavior. For a latency
+benchmark, set the following documented environment flags in `.env.local` and restart
+the worker:
+
+- `LLM_TASK_ROUTING_ENABLED=1` routes short hook/overlay/safety work to the Lite model
+  family with 15–20 second limits and `thinkingBudget: 0`; viral detection keeps a
+  90-second quality route and B-roll planning remains a separate 45-second LLM call.
+- `LLM_CIRCUIT_BREAKER_ENABLED=1` opens a process-local model circuit after repeated
+  timeout, network, 429, or 5xx failures. `LLM_CIRCUIT_FAILURE_THRESHOLD` (default 2)
+  and `LLM_CIRCUIT_COOLDOWN_SECONDS` (default 90) tune it. The worker logs every
+  route- and circuit-based model skip.
+
+Both are off by default and can be disabled independently without changing stored
+clips, captions, B-roll plans, or final encoding settings.
+
 ## Project structure
 
 ```

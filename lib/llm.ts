@@ -59,6 +59,140 @@ export interface LlmProviderEntry {
 }
 
 /**
+ * A small, explicit task vocabulary lets the LLM layer choose bounded budgets
+ * and a suitable model family without callers relying on fragile task strings.
+ */
+export type LlmTaskKind =
+  | "viral-detection"
+  | "broll-planning"
+  | "safety-review"
+  | "overlay-text"
+  | "hook-moment"
+  | "generic";
+
+export interface LlmTaskRoute {
+  /** Human-readable label included in per-attempt logs. */
+  name: string;
+  /** Per-model attempt deadline. */
+  timeoutMs: number;
+  /** Maximum output budget for this task. */
+  maxTokens?: number;
+  /** Disable Gemini thinking only when this task does not benefit from it. */
+  thinkingBudget?: number;
+  /** Only these model ids are eligible when task routing is switched on. */
+  modelIds?: readonly string[];
+}
+
+export interface LlmRuntimeConfig {
+  /** Off by default: preserves the existing all-model / 120-second behavior. */
+  taskRoutingEnabled: boolean;
+  /** Off by default: failed models are retried on the next task as before. */
+  circuitBreakerEnabled: boolean;
+  /** Consecutive transient failures before a model is temporarily skipped. */
+  circuitFailureThreshold: number;
+  /** How long an open model circuit stays open. */
+  circuitCooldownMs: number;
+}
+
+const FAST_LITE_MODEL_IDS = [
+  "gemini-studio-3-5-lite",
+  "gemini-studio-3-1-lite",
+  "gemini-studio-2-5-lite",
+] as const;
+
+/**
+ * Opt-in latency routes. The standard route is intentionally the prior behavior:
+ * every configured model, caller-selected budget, and a 120-second deadline.
+ */
+const OPTIMIZED_TASK_ROUTES: Record<Exclude<LlmTaskKind, "generic">, LlmTaskRoute> = {
+  "viral-detection": {
+    name: "viral-quality",
+    timeoutMs: 90_000,
+    // Preserves normal 1-6 clip detection responses while preventing an
+    // accidentally huge request from monopolising every fallback model.
+    maxTokens: 16_000,
+  },
+  "broll-planning": {
+    name: "broll-fast",
+    timeoutMs: 45_000,
+    maxTokens: 1_200,
+    thinkingBudget: 0,
+    modelIds: FAST_LITE_MODEL_IDS,
+  },
+  "safety-review": {
+    name: "safety-fast",
+    timeoutMs: 15_000,
+    maxTokens: 128,
+    thinkingBudget: 0,
+    modelIds: FAST_LITE_MODEL_IDS,
+  },
+  "overlay-text": {
+    name: "overlay-fast",
+    timeoutMs: 15_000,
+    maxTokens: 128,
+    thinkingBudget: 0,
+    modelIds: FAST_LITE_MODEL_IDS,
+  },
+  "hook-moment": {
+    name: "hook-fast",
+    timeoutMs: 20_000,
+    maxTokens: 192,
+    thinkingBudget: 0,
+    modelIds: FAST_LITE_MODEL_IDS,
+  },
+};
+
+const LEGACY_TASK_ROUTE: LlmTaskRoute = {
+  name: "legacy",
+  timeoutMs: 120_000,
+};
+
+function envFlag(value: string | undefined): boolean {
+  return /^(1|true|yes|on)$/i.test(value?.trim() ?? "");
+}
+
+function envInteger(
+  value: string | undefined,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+): number {
+  const parsed = Number.parseInt(value?.trim() ?? "", 10);
+  return Number.isFinite(parsed)
+    ? Math.max(minimum, Math.min(maximum, parsed))
+    : fallback;
+}
+
+/** Read at request time so settings can be toggled without restarting the worker. */
+export function getLlmRuntimeConfig(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): LlmRuntimeConfig {
+  return {
+    taskRoutingEnabled: envFlag(env.LLM_TASK_ROUTING_ENABLED),
+    circuitBreakerEnabled: envFlag(env.LLM_CIRCUIT_BREAKER_ENABLED),
+    circuitFailureThreshold: envInteger(
+      env.LLM_CIRCUIT_FAILURE_THRESHOLD,
+      2,
+      1,
+      10,
+    ),
+    circuitCooldownMs:
+      envInteger(env.LLM_CIRCUIT_COOLDOWN_SECONDS, 90, 5, 3_600) * 1_000,
+  };
+}
+
+/** Resolve the effective route while retaining legacy behavior when disabled. */
+export function resolveLlmTaskRoute(
+  request: Pick<LlmCompletionRequest, "taskKind">,
+  config: LlmRuntimeConfig = getLlmRuntimeConfig(),
+): LlmTaskRoute {
+  if (!config.taskRoutingEnabled || !request.taskKind || request.taskKind === "generic") {
+    return LEGACY_TASK_ROUTE;
+  }
+  return OPTIMIZED_TASK_ROUTES[request.taskKind];
+}
+
+/**
  * THE FALLBACK CHAIN - tried in this exact order, once per model.
  *
  * A model is never retried; a failure advances to the next configured model.
@@ -105,6 +239,8 @@ export const LLM_PROVIDER_CHAIN: LlmProviderEntry[] = [
 export interface LlmCompletionRequest {
   /** What this completion is for — appears in logs and the final error. */
   task: string;
+  /** Opt-in routing category; omitted callers use the legacy fallback behavior. */
+  taskKind?: LlmTaskKind;
   /** System instruction from the prompt template (may be empty). */
   system?: string;
   /** User prompt with the template placeholder already filled in. */
@@ -126,21 +262,45 @@ export interface LlmCompletionResult {
   tookMs: number;
 }
 
-/** Per-attempt failure carrying the HTTP status (when there was one). */
+/** Per-attempt failure carrying the HTTP status and failure class (when known). */
+type LlmFailureKind = "timeout" | "network" | "http" | "response" | "configuration";
+
 class LlmCallFailure extends Error {
   readonly entry: LlmProviderEntry;
   readonly statusCode?: number;
+  readonly kind: LlmFailureKind;
 
-  constructor(entry: LlmProviderEntry, message: string, statusCode?: number) {
+  constructor(
+    entry: LlmProviderEntry,
+    message: string,
+    options: { statusCode?: number; kind?: LlmFailureKind } = {},
+  ) {
     super(message);
     this.name = "LlmCallFailure";
     this.entry = entry;
-    this.statusCode = statusCode;
+    this.statusCode = options.statusCode;
+    this.kind = options.kind ?? "response";
   }
 }
 
-/** Per-call timeout so one hung provider cannot stall the whole analysis. */
-const LLM_CALL_TIMEOUT_MS = 120_000;
+/** A cancellable timeout signal so a timeout can be logged and circuit-counted exactly. */
+interface AttemptAbortSignal {
+  signal: AbortSignal;
+  didTimeout: () => boolean;
+  dispose: () => void;
+}
+
+function requestAbortSignal(signal: AbortSignal | undefined, timeoutMs: number): AttemptAbortSignal {
+  const timeoutController = new AbortController();
+  const timeout = setTimeout(() => timeoutController.abort(), timeoutMs);
+  return {
+    signal: signal
+      ? AbortSignal.any([signal, timeoutController.signal])
+      : timeoutController.signal,
+    didTimeout: () => timeoutController.signal.aborted && !signal?.aborted,
+    dispose: () => clearTimeout(timeout),
+  };
+}
 
 /** Return the configured API key pool; each model attempt uses its first key. */
 export async function llmKeysFor(entry?: LlmProviderEntry): Promise<string[]> {
@@ -180,174 +340,199 @@ function describeHttpError(status: number, rawBody: string): string {
   return `${kind} (HTTP ${status}${detail ? `: ${detail.slice(0, 200)}` : ""})`;
 }
 
-function requestAbortSignal(signal?: AbortSignal): AbortSignal {
-  const timeout = AbortSignal.timeout(LLM_CALL_TIMEOUT_MS);
-  return signal ? AbortSignal.any([signal, timeout]) : timeout;
-}
-
 function throwIfCancelled(signal?: AbortSignal): void {
   if (signal?.aborted) throw new RenderCancelledError();
+}
+
+interface LlmAttemptOptions {
+  maxTokens: number;
+  timeoutMs: number;
+  thinkingBudget?: number;
 }
 
 async function callOpenAiCompatible(
   entry: LlmProviderEntry,
   apiKey: string,
   request: LlmCompletionRequest,
-  maxTokens: number,
+  attempt: LlmAttemptOptions,
 ): Promise<string> {
   if (!entry.baseUrl) {
-    throw new LlmCallFailure(
-      entry,
-      "no baseUrl configured for this entry (lib/llm.ts)",
-    );
-  }
-
-  let response: Response;
-  try {
-    response = await fetch(`${entry.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${apiKey}`,
-        // OpenRouter uses X-Title for attribution on the free tier.
-        ...(entry.provider === "OpenRouter"
-          ? { "x-title": "ClipCraft Local" }
-          : {}),
-      },
-      body: JSON.stringify({
-        model: entry.model,
-        messages: [
-          ...(request.system
-            ? [{ role: "system" as const, content: request.system }]
-            : []),
-          { role: "user" as const, content: request.prompt },
-        ],
-        max_tokens: maxTokens,
-        temperature: request.temperature ?? 0.5,
-        ...(request.json ? { response_format: { type: "json_object" } } : {}),
-      }),
-      signal: requestAbortSignal(request.signal),
+    throw new LlmCallFailure(entry, "no baseUrl configured for this entry (lib/llm.ts)", {
+      kind: "configuration",
     });
-  } catch (error) {
-    // Network failure, DNS, TLS or the per-call timeout.
-    throwIfCancelled(request.signal);
-    throw new LlmCallFailure(entry, toErrorMessage(error));
   }
 
-  throwIfCancelled(request.signal);
-  const rawBody = await response.text();
-  if (!response.ok) {
-    throw new LlmCallFailure(
-      entry,
-      describeHttpError(response.status, rawBody),
-      response.status,
-    );
-  }
-
-  let json: unknown;
+  const abort = requestAbortSignal(request.signal, attempt.timeoutMs);
   try {
-    json = JSON.parse(rawBody);
-  } catch {
-    throw new LlmCallFailure(entry, "returned a non-JSON response body");
-  }
+    let response: Response;
+    try {
+      response = await fetch(`${entry.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${apiKey}`,
+          // OpenRouter uses X-Title for attribution on the free tier.
+          ...(entry.provider === "OpenRouter"
+            ? { "x-title": "ClipCraft Local" }
+            : {}),
+        },
+        body: JSON.stringify({
+          model: entry.model,
+          messages: [
+            ...(request.system
+              ? [{ role: "system" as const, content: request.system }]
+              : []),
+            { role: "user" as const, content: request.prompt },
+          ],
+          max_tokens: attempt.maxTokens,
+          temperature: request.temperature ?? 0.5,
+          ...(request.json ? { response_format: { type: "json_object" } } : {}),
+        }),
+        signal: abort.signal,
+      });
+    } catch (error) {
+      // Network failure, DNS, TLS or the per-call timeout.
+      throwIfCancelled(request.signal);
+      if (abort.didTimeout()) {
+        throw new LlmCallFailure(
+          entry,
+          `timed out after ${attempt.timeoutMs}ms`,
+          { kind: "timeout" },
+        );
+      }
+      throw new LlmCallFailure(entry, toErrorMessage(error), { kind: "network" });
+    }
 
-  const content = (
-    json as { choices?: Array<{ message?: { content?: string | null } }> }
-  ).choices?.[0]?.message?.content;
-  const text = typeof content === "string" ? content.trim() : "";
-  if (!text) {
-    throw new LlmCallFailure(entry, "returned an empty completion");
+    throwIfCancelled(request.signal);
+    const rawBody = await response.text();
+    if (!response.ok) {
+      throw new LlmCallFailure(entry, describeHttpError(response.status, rawBody), {
+        statusCode: response.status,
+        kind: "http",
+      });
+    }
+
+    let json: unknown;
+    try {
+      json = JSON.parse(rawBody);
+    } catch {
+      throw new LlmCallFailure(entry, "returned a non-JSON response body");
+    }
+
+    const content = (
+      json as { choices?: Array<{ message?: { content?: string | null } }> }
+    ).choices?.[0]?.message?.content;
+    const text = typeof content === "string" ? content.trim() : "";
+    if (!text) {
+      throw new LlmCallFailure(entry, "returned an empty completion");
+    }
+    return text;
+  } finally {
+    abort.dispose();
   }
-  return text;
 }
 
 async function callGeminiNative(
   entry: LlmProviderEntry,
   apiKey: string,
   request: LlmCompletionRequest,
-  maxTokens: number,
+  attempt: LlmAttemptOptions,
 ): Promise<string> {
-  let response: Response;
+  const abort = requestAbortSignal(request.signal, attempt.timeoutMs);
   try {
-    response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(entry.model)}:generateContent`,
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          // Header form so the key never ends up in URLs/logs.
-          "x-goog-api-key": apiKey,
-        },
-        body: JSON.stringify({
-          ...(request.system
-            ? { systemInstruction: { parts: [{ text: request.system }] } }
-            : {}),
-          contents: [{ role: "user", parts: [{ text: request.prompt }] }],
-          generationConfig: {
-            temperature: request.temperature ?? 0.5,
-            maxOutputTokens: maxTokens,
-            ...(request.json ? { responseMimeType: "application/json" } : {}),
+    let response: Response;
+    try {
+      response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(entry.model)}:generateContent`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            // Header form so the key never ends up in URLs/logs.
+            "x-goog-api-key": apiKey,
           },
-        }),
-        signal: requestAbortSignal(request.signal),
-      },
-    );
-  } catch (error) {
+          body: JSON.stringify({
+            ...(request.system
+              ? { systemInstruction: { parts: [{ text: request.system }] } }
+              : {}),
+            contents: [{ role: "user", parts: [{ text: request.prompt }] }],
+            generationConfig: {
+              temperature: request.temperature ?? 0.5,
+              maxOutputTokens: attempt.maxTokens,
+              ...(request.json ? { responseMimeType: "application/json" } : {}),
+              ...(attempt.thinkingBudget === undefined
+                ? {}
+                : { thinkingConfig: { thinkingBudget: attempt.thinkingBudget } }),
+            },
+          }),
+          signal: abort.signal,
+        },
+      );
+    } catch (error) {
+      throwIfCancelled(request.signal);
+      if (abort.didTimeout()) {
+        throw new LlmCallFailure(
+          entry,
+          `timed out after ${attempt.timeoutMs}ms`,
+          { kind: "timeout" },
+        );
+      }
+      throw new LlmCallFailure(entry, toErrorMessage(error), { kind: "network" });
+    }
+
     throwIfCancelled(request.signal);
-    throw new LlmCallFailure(entry, toErrorMessage(error));
-  }
+    const rawBody = await response.text();
+    if (!response.ok) {
+      throw new LlmCallFailure(entry, describeHttpError(response.status, rawBody), {
+        statusCode: response.status,
+        kind: "http",
+      });
+    }
 
-  throwIfCancelled(request.signal);
-  const rawBody = await response.text();
-  if (!response.ok) {
-    throw new LlmCallFailure(
-      entry,
-      describeHttpError(response.status, rawBody),
-      response.status,
-    );
-  }
+    let json: unknown;
+    try {
+      json = JSON.parse(rawBody);
+    } catch {
+      throw new LlmCallFailure(entry, "returned a non-JSON response body");
+    }
 
-  let json: unknown;
-  try {
-    json = JSON.parse(rawBody);
-  } catch {
-    throw new LlmCallFailure(entry, "returned a non-JSON response body");
-  }
+    const data = json as {
+      candidates?: Array<{
+        content?: { parts?: Array<{ text?: string }> };
+        finishReason?: string;
+      }>;
+      promptFeedback?: { blockReason?: string };
+    };
 
-  const data = json as {
-    candidates?: Array<{
-      content?: { parts?: Array<{ text?: string }> };
-      finishReason?: string;
-    }>;
-    promptFeedback?: { blockReason?: string };
-  };
+    // Gemini 3.x models spend part of maxOutputTokens on "thinking" tokens.
+    // When the budget runs out mid-answer the API still returns HTTP 200 with
+    // finishReason MAX_TOKENS and a silently truncated body - detect it here so
+    // the chain logs a real failure instead of feeding half-JSON to the parser.
+    const finishReason = data.candidates?.[0]?.finishReason;
+    if (finishReason === "MAX_TOKENS") {
+      throw new LlmCallFailure(
+        entry,
+        `output was cut off at the maxOutputTokens limit (${attempt.maxTokens}) before the answer could finish (Gemini 3.x spends part of this budget on thinking tokens)`,
+      );
+    }
 
-  // Gemini 3.x models spend part of maxOutputTokens on "thinking" tokens.
-  // When the budget runs out mid-answer the API still returns HTTP 200 with
-  // finishReason MAX_TOKENS and a silently truncated body - detect it here so
-  // the chain logs a real failure instead of feeding half-JSON to the parser.
-  const finishReason = data.candidates?.[0]?.finishReason;
-  if (finishReason === "MAX_TOKENS") {
-    throw new LlmCallFailure(
-      entry,
-      `output was cut off at the maxOutputTokens limit (${maxTokens}) before the answer could finish (Gemini 3.x spends part of this budget on thinking tokens)`,
-    );
+    const text = (data.candidates?.[0]?.content?.parts ?? [])
+      .map((part) => part.text ?? "")
+      .join("")
+      .trim();
+    if (!text) {
+      const blockReason = data.promptFeedback?.blockReason;
+      throw new LlmCallFailure(
+        entry,
+        blockReason
+          ? `blocked by safety filter (${blockReason})`
+          : "returned an empty completion",
+      );
+    }
+    return text;
+  } finally {
+    abort.dispose();
   }
-
-  const text = (data.candidates?.[0]?.content?.parts ?? [])
-    .map((part) => part.text ?? "")
-    .join("")
-    .trim();
-  if (!text) {
-    const blockReason = data.promptFeedback?.blockReason;
-    throw new LlmCallFailure(
-      entry,
-      blockReason
-        ? `blocked by safety filter (${blockReason})`
-        : "returned an empty completion",
-    );
-  }
-  return text;
 }
 
 /**
@@ -358,10 +543,12 @@ async function callGeminiNative(
 function effectiveMaxTokens(
   entry: LlmProviderEntry,
   request: LlmCompletionRequest,
+  route: LlmTaskRoute,
 ): number {
   return Math.min(
     request.maxTokens ?? 1500,
     entry.maxTokens ?? Number.MAX_SAFE_INTEGER,
+    route.maxTokens ?? Number.MAX_SAFE_INTEGER,
   );
 }
 
@@ -370,11 +557,84 @@ async function callEntryWithKey(
   entry: LlmProviderEntry,
   apiKey: string,
   request: LlmCompletionRequest,
+  route: LlmTaskRoute,
 ): Promise<string> {
-  const maxTokens = effectiveMaxTokens(entry, request);
+  const attempt: LlmAttemptOptions = {
+    maxTokens: effectiveMaxTokens(entry, request, route),
+    timeoutMs: route.timeoutMs,
+    ...(route.thinkingBudget === undefined
+      ? {}
+      : { thinkingBudget: route.thinkingBudget }),
+  };
   return entry.kind === "gemini-native"
-    ? callGeminiNative(entry, apiKey, request, maxTokens)
-    : callOpenAiCompatible(entry, apiKey, request, maxTokens);
+    ? callGeminiNative(entry, apiKey, request, attempt)
+    : callOpenAiCompatible(entry, apiKey, request, attempt);
+}
+
+interface ModelCircuitState {
+  consecutiveTransientFailures: number;
+  openedUntilMs: number | null;
+}
+
+const modelCircuits = new Map<string, ModelCircuitState>();
+
+/** Test-only reset: production circuits intentionally live for the worker process. */
+export function resetLlmCircuitForTests(): void {
+  modelCircuits.clear();
+}
+
+function transientCircuitFailure(failure: LlmCallFailure): boolean {
+  return (
+    failure.kind === "timeout" ||
+    failure.kind === "network" ||
+    failure.statusCode === 429 ||
+    (failure.statusCode !== undefined && failure.statusCode >= 500)
+  );
+}
+
+function openCircuitReason(
+  entry: LlmProviderEntry,
+  config: LlmRuntimeConfig,
+  now = Date.now(),
+): string | null {
+  if (!config.circuitBreakerEnabled) return null;
+  const circuit = modelCircuits.get(entry.id);
+  if (!circuit?.openedUntilMs) return null;
+  if (circuit.openedUntilMs <= now) {
+    // The cooldown elapsed: keep the failure history only as diagnostics, but
+    // allow one attempt to prove the provider is healthy again.
+    circuit.openedUntilMs = null;
+    return null;
+  }
+  return `circuit open for ${Math.ceil((circuit.openedUntilMs - now) / 1_000)}s after ` +
+    `${circuit.consecutiveTransientFailures} transient failure(s)`;
+}
+
+function recordCircuitFailure(
+  entry: LlmProviderEntry,
+  failure: LlmCallFailure,
+  config: LlmRuntimeConfig,
+  now = Date.now(),
+): string | null {
+  if (!config.circuitBreakerEnabled || !transientCircuitFailure(failure)) return null;
+  const circuit = modelCircuits.get(entry.id) ?? {
+    consecutiveTransientFailures: 0,
+    openedUntilMs: null,
+  };
+  circuit.consecutiveTransientFailures += 1;
+  if (circuit.consecutiveTransientFailures >= config.circuitFailureThreshold) {
+    circuit.openedUntilMs = now + config.circuitCooldownMs;
+    modelCircuits.set(entry.id, circuit);
+    return `opened circuit for ${Math.ceil(config.circuitCooldownMs / 1_000)}s after ` +
+      `${circuit.consecutiveTransientFailures} transient failure(s)`;
+  }
+  modelCircuits.set(entry.id, circuit);
+  return null;
+}
+
+function recordCircuitSuccess(entry: LlmProviderEntry, config: LlmRuntimeConfig): void {
+  if (!config.circuitBreakerEnabled) return;
+  modelCircuits.delete(entry.id);
 }
 
 /**
@@ -389,8 +649,10 @@ async function callEntryWithKey(
 export async function completeWithFallback(
   request: LlmCompletionRequest,
   chain: LlmProviderEntry[] = LLM_PROVIDER_CHAIN,
+  config: LlmRuntimeConfig = getLlmRuntimeConfig(),
 ): Promise<LlmCompletionResult> {
   const attempts: string[] = [];
+  const route = resolveLlmTaskRoute(request, config);
 
   // All configured models currently use this same Gemini key pool.
   const keyPool = new Map<string, string[]>();
@@ -401,8 +663,22 @@ export async function completeWithFallback(
   for (const entry of chain) {
     throwIfCancelled(request.signal);
     const label = `${entry.provider} (${entry.model})`;
-    const keys = (keyPool.get(entry.apiKeyEnv) ?? []).slice(0, 1);
 
+    if (route.modelIds && !route.modelIds.includes(entry.id)) {
+      const why = `task route ${route.name} prefers a fast model family`;
+      console.log(`[LLM] Skipping ${label} for "${request.task}" — ${why}`);
+      attempts.push(`${label}: ${why}`);
+      continue;
+    }
+
+    const circuitReason = openCircuitReason(entry, config);
+    if (circuitReason) {
+      console.log(`[LLM] Skipping ${label} for "${request.task}" — ${circuitReason}`);
+      attempts.push(`${label}: ${circuitReason}`);
+      continue;
+    }
+
+    const keys = (keyPool.get(entry.apiKeyEnv) ?? []).slice(0, 1);
     if (keys.length === 0) {
       const why = "no key is configured (Settings -> AI providers)";
       console.log(`[LLM] Skipping ${label} — ${why}`);
@@ -410,11 +686,20 @@ export async function completeWithFallback(
       continue;
     }
 
+    const maxTokens = effectiveMaxTokens(entry, request, route);
+    const routeDetails =
+      route.name === "legacy"
+        ? ""
+        : ` route=${route.name} timeout_ms=${route.timeoutMs} max_output_tokens=${maxTokens}` +
+          (route.thinkingBudget === undefined
+            ? ""
+            : ` thinking_budget=${route.thinkingBudget}`);
     const startedAt = Date.now();
-    console.log(`[LLM] Trying ${label} for "${request.task}" ...`);
+    console.log(`[LLM] Trying ${label} for "${request.task}"...${routeDetails}`);
     try {
-      const text = await callEntryWithKey(entry, keys[0], request);
+      const text = await callEntryWithKey(entry, keys[0], request, route);
       const tookMs = Date.now() - startedAt;
+      recordCircuitSuccess(entry, config);
       console.log(`[LLM] ${label} handled "${request.task}" in ${tookMs}ms`);
       return { text, entry, tookMs };
     } catch (error) {
@@ -424,8 +709,12 @@ export async function completeWithFallback(
       const failure =
         error instanceof LlmCallFailure
           ? error
-          : new LlmCallFailure(entry, toErrorMessage(error));
-      console.warn(`[LLM] ${label} failed (${failure.message}) - trying next model`);
+          : new LlmCallFailure(entry, toErrorMessage(error), { kind: "network" });
+      const circuitUpdate = recordCircuitFailure(entry, failure, config);
+      console.warn(
+        `[LLM] ${label} failed (${failure.message}) - trying next model` +
+          (circuitUpdate ? `; ${circuitUpdate}` : ""),
+      );
       attempts.push(`${label}: ${failure.message}`);
     }
   }
@@ -437,7 +726,8 @@ export async function completeWithFallback(
       details: attempts.join(" • "),
       resolution:
         "Add a working key under Settings -> AI providers, check the per-provider reasons " +
-        "in the details above, and retry.",
+        "in the details above, and retry. If LLM task routing is enabled, disable it " +
+        "to restore the full fallback chain.",
     },
   );
 }

@@ -388,6 +388,7 @@ export async function findContextCensorWordIndexes(
       .slice(0, 24_000);
     const result = await completeWithFallback({
       task: 'render safety context review',
+      taskKind: 'safety-review',
       system: 'You are a strict child-safe video moderation pass. Return only JSON. Flag word indexes that form profanity, sexual content, slurs or hate, threats or graphic violence, self-harm, drug references, or other language major short-video platforms would not permit children to hear. Do not flag harmless context.',
       prompt: `Transcript words with indexes:\n${transcript}\n\nReturn exactly {"indexes":[non-negative integer indexes]}.`,
       json: true,

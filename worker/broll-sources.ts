@@ -159,6 +159,7 @@ export function createBrollDeps(options: BrollSourceOptions): BrollPlanDeps {
 
       const result = await completeWithFallback({
         task: "B-roll planning",
+        taskKind: "broll-planning",
         prompt,
         json: true,
         temperature: 0.3,
