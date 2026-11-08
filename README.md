@@ -207,6 +207,11 @@ changes that cap while still honoring a smaller Chrome-tab setting.
 
 B-roll card decoding/cropping/JPEG preparation now uses two bounded Jimp workers by
 default (`BROLL_IMAGE_PREP_CONCURRENCY=2`); set it to `1` for the prior serial path.
+Active-speaker detection likewise begins with an adaptive <=4 fps, 240-frame, 640px JPEG
+pass and interpolates only adjacent measured face positions onto the established 8 fps
+analysis cadence. If faces are missing, fleeting, or too small, it retries the prior <=8
+fps, 480-frame, 960px quality path before a layout is selected. Set
+`ASD_ADAPTIVE_SAMPLING=0` for an exact quality-profile-only rollback.
 `CAPTION_ACTIVE_RANGE_RENDERING=1` is an experimental sparse-caption benchmark: it keeps
 the full composition clock and re-bases only proven caption/hook/CTA windows in FFmpeg.
 It automatically stays on the legacy full transparent sequence for dense speech or a

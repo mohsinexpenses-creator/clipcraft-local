@@ -6,10 +6,18 @@ import {
   cleanupSampledFrames,
   sampleSegmentFrames,
 } from '../frame-sampler';
-import { detectFacesYunet, loadYuNet, yunetModelPresent } from '../yunet-detector';
+import { detectFacesYunet, loadYuNet, yunetModelPresent, type YuNetRuntime } from '../yunet-detector';
 import { computeVoiceEnvelope, extractPcmMono } from './audio';
 import { Tracker, Track, FrameDetection } from './tracker';
 import { SpeakerSegment, buildSpeakerTimeline } from './speaker';
+import {
+  ASD_QUALITY_SAMPLE_WIDTH,
+  buildAsdSamplingPlan,
+  getAdaptiveAsdSamplingEnabled,
+  getAsdQualityFallbackReason,
+  interpolateTracksForAnalysis,
+  type AsdSamplingProfile,
+} from './sampling';
 
 /**
  * Active Speaker Detection (ASD) pipeline for one clip window.
@@ -30,12 +38,13 @@ import { SpeakerSegment, buildSpeakerTimeline } from './speaker';
  * optional mouth cue, prominence, continuity - see ./speaker.ts), and the
  * tracker is identity-free nearest-neighbour - no face recognition, no cloud.
  *
- * Cost model: frames are sampled at <= 8 fps (bounded by a 480-frame budget),
- * so a 90 s clip runs at most ~480 YuNet inferences on 640px frames (a few
- * seconds of CPU time) instead of 2,700. The higher rate matters for the
- * speaker decision: the audio↔motion cues need several samples per 0.6 s
- * window to be statistically meaningful at 4 fps, and it is what lets the
- * label flip promptly when the turn changes.
+ * Cost model: the ordinary adaptive pass samples at <=4 fps (bounded by 240
+ * frames) on 640px JPEGs, then fills adjacent face sightings onto the 8fps
+ * speaker/layout cadence without inventing motion. If faces are absent, fleeting
+ * or too small in that cheap pass, it retries the established <=8fps, 960px,
+ * 480-frame quality profile before a layout is chosen. That keeps wide-shot and
+ * small-face output conservative while avoiding the expensive pass on ordinary
+ * close-up clips.
  */
 
 export interface AsdResult {
@@ -52,6 +61,7 @@ export interface AsdResult {
   maxFacesSeen: number;
   framesUsed: number;
   framesTotal: number;
+  /** Detector sampling cadence; fast profiles may interpolate positions onto a denser analysis grid. */
   sampleFps: number;
   /** Share of sampled frames that were voiced (0..1). */
   voicedRatio: number;
@@ -66,23 +76,18 @@ export interface AsdResult {
 export interface AsdOptions {
   /** False when the source has no audio stream. */
   hasAudio: boolean;
-  /** Upper bound on the frame-sampling fps (default 8). */
+  /** Upper bound on the quality-frame sampling fps (default 8). */
   maxSampleFps?: number;
-  /** Upper bound on sampled frames (default 480). */
+  /** Upper bound on quality-frame samples (default 480). */
   maxFrames?: number;
+  /** Override adaptive sampling; omitted follows ASD_ADAPTIVE_SAMPLING. */
+  adaptiveSampling?: boolean;
   /** Worker-owned cancellation signal forwarded to frame/audio extraction. */
   signal?: AbortSignal;
 }
 
-const DEFAULT_MAX_SAMPLE_FPS = 8;
-const DEFAULT_MAX_FRAMES = 480;
-/**
- * Width of the frames the detector sees. 640px (the old value) leaves a host in
- * a 1080p wide shot ~35px wide; 960px keeps ~50px of real detail per face (and
- * sharper face-motion thumbnails) for ~25ms of extra JPEG decode per frame.
- * Never larger than the source itself.
- */
-export const ASD_SAMPLE_WIDTH = 960;
+/** Kept as the public name for callers that describe the quality scan width. */
+export const ASD_SAMPLE_WIDTH = ASD_QUALITY_SAMPLE_WIDTH;
 const THUMB = 16;
 
 /** 16x16 grayscale thumbnail of a face region (scale-invariant motion cue). */
@@ -125,6 +130,122 @@ function medianOf(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+interface FrameAnalysis {
+  tracks: Track[];
+  maxFacesSeen: number;
+  /** Frames with at least one face; kept as the historical `framesUsed` metric. */
+  framesUsed: number;
+  framesWithMultipleFaces: number;
+  faceWidthsSource: number[];
+  faceWidthsSample: number[];
+}
+
+/**
+ * Run the expensive per-image YuNet/motion/tracker work for one sampling pass.
+ * It deliberately has no audio or layout concerns so an adaptive quality retry
+ * can reuse already-decoded PCM and only repeat the work that needs sharper
+ * frames.
+ */
+async function analyzeSampledFrames(
+  frames: string[],
+  sampleFps: number,
+  videoWidth: number,
+  runtime: YuNetRuntime,
+  signal?: AbortSignal,
+): Promise<FrameAnalysis> {
+  const tracker = new Tracker();
+  let maxFacesSeen = 0;
+  let framesUsed = 0;
+  let framesWithMultipleFaces = 0;
+  const faceWidthsSource: number[] = [];
+  const faceWidthsSample: number[] = [];
+  let prevThumbs: Array<{ cx: number; cy: number; w: number; full: number[]; mouth: number[] }> = [];
+
+  for (let i = 0; i < frames.length; i += 1) {
+    if (signal?.aborted) throw new RenderCancelledError();
+    const framePath = frames[i];
+    const t = i / sampleFps;
+
+    const image = await Jimp.read(framePath);
+    const width = image.bitmap.width;
+    const height = image.bitmap.height;
+    const data = image.bitmap.data;
+    const scaleFactor = videoWidth / Math.max(1, width);
+
+    const detections = await detectFacesYunet(runtime, { data, width, height });
+    const faces: Array<{ cx: number; cy: number; w: number; h: number }> = detections.map((d) => ({
+      cx: (d.box.x + d.box.width / 2) * scaleFactor,
+      cy: (d.box.y + d.box.height / 2) * scaleFactor,
+      w: d.box.width * scaleFactor,
+      h: d.box.height * scaleFactor,
+    }));
+
+    // No skin-heuristic fallback here by design: a frame YuNet misses simply
+    // contributes no track points (the tracker ages it out). If the WHOLE
+    // window yields no face, detectSpeakerTimeline throws rather than faking a
+    // static/centre crop.
+    maxFacesSeen = Math.max(maxFacesSeen, faces.length);
+    if (faces.length > 1) framesWithMultipleFaces += 1;
+    for (const f of faces) faceWidthsSource.push(f.w);
+    for (const detection of detections) faceWidthsSample.push(detection.box.width);
+    if (faces.length === 0) {
+      tracker.update(t, []);
+      prevThumbs = [];
+      continue;
+    }
+
+    // Full-face + mouth-region (lower third) thumbnails: the mouth channel is
+    // the sharper cue when lips are visible; the full-face channel continues
+    // working when a mic, mask or hand covers them.
+    const curThumbs = faces.map((f) => {
+      const boxX = f.cx / scaleFactor - (f.w / scaleFactor) / 2;
+      const boxY = f.cy / scaleFactor - (f.h / scaleFactor) / 2;
+      const boxW = f.w / scaleFactor;
+      const boxH = f.h / scaleFactor;
+      const full = faceThumb(data, width, height, boxX, boxY, boxW, boxH);
+      const mouth = faceThumb(data, width, height, boxX, boxY + boxH * 0.55, boxW, boxH * 0.45);
+      return { cx: f.cx, cy: f.cy, w: f.w, full, mouth };
+    });
+
+    const dets: FrameDetection[] = faces.map((f, fi) => {
+      // Two-frame nearest-neighbour motion (no long-term identity needed).
+      let bestPrev: (typeof prevThumbs)[number] | null = null;
+      let bestDist = Infinity;
+      for (const prev of prevThumbs) {
+        const dist = Math.hypot(f.cx - prev.cx, f.cy - prev.cy);
+        if (dist < bestDist && dist < 0.6 * (f.w + prev.w)) {
+          bestDist = dist;
+          bestPrev = prev;
+        }
+      }
+      const motion = bestPrev
+        ? 0.6 * thumbDiff(bestPrev.full, curThumbs[fi].full) +
+          0.4 * thumbDiff(bestPrev.mouth, curThumbs[fi].mouth)
+        : null;
+      return {
+        cx: f.cx,
+        cy: f.cy,
+        w: f.w,
+        mouthOpen: null, // YuNet has no mouth landmarks; the fusion treats this as no cue.
+        motion,
+      };
+    });
+
+    tracker.update(t, dets);
+    prevThumbs = curThumbs;
+    framesUsed += 1;
+  }
+
+  return {
+    tracks: mergeTrackFragments(tracker.allVisible()),
+    maxFacesSeen,
+    framesUsed,
+    framesWithMultipleFaces,
+    faceWidthsSource,
+    faceWidthsSample,
+  };
 }
 
 /** Two tracks "co-exist" when both are seen around the same sampled frame. */
@@ -216,45 +337,54 @@ export async function detectSpeakerTimeline(
   }
 
   if (options.signal?.aborted) throw new RenderCancelledError();
-  const maxFps = options.maxSampleFps ?? DEFAULT_MAX_SAMPLE_FPS;
-  const maxFrames = options.maxFrames ?? DEFAULT_MAX_FRAMES;
+  const adaptiveSampling = options.adaptiveSampling ?? getAdaptiveAsdSamplingEnabled();
+  const samplingPlan = buildAsdSamplingPlan({
+    sourceWidth: videoWidth,
+    maxSampleFps: options.maxSampleFps,
+    maxFrames: options.maxFrames,
+    adaptive: adaptiveSampling,
+  });
 
   let frames: string[] = [];
   let sampleFps = 0;
+  let sampleWidth = samplingPlan.initial.sampleWidth;
   try {
-    log.detail(
-      `ASD · sampling up to ${maxFrames} frames @ <=${maxFps}fps + audio envelope ` +
-      `(window ${start.toFixed(1)}s +${duration.toFixed(1)}s)`
-    );
-
-    // 1) Frames and audio can be extracted independently - run them together.
-    const sampleWidth = Math.max(160, Math.min(ASD_SAMPLE_WIDTH, Math.floor(videoWidth / 2) * 2));
-    const [sampled, pcm] = await Promise.all([
+    const sampleWithProfile = (profile: AsdSamplingProfile, prefix: string) =>
       sampleSegmentFrames(
         videoPath,
         start,
         duration,
-        maxFps,
-        maxFrames,
-        'frames',
-        sampleWidth,
+        profile.maxFps,
+        profile.maxFrames,
+        prefix,
+        profile.sampleWidth,
         options.signal,
-      ),
+        profile.jpegQuality,
+      );
+
+    const initial = samplingPlan.initial;
+    log.detail(
+      `ASD · ${initial.name} sampling up to ${initial.maxFrames} frames @ <=${initial.maxFps}fps ` +
+      `on ${initial.sampleWidth}px JPEG q=${initial.jpegQuality} + audio envelope ` +
+      `(window ${start.toFixed(1)}s +${duration.toFixed(1)}s)`,
+    );
+
+    // Frame extraction, PCM extraction and loading the one process-wide YuNet
+    // session are independent. Starting them together removes idle wall time.
+    const [initialSampled, pcm, runtime] = await Promise.all([
+      sampleWithProfile(initial, initial.name === 'fast' ? 'frames-fast' : 'frames'),
       options.hasAudio
         ? extractPcmMono(videoPath, start, duration, 16000, options.signal)
         : Promise.resolve(new Int16Array(0)),
+      loadYuNet(),
     ]);
     if (options.signal?.aborted) throw new RenderCancelledError();
-    frames = sampled.frames;
-    sampleFps = sampled.fps;
+    frames = initialSampled.frames;
+    sampleFps = initialSampled.fps;
+    sampleWidth = initial.sampleWidth;
 
-    const voice =
-      pcm.length > 0 ? computeVoiceEnvelope(pcm, 16000, sampleFps).voice : new Array(frames.length).fill(0);
-
-    // 2) YuNet runtime. Missing model -> a clear error. There is NO fallback
-    //    detector by design: if we cannot detect a face the render stops with
-    //    an informative error instead of producing a static/centre crop.
-    const runtime = await loadYuNet();
+    // Missing model -> a clear error. There is no unrelated detector fallback:
+    // if no face can be detected the render stops rather than centring blindly.
     if (!runtime) {
       throw new AppError(
         `YuNet face detection is unavailable${yunetModelPresent() ? '' : ' (model not found)'}.`,
@@ -265,96 +395,48 @@ export async function detectSpeakerTimeline(
       );
     }
 
-    // 3) Per-frame detection -> motion cues -> tracker.
-    const tracker = new Tracker();
-    let maxFacesSeen = 0;
-    let framesUsed = 0;
-    let framesWithMultipleFaces = 0;
-    const faceWidthsSource: number[] = [];
-    let prevThumbs: Array<{ cx: number; cy: number; w: number; full: number[]; mouth: number[] }> = [];
+    let profile = initial;
+    let analysis = await analyzeSampledFrames(
+      frames,
+      sampleFps,
+      videoWidth,
+      runtime,
+      options.signal,
+    );
 
-    for (let i = 0; i < frames.length; i += 1) {
+    const fallbackReason = samplingPlan.qualityFallback
+      ? getAsdQualityFallbackReason({
+          framesTotal: frames.length,
+          framesWithFaces: analysis.framesUsed,
+          tracks: analysis.tracks.length,
+          medianSampleFaceWidth: medianOf(analysis.faceWidthsSample),
+        })
+      : null;
+    if (fallbackReason && samplingPlan.qualityFallback) {
+      const fallback = samplingPlan.qualityFallback;
+      log.warn(
+        `ASD · fast sampling quality fallback (${fallbackReason}); retrying ` +
+        `${fallback.maxFrames} frames @ <=${fallback.maxFps}fps on ${fallback.sampleWidth}px.`,
+      );
+      if (frames[0]) cleanupSampledFrames(path.dirname(frames[0]));
+      frames = [];
+
+      const qualitySampled = await sampleWithProfile(fallback, 'frames-quality');
       if (options.signal?.aborted) throw new RenderCancelledError();
-      const framePath = frames[i];
-      const t = i / sampleFps;
-
-      const image = await Jimp.read(framePath);
-      const width = image.bitmap.width;
-      const height = image.bitmap.height;
-      const data = image.bitmap.data;
-      const scaleFactor = videoWidth / Math.max(1, width);
-
-      const detections = await detectFacesYunet(runtime, { data, width, height });
-      const faces: Array<{ cx: number; cy: number; w: number; h: number }> = detections.map((d) => ({
-        cx: (d.box.x + d.box.width / 2) * scaleFactor,
-        cy: (d.box.y + d.box.height / 2) * scaleFactor,
-        w: d.box.width * scaleFactor,
-        h: d.box.height * scaleFactor,
-      }));
-
-      // No skin-heuristic fallback here by design: a frame YuNet misses simply
-      // contributes no track points (the tracker ages it out). If the WHOLE
-      // window yields no face, detectSpeakerTimeline throws and the render
-      // stops with an informative error instead of faking a pan.
-      maxFacesSeen = Math.max(maxFacesSeen, faces.length);
-      if (faces.length > 1) framesWithMultipleFaces += 1;
-      for (const f of faces) faceWidthsSource.push(f.w);
-      if (faces.length === 0) {
-        // Still feed an empty frame so the tracker ages its grace periods.
-        tracker.update(t, []);
-        prevThumbs = [];
-        continue;
-      }
-
-      // Full-face + mouth-region (lower third) thumbnails: the mouth channel is
-      // the sharper cue when the lips are visible; the full-face channel keeps
-      // working when a mic/mask/hand covers them.
-      const curThumbs = faces.map((f) => {
-        const boxX = (f.cx / scaleFactor) - (f.w / scaleFactor) / 2;
-        const boxY = (f.cy / scaleFactor) - (f.h / scaleFactor) / 2;
-        const boxW = f.w / scaleFactor;
-        const boxH = f.h / scaleFactor;
-        const full = faceThumb(data, width, height, boxX, boxY, boxW, boxH);
-        const mouth = faceThumb(data, width, height, boxX, boxY + boxH * 0.55, boxW, boxH * 0.45);
-        return { cx: f.cx, cy: f.cy, w: f.w, full, mouth };
-      });
-
-      const dets: FrameDetection[] = faces.map((f, fi) => {
-        // 2-frame nearest-neighbour motion (no long-term identity needed).
-        let bestPrev: (typeof prevThumbs)[number] | null = null;
-        let bestDist = Infinity;
-        for (const prev of prevThumbs) {
-          const dist = Math.hypot(f.cx - prev.cx, f.cy - prev.cy);
-          if (dist < bestDist && dist < 0.6 * (f.w + prev.w)) {
-            bestDist = dist;
-            bestPrev = prev;
-          }
-        }
-        const motion = bestPrev
-          ? 0.6 * thumbDiff(bestPrev.full, curThumbs[fi].full) +
-            0.4 * thumbDiff(bestPrev.mouth, curThumbs[fi].mouth)
-          : null;
-        return {
-          cx: f.cx,
-          cy: f.cy,
-          w: f.w,
-          mouthOpen: null, // YuNet has no mouth landmarks; the fusion treats this as "no cue"
-          motion,
-        };
-      });
-
-      tracker.update(t, dets);
-      prevThumbs = curThumbs;
-      framesUsed += 1;
+      frames = qualitySampled.frames;
+      sampleFps = qualitySampled.fps;
+      sampleWidth = fallback.sampleWidth;
+      profile = fallback;
+      analysis = await analyzeSampledFrames(
+        frames,
+        sampleFps,
+        videoWidth,
+        runtime,
+        options.signal,
+      );
     }
 
-    // 4) Fuse audio + per-track visual cues into a speaker timeline.
-    // Fragments of one person (ids lost through long occlusions) are merged
-    // FIRST so both the speaker decision and the split-grid count see PEOPLE,
-    // not track-id history.
-    const tracks = mergeTrackFragments(tracker.allVisible());
-
-    if (tracks.length === 0) {
+    if (analysis.tracks.length === 0) {
       throw new AppError(
         `No faces were detected in this clip window (0 of ${frames.length} sampled frames contained a face).`,
         {
@@ -366,9 +448,20 @@ export async function detectSpeakerTimeline(
       );
     }
 
+    // The quality/rollback path preserves its historical cadence exactly. The
+    // fast path promotes only adjacent face positions to the old 8fps analysis
+    // grid; synthetic points carry no motion so they cannot manufacture a
+    // speaker decision.
+    const analysisFps =
+      profile.name === 'fast' ? Math.max(sampleFps, samplingPlan.analysisFps) : sampleFps;
+    const tracks = interpolateTracksForAnalysis(analysis.tracks, sampleFps, analysisFps);
+    const voice =
+      pcm.length > 0
+        ? computeVoiceEnvelope(pcm, 16000, analysisFps).voice
+        : new Array(Math.max(1, Math.round(duration * analysisFps))).fill(0);
     const { segments, speakerCount } = buildSpeakerTimeline({
       duration,
-      fps: sampleFps,
+      fps: analysisFps,
       voice,
       tracks,
       frameWidth: videoWidth,
@@ -376,45 +469,43 @@ export async function detectSpeakerTimeline(
 
     const voicedRatio =
       voice.length > 0 ? voice.filter((v) => v >= 0.18).length / voice.length : 0;
-
-    const medianFaceWidth = medianOf(faceWidthsSource);
-    const facePct = frames.length > 0 ? Math.round((framesUsed / frames.length) * 100) : 0;
+    const medianFaceWidth = medianOf(analysis.faceWidthsSource);
+    const facePct = frames.length > 0 ? Math.round((analysis.framesUsed / frames.length) * 100) : 0;
 
     log.ok(
-      `ASD: ${tracks.length} person(s) tracked${maxFacesSeen > 1 ? `, ${maxFacesSeen} on screen at once` : ''}, ` +
+      `ASD: ${tracks.length} person(s) tracked${analysis.maxFacesSeen > 1 ? `, ${analysis.maxFacesSeen} on screen at once` : ''}, ` +
       `${speakerCount} active speaker(s), ${Math.round(voicedRatio * 100)}% voiced, ` +
-      `frames=${framesUsed}/${frames.length}, fps=${sampleFps.toFixed(2)}, ` +
-      `cue=multi-cue (audio↔motion + energy + prominence + continuity)`
+      `frames=${analysis.framesUsed}/${frames.length}, detector_fps=${sampleFps.toFixed(2)}, ` +
+      `analysis_fps=${analysisFps.toFixed(2)}, profile=${profile.name}, ` +
+      `cue=multi-cue (audio↔motion + energy + prominence + continuity)`,
     );
     log.detail(
       `  detection: faces in ${facePct}% of sampled frames` +
-      (framesWithMultipleFaces > 0
-        ? `, 2+ faces together in ${Math.round((framesWithMultipleFaces / Math.max(1, frames.length)) * 100)}%`
+      (analysis.framesWithMultipleFaces > 0
+        ? `, 2+ faces together in ${Math.round((analysis.framesWithMultipleFaces / Math.max(1, frames.length)) * 100)}%`
         : '') +
       `, median face ${Math.round(medianFaceWidth)}px ` +
       `(${((medianFaceWidth / videoWidth) * 100).toFixed(1)}% of the ${videoWidth}px frame), ` +
-      `scanned on ${sampleWidth}px frames`
+      `scanned on ${sampleWidth}px frames`,
     );
-    if (frames.length >= 8 && framesUsed / frames.length < 0.25) {
+    if (frames.length >= 8 && analysis.framesUsed / frames.length < 0.25) {
       log.warn(
-        `Faces were found in only ${framesUsed} of ${frames.length} sampled frames - the framing will ` +
-        `be unreliable. The people may be very small, dark, turned away or covered in this window.`
+        `Faces were found in only ${analysis.framesUsed} of ${frames.length} sampled frames - the framing will ` +
+        `be unreliable. The people may be very small, dark, turned away or covered in this window.`,
       );
     }
 
-    if (tracks.length > 0) {
-      for (const track of tracks) {
-        const third = videoWidth / 3;
-        const avgX = Math.round(
-          track.points.reduce((sum, p) => sum + p.cx, 0) / track.points.length
-        );
-        const side = avgX < third ? 'LEFT' : avgX > third * 2 ? 'RIGHT' : 'centre';
-        log.detail(
-          `  person#${track.id}: visible ${track.visibleTime.toFixed(1)}s, ` +
-          `avg face ${Math.round(track.avgW)}px, ${track.points.length} sightings, ` +
-          `sits ${side} (avg x=${avgX} of ${videoWidth})`
-        );
-      }
+    for (const track of tracks) {
+      const third = videoWidth / 3;
+      const avgX = Math.round(
+        track.points.reduce((sum, point) => sum + point.cx, 0) / track.points.length,
+      );
+      const side = avgX < third ? 'LEFT' : avgX > third * 2 ? 'RIGHT' : 'centre';
+      log.detail(
+        `  person#${track.id}: visible ${track.visibleTime.toFixed(1)}s, ` +
+        `avg face ${Math.round(track.avgW)}px, ${track.points.length} sightings, ` +
+        `sits ${side} (avg x=${avgX} of ${videoWidth})`,
+      );
     }
 
     const method: AsdResult['method'] = options.hasAudio
@@ -428,12 +519,12 @@ export async function detectSpeakerTimeline(
       method,
       hasLandmarks: false, // no mouth-landmark cue from YuNet (5-point only)
       hasAudio: pcm.length > 0,
-      maxFacesSeen,
-      framesUsed,
+      maxFacesSeen: analysis.maxFacesSeen,
+      framesUsed: analysis.framesUsed,
       framesTotal: frames.length,
       sampleFps,
       voicedRatio,
-      framesWithMultipleFaces,
+      framesWithMultipleFaces: analysis.framesWithMultipleFaces,
       medianFaceWidth,
       sampleWidth,
     };

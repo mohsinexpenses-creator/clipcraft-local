@@ -49,9 +49,13 @@ export async function sampleSegmentFrames(
   tmpPrefix = "frames",
   sampleWidth = DEFAULT_SAMPLE_WIDTH,
   signal?: AbortSignal,
+  jpegQuality = 3,
 ): Promise<SampledFrames> {
   const safeDuration = Math.max(0.5, duration);
   const fps = Math.max(0.5, Math.min(targetFps, maxFrames / safeDuration));
+  // FFmpeg JPEG quality is inverse (2 is very high, 31 is poor). Keep caller
+  // tuning bounded; ASD's fast pass uses 5 while quality fallback retains 3.
+  const boundedJpegQuality = Math.max(2, Math.min(31, Math.round(jpegQuality)));
 
   const tempFramesDir = path.join(
     process.cwd(),
@@ -79,30 +83,37 @@ export async function sampleSegmentFrames(
     `fps=${fps.toFixed(3)},hflip,scale=${evenSize(sampleWidth)}:-2:flags=area`,
     "-frames:v",
     String(maxFrames),
-    // q:v 3 (~Q90): the default JPEG quality smears small faces, which is
-    // exactly what the detector and the face-motion cue depend on.
+    // q:v 3 (~Q90) is the quality profile; the adaptive first pass may use
+    // q:v 5 and retries q:v 3 when face evidence is weak.
     "-q:v",
-    "3",
+    String(boundedJpegQuality),
     path.join(tempFramesDir, "frame_%03d.jpg"),
   ];
 
-  await runFfmpeg(frameArgs, { label: "sample-frames", signal });
+  try {
+    await runFfmpeg(frameArgs, { label: "sample-frames", signal });
 
-  const frames = fs
-    .readdirSync(tempFramesDir)
-    .filter((file) => file.toLowerCase().endsWith(".jpg"))
-    .sort()
-    .map((file) => path.join(tempFramesDir, file));
+    const frames = fs
+      .readdirSync(tempFramesDir)
+      .filter((file) => file.toLowerCase().endsWith(".jpg"))
+      .sort()
+      .map((file) => path.join(tempFramesDir, file));
 
-  if (frames.length === 0) {
-    throw new AppError("Frame sampling produced no frames.", {
-      details: `start=${start}, duration=${safeDuration}`,
-      resolution:
-        "Check the clip timestamps and verify FFmpeg can decode the source video.",
-    });
+    if (frames.length === 0) {
+      throw new AppError("Frame sampling produced no frames.", {
+        details: `start=${start}, duration=${safeDuration}`,
+        resolution:
+          "Check the clip timestamps and verify FFmpeg can decode the source video.",
+      });
+    }
+
+    return { frames, fps };
+  } catch (error) {
+    // A cancellation/failing FFmpeg invocation happens before ownership is
+    // returned to the caller, so clean its partial JPEG directory here.
+    cleanupSampledFrames(tempFramesDir);
+    throw error;
   }
-
-  return { frames, fps };
 }
 
 /** Remove a sampled-frames directory (caller passes the dir it sampled into). */

@@ -18,11 +18,15 @@ in-flight jobs keep the layout they were created with.
 
 The worker pipeline (`worker/asd/` + `worker/layout.ts`):
 
-1. **Samples** the clip window at ≤8 fps (mirrored + downscaled to **960px**, capped at
-   480 frames) and extracts an audio **voice envelope** per sample from the segment
-   PCM (`worker/asd/audio.ts`). The 8 fps rate matters: the audio↔motion cues need
-   several samples per decision window to be meaningful, and it is what lets the
-   label flip promptly on a turn change.
+1. **Samples** the clip window through an adaptive quality gate while extracting an audio
+   **voice envelope** from segment PCM (`worker/asd/audio.ts`). The ordinary pass is
+   mirrored, ≤4 fps, capped at 240 frames and downscaled to **640px**; adjacent measured
+   face positions are interpolated onto the established 8 fps speaker-analysis cadence,
+   but interpolated points never carry fabricated mouth/motion evidence. If faces are
+   absent, fleeting, or small in that pass, ASD retries the previous mirrored ≤8 fps,
+   480-frame, **960px** quality profile before choosing a layout. Set
+   `ASD_ADAPTIVE_SAMPLING=0` for that quality profile only. This preserves a conservative
+   fallback for wide shots while avoiding the expensive scan on ordinary close-up clips.
 2. **Detects faces** with OpenCV **YuNet** (`face_detection_yunet_2023mar.onnx`, run via
    `onnxruntime-node` — download with `npm run setup:yunet`) — this replaced the old
    face-api / tiny_face_detector pipeline. The model input is a fixed 640×640 square,
