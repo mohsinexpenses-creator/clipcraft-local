@@ -18,6 +18,7 @@ import { getVideoMetadata } from "../lib/ffmpeg";
 import { getCaptionOffsetMs, shiftCaptionWords } from "./caption-timing";
 import { detectSpeakerTimeline } from "./asd";
 import {
+  CaptionPreset,
   ClipLayout,
   ClipRecord,
   JobData,
@@ -44,6 +45,8 @@ import {
   type PreparedCaptionOverlays,
 } from "./remotion-renderer";
 import { startMediaServer, type ClipMediaServer } from "./clip-http-server";
+import { runParallelRenderBranches } from "./parallel";
+import { getParallelBrollAsdEnabled } from "./render-options";
 import { cachedImagePath } from "../lib/broll/cache";
 import { anchoredCardRect } from "../lib/broll/card";
 import { buildBrollSfxCues } from "../lib/broll/sfx";
@@ -113,6 +116,141 @@ async function resolveOverlayStyle(
     );
   }
   return preset;
+}
+
+interface BrollRenderPreparation {
+  preparedBroll: PreparedBrollOverlays | null;
+  sequences: OverlayFrameSequence[];
+  fileCount: number;
+  sfx: Array<{ filePath: string; atSeconds: number; volume?: number }>;
+}
+
+interface PrepareBrollForRenderOptions {
+  brollPlan: ClipRecord["broll"];
+  fps: number;
+  totalDuration: number;
+  captionPreset: CaptionPreset;
+  cardLayout: "speaker-focus" | "split-screen";
+  faceBands?: Array<{ top: number; bottom: number }>;
+  onProgress: (progress: number) => void;
+  signal?: AbortSignal;
+  isCancelled: () => boolean;
+}
+
+async function prepareBrollForRender(
+  options: PrepareBrollForRenderOptions,
+): Promise<BrollRenderPreparation> {
+  const empty: BrollRenderPreparation = {
+    preparedBroll: null,
+    sequences: [],
+    fileCount: 0,
+    sfx: [],
+  };
+  const brollPlan = options.brollPlan;
+  if (!brollPlan || brollPlan.items.length === 0) return empty;
+
+  const usable = brollPlan.items
+    .map((item) => ({ item, filePath: cachedImagePath(item.renderFile) }))
+    .filter(({ filePath }) => {
+      const exists = fs.existsSync(filePath);
+      if (!exists) {
+        log.warn(
+          `B-roll image missing from the cache, skipping it: ${path.basename(filePath)}`,
+        );
+      }
+      return exists;
+    });
+  if (usable.length === 0) return empty;
+
+  let mediaServer: ClipMediaServer | null = null;
+  try {
+    const mediaServerStartedAt = Date.now();
+    log.info(
+      `[RENDER-DIAG] stage=broll.media-server-start event=before images=${usable.length}`,
+    );
+    const servedMedia = await startMediaServer(
+      usable.map(({ filePath }, index) => ({
+        route: `broll-${index}${path.extname(filePath) || ".jpg"}`,
+        filePath,
+      })),
+    );
+    mediaServer = servedMedia;
+    log.info(
+      `[RENDER-DIAG] stage=broll.media-server-start event=after time_taken_ms=${Date.now() - mediaServerStartedAt} images=${usable.length}`,
+    );
+
+    const captionBand = captionReservedBand(options.captionPreset);
+    log.info(
+      `[RENDER-DIAG] stage=broll.remotion-prepare event=before ` +
+        `items=${usable.map(({ item }) => `${item.id}:${item.kind}@${item.start.toFixed(3)}-${item.end.toFixed(3)}s`).join(",")} ` +
+        `fps=${options.fps} total_timeline_frame_range=0-${Math.max(0, Math.ceil(options.totalDuration * options.fps) - 1)}`,
+    );
+    const brollPrepareStartedAt = Date.now();
+    const preparedBroll = await prepareRemotionBrollOverlays({
+      fps: options.fps,
+      totalDuration: options.totalDuration,
+      items: usable.map(({ item }, index) => ({
+        id: item.id,
+        kind: item.kind,
+        start: item.start,
+        end: item.end,
+        imageUrl: `${servedMedia.baseUrl}/broll-${index}${path.extname(usable[index].filePath) || ".jpg"}`,
+        // This matches the legacy renderer exactly. For speaker-focus the anchor
+        // has no ASD inputs; for split screen the caller supplies the face bands.
+        ...(item.card
+          ? {
+              card: anchoredCardRect(options.cardLayout, {
+                faceBands: options.faceBands,
+              }),
+            }
+          : {}),
+      })),
+      captionTextColor: options.captionPreset.textColor,
+      captionBand,
+      onProgress: options.onProgress,
+      isCancelled: options.isCancelled,
+      signal: options.signal,
+    });
+    log.info(
+      `[RENDER-DIAG] stage=broll.remotion-prepare event=after time_taken_ms=${Date.now() - brollPrepareStartedAt} sequence_count=${preparedBroll.sequences.length} output_directory=${preparedBroll.workDir}`,
+    );
+
+    let sfx: BrollRenderPreparation["sfx"] = [];
+    if (brollPlan.options.sfx) {
+      sfx = buildBrollSfxCues(
+        usable.map(({ item }) => ({ start: item.start, end: item.end })),
+        { totalDuration: options.totalDuration, enabled: true },
+      )
+        .map((cue) => ({
+          filePath: path.join(process.cwd(), "public", "sfx", cue.file),
+          atSeconds: cue.atSeconds,
+          volume: cue.volume,
+        }))
+        .filter((cue) => fs.existsSync(cue.filePath));
+    }
+    return {
+      preparedBroll,
+      sequences: preparedBroll.sequences,
+      fileCount: usable.length,
+      sfx,
+    };
+  } catch (error) {
+    if (error instanceof RenderCancelledError || options.signal?.aborted) {
+      throw new RenderCancelledError();
+    }
+    // B-roll is an enhancement: a provider/Chromium failure must never lose the clip.
+    log.warn(`B-roll rendering skipped: ${toErrorMessage(error)}`);
+    return empty;
+  } finally {
+    if (mediaServer) {
+      const mediaServerCloseStartedAt = Date.now();
+      log.info("[RENDER-DIAG] stage=broll.media-server-close event=before");
+      await mediaServer.close();
+      log.info(
+        `[RENDER-DIAG] stage=broll.media-server-close event=after time_taken_ms=${Date.now() - mediaServerCloseStartedAt}`,
+      );
+    }
+  }
 }
 
 export interface ProcessClipJobOptions {
@@ -234,6 +372,10 @@ export async function processClipJob(
   // `worker/index.ts` owns the job-token watcher. The signal is shared by
   // speaker detection, Remotion and FFmpeg; no per-clip polling race can let a
   // cancelled attempt write after a replacement job claims this clip.
+  // Track transient Remotion directories from the moment each branch completes,
+  // including B-roll that completed in parallel before later caption work fails.
+  let captionOverlaysForCleanup: PreparedCaptionOverlays | null = null;
+  let brollOverlaysForCleanup: PreparedBrollOverlays | null = null;
   try {
     checkCancelled();
     if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
@@ -390,19 +532,125 @@ export async function processClipJob(
       jobData.layout === "split-screen" ? "split-screen" : "speaker-focus";
     clip.layout = layout;
 
+    // Resolving the base caption preset is database-only work. For a speaker-focus
+    // clip its caption colour and B-roll anchor cannot change after ASD, so doing
+    // it before ASD lets the independent B-roll branch start safely.
+    const requestedCaptionPresetId =
+      typeof captionPresetId === "string" && captionPresetId.trim()
+        ? captionPresetId.trim()
+        : clip.captionPresetId?.trim() || undefined;
+    const defaultCaptionPreset = requestedCaptionPresetId
+      ? null
+      : await getDefaultCaptionPreset();
+    const resolvedCaptionPresetId =
+      requestedCaptionPresetId ?? defaultCaptionPreset?._id;
+    if (!resolvedCaptionPresetId) {
+      throw new AppError(
+        "No caption preset is selected and no database default is configured.",
+        {
+          status: 500,
+          resolution:
+            "Choose a default caption preset in preset settings before rendering.",
+        },
+      );
+    }
+    const preset = await getCaptionPreset(resolvedCaptionPresetId);
+    if (!preset) {
+      throw new AppError(
+        `Caption preset ${resolvedCaptionPresetId} was not found.`,
+        {
+          status: 404,
+          resolution:
+            "Select an existing caption preset from the dashboard and retry rendering.",
+        },
+      );
+    }
+    const totalDuration = segmentDuration + safeHookDuration;
+    const overlayProgressSink = (progress: number): void => {
+      const scaled = 20 + Math.max(0, Math.min(100, progress)) * 0.1;
+      clip.progress = Math.max(clip.progress ?? 0, Math.round(scaled));
+      void persistClip(clip).catch((error) =>
+        log.warn("progress save failed: " + toErrorMessage(error)),
+      );
+      void reportProgress(scaled);
+    };
+
     // No fallbacks by design: detectSpeakerTimeline throws an informative
     // error when it finds no face in the window (or YuNet is unavailable),
     // and the render STOPS - no static-centre crop, no legacy skin track.
-    const asd = await jobTimer.measure("asd", () =>
-      detectSpeakerTimeline(
-        video.filePath,
-        start,
-        segmentDuration,
-        sourceMeta.width,
-        sourceMeta.height,
-        { hasAudio: sourceMeta.hasAudio, signal: execution.signal },
-      ),
+    //
+    // Speaker-focus B-roll has a fixed anchor, so it can render while ASD reads
+    // and samples the source. Split cards deliberately remain after ASD: their
+    // seam/face bands are part of the visual contract and cannot be guessed.
+    const brollPlan = clip.broll ?? null;
+    const parallelBrollRequested = getParallelBrollAsdEnabled();
+    const parallelBrollEligible = Boolean(
+      parallelBrollRequested &&
+        layout === "speaker-focus" &&
+        brollPlan &&
+        brollPlan.items.length > 0,
     );
+    if (parallelBrollRequested && !parallelBrollEligible) {
+      log.detail(
+        !brollPlan?.items.length
+          ? "B-roll/ASD parallel rendering requested, but this clip has no B-roll items."
+          : "B-roll/ASD parallel rendering is skipped for split-screen clips to preserve face-safe card placement.",
+      );
+    }
+
+    checkCancelled();
+    let parallelBrollPreparation: BrollRenderPreparation | null = null;
+    let asd: Awaited<ReturnType<typeof detectSpeakerTimeline>>;
+    if (parallelBrollEligible && brollPlan) {
+      log.detail(
+        "B-roll/ASD parallel rendering enabled: starting the fixed-anchor B-roll branch beside active-speaker detection.",
+      );
+      const [brollPreparation, detectedSpeakerTimeline] =
+        await runParallelRenderBranches(
+          execution.signal,
+          (signal) =>
+            jobTimer.measure("broll-remotion", () =>
+              prepareBrollForRender({
+                brollPlan,
+                fps: renderFps,
+                totalDuration,
+                captionPreset: preset,
+                cardLayout: "speaker-focus",
+                // Do not race ASD's planning persistence with background progress
+                // writes. Remotion still emits detailed frame diagnostics; normal
+                // overlay progress resumes after the joined branches.
+                onProgress: () => undefined,
+                signal,
+                isCancelled: () => signal.aborted,
+              }),
+            ),
+          (signal) =>
+            jobTimer.measure("asd", () =>
+              detectSpeakerTimeline(
+                video.filePath,
+                start,
+                segmentDuration,
+                sourceMeta.width,
+                sourceMeta.height,
+                { hasAudio: sourceMeta.hasAudio, signal },
+              ),
+            ),
+        );
+      parallelBrollPreparation = brollPreparation;
+      brollOverlaysForCleanup = brollPreparation.preparedBroll;
+      asd = detectedSpeakerTimeline;
+    } else {
+      asd = await jobTimer.measure("asd", () =>
+        detectSpeakerTimeline(
+          video.filePath,
+          start,
+          segmentDuration,
+          sourceMeta.width,
+          sourceMeta.height,
+          { hasAudio: sourceMeta.hasAudio, signal: execution.signal },
+        ),
+      );
+    }
     const splitFraming = getSplitFramingSettings();
     const plan = buildLayoutPlan(
       asd,
@@ -448,44 +696,15 @@ export async function processClipJob(
         height: plan.cropH,
       };
     }
-    clip.progress = 20;
+    // The parallel B-roll branch may already have reported overlay progress.
+    // Keep progress monotonic rather than moving the UI backwards after ASD.
+    clip.progress = Math.max(clip.progress ?? 0, 20);
     if (!(await persistClip(clip))) {
       throw new RenderCancelledError(
         "Clip was deleted while render planning was in progress.",
       );
     }
     await reportProgress(20);
-
-    const requestedCaptionPresetId =
-      typeof captionPresetId === "string" && captionPresetId.trim()
-        ? captionPresetId.trim()
-        : clip.captionPresetId?.trim() || undefined;
-    const defaultCaptionPreset = requestedCaptionPresetId
-      ? null
-      : await getDefaultCaptionPreset();
-    const resolvedCaptionPresetId =
-      requestedCaptionPresetId ?? defaultCaptionPreset?._id;
-    if (!resolvedCaptionPresetId) {
-      throw new AppError(
-        "No caption preset is selected and no database default is configured.",
-        {
-          status: 500,
-          resolution:
-            "Choose a default caption preset in preset settings before rendering.",
-        },
-      );
-    }
-    const preset = await getCaptionPreset(resolvedCaptionPresetId);
-    if (!preset) {
-      throw new AppError(
-        `Caption preset ${resolvedCaptionPresetId} was not found.`,
-        {
-          status: 404,
-          resolution:
-            "Select an existing caption preset from the dashboard and retry rendering.",
-        },
-      );
-    }
 
     // hookDuration 0 means the hook intro/overlay was turned off for this clip
     // (detection ran with the hook-text switch off) - don't derive text that
@@ -610,17 +829,7 @@ export async function processClipJob(
     log.step(
       `Step 2/3 · Render transparent overlays (Remotion)  ${color.gray(`(${clipWords.length} words, preset "${preset.name}")`)}`,
     );
-    const overlayProgressSink = (progress: number): void => {
-      const scaled = 20 + Math.max(0, Math.min(100, progress)) * 0.1;
-      clip.progress = Math.max(clip.progress ?? 0, Math.round(scaled));
-      void persistClip(clip).catch((error) =>
-        log.warn("progress save failed: " + toErrorMessage(error)),
-      );
-      void reportProgress(scaled);
-    };
-
     checkCancelled();
-    const totalDuration = segmentDuration + safeHookDuration;
     const preparedOverlays: PreparedCaptionOverlays =
       await jobTimer.measure("caption-remotion", () =>
         prepareRemotionCaptionOverlays({
@@ -646,118 +855,44 @@ export async function processClipJob(
           signal: execution.signal,
         }),
       );
+    captionOverlaysForCleanup = preparedOverlays;
 
     /**
-     * B-roll: the plan was made by the `broll` job (before this render) and this is
-     * the ONLY place that consumes it. Images are served over loopback because
-     * Chromium cannot read the filesystem (and must never fetch a remote URL).
+     * B-roll is planned before rendering and is optional. In the safe parallel
+     * path above this work is already complete; otherwise preserve the legacy
+     * ordering and use the resolved ASD/layout data here.
      */
-    let preparedBroll: PreparedBrollOverlays | null = null;
-    let brollSequences: OverlayFrameSequence[] = [];
-    let brollFileCount = 0;
-    let sfx: Array<{ filePath: string; atSeconds: number; volume?: number }> = [];
-    let brollMediaServer: ClipMediaServer | null = null;
-    const brollPlan = clip.broll ?? null;
-    if (brollPlan && brollPlan.items.length > 0) {
-      const usable = brollPlan.items
-        .map((item) => ({ item, filePath: cachedImagePath(item.renderFile) }))
-        .filter(({ filePath }) => {
-          const exists = fs.existsSync(filePath);
-          if (!exists)
-            log.warn(
-              `B-roll image missing from the cache, skipping it: ${path.basename(filePath)}`,
-            );
-          return exists;
-        });
-      if (usable.length > 0) {
-        try {
-          const mediaServerStartedAt = Date.now();
-          log.info(
-            `[RENDER-DIAG] stage=broll.media-server-start event=before images=${usable.length}`,
-          );
-          brollMediaServer = await startMediaServer(
-            usable.map(({ filePath }, index) => ({
-              route: `broll-${index}${path.extname(filePath) || ".jpg"}`,
-              filePath,
-            })),
-          );
-          log.info(
-            `[RENDER-DIAG] stage=broll.media-server-start event=after time_taken_ms=${Date.now() - mediaServerStartedAt} images=${usable.length}`,
-          );
-          const mediaServer = brollMediaServer;
-          const captionBand = captionReservedBand(captionPresetForRender);
-          const cardLayout =
-            plan.mode === "split" ? "split-screen" : "speaker-focus";
-          const faceBands =
-            plan.mode === "split"
-              ? plan.cells.map((cell) => ({
-                  top: cell.faceZone.top,
-                  bottom: cell.faceZone.bottom,
-                }))
-              : [];
-          log.info(
-            `[RENDER-DIAG] stage=broll.remotion-prepare event=before ` +
-              `items=${usable.map(({ item }) => `${item.id}:${item.kind}@${item.start.toFixed(3)}-${item.end.toFixed(3)}s`).join(",")} ` +
-              `fps=${renderFps} total_timeline_frame_range=0-${Math.max(0, Math.ceil(totalDuration * renderFps) - 1)}`,
-          );
-          const brollPrepareStartedAt = Date.now();
-          preparedBroll = await jobTimer.measure("broll-remotion", () =>
-            prepareRemotionBrollOverlays({
-              fps: renderFps,
-              totalDuration,
-              items: usable.map(({ item }, index) => ({
-                id: item.id,
-                kind: item.kind,
-                start: item.start,
-                end: item.end,
-                imageUrl: `${mediaServer.baseUrl}/broll-${index}${path.extname(usable[index].filePath) || ".jpg"}`,
-                // Fixed anchor per layout (CARD_* constants in lib/broll/card.ts).
-                ...(item.card
-                  ? { card: anchoredCardRect(cardLayout, { faceBands }) }
-                  : {}),
-              })),
-              captionTextColor: captionPresetForRender.textColor,
-              captionBand,
-              onProgress: overlayProgressSink,
-              isCancelled: () => Boolean(execution.signal?.aborted),
-              signal: execution.signal,
-            }),
-          );
-          log.info(
-            `[RENDER-DIAG] stage=broll.remotion-prepare event=after time_taken_ms=${Date.now() - brollPrepareStartedAt} sequence_count=${preparedBroll.sequences.length} output_directory=${preparedBroll.workDir}`,
-          );
-          brollSequences = preparedBroll.sequences;
-          brollFileCount = usable.length;
-          if (brollPlan.options.sfx) {
-            sfx = buildBrollSfxCues(
-              usable.map(({ item }) => ({ start: item.start, end: item.end })),
-              { totalDuration, enabled: true },
-            ).map((cue) => ({
-              filePath: path.join(process.cwd(), "public", "sfx", cue.file),
-              atSeconds: cue.atSeconds,
-              volume: cue.volume,
-            }));
-            sfx = sfx.filter((cue) => fs.existsSync(cue.filePath));
-          }
-        } catch (error) {
-          if (error instanceof RenderCancelledError || execution.signal?.aborted) throw new RenderCancelledError();
-          // B-roll is an enhancement: a failure here must never lose the clip.
-          log.warn(`B-roll rendering skipped: ${toErrorMessage(error)}`);
-          brollSequences = [];
-          sfx = [];
-        } finally {
-          if (brollMediaServer) {
-            const mediaServerCloseStartedAt = Date.now();
-            log.info("[RENDER-DIAG] stage=broll.media-server-close event=before");
-            await brollMediaServer.close();
-            log.info(
-              `[RENDER-DIAG] stage=broll.media-server-close event=after time_taken_ms=${Date.now() - mediaServerCloseStartedAt}`,
-            );
-            brollMediaServer = null;
-          }
-        }
-      }
+    let brollPreparation = parallelBrollPreparation;
+    if (!brollPreparation && brollPlan && brollPlan.items.length > 0) {
+      const cardLayout =
+        plan.mode === "split" ? "split-screen" : "speaker-focus";
+      const faceBands =
+        plan.mode === "split"
+          ? plan.cells.map((cell) => ({
+              top: cell.faceZone.top,
+              bottom: cell.faceZone.bottom,
+            }))
+          : [];
+      brollPreparation = await jobTimer.measure("broll-remotion", () =>
+        prepareBrollForRender({
+          brollPlan,
+          fps: renderFps,
+          totalDuration,
+          captionPreset: captionPresetForRender,
+          cardLayout,
+          faceBands,
+          onProgress: overlayProgressSink,
+          signal: execution.signal,
+          isCancelled: () => Boolean(execution.signal?.aborted),
+        }),
+      );
     }
+
+    const preparedBroll = brollPreparation?.preparedBroll ?? null;
+    brollOverlaysForCleanup = preparedBroll;
+    const brollSequences = brollPreparation?.sequences ?? [];
+    const brollFileCount = brollPreparation?.fileCount ?? 0;
+    const sfx = brollPreparation?.sfx ?? [];
     if (brollSequences.length > 0) {
       log.detail(
         `B-roll: ${brollSequences.length} sequence(s) from ${brollFileCount} image(s), ` +
@@ -923,8 +1058,18 @@ export async function processClipJob(
     );
     throw error;
   } finally {
-    // Per-render frame/media work directories are removed by their producers;
-    // the shared queue controller is disposed by worker/index.ts.
+    // A parallel B-roll branch can finish before later overlay work throws. Clean
+    // both directories from this outer scope as well as the normal post-FFmpeg
+    // path so cancellation/failure never leaves transparent-frame work behind.
+    for (const overlays of [captionOverlaysForCleanup, brollOverlaysForCleanup]) {
+      if (!overlays) continue;
+      try {
+        fs.rmSync(overlays.workDir, { recursive: true, force: true });
+      } catch {
+        /* best-effort */
+      }
+    }
+    // The shared queue controller is disposed by worker/index.ts.
     jobTimer.logSummary(jobTimingOutcome);
   }
 }

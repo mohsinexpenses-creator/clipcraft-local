@@ -195,6 +195,14 @@ audit pass. B-roll now paints one transparent sequence per scheduled image windo
 than blank full-timeline frames. `BROLL_ACTIVE_RANGE_RENDERING=0` is a rollback switch
 for the legacy one-sequence renderer; it is enabled by default.
 
+For an opt-in render-overlap benchmark, set `RENDER_PARALLEL_BROLL_ASD=1`. It starts
+speaker-focus B-roll rendering beside active-speaker detection, using the same fixed
+card anchor, timing, images, caption colour, and final compositing order as the
+sequential path. Split-screen clips deliberately remain sequential because their
+face-safe card placement needs the final ASD face bands. If either concurrent branch
+fails or the job is cancelled, the sibling is aborted and awaited before cleanup; set
+the flag back to `0` on CPU- or RAM-constrained workers.
+
 ## Project structure
 
 ```
