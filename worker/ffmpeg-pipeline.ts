@@ -243,10 +243,12 @@ export function buildOverlayFilterStatements(
     const overlayLabel = `overlay${index}`;
     const outputLabel = index === overlays.length - 1 ? "v" : `vcomp${index}`;
     const start = Math.max(0, overlay.startAtSeconds);
+    // Every normalized image sequence begins at frame 1. Reset its own PTS
+    // before translating it to the final timeline; this is essential for the
+    // per-item B-roll active ranges, whose source composition frames were
+    // rendered at a later absolute frame number and then renamed from 1.
     statements.push(
-      start > 0
-        ? `[${input}:v]setpts=PTS+${start.toFixed(4)}/TB,format=rgba[${overlayLabel}]`
-        : `[${input}:v]format=rgba[${overlayLabel}]`,
+      `[${input}:v]setpts=PTS-STARTPTS${start > 0 ? `+${start.toFixed(4)}/TB` : ""},format=rgba[${overlayLabel}]`,
     );
     statements.push(
       `[${lastVideoLabel}][${overlayLabel}]overlay=0:0:format=auto:eof_action=pass:repeatlast=0:shortest=0[${outputLabel}]`,

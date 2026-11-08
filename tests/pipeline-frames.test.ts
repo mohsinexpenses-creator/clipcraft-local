@@ -179,9 +179,9 @@ test('transparent overlays are composited into the base filter graph before the 
     { name: 'captions', inputPattern: '/tmp/captions_%05d.png', startAtSeconds: 0 },
     { name: 'cta', inputPattern: '/tmp/cta_%05d.png', startAtSeconds: 17.5 },
   ], [2, 3]);
-  assert.ok(graph[0].includes('[2:v]format=rgba[overlay0]'));
+  assert.ok(graph[0].includes('[2:v]setpts=PTS-STARTPTS,format=rgba[overlay0]'));
   assert.ok(graph[1].includes('[vbase][overlay0]overlay='));
-  assert.ok(graph[2].includes('[3:v]setpts=PTS+17.5000/TB,format=rgba[overlay1]'));
+  assert.ok(graph[2].includes('[3:v]setpts=PTS-STARTPTS+17.5000/TB,format=rgba[overlay1]'));
   assert.ok(graph[3].includes('[vcomp0][overlay1]overlay=') && graph[3].endsWith('[v]'));
   assert.ok(graph.filter((statement) => statement.includes('overlay=')).every((statement) =>
     statement.includes('eof_action=pass:repeatlast=0')
@@ -211,9 +211,9 @@ test('B-roll sequences are composited BEFORE the caption layer, whatever their s
     'the caption layer is painted last and produces the output'
   );
   // Each B-roll item keeps its own start time.
-  assert.ok(graph.some((statement) => statement.includes('[2:v]setpts=PTS+12.5000/TB')));
-  assert.ok(graph.some((statement) => statement.includes('[3:v]setpts=PTS+20.0000/TB')));
-  assert.ok(graph.some((statement) => statement.includes('[4:v]format=rgba[overlay2]')), 'captions start at 0');
+  assert.ok(graph.some((statement) => statement.includes('[2:v]setpts=PTS-STARTPTS+12.5000/TB')));
+  assert.ok(graph.some((statement) => statement.includes('[3:v]setpts=PTS-STARTPTS+20.0000/TB')));
+  assert.ok(graph.some((statement) => statement.includes('[4:v]setpts=PTS-STARTPTS,format=rgba[overlay2]')), 'captions start at 0');
 });
 
 test('hook intervals outside the base segment fail instead of being clamped to a partial replay', async () => {

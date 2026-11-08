@@ -369,21 +369,24 @@ export async function prepareRemotionCaptionOverlays(
  * B-roll overlays
  * -------------------------------------------------------------------------- */
 
+export interface BrollOverlayItem {
+  id: string;
+  kind: "fullscreen" | "landscape";
+  /** FINAL timeline seconds, including any prepended hook replay. */
+  start: number;
+  end: number;
+  imageUrl: string;
+  card?: { x: number; y: number; width: number; height: number };
+}
+
 export interface PrepareBrollOverlaysOptions {
   fps: number;
   /** Items to paint, already scheduled on the FINAL (hook-inclusive) timeline. */
-  items: Array<{
-    id: string;
-    kind: "fullscreen" | "landscape";
-    start: number;
-    end: number;
-    imageUrl: string;
-    card?: { x: number; y: number; width: number; height: number };
-  }>;
+  items: BrollOverlayItem[];
   captionTextColor?: string;
   captionBand?: { top: number; bottom: number };
   onProgress?: (progress: number) => void;
-  /** Final clip length (incl. hook). The merged B-roll layer is padded to this. */
+  /** Final clip length (incl. hook), used to clamp every active range. */
   totalDuration?: number;
   isCancelled?: () => boolean;
   /** Shared worker job signal: cancels Remotion and closes Chromium. */
@@ -395,22 +398,132 @@ export interface PreparedBrollOverlays {
   sequences: OverlayFrameSequence[];
 }
 
+export interface BrollActiveFrameRange {
+  item: BrollOverlayItem;
+  /** Absolute frame numbers in the final composition, both inclusive. */
+  startFrame: number;
+  endFrame: number;
+  frameCount: number;
+  /** The matching FFmpeg input starts at this final-timeline timestamp. */
+  startAtSeconds: number;
+}
+
 /**
- * Paint all scheduled B-roll items together as one transparent timeline sequence.
- * FFmpeg composites that single layer before captions, avoiding a long chain of
- * independent image-sequence overlays.
+ * Translate schedule seconds with the exact `Sequence` rounding used by the
+ * Remotion composition. Rendering these absolute frames one item at a time and
+ * rebasing them in FFmpeg is pixel-equivalent to rendering the old full canvas.
+ */
+export function calculateBrollActiveFrameRanges(
+  items: readonly BrollOverlayItem[],
+  fpsInput: number,
+  totalDurationInput: number,
+): BrollActiveFrameRange[] {
+  const fps = normalizeFps(fpsInput);
+  const totalFrames = Math.max(1, Math.ceil(Math.max(0.1, totalDurationInput) * fps));
+  const ranges: BrollActiveFrameRange[] = [];
+
+  for (const item of items) {
+    const rawStartFrame = Math.round(item.start * fps);
+    const rawFrameCount = Math.max(1, Math.round((item.end - item.start) * fps));
+    const rawEndFrame = rawStartFrame + rawFrameCount - 1;
+    // An entirely off-timeline item was invisible in the legacy full render too.
+    if (rawEndFrame < 0 || rawStartFrame >= totalFrames) continue;
+
+    const startFrame = Math.max(0, Math.min(totalFrames - 1, rawStartFrame));
+    const endFrame = Math.max(startFrame, Math.min(totalFrames - 1, rawEndFrame));
+    ranges.push({
+      item,
+      startFrame,
+      endFrame,
+      frameCount: endFrame - startFrame + 1,
+      startAtSeconds: startFrame / fps,
+    });
+  }
+
+  return ranges;
+}
+
+/**
+ * Active-range rendering is the default. Set this to 0 only as a visual
+ * rollback switch; it restores the previous one-full-timeline B-roll sequence.
+ */
+export function getBrollActiveRangeRenderingEnabled(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): boolean {
+  return !/^(0|false|no|off)$/i.test(env.BROLL_ACTIVE_RANGE_RENDERING?.trim() ?? "");
+}
+
+function safeBrollDirectoryPart(value: string): string {
+  const normalized = value.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+  return normalized.slice(0, 72) || "item";
+}
+
+interface BrollRenderPhase {
+  name: string;
+  items: BrollOverlayItem[];
+  startFrame: number;
+  endFrame: number;
+  frameCount: number;
+  startAtSeconds: number;
+  outputDir: string;
+}
+
+/**
+ * Render only each item's active frames. Each range remains in the full
+ * composition clock while Remotion paints it, then is normalized to frame 1 and
+ * shifted back to that same clock by FFmpeg. This keeps animation, z-order,
+ * captions and card/fullscreen geometry identical without decoding transparent
+ * frames before or after the item.
  */
 export async function prepareRemotionBrollOverlays(
   options: PrepareBrollOverlaysOptions,
 ): Promise<PreparedBrollOverlays> {
   const fps = normalizeFps(options.fps);
+  const totalDuration = Math.max(
+    0.1,
+    options.totalDuration ?? Math.max(0, ...options.items.map((item) => item.end)),
+  );
+  const totalFrames = Math.max(1, Math.ceil(totalDuration * fps));
+  const activeRangeRendering = getBrollActiveRangeRenderingEnabled();
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "clipcraft-broll-"));
   let browser: Awaited<
     ReturnType<typeof import("@remotion/renderer").openBrowser>
   > | null = null;
   let cancelBridge: Awaited<ReturnType<typeof remotionCancelBridge>> | null = null;
 
+  const activeRanges = calculateBrollActiveFrameRanges(options.items, fps, totalDuration);
+  const phases: BrollRenderPhase[] = activeRangeRendering
+    ? activeRanges.map((range, index) => ({
+        name: `b-roll ${range.item.kind} ${range.item.id}`,
+        items: [range.item],
+        startFrame: range.startFrame,
+        endFrame: range.endFrame,
+        frameCount: range.frameCount,
+        startAtSeconds: range.startAtSeconds,
+        outputDir: path.join(
+          workDir,
+          `item-${String(index + 1).padStart(3, "0")}-${safeBrollDirectoryPart(range.item.id)}`,
+        ),
+      }))
+    : [
+        {
+          name: "b-roll timeline",
+          items: options.items,
+          startFrame: 0,
+          endFrame: totalFrames - 1,
+          frameCount: totalFrames,
+          startAtSeconds: 0,
+          outputDir: path.join(workDir, "timeline"),
+        },
+      ];
+
   try {
+    checkCancelled(options.isCancelled, options.signal);
+    if (phases.length === 0) {
+      log.detail("B-roll schedule has no active frames inside the final timeline.");
+      return { workDir, sequences: [] };
+    }
+
     const { renderFrames, selectComposition, openBrowser } =
       await timedRenderStage("remotion.renderer-import", () =>
         import("@remotion/renderer"),
@@ -427,15 +540,7 @@ export async function prepareRemotionBrollOverlays(
     );
     const activeBrowser = browser;
 
-    checkCancelled(options.isCancelled, options.signal);
-    const totalDuration = Math.max(
-      0.1,
-      options.totalDuration ?? Math.max(...options.items.map((item) => item.end)),
-    );
-    const durationInFrames = Math.max(1, Math.ceil(totalDuration * fps));
-    const outputDir = path.join(workDir, "frames");
-    fs.mkdirSync(outputDir, { recursive: true });
-    const inputProps = {
+    const compositionInputProps = {
       items: options.items,
       captionTextColor: options.captionTextColor,
       captionBand: options.captionBand,
@@ -447,114 +552,134 @@ export async function prepareRemotionBrollOverlays(
           selectComposition({
             serveUrl: bundleDir,
             id: "BrollTimelineComposition",
-            inputProps,
+            inputProps: compositionInputProps,
             logLevel: "error",
           }),
           getRenderTimeoutMs(),
           "remotion.select-composition",
         ),
-      `composition=BrollTimelineComposition items=${options.items.length} frame_range=0-${durationInFrames - 1}`,
+      `composition=BrollTimelineComposition items=${options.items.length} frame_range=0-${totalFrames - 1}`,
     );
     checkCancelled(options.isCancelled, options.signal);
 
     log.info(
-      `[RENDER-DIAG] stage=broll.phase-model event=active render_api=renderFrames renderRange=absent phase=combined-timeline image_format=png separate_enter_hold_exit=false fps=${fps} frame_range=0-${durationInFrames - 1} planned_frames=${durationInFrames} output_dir=${outputDir}`,
+      `[RENDER-DIAG] stage=broll.phase-model event=active render_api=renderFrames ` +
+        `mode=${activeRangeRendering ? "per-item-active-range" : "legacy-full-timeline"} ` +
+        `fps=${fps} total_frame_range=0-${totalFrames - 1} active_sequences=${phases.length}`,
     );
-    const itemPhaseRanges = options.items.map((item) => {
-      const startFrame = Math.max(0, Math.round(item.start * fps));
-      const itemFrames = Math.max(1, Math.round((item.end - item.start) * fps));
-      return {
-        item,
-        startFrame,
-        endFrame: startFrame + itemFrames - 1,
-        frameCount: itemFrames,
+
+    const totalRenderedFrames = phases.reduce((sum, phase) => sum + phase.frameCount, 0);
+    let completedFrames = 0;
+    const sequences: OverlayFrameSequence[] = [];
+
+    for (const phase of phases) {
+      checkCancelled(options.isCancelled, options.signal);
+      fs.mkdirSync(phase.outputDir, { recursive: true });
+      const phaseInputProps = {
+        items: phase.items,
+        captionTextColor: options.captionTextColor,
+        captionBand: options.captionBand,
       };
-    });
-    for (const phase of itemPhaseRanges) {
+      const itemDescription = phase.items.map((item) => `${item.id}:${item.kind}`).join(",");
       log.info(
-        `[RENDER-DIAG] stage=broll.item-render event=before item_id=${phase.item.id} type=${phase.item.kind} phase=combined-timeline image_format=png canvas=1080x1920 frame_range=${phase.startFrame}-${phase.endFrame} generated_frames=pending output_directory=${outputDir} total_generated_file_size_bytes=pending time_taken_ms=pending ${renderMemoryUsage()}`,
+        `[RENDER-DIAG] stage=broll.item-render event=before items=${itemDescription} ` +
+          `mode=${activeRangeRendering ? "active-range" : "combined-timeline"} image_format=png ` +
+          `canvas=1080x1920 frame_range=${phase.startFrame}-${phase.endFrame} ` +
+          `planned_frames=${phase.frameCount} timeline_start_seconds=${phase.startAtSeconds.toFixed(6)} ` +
+          `output_directory=${phase.outputDir} ${renderMemoryUsage()}`,
       );
-    }
-    let lastLoggedFrames = 0;
-    const renderStartedAt = Date.now();
-    await timedRenderStage(
-      "broll.render-frames",
-      () =>
-        withTimeout(renderFrames({
-        composition: {
-          ...composition,
-          width: 1080,
-          height: 1920,
-          fps,
-          durationInFrames,
-        },
-        serveUrl: bundleDir,
-        inputProps,
-        outputDir,
-        imageFormat: "png",
-        cancelSignal: cancelBridge?.cancelSignal,
-        puppeteerInstance: activeBrowser,
-        concurrency:
-          Number(process.env.REMOTION_CONCURRENCY?.trim()) || undefined,
-        onStart: () =>
-          log.info(
-            `[RENDER-DIAG] stage=broll.render-frames event=renderer-started image_format=png canvas=1080x1920 frame_range=0-${durationInFrames - 1} planned_frames=${durationInFrames} output_dir=${outputDir} ${renderMemoryUsage()}`,
+
+      let lastLoggedFrames = 0;
+      const renderStartedAt = Date.now();
+      await timedRenderStage(
+        "broll.render-frames",
+        () =>
+          withTimeout(
+            renderFrames({
+              composition: {
+                ...composition,
+                width: 1080,
+                height: 1920,
+                fps,
+                durationInFrames: totalFrames,
+              },
+              serveUrl: bundleDir,
+              inputProps: phaseInputProps,
+              outputDir: phase.outputDir,
+              imageFormat: "png",
+              frameRange: [phase.startFrame, phase.endFrame],
+              cancelSignal: cancelBridge?.cancelSignal,
+              puppeteerInstance: activeBrowser,
+              concurrency:
+                Number(process.env.REMOTION_CONCURRENCY?.trim()) || undefined,
+              onStart: () =>
+                log.info(
+                  `[RENDER-DIAG] stage=broll.render-frames event=renderer-started image_format=png ` +
+                    `frame_range=${phase.startFrame}-${phase.endFrame} planned_frames=${phase.frameCount} ` +
+                    `output_dir=${phase.outputDir} ${renderMemoryUsage()}`,
+                ),
+              onFrameUpdate: (framesRendered) => {
+                const progressInterval = Math.max(1, Math.ceil(phase.frameCount / 10));
+                if (
+                  framesRendered === phase.frameCount ||
+                  framesRendered - lastLoggedFrames >= progressInterval
+                ) {
+                  lastLoggedFrames = framesRendered;
+                  log.info(
+                    `[RENDER-DIAG] stage=broll.render-frames event=frame-progress ` +
+                      `frames=${framesRendered}/${phase.frameCount} elapsed_ms=${Date.now() - renderStartedAt} ` +
+                      `${renderMemoryUsage()}`,
+                  );
+                }
+                if (options.onProgress) {
+                  options.onProgress(
+                    Math.round(((completedFrames + framesRendered) / totalRenderedFrames) * 100),
+                  );
+                }
+              },
+              logLevel:
+                (process.env.REMOTION_LOG_LEVEL?.trim() as
+                  | "info"
+                  | "verbose"
+                  | "warn"
+                  | "error") || "info",
+            }),
+            getRenderTimeoutMs(),
+            "broll.render-frames",
           ),
-        onFrameUpdate: (framesRendered) => {
-          const progressInterval = Math.max(1, Math.ceil(durationInFrames / 10));
-          if (
-            framesRendered === durationInFrames ||
-            framesRendered - lastLoggedFrames >= progressInterval
-          ) {
-            lastLoggedFrames = framesRendered;
-            log.info(
-              `[RENDER-DIAG] stage=broll.render-frames event=frame-progress frames=${framesRendered}/${durationInFrames} elapsed_ms=${Date.now() - renderStartedAt} ${renderMemoryUsage()}`,
-            );
-          }
-          if (options.onProgress) {
-            options.onProgress(
-              Math.round((framesRendered / durationInFrames) * 100),
-            );
-          }
-        },
-        logLevel:
-          (process.env.REMOTION_LOG_LEVEL?.trim() as
-            | "info"
-            | "verbose"
-            | "warn"
-            | "error") || "info",
-      }), getRenderTimeoutMs(), "broll.render-frames"),
-      `composition=BrollTimelineComposition image_format=png frame_range=0-${durationInFrames - 1} planned_frames=${durationInFrames} items=${options.items.length} output_dir=${outputDir}`,
-    );
-    checkCancelled(options.isCancelled, options.signal);
-
-    const renderTimeMs = Date.now() - renderStartedAt;
-    const generatedStats = frameOutputStats(outputDir);
-    for (const phase of itemPhaseRanges) {
-      log.info(
-        `[RENDER-DIAG] stage=broll.item-render event=after item_id=${phase.item.id} type=${phase.item.kind} phase=combined-timeline image_format=png canvas=1080x1920 frame_range=${phase.startFrame}-${phase.endFrame} generated_frames=${phase.frameCount} output_directory=${outputDir} shared_timeline_generated_frames=${generatedStats.count} total_generated_file_size_bytes=${generatedStats.bytes} time_taken_ms=${renderTimeMs} ${renderMemoryUsage()}`,
+        `composition=BrollTimelineComposition image_format=png frame_range=${phase.startFrame}-${phase.endFrame} ` +
+          `planned_frames=${phase.frameCount} items=${itemDescription} output_dir=${phase.outputDir}`,
       );
-    }
+      checkCancelled(options.isCancelled, options.signal);
 
-    const normalizationStartedAt = Date.now();
-    const inputPattern = normalizeFrameSequence(outputDir, "png");
-    const normalizationStats = frameOutputStats(outputDir);
-    for (const phase of itemPhaseRanges) {
-      log.info(
-        `[RENDER-DIAG] stage=broll.frame-normalization event=after item_id=${phase.item.id} type=${phase.item.kind} phase=frame-normalization image_format=png canvas=1080x1920 frame_range=${phase.startFrame}-${phase.endFrame} generated_frames=${phase.frameCount} output_directory=${outputDir} shared_timeline_generated_frames=${normalizationStats.count} total_generated_file_size_bytes=${normalizationStats.bytes} time_taken_ms=${Date.now() - normalizationStartedAt} ${renderMemoryUsage()}`,
-      );
-    }
-
-    const sequences: OverlayFrameSequence[] = [
-      {
-        name: "b-roll timeline",
+      const generatedStats = frameOutputStats(phase.outputDir);
+      if (generatedStats.count !== phase.frameCount) {
+        throw new AppError(
+          `B-roll renderer produced ${generatedStats.count} frames for ${phase.name}; expected ${phase.frameCount}.`,
+          {
+            details: `frame_range=${phase.startFrame}-${phase.endFrame}, output=${phase.outputDir}`,
+            resolution: "Retry the render; if it repeats, disable BROLL_ACTIVE_RANGE_RENDERING for the legacy renderer.",
+          },
+        );
+      }
+      const inputPattern = normalizeFrameSequence(phase.outputDir, "png");
+      sequences.push({
+        name: phase.name,
         inputPattern,
-        startAtSeconds: 0,
-      },
-    ];
+        startAtSeconds: phase.startAtSeconds,
+      });
+      log.info(
+        `[RENDER-DIAG] stage=broll.item-render event=after items=${itemDescription} ` +
+          `generated_frames=${generatedStats.count} output_directory=${phase.outputDir} ` +
+          `total_generated_file_size_bytes=${generatedStats.bytes} time_taken_ms=${Date.now() - renderStartedAt} ` +
+          `${renderMemoryUsage()}`,
+      );
+      completedFrames += phase.frameCount;
+    }
 
     log.ok(
-      `Remotion B-roll ready: ${options.items.length} item(s) in one timeline layer`,
+      `Remotion B-roll ready: ${options.items.length} item(s), ${sequences.length} active sequence(s), ` +
+        `${totalRenderedFrames}/${totalFrames} timeline frame(s) painted`,
     );
     cancelBridge?.dispose();
     cancelBridge = null;

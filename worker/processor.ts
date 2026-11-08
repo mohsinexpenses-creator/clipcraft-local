@@ -696,7 +696,9 @@ export async function processClipJob(
                 }))
               : [];
           log.info(
-            `[RENDER-DIAG] stage=broll.remotion-prepare event=before items=${usable.map(({ item }) => `${item.id}:${item.kind}`).join(",")} fps=${renderFps} frame_range=0-${Math.max(0, Math.ceil(totalDuration * renderFps) - 1)}`,
+            `[RENDER-DIAG] stage=broll.remotion-prepare event=before ` +
+              `items=${usable.map(({ item }) => `${item.id}:${item.kind}@${item.start.toFixed(3)}-${item.end.toFixed(3)}s`).join(",")} ` +
+              `fps=${renderFps} total_timeline_frame_range=0-${Math.max(0, Math.ceil(totalDuration * renderFps) - 1)}`,
           );
           const brollPrepareStartedAt = Date.now();
           preparedBroll = await jobTimer.measure("broll-remotion", () =>
