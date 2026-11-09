@@ -24,6 +24,17 @@ export interface PreparedCaptionOverlays {
   sequences: OverlayFrameSequence[];
 }
 
+/** Lower-level timings included in the parent clip job's [JOB-TIMING] summary. */
+export type RemotionTimingStage =
+  | "bundle"
+  | "select-composition"
+  | "render-frames"
+  | "frame-normalization";
+export type RemotionStageTimingReporter = (
+  stage: RemotionTimingStage,
+  elapsedMs: number,
+) => void;
+
 export interface PrepareRemotionOverlaysOptions {
   fps: number;
   hookText: string;
@@ -47,6 +58,8 @@ export interface PrepareRemotionOverlaysOptions {
   isCancelled?: () => boolean;
   /** Shared worker job signal: cancels Remotion and its Chromium work immediately. */
   signal?: AbortSignal;
+  /** Optional sink for bundle/select/render/normalization substage durations. */
+  onStageTiming?: RemotionStageTimingReporter;
 }
 
 /**
@@ -62,10 +75,25 @@ function renderMemoryUsage(): string {
   return `rss=${mb(memory.rss)}MB heap=${mb(memory.heapUsed)}MB external=${mb(memory.external)}MB`;
 }
 
+function reportRemotionStageTiming(
+  report: RemotionStageTimingReporter | undefined,
+  stage: RemotionTimingStage,
+  elapsedMs: number,
+): void {
+  if (!report) return;
+  try {
+    report(stage, elapsedMs);
+  } catch (error) {
+    // Job diagnostics are optional and must not break the actual render.
+    log.warn(`Remotion timing reporter failed for ${stage}: ${toErrorMessage(error)}`);
+  }
+}
+
 async function timedRenderStage<T>(
   stage: string,
   operation: () => Promise<T>,
   details = "",
+  timing?: { stage: RemotionTimingStage; report?: RemotionStageTimingReporter },
 ): Promise<T> {
   const startedAt = Date.now();
   log.info(
@@ -82,6 +110,10 @@ async function timedRenderStage<T>(
       `[RENDER-DIAG] stage=${stage} event=failed time_taken_ms=${Date.now() - startedAt} error=${toErrorMessage(error)} ${details} ${renderMemoryUsage()}`.trim(),
     );
     throw error;
+  } finally {
+    if (timing) {
+      reportRemotionStageTiming(timing.report, timing.stage, Date.now() - startedAt);
+    }
   }
 }
 
@@ -201,38 +233,43 @@ function withTimeout<T>(
 function normalizeFrameSequence(
   outputDir: string,
   extension: "png" | "jpeg",
+  onStageTiming?: RemotionStageTimingReporter,
 ): string {
   const startedAt = Date.now();
   log.info(
     `[RENDER-DIAG] stage=remotion.frame-normalization event=before format=${extension} output_dir=${outputDir} ${renderMemoryUsage()}`,
   );
-  const files = fs
-    .readdirSync(outputDir)
-    .filter((file) => file.toLowerCase().endsWith(`.${extension}`))
-    .map((file) => ({ file, index: Number(file.match(/(\d+)/)?.[1] ?? -1) }))
-    .filter(({ index }) => Number.isFinite(index) && index >= 0)
-    .sort((a, b) => a.index - b.index);
-  if (files.length === 0)
-    throw new Error(`Remotion produced no ${extension.toUpperCase()} frames in ${outputDir}`);
+  try {
+    const files = fs
+      .readdirSync(outputDir)
+      .filter((file) => file.toLowerCase().endsWith(`.${extension}`))
+      .map((file) => ({ file, index: Number(file.match(/(\d+)/)?.[1] ?? -1) }))
+      .filter(({ index }) => Number.isFinite(index) && index >= 0)
+      .sort((a, b) => a.index - b.index);
+    if (files.length === 0)
+      throw new Error(`Remotion produced no ${extension.toUpperCase()} frames in ${outputDir}`);
 
-  // Rename in two phases to avoid a collision if the renderer already happens
-  // to use the ov_00001.png pattern.
-  const temporary = files.map(({ file }, index) => {
-    const tempName = `__normalized_${String(index + 1).padStart(6, "0")}.${extension}`;
-    fs.renameSync(path.join(outputDir, file), path.join(outputDir, tempName));
-    return tempName;
-  });
-  temporary.forEach((file, index) => {
-    fs.renameSync(
-      path.join(outputDir, file),
-      path.join(outputDir, `ov_${String(index + 1).padStart(5, "0")}.${extension}`),
+    // Rename in two phases to avoid a collision if the renderer already happens
+    // to use the ov_00001.png pattern.
+    const temporary = files.map(({ file }, index) => {
+      const tempName = `__normalized_${String(index + 1).padStart(6, "0")}.${extension}`;
+      fs.renameSync(path.join(outputDir, file), path.join(outputDir, tempName));
+      return tempName;
+    });
+    temporary.forEach((file, index) => {
+      fs.renameSync(
+        path.join(outputDir, file),
+        path.join(outputDir, `ov_${String(index + 1).padStart(5, "0")}.${extension}`),
+      );
+    });
+    const stats = frameOutputStats(outputDir);
+    log.info(
+      `[RENDER-DIAG] stage=remotion.frame-normalization event=after format=${extension} frame_range=${stats.firstFrame ?? "unknown"}-${stats.lastFrame ?? "unknown"} generated_frames=${stats.count} output_dir=${outputDir} total_file_size_bytes=${stats.bytes} time_taken_ms=${Date.now() - startedAt} ${renderMemoryUsage()}`,
     );
-  });
-  const stats = frameOutputStats(outputDir);
-  log.info(
-    `[RENDER-DIAG] stage=remotion.frame-normalization event=after format=${extension} frame_range=${stats.firstFrame ?? "unknown"}-${stats.lastFrame ?? "unknown"} generated_frames=${stats.count} output_dir=${outputDir} total_file_size_bytes=${stats.bytes} time_taken_ms=${Date.now() - startedAt} ${renderMemoryUsage()}`,
-  );
-  return path.join(outputDir, `ov_%05d.${extension}`);
+    return path.join(outputDir, `ov_%05d.${extension}`);
+  } finally {
+    reportRemotionStageTiming(onStageTiming, "frame-normalization", Date.now() - startedAt);
+  }
 }
 
 /** A contiguous final-timeline interval whose transparent caption frames are needed. */
@@ -436,6 +473,8 @@ export async function prepareRemotionCaptionOverlays(
     const bundleDir = await timedRenderStage(
       "remotion.bundle-load",
       () => withTimeout(getRemotionBundle(), getRenderTimeoutMs(), "remotion.bundle-load"),
+      "",
+      { stage: "bundle", report: options.onStageTiming },
     );
     // A sparse render can have several discontinuous phases. Reuse one Chrome
     // process so setup does not erase the transparent-frame savings. The legacy
@@ -462,6 +501,7 @@ export async function prepareRemotionCaptionOverlays(
           "remotion.select-composition",
         ),
       "composition=CaptionOverlayComposition",
+      { stage: "select-composition", report: options.onStageTiming },
     );
     checkCancelled(options.isCancelled, options.signal);
 
@@ -536,6 +576,7 @@ export async function prepareRemotionCaptionOverlays(
           ),
         `composition=CaptionOverlayComposition image_format=png frame_range=${phase.startFrame}-${phase.endFrame} ` +
           `planned_frames=${phase.frameCount} output_dir=${phase.outputDir}`,
+        { stage: "render-frames", report: options.onStageTiming },
       );
       checkCancelled(options.isCancelled, options.signal);
       const generated = frameOutputStats(phase.outputDir);
@@ -550,7 +591,7 @@ export async function prepareRemotionCaptionOverlays(
       }
       sequences.push({
         name: phase.name,
-        inputPattern: normalizeFrameSequence(phase.outputDir, "png"),
+        inputPattern: normalizeFrameSequence(phase.outputDir, "png", options.onStageTiming),
         startAtSeconds: phase.startAtSeconds,
         layer: "captions",
         frameCount: phase.frameCount,
@@ -627,6 +668,8 @@ export interface PrepareBrollOverlaysOptions {
   isCancelled?: () => boolean;
   /** Shared worker job signal: cancels Remotion and closes Chromium. */
   signal?: AbortSignal;
+  /** Optional sink for bundle/select/render/normalization substage durations. */
+  onStageTiming?: RemotionStageTimingReporter;
 }
 
 export interface PreparedBrollOverlays {
@@ -771,6 +814,8 @@ export async function prepareRemotionBrollOverlays(
     const bundleDir = await timedRenderStage(
       "remotion.bundle-load",
       () => withTimeout(getRemotionBundle(), getRenderTimeoutMs(), "remotion.bundle-load"),
+      "",
+      { stage: "bundle", report: options.onStageTiming },
     );
     browser = await timedRenderStage(
       "chromium.browser-initialization",
@@ -798,6 +843,7 @@ export async function prepareRemotionBrollOverlays(
           "remotion.select-composition",
         ),
       `composition=BrollTimelineComposition items=${options.items.length} frame_range=0-${totalFrames - 1}`,
+      { stage: "select-composition", report: options.onStageTiming },
     );
     checkCancelled(options.isCancelled, options.signal);
 
@@ -888,6 +934,7 @@ export async function prepareRemotionBrollOverlays(
           ),
         `composition=BrollTimelineComposition image_format=png frame_range=${phase.startFrame}-${phase.endFrame} ` +
           `planned_frames=${phase.frameCount} items=${itemDescription} output_dir=${phase.outputDir}`,
+        { stage: "render-frames", report: options.onStageTiming },
       );
       checkCancelled(options.isCancelled, options.signal);
 
@@ -901,7 +948,7 @@ export async function prepareRemotionBrollOverlays(
           },
         );
       }
-      const inputPattern = normalizeFrameSequence(phase.outputDir, "png");
+      const inputPattern = normalizeFrameSequence(phase.outputDir, "png", options.onStageTiming);
       sequences.push({
         name: phase.name,
         inputPattern,

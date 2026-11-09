@@ -227,6 +227,12 @@ incomplete, overlapping, or custom-timed sequence automatically keeps the prior 
 input path. Set `FFMPEG_OVERLAY_CONCAT=0` to roll back every overlay range to direct
 per-sequence compositing when comparing a renderer or FFmpeg build.
 
+For repeatable timing and visual comparisons, use the immutable static speaker-focus
+fixture and the `[JOB-TIMING]` substage contract in
+[docs/RENDER_BENCHMARK.md](./docs/RENDER_BENCHMARK.md). It never changes regular render
+settings automatically; real-render/reference-frame/audio gates remain explicitly deferred
+until a representative source fixture and FFmpeg tooling are available.
+
 ## Project structure
 
 ```
@@ -298,4 +304,6 @@ docs/                   feature guides (layouts, overlays, viral prompt)
   background picker
 - **[docs/VIRAL_PROMPT_GUIDE.md](./docs/VIRAL_PROMPT_GUIDE.md)** — the viral-detection
   prompt, its variables, and how to customize it
+- **[docs/RENDER_BENCHMARK.md](./docs/RENDER_BENCHMARK.md)** — static comparison fixture,
+  job timing keys, and deferred real-render gates
 - **[docs/sqlite-migration-inventory.md](./docs/sqlite-migration-inventory.md)** — legacy collections, indexes, queue payloads, and behavior recorded before migration

@@ -112,6 +112,22 @@ export class JobTimer {
     this.stages.set(name, existing);
   }
 
+  /**
+   * Add a completed span measured by a lower-level subsystem. This keeps nested
+   * sub-stage timings visible in the one job-end summary without making a
+   * caller hold another active JobTimer stage around concurrent work.
+   */
+  record(name: string, elapsedMs: number): void {
+    const existing = this.stages.get(name) ?? {
+      name,
+      elapsedMs: 0,
+      count: 0,
+    };
+    existing.elapsedMs += Number.isFinite(elapsedMs) ? Math.max(0, elapsedMs) : 0;
+    existing.count += 1;
+    this.stages.set(name, existing);
+  }
+
   /** Time a synchronous or asynchronous operation, including a thrown failure. */
   async measure<T>(name: string, operation: () => Promise<T> | T): Promise<T> {
     const done = this.start(name);

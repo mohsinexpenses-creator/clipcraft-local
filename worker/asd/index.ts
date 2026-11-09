@@ -73,6 +73,13 @@ export interface AsdResult {
   sampleWidth?: number;
 }
 
+export type AsdTimingStage =
+  | "ffmpeg-frame-extraction"
+  | "audio-envelope"
+  | "yunet-detection"
+  | "tracking-speaker-fusion";
+export type AsdStageTimingReporter = (stage: AsdTimingStage, elapsedMs: number) => void;
+
 export interface AsdOptions {
   /** False when the source has no audio stream. */
   hasAudio: boolean;
@@ -84,6 +91,35 @@ export interface AsdOptions {
   adaptiveSampling?: boolean;
   /** Worker-owned cancellation signal forwarded to frame/audio extraction. */
   signal?: AbortSignal;
+  /** Optional per-substage timing sink; caller owns aggregation into job timing. */
+  onStageTiming?: AsdStageTimingReporter;
+}
+
+function reportAsdStageTiming(
+  report: AsdOptions["onStageTiming"],
+  stage: AsdTimingStage,
+  elapsedMs: number,
+): void {
+  if (!report) return;
+  try {
+    report(stage, elapsedMs);
+  } catch (error) {
+    // Observability must never turn an otherwise valid render into a failure.
+    log.warn(`ASD timing reporter failed for ${stage}: ${toErrorMessage(error)}`);
+  }
+}
+
+async function measureAsdStage<T>(
+  options: Pick<AsdOptions, "onStageTiming">,
+  stage: AsdTimingStage,
+  operation: () => Promise<T> | T,
+): Promise<T> {
+  const startedAt = options.onStageTiming ? Date.now() : 0;
+  try {
+    return await operation();
+  } finally {
+    reportAsdStageTiming(options.onStageTiming, stage, Date.now() - startedAt);
+  }
 }
 
 /** Kept as the public name for callers that describe the quality scan width. */
@@ -154,6 +190,7 @@ async function analyzeSampledFrames(
   videoWidth: number,
   runtime: YuNetRuntime,
   signal?: AbortSignal,
+  onStageTiming?: AsdOptions["onStageTiming"],
 ): Promise<FrameAnalysis> {
   const tracker = new Tracker();
   let maxFacesSeen = 0;
@@ -162,90 +199,119 @@ async function analyzeSampledFrames(
   const faceWidthsSource: number[] = [];
   const faceWidthsSample: number[] = [];
   let prevThumbs: Array<{ cx: number; cy: number; w: number; full: number[]; mouth: number[] }> = [];
+  const measureTimings = Boolean(onStageTiming);
+  let yunetDetectionMs = 0;
+  let trackingAndFusionMs = 0;
 
-  for (let i = 0; i < frames.length; i += 1) {
-    if (signal?.aborted) throw new RenderCancelledError();
-    const framePath = frames[i];
-    const t = i / sampleFps;
+  try {
+    for (let i = 0; i < frames.length; i += 1) {
+      if (signal?.aborted) throw new RenderCancelledError();
+      const framePath = frames[i];
+      const t = i / sampleFps;
+      let width = 0;
+      let height = 0;
+      let data: Buffer | Uint8Array;
+      let scaleFactor = 1;
+      let faces: Array<{ cx: number; cy: number; w: number; h: number }> = [];
 
-    const image = await Jimp.read(framePath);
-    const width = image.bitmap.width;
-    const height = image.bitmap.height;
-    const data = image.bitmap.data;
-    const scaleFactor = videoWidth / Math.max(1, width);
+      // JPEG decode and YuNet inference are the detector's complete per-frame
+      // cost. Keep it distinct from the sequential tracker/fusion work below.
+      const detectionStartedAt = measureTimings ? Date.now() : 0;
+      try {
+        const image = await Jimp.read(framePath);
+        width = image.bitmap.width;
+        height = image.bitmap.height;
+        data = image.bitmap.data;
+        scaleFactor = videoWidth / Math.max(1, width);
+        const detections = await detectFacesYunet(runtime, { data, width, height });
+        faces = detections.map((d) => ({
+          cx: (d.box.x + d.box.width / 2) * scaleFactor,
+          cy: (d.box.y + d.box.height / 2) * scaleFactor,
+          w: d.box.width * scaleFactor,
+          h: d.box.height * scaleFactor,
+        }));
+        for (const detection of detections) faceWidthsSample.push(detection.box.width);
+      } finally {
+        if (measureTimings) yunetDetectionMs += Date.now() - detectionStartedAt;
+      }
 
-    const detections = await detectFacesYunet(runtime, { data, width, height });
-    const faces: Array<{ cx: number; cy: number; w: number; h: number }> = detections.map((d) => ({
-      cx: (d.box.x + d.box.width / 2) * scaleFactor,
-      cy: (d.box.y + d.box.height / 2) * scaleFactor,
-      w: d.box.width * scaleFactor,
-      h: d.box.height * scaleFactor,
-    }));
+      const trackingStartedAt = measureTimings ? Date.now() : 0;
+      try {
+        // No skin-heuristic fallback here by design: a frame YuNet misses simply
+        // contributes no track points (the tracker ages it out). If the WHOLE
+        // window yields no face, detectSpeakerTimeline throws rather than faking a
+        // static/centre crop.
+        maxFacesSeen = Math.max(maxFacesSeen, faces.length);
+        if (faces.length > 1) framesWithMultipleFaces += 1;
+        for (const f of faces) faceWidthsSource.push(f.w);
+        if (faces.length === 0) {
+          tracker.update(t, []);
+          prevThumbs = [];
+          continue;
+        }
 
-    // No skin-heuristic fallback here by design: a frame YuNet misses simply
-    // contributes no track points (the tracker ages it out). If the WHOLE
-    // window yields no face, detectSpeakerTimeline throws rather than faking a
-    // static/centre crop.
-    maxFacesSeen = Math.max(maxFacesSeen, faces.length);
-    if (faces.length > 1) framesWithMultipleFaces += 1;
-    for (const f of faces) faceWidthsSource.push(f.w);
-    for (const detection of detections) faceWidthsSample.push(detection.box.width);
-    if (faces.length === 0) {
-      tracker.update(t, []);
-      prevThumbs = [];
-      continue;
+        // Full-face + mouth-region (lower third) thumbnails: the mouth channel is
+        // the sharper cue when lips are visible; the full-face channel continues
+        // working when a mic, mask or hand covers them.
+        const curThumbs = faces.map((f) => {
+          const boxX = f.cx / scaleFactor - (f.w / scaleFactor) / 2;
+          const boxY = f.cy / scaleFactor - (f.h / scaleFactor) / 2;
+          const boxW = f.w / scaleFactor;
+          const boxH = f.h / scaleFactor;
+          const full = faceThumb(data, width, height, boxX, boxY, boxW, boxH);
+          const mouth = faceThumb(data, width, height, boxX, boxY + boxH * 0.55, boxW, boxH * 0.45);
+          return { cx: f.cx, cy: f.cy, w: f.w, full, mouth };
+        });
+
+        const dets: FrameDetection[] = faces.map((f, fi) => {
+          // Two-frame nearest-neighbour motion (no long-term identity needed).
+          let bestPrev: (typeof prevThumbs)[number] | null = null;
+          let bestDist = Infinity;
+          for (const prev of prevThumbs) {
+            const dist = Math.hypot(f.cx - prev.cx, f.cy - prev.cy);
+            if (dist < bestDist && dist < 0.6 * (f.w + prev.w)) {
+              bestDist = dist;
+              bestPrev = prev;
+            }
+          }
+          const motion = bestPrev
+            ? 0.6 * thumbDiff(bestPrev.full, curThumbs[fi].full) +
+              0.4 * thumbDiff(bestPrev.mouth, curThumbs[fi].mouth)
+            : null;
+          return {
+            cx: f.cx,
+            cy: f.cy,
+            w: f.w,
+            mouthOpen: null, // YuNet has no mouth landmarks; the fusion treats this as no cue.
+            motion,
+          };
+        });
+
+        tracker.update(t, dets);
+        prevThumbs = curThumbs;
+        framesUsed += 1;
+      } finally {
+        if (measureTimings) trackingAndFusionMs += Date.now() - trackingStartedAt;
+      }
     }
 
-    // Full-face + mouth-region (lower third) thumbnails: the mouth channel is
-    // the sharper cue when lips are visible; the full-face channel continues
-    // working when a mic, mask or hand covers them.
-    const curThumbs = faces.map((f) => {
-      const boxX = f.cx / scaleFactor - (f.w / scaleFactor) / 2;
-      const boxY = f.cy / scaleFactor - (f.h / scaleFactor) / 2;
-      const boxW = f.w / scaleFactor;
-      const boxH = f.h / scaleFactor;
-      const full = faceThumb(data, width, height, boxX, boxY, boxW, boxH);
-      const mouth = faceThumb(data, width, height, boxX, boxY + boxH * 0.55, boxW, boxH * 0.45);
-      return { cx: f.cx, cy: f.cy, w: f.w, full, mouth };
-    });
-
-    const dets: FrameDetection[] = faces.map((f, fi) => {
-      // Two-frame nearest-neighbour motion (no long-term identity needed).
-      let bestPrev: (typeof prevThumbs)[number] | null = null;
-      let bestDist = Infinity;
-      for (const prev of prevThumbs) {
-        const dist = Math.hypot(f.cx - prev.cx, f.cy - prev.cy);
-        if (dist < bestDist && dist < 0.6 * (f.w + prev.w)) {
-          bestDist = dist;
-          bestPrev = prev;
-        }
-      }
-      const motion = bestPrev
-        ? 0.6 * thumbDiff(bestPrev.full, curThumbs[fi].full) +
-          0.4 * thumbDiff(bestPrev.mouth, curThumbs[fi].mouth)
-        : null;
+    const mergeStartedAt = measureTimings ? Date.now() : 0;
+    try {
       return {
-        cx: f.cx,
-        cy: f.cy,
-        w: f.w,
-        mouthOpen: null, // YuNet has no mouth landmarks; the fusion treats this as no cue.
-        motion,
+        tracks: mergeTrackFragments(tracker.allVisible()),
+        maxFacesSeen,
+        framesUsed,
+        framesWithMultipleFaces,
+        faceWidthsSource,
+        faceWidthsSample,
       };
-    });
-
-    tracker.update(t, dets);
-    prevThumbs = curThumbs;
-    framesUsed += 1;
+    } finally {
+      if (measureTimings) trackingAndFusionMs += Date.now() - mergeStartedAt;
+    }
+  } finally {
+    reportAsdStageTiming(onStageTiming, "yunet-detection", yunetDetectionMs);
+    reportAsdStageTiming(onStageTiming, "tracking-speaker-fusion", trackingAndFusionMs);
   }
-
-  return {
-    tracks: mergeTrackFragments(tracker.allVisible()),
-    maxFacesSeen,
-    framesUsed,
-    framesWithMultipleFaces,
-    faceWidthsSource,
-    faceWidthsSample,
-  };
 }
 
 /** Two tracks "co-exist" when both are seen around the same sampled frame. */
@@ -350,16 +416,18 @@ export async function detectSpeakerTimeline(
   let sampleWidth = samplingPlan.initial.sampleWidth;
   try {
     const sampleWithProfile = (profile: AsdSamplingProfile, prefix: string) =>
-      sampleSegmentFrames(
-        videoPath,
-        start,
-        duration,
-        profile.maxFps,
-        profile.maxFrames,
-        prefix,
-        profile.sampleWidth,
-        options.signal,
-        profile.jpegQuality,
+      measureAsdStage(options, "ffmpeg-frame-extraction", () =>
+        sampleSegmentFrames(
+          videoPath,
+          start,
+          duration,
+          profile.maxFps,
+          profile.maxFrames,
+          prefix,
+          profile.sampleWidth,
+          options.signal,
+          profile.jpegQuality,
+        ),
       );
 
     const initial = samplingPlan.initial;
@@ -373,9 +441,11 @@ export async function detectSpeakerTimeline(
     // session are independent. Starting them together removes idle wall time.
     const [initialSampled, pcm, runtime] = await Promise.all([
       sampleWithProfile(initial, initial.name === 'fast' ? 'frames-fast' : 'frames'),
-      options.hasAudio
-        ? extractPcmMono(videoPath, start, duration, 16000, options.signal)
-        : Promise.resolve(new Int16Array(0)),
+      measureAsdStage(options, "audio-envelope", () =>
+        options.hasAudio
+          ? extractPcmMono(videoPath, start, duration, 16000, options.signal)
+          : Promise.resolve(new Int16Array(0)),
+      ),
       loadYuNet(),
     ]);
     if (options.signal?.aborted) throw new RenderCancelledError();
@@ -402,6 +472,7 @@ export async function detectSpeakerTimeline(
       videoWidth,
       runtime,
       options.signal,
+      options.onStageTiming,
     );
 
     const fallbackReason = samplingPlan.qualityFallback
@@ -433,6 +504,7 @@ export async function detectSpeakerTimeline(
         videoWidth,
         runtime,
         options.signal,
+        options.onStageTiming,
       );
     }
 
@@ -454,18 +526,26 @@ export async function detectSpeakerTimeline(
     // speaker decision.
     const analysisFps =
       profile.name === 'fast' ? Math.max(sampleFps, samplingPlan.analysisFps) : sampleFps;
-    const tracks = interpolateTracksForAnalysis(analysis.tracks, sampleFps, analysisFps);
-    const voice =
+    const voice = await measureAsdStage(options, "audio-envelope", () =>
       pcm.length > 0
         ? computeVoiceEnvelope(pcm, 16000, analysisFps).voice
-        : new Array(Math.max(1, Math.round(duration * analysisFps))).fill(0);
-    const { segments, speakerCount } = buildSpeakerTimeline({
-      duration,
-      fps: analysisFps,
-      voice,
-      tracks,
-      frameWidth: videoWidth,
-    });
+        : new Array(Math.max(1, Math.round(duration * analysisFps))).fill(0),
+    );
+    const { tracks, segments, speakerCount } = await measureAsdStage(
+      options,
+      "tracking-speaker-fusion",
+      () => {
+        const tracks = interpolateTracksForAnalysis(analysis.tracks, sampleFps, analysisFps);
+        const { segments, speakerCount } = buildSpeakerTimeline({
+          duration,
+          fps: analysisFps,
+          voice,
+          tracks,
+          frameWidth: videoWidth,
+        });
+        return { tracks, segments, speakerCount };
+      },
+    );
 
     const voicedRatio =
       voice.length > 0 ? voice.filter((v) => v >= 0.18).length / voice.length : 0;

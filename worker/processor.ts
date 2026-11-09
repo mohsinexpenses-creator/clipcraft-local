@@ -16,7 +16,7 @@ import { resolveCaptionThemeOverlayStyle } from "../lib/caption-theme-styles";
 
 import { getVideoMetadata } from "../lib/ffmpeg";
 import { getCaptionOffsetMs, shiftCaptionWords } from "./caption-timing";
-import { detectSpeakerTimeline } from "./asd";
+import { detectSpeakerTimeline, type AsdStageTimingReporter } from "./asd";
 import {
   CaptionPreset,
   ClipLayout,
@@ -43,6 +43,7 @@ import {
   prepareRemotionCaptionOverlays,
   type PreparedBrollOverlays,
   type PreparedCaptionOverlays,
+  type RemotionStageTimingReporter,
 } from "./remotion-renderer";
 import { startMediaServer, type ClipMediaServer } from "./clip-http-server";
 import { runParallelRenderBranches } from "./parallel";
@@ -138,6 +139,8 @@ interface PrepareBrollForRenderOptions {
   onProgress: (progress: number) => void;
   /** Cap Chrome tabs only when this render shares resources with ASD. */
   remotionConcurrencyCap?: number;
+  /** Adds B-roll Remotion substages to the enclosing job timing summary. */
+  onStageTiming?: RemotionStageTimingReporter;
   signal?: AbortSignal;
   isCancelled: () => boolean;
 }
@@ -216,6 +219,7 @@ async function prepareBrollForRender(
       maxConcurrency: options.remotionConcurrencyCap,
       isCancelled: options.isCancelled,
       signal: options.signal,
+      onStageTiming: options.onStageTiming,
     });
     log.info(
       `[RENDER-DIAG] stage=broll.remotion-prepare event=after time_taken_ms=${Date.now() - brollPrepareStartedAt} sequence_count=${preparedBroll.sequences.length} output_directory=${preparedBroll.workDir}`,
@@ -296,6 +300,17 @@ export async function processClipJob(
   // ASD in the opt-in parallel renderer). The final job-end summary makes a
   // real baseline/re-run directly comparable without adding database writes.
   const jobTimer = new JobTimer({ job: `clip-render:${clipId}` });
+  // Keep component timings namespaced beneath their existing top-level stage.
+  // They intentionally overlap their parent measure; wall time remains the only
+  // end-to-end number, while this exposes the expensive work inside it.
+  const asdStageTiming: AsdStageTimingReporter = (stage, elapsedMs): void =>
+    jobTimer.record(`asd.${stage}`, elapsedMs);
+  const remotionStageTiming = (
+    parent: "caption-remotion" | "broll-remotion",
+  ): RemotionStageTimingReporter =>
+    (stage, elapsedMs) => jobTimer.record(`${parent}.${stage}`, elapsedMs);
+  const captionStageTiming = remotionStageTiming("caption-remotion");
+  const brollStageTiming = remotionStageTiming("broll-remotion");
   let jobTimingOutcome: JobTimingOutcome = "failed";
 
   const reportProgress = async (value: number): Promise<void> => {
@@ -627,6 +642,7 @@ export async function processClipJob(
                 // overlay progress resumes after the joined branches.
                 onProgress: () => undefined,
                 remotionConcurrencyCap: getParallelBrollAsdConcurrencyCap(),
+                onStageTiming: brollStageTiming,
                 signal,
                 isCancelled: () => signal.aborted,
               }),
@@ -639,7 +655,11 @@ export async function processClipJob(
                 segmentDuration,
                 sourceMeta.width,
                 sourceMeta.height,
-                { hasAudio: sourceMeta.hasAudio, signal },
+                {
+                  hasAudio: sourceMeta.hasAudio,
+                  signal,
+                  onStageTiming: asdStageTiming,
+                },
               ),
             ),
         );
@@ -654,7 +674,11 @@ export async function processClipJob(
           segmentDuration,
           sourceMeta.width,
           sourceMeta.height,
-          { hasAudio: sourceMeta.hasAudio, signal: execution.signal },
+          {
+            hasAudio: sourceMeta.hasAudio,
+            signal: execution.signal,
+            onStageTiming: asdStageTiming,
+          },
         ),
       );
     }
@@ -860,6 +884,7 @@ export async function processClipJob(
           onProgress: overlayProgressSink,
           isCancelled: () => Boolean(execution.signal?.aborted),
           signal: execution.signal,
+          onStageTiming: captionStageTiming,
         }),
       );
     captionOverlaysForCleanup = preparedOverlays;
@@ -891,6 +916,7 @@ export async function processClipJob(
           onProgress: overlayProgressSink,
           signal: execution.signal,
           isCancelled: () => Boolean(execution.signal?.aborted),
+          onStageTiming: brollStageTiming,
         }),
       );
     }

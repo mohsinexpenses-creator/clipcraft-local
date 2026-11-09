@@ -35,6 +35,27 @@ test("JobTimer records wall time and aggregates repeated named stages", async ()
   );
 });
 
+test("JobTimer records lower-level completed spans in the same summary", () => {
+  let now = 0;
+  const timer = new JobTimer({ job: "clip-render:clip-substages", now: () => now });
+
+  timer.record("asd.ffmpeg-frame-extraction", 1_200);
+  timer.record("asd.ffmpeg-frame-extraction", 800);
+  timer.record("caption-remotion.render-frames", -10);
+  timer.record("caption-remotion.render-frames", Number.NaN);
+  now = 50;
+
+  const summary = timer.summary("done");
+  assert.deepEqual(summary.stages, [
+    { name: "asd.ffmpeg-frame-extraction", elapsedMs: 2_000, count: 2 },
+    { name: "caption-remotion.render-frames", elapsedMs: 0, count: 2 },
+  ]);
+  assert.match(
+    formatJobTimingSummary(summary),
+    /stages: asd\.ffmpeg-frame-extraction=2\.00s×2, caption-remotion\.render-frames=0ms×2$/,
+  );
+});
+
 test("JobTimer closes an active stage in a cancelled summary", () => {
   let now = 0;
   const timer = new JobTimer({ job: "clip-render:clip-2", now: () => now });
