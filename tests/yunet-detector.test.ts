@@ -315,6 +315,15 @@ test('planDetectionRegions: square frames use one pass, wide frames add overlapp
 
   // Tiling can be switched off.
   assert.equal(planDetectionRegions(1920, 1080, 'off').length, 1);
+  // Wide-shot optimization can remove only the redundant full-frame pass;
+  // tiles and their seam geometry stay exactly the same.
+  const tileOnly = planDetectionRegions(1920, 1080, 'auto', false);
+  assert.deepEqual(
+    tileOnly.map((region) => [region.x, region.y, region.w, region.h]),
+    wide.slice(1).map((region) => [region.x, region.y, region.w, region.h]),
+  );
+  // Square-ish content never becomes detector-less when tile-only is requested.
+  assert.equal(planDetectionRegions(640, 640, 'auto', false).length, 1);
 });
 
 test('a small face that ONLY a tile can see is found, at the right frame position', async () => {

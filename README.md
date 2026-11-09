@@ -195,23 +195,35 @@ audit pass. B-roll now paints one transparent sequence per scheduled image windo
 than blank full-timeline frames. `BROLL_ACTIVE_RANGE_RENDERING=0` is a rollback switch
 for the legacy one-sequence renderer; it is enabled by default.
 
-For an opt-in render-overlap benchmark, set `RENDER_PARALLEL_BROLL_ASD=1`. It starts
-speaker-focus B-roll rendering beside active-speaker detection, using the same fixed
-card anchor, timing, images, caption colour, and final compositing order as the
-sequential path. Split-screen clips deliberately remain sequential because their
-face-safe card placement needs the final ASD face bands. If either concurrent branch
+Speaker-focus B-roll rendering now starts beside active-speaker detection by default,
+using the same fixed card anchor, timing, images, caption colour, and final compositing
+order as the sequential path. Split-screen clips deliberately remain sequential because
+their face-safe card placement needs the final ASD face bands. If either concurrent branch
 fails or the job is cancelled, the sibling is aborted and awaited before cleanup; set
-the flag back to `0` on CPU- or RAM-constrained workers. That shared branch caps Chrome
-tabs at two by default so ASD keeps CPU/RAM; `RENDER_PARALLEL_BROLL_CONCURRENCY=1..32`
-changes that cap while still honoring a smaller Chrome-tab setting.
+`RENDER_PARALLEL_BROLL_ASD=0` on CPU- or RAM-constrained workers to restore the sequential
+path. That shared branch caps Chrome tabs at two by default so ASD keeps CPU/RAM;
+`RENDER_PARALLEL_BROLL_CONCURRENCY=1..32` changes that cap while still honoring a smaller
+Chrome-tab setting.
 
 B-roll card decoding/cropping/JPEG preparation now uses two bounded Jimp workers by
 default (`BROLL_IMAGE_PREP_CONCURRENCY=2`); set it to `1` for the prior serial path.
-Active-speaker detection likewise begins with an adaptive <=4 fps, 240-frame, 640px JPEG
-pass and interpolates only adjacent measured face positions onto the established 8 fps
-analysis cadence. If faces are missing, fleeting, or too small, it retries the prior <=8
-fps, 480-frame, 960px quality path before a layout is selected. Set
-`ASD_ADAPTIVE_SAMPLING=0` for an exact quality-profile-only rollback.
+Active-speaker detection likewise begins with an adaptive <=4 fps, 240-frame, 960px JPEG
+balanced pass and interpolates only adjacent measured face positions onto the established
+8 fps analysis cadence. Bounded two-frame YuNet decode/inference runs concurrently, while
+tracking and speaker fusion stay ordered and sequential. On sustained small-face wide shots,
+the redundant full-frame YuNet pass is skipped while overlapping tiles remain; set
+`ASD_DETECTION_CONCURRENCY=1` or `ASD_SKIP_FULL_FRAME_ON_WIDE_SHOTS=0` for their prior
+paths. If face evidence is missing, fleeting, or too small, it retries the <=8 fps,
+480-frame quality path and remembers that quality preference for the immutable source.
+`ASD_INITIAL_PROFILE=legacy-fast` restores the prior 640px first pass and
+`ASD_ADAPTIVE_SAMPLING=0` starts quality-only. Exact ASD outputs are disk-cached by source
+path/size/mtime, clip range and profile/version under `.tmp/asd-cache` (bounded by
+`ASD_CACHE_MAX_MB`, default 512); set `ASD_CACHE_ENABLED=0` or `ASD_CACHE_DIR` to disable
+or relocate it.
+
+For an image-input queue experiment, `FFMPEG_OVERLAY_THREAD_QUEUE_SIZE` defaults to the
+baseline-safe `2`; benchmark `16` or `32` on the actual render host before retaining either
+value. It is read per job and `2` is the rollback.
 `CAPTION_ACTIVE_RANGE_RENDERING=1` is an experimental sparse-caption benchmark: it keeps
 the full composition clock and re-bases only proven caption/hook/CTA windows in FFmpeg.
 It automatically stays on the legacy full transparent sequence for dense speech or a

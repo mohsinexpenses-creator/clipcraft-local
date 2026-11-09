@@ -1,9 +1,8 @@
 import type { Track, TrackPoint } from "./tracker";
 
 /**
- * The prior ASD profile. It remains the quality retry and explicit rollback
- * path for wide shots, very small faces, and anyone who turns adaptive sampling
- * off while comparing output.
+ * The established high-evidence profile. It remains the explicit quality
+ * setting and the adaptive retry path for clips with weak face evidence.
  */
 export const ASD_QUALITY_SAMPLE_WIDTH = 960;
 export const ASD_QUALITY_MAX_SAMPLE_FPS = 8;
@@ -11,17 +10,27 @@ export const ASD_QUALITY_MAX_FRAMES = 480;
 export const ASD_QUALITY_JPEG_QUALITY = 3;
 
 /**
- * The ordinary first pass deliberately does half as many detector calls and
- * decodes noticeably smaller JPEGs. Adjacent confident sightings are filled on
- * the quality cadence before speaker/layout planning, never by inventing motion.
+ * The Phase 1 default: enough horizontal detail for a podcast wide shot, while
+ * retaining the former fast pass's bounded four-fps / 240-frame detector load.
+ */
+export const ASD_BALANCED_SAMPLE_WIDTH = 960;
+export const ASD_BALANCED_MAX_SAMPLE_FPS = 4;
+export const ASD_BALANCED_MAX_FRAMES = 240;
+export const ASD_BALANCED_JPEG_QUALITY = 3;
+
+/**
+ * The previous adaptive first pass. It is intentionally retained behind
+ * `ASD_INITIAL_PROFILE=legacy-fast` for an exact sampling rollback.
  */
 export const ASD_FAST_SAMPLE_WIDTH = 640;
 export const ASD_FAST_MAX_SAMPLE_FPS = 4;
 export const ASD_FAST_MAX_FRAMES = 240;
 export const ASD_FAST_JPEG_QUALITY = 5;
 
+export type AsdInitialProfile = "balanced" | "legacy-fast" | "quality";
+
 export interface AsdSamplingProfile {
-  name: "fast" | "quality";
+  name: "fast" | "balanced" | "quality";
   maxFps: number;
   maxFrames: number;
   sampleWidth: number;
@@ -41,14 +50,56 @@ function isExplicitlyDisabled(value: string | undefined): boolean {
 }
 
 /**
- * Adaptive sampling is on by default because a failed quality check retries the
- * old 8fps/960px profile. Set ASD_ADAPTIVE_SAMPLING=0 for an exact legacy
- * sampling comparison or a conservative rollback.
+ * Adaptive sampling remains available as a safe quality-only rollback. Set
+ * `ASD_ADAPTIVE_SAMPLING=0` to begin and remain on the 8fps/480-frame profile.
  */
 export function getAdaptiveAsdSamplingEnabled(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): boolean {
   return !isExplicitlyDisabled(env.ASD_ADAPTIVE_SAMPLING);
+}
+
+/**
+ * `balanced` is the default Phase 1 profile. `legacy-fast` restores the prior
+ * 640px JPEG first pass; `quality` is the direct no-downsampling comparison.
+ */
+export function getAsdInitialProfile(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): AsdInitialProfile {
+  switch (env.ASD_INITIAL_PROFILE?.trim().toLowerCase()) {
+    case "legacy-fast":
+    case "fast":
+      return "legacy-fast";
+    case "quality":
+      return "quality";
+    default:
+      return "balanced";
+  }
+}
+
+/**
+ * Bound concurrent JPEG decode + YuNet passes. Tracker and speaker fusion stay
+ * sequential so identity and speech decisions preserve input-frame order.
+ */
+export function getAsdDetectionConcurrency(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): number {
+  const configured = Number(env.ASD_DETECTION_CONCURRENCY?.trim());
+  if (Number.isFinite(configured) && configured >= 1 && configured <= 3) {
+    return Math.floor(configured);
+  }
+  return 2;
+}
+
+/**
+ * Once several recent wide-shot samples contain only small faces, tile scans
+ * provide the useful evidence and the letterboxed full-frame pass is redundant.
+ * Set to 0 to retain the exact previous per-frame detector passes.
+ */
+export function getAsdSkipFullFrameOnWideShotsEnabled(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): boolean {
+  return !isExplicitlyDisabled(env.ASD_SKIP_FULL_FRAME_ON_WIDE_SHOTS);
 }
 
 /** Clamp a sampled width exactly like FFmpeg's even-sized scale input. */
@@ -57,15 +108,15 @@ export function asdSampleWidth(limit: number, sourceWidth: number): number {
 }
 
 /**
- * Pick the cheap first pass and the old quality retry. Caller-supplied sampling
- * limits are respected: the fast profile never exceeds them and the quality
- * profile is still their requested ceiling.
+ * Pick a bounded initial profile and preserve the established quality pass as a
+ * fallback. Caller-supplied ceilings are always respected.
  */
 export function buildAsdSamplingPlan(options: {
   sourceWidth: number;
   maxSampleFps?: number;
   maxFrames?: number;
   adaptive: boolean;
+  initialProfile?: AsdInitialProfile;
 }): AsdSamplingPlan {
   const qualityMaxFps = options.maxSampleFps ?? ASD_QUALITY_MAX_SAMPLE_FPS;
   const qualityMaxFrames = options.maxFrames ?? ASD_QUALITY_MAX_FRAMES;
@@ -77,7 +128,8 @@ export function buildAsdSamplingPlan(options: {
     jpegQuality: ASD_QUALITY_JPEG_QUALITY,
   };
 
-  if (!options.adaptive) {
+  const requestedInitial = options.initialProfile ?? "balanced";
+  if (!options.adaptive || requestedInitial === "quality") {
     return { initial: quality, qualityFallback: null, analysisFps: quality.maxFps };
   }
 
@@ -88,14 +140,22 @@ export function buildAsdSamplingPlan(options: {
     sampleWidth: asdSampleWidth(ASD_FAST_SAMPLE_WIDTH, options.sourceWidth),
     jpegQuality: ASD_FAST_JPEG_QUALITY,
   };
+  const balanced: AsdSamplingProfile = {
+    name: "balanced",
+    maxFps: Math.min(ASD_BALANCED_MAX_SAMPLE_FPS, quality.maxFps),
+    maxFrames: Math.min(ASD_BALANCED_MAX_FRAMES, quality.maxFrames),
+    sampleWidth: asdSampleWidth(ASD_BALANCED_SAMPLE_WIDTH, options.sourceWidth),
+    jpegQuality: ASD_BALANCED_JPEG_QUALITY,
+  };
+  const initial = requestedInitial === "legacy-fast" ? fast : balanced;
   const differsFromQuality =
-    fast.maxFps < quality.maxFps ||
-    fast.maxFrames < quality.maxFrames ||
-    fast.sampleWidth < quality.sampleWidth ||
-    fast.jpegQuality !== quality.jpegQuality;
+    initial.maxFps < quality.maxFps ||
+    initial.maxFrames < quality.maxFrames ||
+    initial.sampleWidth < quality.sampleWidth ||
+    initial.jpegQuality !== quality.jpegQuality;
 
   return {
-    initial: fast,
+    initial,
     qualityFallback: differsFromQuality ? quality : null,
     analysisFps: quality.maxFps,
   };

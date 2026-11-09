@@ -15,6 +15,7 @@ import { log } from "../lib/logger";
 import { buildSfxMixPlan, BROLL_SFX_VOLUME } from "../lib/broll/sfx";
 import { buildBrollSfxWav } from "./sfx-mixer";
 import { buildOverlayConcatManifest, type OverlayConcatSource } from "./overlay-concat";
+import { getOverlayThreadQueueSize } from "./render-options";
 import {
   LayoutPlan,
   OUTPUT_HEIGHT,
@@ -749,6 +750,9 @@ export async function processVideoSegment(
   const snap = (time: number, phase: number): string =>
     Math.max(0, time + phase - SEEK_GUARD_SECONDS).toFixed(4);
 
+  // Keep the existing queue size unless a host explicitly benchmarks 16/32 as
+  // faster. This is read for every job, so no worker restart is needed.
+  const overlayThreadQueueSize = getOverlayThreadQueueSize();
   const inputArgs: string[] = [];
   let nextInput = 0;
   const hookInput = hookEnabled ? nextInput++ : -1;
@@ -820,14 +824,14 @@ export async function processVideoSegment(
       const extension = path.extname(source.sequence.inputPattern).replace(/^\./, "");
       log.info(
         `[RENDER-DIAG] stage=ffmpeg.overlay-sequence event=before-input name=${source.sequence.name} ` +
-          `image_format=${extension} fps=${ffmpegFpsArg(fps)} frame_range=1-${source.generatedFrames} ` +
-          `generated_frames=${source.generatedFrames} output_directory=${sequenceDir} ` +
+          `image_format=${extension} fps=${ffmpegFpsArg(fps)} thread_queue_size=${overlayThreadQueueSize} ` +
+          `frame_range=1-${source.generatedFrames} generated_frames=${source.generatedFrames} output_directory=${sequenceDir} ` +
           `total_generated_file_size_bytes=${source.generatedBytes} ` +
           `timeline_start_seconds=${source.sequence.startAtSeconds}`,
       );
       inputArgs.push(
         "-thread_queue_size",
-        "2",
+        String(overlayThreadQueueSize),
         "-framerate",
         ffmpegFpsArg(fps),
         "-start_number",

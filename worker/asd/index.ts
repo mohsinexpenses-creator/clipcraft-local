@@ -14,10 +14,22 @@ import {
   ASD_QUALITY_SAMPLE_WIDTH,
   buildAsdSamplingPlan,
   getAdaptiveAsdSamplingEnabled,
+  getAsdDetectionConcurrency,
+  getAsdInitialProfile,
   getAsdQualityFallbackReason,
+  getAsdSkipFullFrameOnWideShotsEnabled,
   interpolateTracksForAnalysis,
   type AsdSamplingProfile,
 } from './sampling';
+import {
+  buildAsdResultCacheKey,
+  getAsdCacheSettings,
+  getAsdSourceIdentity,
+  readAsdResultCache,
+  readAsdSourceProfile,
+  writeAsdResultCache,
+  writeAsdSourceProfile,
+} from './cache';
 
 /**
  * Active Speaker Detection (ASD) pipeline for one clip window.
@@ -39,12 +51,11 @@ import {
  * tracker is identity-free nearest-neighbour - no face recognition, no cloud.
  *
  * Cost model: the ordinary adaptive pass samples at <=4 fps (bounded by 240
- * frames) on 640px JPEGs, then fills adjacent face sightings onto the 8fps
- * speaker/layout cadence without inventing motion. If faces are absent, fleeting
- * or too small in that cheap pass, it retries the established <=8fps, 960px,
- * 480-frame quality profile before a layout is chosen. That keeps wide-shot and
- * small-face output conservative while avoiding the expensive pass on ordinary
- * close-up clips.
+ * frames) on 960px JPEGs, then fills adjacent face sightings onto the 8fps
+ * speaker/layout cadence without inventing motion. If face evidence is still
+ * weak, it retries the established <=8fps, 960px, 480-frame quality profile
+ * before a layout is chosen and remembers that source's quality preference.
+ * The legacy 640px first pass remains an explicit env rollback.
  */
 
 export interface AsdResult {
@@ -184,6 +195,49 @@ interface FrameAnalysis {
  * can reuse already-decoded PCM and only repeat the work that needs sharper
  * frames.
  */
+interface DetectedSampleFrame {
+  index: number;
+  width: number;
+  height: number;
+  data: Buffer | Uint8Array;
+  scaleFactor: number;
+  faces: Array<{ cx: number; cy: number; w: number; h: number }>;
+  sampleFaceWidths: number[];
+}
+
+async function decodeAndDetectSampleFrame(
+  framePath: string,
+  index: number,
+  videoWidth: number,
+  runtime: YuNetRuntime,
+  includeFullFrame: boolean,
+): Promise<DetectedSampleFrame> {
+  const image = await Jimp.read(framePath);
+  const width = image.bitmap.width;
+  const height = image.bitmap.height;
+  const data = image.bitmap.data;
+  const scaleFactor = videoWidth / Math.max(1, width);
+  const detections = await detectFacesYunet(
+    runtime,
+    { data, width, height },
+    { includeFullFrame },
+  );
+  return {
+    index,
+    width,
+    height,
+    data,
+    scaleFactor,
+    faces: detections.map((d) => ({
+      cx: (d.box.x + d.box.width / 2) * scaleFactor,
+      cy: (d.box.y + d.box.height / 2) * scaleFactor,
+      w: d.box.width * scaleFactor,
+      h: d.box.height * scaleFactor,
+    })),
+    sampleFaceWidths: detections.map((d) => d.box.width),
+  };
+}
+
 async function analyzeSampledFrames(
   frames: string[],
   sampleFps: number,
@@ -191,6 +245,8 @@ async function analyzeSampledFrames(
   runtime: YuNetRuntime,
   signal?: AbortSignal,
   onStageTiming?: AsdOptions["onStageTiming"],
+  detectionConcurrency = 1,
+  skipFullFrameOnWideShots = false,
 ): Promise<FrameAnalysis> {
   const tracker = new Tracker();
   let maxFacesSeen = 0;
@@ -202,96 +258,111 @@ async function analyzeSampledFrames(
   const measureTimings = Boolean(onStageTiming);
   let yunetDetectionMs = 0;
   let trackingAndFusionMs = 0;
+  const boundedDetectionConcurrency = Math.max(1, Math.min(3, Math.floor(detectionConcurrency) || 1));
+  let recentSmallFaceFrames = 0;
 
   try {
-    for (let i = 0; i < frames.length; i += 1) {
+    for (let batchStart = 0; batchStart < frames.length; batchStart += boundedDetectionConcurrency) {
       if (signal?.aborted) throw new RenderCancelledError();
-      const framePath = frames[i];
-      const t = i / sampleFps;
-      let width = 0;
-      let height = 0;
-      let data: Buffer | Uint8Array;
-      let scaleFactor = 1;
-      let faces: Array<{ cx: number; cy: number; w: number; h: number }> = [];
-
-      // JPEG decode and YuNet inference are the detector's complete per-frame
-      // cost. Keep it distinct from the sequential tracker/fusion work below.
+      const batchEnd = Math.min(frames.length, batchStart + boundedDetectionConcurrency);
+      // Wait for three recent small-face frames before dropping the full-frame
+      // pass. A miss resets the streak, so close-ups and scene changes return to
+      // the conservative all-pass detector immediately.
+      const includeFullFrame = !skipFullFrameOnWideShots || recentSmallFaceFrames < 3;
       const detectionStartedAt = measureTimings ? Date.now() : 0;
+      let detected: DetectedSampleFrame[];
       try {
-        const image = await Jimp.read(framePath);
-        width = image.bitmap.width;
-        height = image.bitmap.height;
-        data = image.bitmap.data;
-        scaleFactor = videoWidth / Math.max(1, width);
-        const detections = await detectFacesYunet(runtime, { data, width, height });
-        faces = detections.map((d) => ({
-          cx: (d.box.x + d.box.width / 2) * scaleFactor,
-          cy: (d.box.y + d.box.height / 2) * scaleFactor,
-          w: d.box.width * scaleFactor,
-          h: d.box.height * scaleFactor,
-        }));
-        for (const detection of detections) faceWidthsSample.push(detection.box.width);
+        detected = await Promise.all(
+          Array.from({ length: batchEnd - batchStart }, (_, offset) => {
+            const index = batchStart + offset;
+            if (signal?.aborted) throw new RenderCancelledError();
+            return decodeAndDetectSampleFrame(
+              frames[index],
+              index,
+              videoWidth,
+              runtime,
+              includeFullFrame,
+            );
+          }),
+        );
       } finally {
         if (measureTimings) yunetDetectionMs += Date.now() - detectionStartedAt;
       }
 
-      const trackingStartedAt = measureTimings ? Date.now() : 0;
-      try {
-        // No skin-heuristic fallback here by design: a frame YuNet misses simply
-        // contributes no track points (the tracker ages it out). If the WHOLE
-        // window yields no face, detectSpeakerTimeline throws rather than faking a
-        // static/centre crop.
-        maxFacesSeen = Math.max(maxFacesSeen, faces.length);
-        if (faces.length > 1) framesWithMultipleFaces += 1;
-        for (const f of faces) faceWidthsSource.push(f.w);
-        if (faces.length === 0) {
-          tracker.update(t, []);
-          prevThumbs = [];
-          continue;
-        }
+      // Detector work above is bounded and concurrent; all stateful tracker and
+      // speaker evidence below remains ordered by the source frame index.
+      for (const sample of detected!) {
+        if (signal?.aborted) throw new RenderCancelledError();
+        const trackingStartedAt = measureTimings ? Date.now() : 0;
+        try {
+          const t = sample.index / sampleFps;
+          const { width, height, data, scaleFactor, faces, sampleFaceWidths } = sample;
+          faceWidthsSample.push(...sampleFaceWidths);
 
-        // Full-face + mouth-region (lower third) thumbnails: the mouth channel is
-        // the sharper cue when lips are visible; the full-face channel continues
-        // working when a mic, mask or hand covers them.
-        const curThumbs = faces.map((f) => {
-          const boxX = f.cx / scaleFactor - (f.w / scaleFactor) / 2;
-          const boxY = f.cy / scaleFactor - (f.h / scaleFactor) / 2;
-          const boxW = f.w / scaleFactor;
-          const boxH = f.h / scaleFactor;
-          const full = faceThumb(data, width, height, boxX, boxY, boxW, boxH);
-          const mouth = faceThumb(data, width, height, boxX, boxY + boxH * 0.55, boxW, boxH * 0.45);
-          return { cx: f.cx, cy: f.cy, w: f.w, full, mouth };
-        });
+          // No skin-heuristic fallback here by design: a frame YuNet misses simply
+          // contributes no track points (the tracker ages it out). If the WHOLE
+          // window yields no face, detectSpeakerTimeline throws rather than faking a
+          // static/centre crop.
+          maxFacesSeen = Math.max(maxFacesSeen, faces.length);
+          if (faces.length > 1) framesWithMultipleFaces += 1;
+          for (const face of faces) faceWidthsSource.push(face.w);
 
-        const dets: FrameDetection[] = faces.map((f, fi) => {
-          // Two-frame nearest-neighbour motion (no long-term identity needed).
-          let bestPrev: (typeof prevThumbs)[number] | null = null;
-          let bestDist = Infinity;
-          for (const prev of prevThumbs) {
-            const dist = Math.hypot(f.cx - prev.cx, f.cy - prev.cy);
-            if (dist < bestDist && dist < 0.6 * (f.w + prev.w)) {
-              bestDist = dist;
-              bestPrev = prev;
-            }
+          const widestSampleFace = sampleFaceWidths.reduce((widest, width) => Math.max(widest, width), 0);
+          if (faces.length > 0 && widestSampleFace > 0 && widestSampleFace < width * 0.1) {
+            recentSmallFaceFrames += 1;
+          } else {
+            recentSmallFaceFrames = 0;
           }
-          const motion = bestPrev
-            ? 0.6 * thumbDiff(bestPrev.full, curThumbs[fi].full) +
-              0.4 * thumbDiff(bestPrev.mouth, curThumbs[fi].mouth)
-            : null;
-          return {
-            cx: f.cx,
-            cy: f.cy,
-            w: f.w,
-            mouthOpen: null, // YuNet has no mouth landmarks; the fusion treats this as no cue.
-            motion,
-          };
-        });
 
-        tracker.update(t, dets);
-        prevThumbs = curThumbs;
-        framesUsed += 1;
-      } finally {
-        if (measureTimings) trackingAndFusionMs += Date.now() - trackingStartedAt;
+          if (faces.length === 0) {
+            tracker.update(t, []);
+            prevThumbs = [];
+            continue;
+          }
+
+          // Full-face + mouth-region (lower third) thumbnails: the mouth channel is
+          // the sharper cue when lips are visible; the full-face channel continues
+          // working when a mic, mask or hand covers them.
+          const curThumbs = faces.map((face) => {
+            const boxX = face.cx / scaleFactor - (face.w / scaleFactor) / 2;
+            const boxY = face.cy / scaleFactor - (face.h / scaleFactor) / 2;
+            const boxW = face.w / scaleFactor;
+            const boxH = face.h / scaleFactor;
+            const full = faceThumb(data, width, height, boxX, boxY, boxW, boxH);
+            const mouth = faceThumb(data, width, height, boxX, boxY + boxH * 0.55, boxW, boxH * 0.45);
+            return { cx: face.cx, cy: face.cy, w: face.w, full, mouth };
+          });
+
+          const detections: FrameDetection[] = faces.map((face, faceIndex) => {
+            // Two-frame nearest-neighbour motion (no long-term identity needed).
+            let bestPrev: (typeof prevThumbs)[number] | null = null;
+            let bestDist = Infinity;
+            for (const previous of prevThumbs) {
+              const distance = Math.hypot(face.cx - previous.cx, face.cy - previous.cy);
+              if (distance < bestDist && distance < 0.6 * (face.w + previous.w)) {
+                bestDist = distance;
+                bestPrev = previous;
+              }
+            }
+            const motion = bestPrev
+              ? 0.6 * thumbDiff(bestPrev.full, curThumbs[faceIndex].full) +
+                0.4 * thumbDiff(bestPrev.mouth, curThumbs[faceIndex].mouth)
+              : null;
+            return {
+              cx: face.cx,
+              cy: face.cy,
+              w: face.w,
+              mouthOpen: null, // YuNet has no mouth landmarks; the fusion treats this as no cue.
+              motion,
+            };
+          });
+
+          tracker.update(t, detections);
+          prevThumbs = curThumbs;
+          framesUsed += 1;
+        } finally {
+          if (measureTimings) trackingAndFusionMs += Date.now() - trackingStartedAt;
+        }
       }
     }
 
@@ -404,12 +475,60 @@ export async function detectSpeakerTimeline(
 
   if (options.signal?.aborted) throw new RenderCancelledError();
   const adaptiveSampling = options.adaptiveSampling ?? getAdaptiveAsdSamplingEnabled();
+  const requestedInitialProfile = getAsdInitialProfile();
+  const detectionConcurrency = getAsdDetectionConcurrency();
+  const skipFullFrameOnWideShots = getAsdSkipFullFrameOnWideShotsEnabled();
+  const cacheSettings = getAsdCacheSettings();
+  const sourceIdentity = getAsdSourceIdentity(videoPath);
+  // A source that genuinely needed the full quality profile once should not
+  // spend every later clip repeating a known-failing first pass. Explicit env
+  // profile choices always win over this learned, source-scoped preference.
+  const rememberedProfile =
+    adaptiveSampling && requestedInitialProfile === "balanced"
+      ? readAsdSourceProfile(cacheSettings, sourceIdentity)
+      : null;
   const samplingPlan = buildAsdSamplingPlan({
     sourceWidth: videoWidth,
     maxSampleFps: options.maxSampleFps,
     maxFrames: options.maxFrames,
     adaptive: adaptiveSampling,
+    initialProfile: rememberedProfile ?? requestedInitialProfile,
   });
+  // Use the requested profile in the result-cache identity. A balanced run that
+  // escalated to quality is still the correct reusable answer for future
+  // balanced requests, even after the source preference has been remembered.
+  const cacheKey = sourceIdentity
+    ? buildAsdResultCacheKey({
+        source: sourceIdentity,
+        start,
+        duration,
+        videoWidth,
+        videoHeight,
+        hasAudio: options.hasAudio,
+        adaptive: adaptiveSampling,
+        initialProfile: requestedInitialProfile,
+        maxSampleFps: options.maxSampleFps,
+        maxFrames: options.maxFrames,
+        detectionConcurrency,
+        skipFullFrameOnWideShots,
+      })
+    : null;
+  if (cacheKey) {
+    const cached = readAsdResultCache(cacheSettings, cacheKey);
+    if (cached) {
+      log.info(
+        `[ASD-CACHE] event=hit profile=${requestedInitialProfile} source=${sourceIdentity?.key.slice(0, 12)} ` +
+          `window=${start.toFixed(3)}+${duration.toFixed(3)}s`,
+      );
+      return cached;
+    }
+  }
+  if (cacheSettings.enabled) {
+    log.info(
+      `[ASD-CACHE] event=miss profile=${requestedInitialProfile} source=${sourceIdentity?.key.slice(0, 12) ?? "unavailable"} ` +
+        `window=${start.toFixed(3)}+${duration.toFixed(3)}s`,
+    );
+  }
 
   let frames: string[] = [];
   let sampleFps = 0;
@@ -440,7 +559,14 @@ export async function detectSpeakerTimeline(
     // Frame extraction, PCM extraction and loading the one process-wide YuNet
     // session are independent. Starting them together removes idle wall time.
     const [initialSampled, pcm, runtime] = await Promise.all([
-      sampleWithProfile(initial, initial.name === 'fast' ? 'frames-fast' : 'frames'),
+      sampleWithProfile(
+        initial,
+        initial.name === "fast"
+          ? "frames-legacy-fast"
+          : initial.name === "balanced"
+            ? "frames-balanced"
+            : "frames",
+      ),
       measureAsdStage(options, "audio-envelope", () =>
         options.hasAudio
           ? extractPcmMono(videoPath, start, duration, 16000, options.signal)
@@ -473,6 +599,8 @@ export async function detectSpeakerTimeline(
       runtime,
       options.signal,
       options.onStageTiming,
+      detectionConcurrency,
+      skipFullFrameOnWideShots,
     );
 
     const fallbackReason = samplingPlan.qualityFallback
@@ -486,9 +614,12 @@ export async function detectSpeakerTimeline(
     if (fallbackReason && samplingPlan.qualityFallback) {
       const fallback = samplingPlan.qualityFallback;
       log.warn(
-        `ASD · fast sampling quality fallback (${fallbackReason}); retrying ` +
+        `ASD · ${profile.name} sampling quality fallback (${fallbackReason}); retrying ` +
         `${fallback.maxFrames} frames @ <=${fallback.maxFps}fps on ${fallback.sampleWidth}px.`,
       );
+      if (writeAsdSourceProfile(cacheSettings, sourceIdentity, "quality")) {
+        log.detail("ASD · remembered the quality profile for this immutable source identity.");
+      }
       if (frames[0]) cleanupSampledFrames(path.dirname(frames[0]));
       frames = [];
 
@@ -505,6 +636,8 @@ export async function detectSpeakerTimeline(
         runtime,
         options.signal,
         options.onStageTiming,
+        detectionConcurrency,
+        skipFullFrameOnWideShots,
       );
     }
 
@@ -520,12 +653,12 @@ export async function detectSpeakerTimeline(
       );
     }
 
-    // The quality/rollback path preserves its historical cadence exactly. The
-    // fast path promotes only adjacent face positions to the old 8fps analysis
-    // grid; synthetic points carry no motion so they cannot manufacture a
-    // speaker decision.
+    // The quality/rollback path preserves its historical cadence exactly. Every
+    // bounded initial profile promotes only adjacent face positions to the old
+    // 8fps analysis grid; synthetic points carry no motion so they cannot
+    // manufacture a speaker decision.
     const analysisFps =
-      profile.name === 'fast' ? Math.max(sampleFps, samplingPlan.analysisFps) : sampleFps;
+      profile.name !== "quality" ? Math.max(sampleFps, samplingPlan.analysisFps) : sampleFps;
     const voice = await measureAsdStage(options, "audio-envelope", () =>
       pcm.length > 0
         ? computeVoiceEnvelope(pcm, 16000, analysisFps).voice
@@ -592,7 +725,7 @@ export async function detectSpeakerTimeline(
       ? 'yunet+audio-visual'
       : 'yunet-visual';
 
-    return {
+    const result: AsdResult = {
       tracks,
       speakerSegments: segments,
       speakerCount,
@@ -608,6 +741,13 @@ export async function detectSpeakerTimeline(
       medianFaceWidth,
       sampleWidth,
     };
+    if (cacheKey && writeAsdResultCache(cacheSettings, cacheKey, result)) {
+      log.info(
+        `[ASD-CACHE] event=write profile=${requestedInitialProfile} source=${sourceIdentity?.key.slice(0, 12)} ` +
+          `window=${start.toFixed(3)}+${duration.toFixed(3)}s`,
+      );
+    }
+    return result;
   } catch (error) {
     if (error instanceof RenderCancelledError || options.signal?.aborted) throw new RenderCancelledError();
     if (error instanceof AppError) throw error;

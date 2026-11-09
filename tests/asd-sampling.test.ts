@@ -3,7 +3,10 @@ import test from "node:test";
 import {
   buildAsdSamplingPlan,
   getAdaptiveAsdSamplingEnabled,
+  getAsdDetectionConcurrency,
+  getAsdInitialProfile,
   getAsdQualityFallbackReason,
+  getAsdSkipFullFrameOnWideShotsEnabled,
   interpolateTracksForAnalysis,
 } from "../worker/asd/sampling";
 import { buildSpeakerTimeline } from "../worker/asd/speaker";
@@ -25,14 +28,14 @@ function track(points: Track["points"]): Track {
   };
 }
 
-test("adaptive ASD starts with a bounded fast pass and retains the old quality retry", () => {
+test("adaptive ASD starts with a bounded 960px profile and retains the quality retry", () => {
   const plan = buildAsdSamplingPlan({ sourceWidth: 1920, adaptive: true });
   assert.deepEqual(plan.initial, {
-    name: "fast",
+    name: "balanced",
     maxFps: 4,
     maxFrames: 240,
-    sampleWidth: 640,
-    jpegQuality: 5,
+    sampleWidth: 960,
+    jpegQuality: 3,
   });
   assert.deepEqual(plan.qualityFallback, {
     name: "quality",
@@ -42,6 +45,32 @@ test("adaptive ASD starts with a bounded fast pass and retains the old quality r
     jpegQuality: 3,
   });
   assert.equal(plan.analysisFps, 8);
+});
+
+test("legacy fast sampling and detector shortcuts remain explicit rollback flags", () => {
+  const legacy = buildAsdSamplingPlan({
+    sourceWidth: 1920,
+    adaptive: true,
+    initialProfile: "legacy-fast",
+  });
+  assert.deepEqual(legacy.initial, {
+    name: "fast",
+    maxFps: 4,
+    maxFrames: 240,
+    sampleWidth: 640,
+    jpegQuality: 5,
+  });
+  assert.equal(getAsdInitialProfile({}), "balanced");
+  assert.equal(getAsdInitialProfile({ ASD_INITIAL_PROFILE: "legacy-fast" }), "legacy-fast");
+  assert.equal(getAsdInitialProfile({ ASD_INITIAL_PROFILE: "quality" }), "quality");
+  assert.equal(getAsdDetectionConcurrency({}), 2);
+  assert.equal(getAsdDetectionConcurrency({ ASD_DETECTION_CONCURRENCY: "1" }), 1);
+  assert.equal(getAsdDetectionConcurrency({ ASD_DETECTION_CONCURRENCY: "3" }), 3);
+  assert.equal(getAsdSkipFullFrameOnWideShotsEnabled({}), true);
+  assert.equal(
+    getAsdSkipFullFrameOnWideShotsEnabled({ ASD_SKIP_FULL_FRAME_ON_WIDE_SHOTS: "0" }),
+    false,
+  );
 });
 
 test("adaptive ASD can be rolled back to the quality profile", () => {
@@ -62,7 +91,7 @@ test("adaptive sampling honors caller ceilings and does not upscale a smaller so
   });
   assert.equal(plan.initial.maxFps, 4);
   assert.equal(plan.initial.maxFrames, 240);
-  assert.equal(plan.initial.sampleWidth, 640);
+  assert.equal(plan.initial.sampleWidth, 720);
   assert.equal(plan.qualityFallback?.maxFps, 6);
   assert.equal(plan.qualityFallback?.maxFrames, 300);
   assert.equal(plan.qualityFallback?.sampleWidth, 720);

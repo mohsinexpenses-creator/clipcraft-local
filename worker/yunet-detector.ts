@@ -249,6 +249,11 @@ export interface DetectOptions {
    * plus a full-frame pass. `off`: a single letterboxed full-frame pass.
    */
   tiling?: 'auto' | 'off';
+  /**
+   * Keep the full-frame pass before the wide-shot tile passes. ASD may disable
+   * it only after recent frames proved that small tile-visible faces dominate.
+   */
+  includeFullFrame?: boolean;
 }
 
 /** One rectangle of the frame that is fed to the model as a 640x640 letterboxed image. */
@@ -262,7 +267,7 @@ export interface DetectRegion {
 }
 
 /**
- * The regions the model scans for a frame: always the whole frame, plus - for
+ * The regions the model scans for a frame: normally the whole frame, plus - for
  * wide (or tall) frames - overlapping SQUARE tiles whose side is the frame's
  * short side. A tile is upscaled to the model input, so small faces become
  * large enough for YuNet to score them confidently; neighbouring tiles overlap
@@ -271,15 +276,21 @@ export interface DetectRegion {
 export function planDetectionRegions(
   frameW: number,
   frameH: number,
-  tiling: 'auto' | 'off' = 'auto'
+  tiling: 'auto' | 'off' = 'auto',
+  includeFullFrame = true,
 ): DetectRegion[] {
   const noSeams = { left: false, right: false, top: false, bottom: false };
-  const regions: DetectRegion[] = [{ x: 0, y: 0, w: frameW, h: frameH, seams: noSeams }];
-  if (tiling === 'off') return regions;
+  const fullFrame: DetectRegion = { x: 0, y: 0, w: frameW, h: frameH, seams: noSeams };
+  const regions: DetectRegion[] = includeFullFrame ? [fullFrame] : [];
+  if (tiling === 'off') return includeFullFrame ? regions : [fullFrame];
 
   const long = Math.max(frameW, frameH);
   const short = Math.min(frameW, frameH);
-  if (short <= 0 || long / short < TILE_MIN_ASPECT) return regions;
+  // Tile-only is meaningful only for an aspect ratio that actually creates
+  // tiles; square-ish frames retain their one full-frame detector pass.
+  if (short <= 0 || long / short < TILE_MIN_ASPECT) {
+    return includeFullFrame ? regions : [fullFrame];
+  }
 
   const count = Math.max(2, Math.ceil((long - short) / (TILE_MAX_STEP * short)) + 1);
   const span = long - short;
@@ -462,7 +473,12 @@ export async function detectFacesYunet(
 
   const confThreshold = options?.confThreshold ?? CONF_THRESHOLD;
   const minWidth = inputW * (options?.minFaceFraction ?? MIN_FACE_FRACTION);
-  const regions = planDetectionRegions(inputW, inputH, options?.tiling ?? 'auto');
+  const regions = planDetectionRegions(
+    inputW,
+    inputH,
+    options?.tiling ?? 'auto',
+    options?.includeFullFrame ?? true,
+  );
   const size = YUNET_INPUT_SIZE;
 
   const candidates: DetectedFace[] = [];

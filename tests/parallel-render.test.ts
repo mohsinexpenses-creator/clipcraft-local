@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { runParallelRenderBranches } from "../worker/parallel";
 import {
+  getOverlayThreadQueueSize,
   getParallelBrollAsdConcurrencyCap,
   getParallelBrollAsdEnabled,
 } from "../worker/render-options";
@@ -10,9 +11,10 @@ import {
   getRemotionConcurrency,
 } from "../worker/remotion-options";
 
-test("B-roll/ASD overlap flag is opt-in", () => {
-  assert.equal(getParallelBrollAsdEnabled({}), false);
+test("speaker-focus B-roll/ASD overlap is on by default and has a sequential rollback", () => {
+  assert.equal(getParallelBrollAsdEnabled({}), true);
   assert.equal(getParallelBrollAsdEnabled({ RENDER_PARALLEL_BROLL_ASD: "1" }), true);
+  assert.equal(getParallelBrollAsdEnabled({ RENDER_PARALLEL_BROLL_ASD: "0" }), false);
   assert.equal(getParallelBrollAsdEnabled({ RENDER_PARALLEL_BROLL_ASD: "false" }), false);
 });
 
@@ -37,6 +39,10 @@ test("parallel B-roll cap leaves capacity for ASD and respects a smaller manual 
     getCaptionActiveRangeRenderingEnabled({ CAPTION_ACTIVE_RANGE_RENDERING: "yes" }),
     true,
   );
+  assert.equal(getOverlayThreadQueueSize({}), 2);
+  assert.equal(getOverlayThreadQueueSize({ FFMPEG_OVERLAY_THREAD_QUEUE_SIZE: "16" }), 16);
+  assert.equal(getOverlayThreadQueueSize({ FFMPEG_OVERLAY_THREAD_QUEUE_SIZE: "32" }), 32);
+  assert.equal(getOverlayThreadQueueSize({ FFMPEG_OVERLAY_THREAD_QUEUE_SIZE: "100" }), 2);
 });
 
 test("parallel render branches wait for sibling cleanup after a failure", async () => {
