@@ -78,6 +78,7 @@ Both `npm run dev` and `npm run worker` load `.env.local` (via `@next/env`'s
 |---|---|---|
 | `DATABASE_PATH` | `./data/clipcraft.db` | Path to the SQLite database, relative to the repository root unless absolute. Parent folders are created automatically. Web and worker processes must use the same path; restart both after changing it. The file is ignored by Git. |
 | **moved to /settings** | — | `GEMINI_API_KEY`, `DEEPGRAM_API_KEY`, `DEEPGRAM_MODEL`, `WORKER_CONCURRENCY`, `VIRAL_CONCURRENCY`, `REMOTION_CONCURRENCY` and `PROFANITY_AUDIO_MODE` are no longer read from this file. Their values live in the `app_settings` table and are edited on **Settings** — the page even points out any of those names still sitting unused in your `.env.local`. |
+| `DEEPGRAM_AUDIO_FORMAT` | `mp3` | Worker-side pre-recorded audio transport, read when the worker starts. `mp3` encodes 16 kHz mono speech at 32 kb/s to avoid Deepgram `408 SLOW_UPLOAD`; `flac` is lossless; `wav` restores the legacy raw PCM path. Restart the worker after changing it. |
 | `FFMPEG_PATH` | `ffmpeg-static` | Point at your own FFmpeg binary if the npm download failed. Must be FFmpeg ≥ 5.1 (`-fps_mode` is used). |
 | `FFPROBE_PATH` | sibling / PATH | Full path to a local ffprobe if it is not beside FFmpeg or on PATH. Needed for VFR detection and clip verification. |
 | `VIDEO_CRF` | `17` | Final libx264 quality; accepted range is 16–18 (lower means larger, higher-quality files). |
@@ -204,7 +205,13 @@ This build intentionally supports only:
 
 There is no local transcription engine, no YouTube import tab, and no legacy local
 transcription setup to configure. The app reads a saved Deepgram key from
-**Settings → AI providers**, then runs transcription in the worker queue.
+**Settings → AI providers**, then runs transcription in the worker queue. Before upload,
+FFmpeg creates compact 16 kHz mono **MP3** audio (32 kb/s by default) rather than a large
+raw WAV, which avoids common Deepgram `HTTP 408 / SLOW_UPLOAD` failures on slower uplinks.
+Set `DEEPGRAM_AUDIO_FORMAT=flac` for lossless transport or `=wav` for the legacy diagnostic
+path, then restart the worker. A `SLOW_UPLOAD` response is an upload-throughput/provider
+limit, not evidence that the API key is invalid; retry from a stable connection or without
+an intercepting VPN/proxy.
 
 ---
 

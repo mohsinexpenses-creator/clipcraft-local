@@ -3,7 +3,11 @@ import path from 'path';
 import { extractAudio16kMono } from './ffmpeg';
 import { AppError, RenderCancelledError } from './errors';
 import { loadEffectiveSettings } from './app-settings';
-import { transcribeWithDeepgram } from './deepgram';
+import {
+  deepgramAudioFileExtension,
+  getDeepgramAudioFormat,
+  transcribeWithDeepgram,
+} from './deepgram';
 import { TranscriptData } from './types';
 
 export interface TranscriptionEngineInfo {
@@ -48,14 +52,24 @@ export async function transcribeVideo(
 ): Promise<TranscriptData> {
   if (options.signal?.aborted) throw new RenderCancelledError();
   const videoDir = path.dirname(videoPath);
-  const audioWavPath = path.join(videoDir, 'audio_16k.wav');
+  // Raw 16 kHz WAV is about 1.9 MB/minute. Use compact speech MP3 by default
+  // so long uploads do not trip Deepgram's pre-recorded SLOW_UPLOAD limit; WAV
+  // remains a documented diagnostic fallback through DEEPGRAM_AUDIO_FORMAT=wav.
+  const audioFormat = getDeepgramAudioFormat();
+  const audioPath = path.join(
+    videoDir,
+    `audio_16k.${deepgramAudioFileExtension(audioFormat)}`,
+  );
 
-  await extractAudio16kMono(videoPath, audioWavPath, { signal: options.signal });
+  await extractAudio16kMono(videoPath, audioPath, {
+    signal: options.signal,
+    format: audioFormat,
+  });
   if (options.signal?.aborted) throw new RenderCancelledError();
 
   const engine = await getPlannedTranscriptionEngine();
   if (engine.provider === 'deepgram') {
-    return transcribeWithDeepgram(audioWavPath, options);
+    return transcribeWithDeepgram(audioPath, { ...options, audioFormat });
   }
 
   throw new AppError('Unsupported transcription engine.', {

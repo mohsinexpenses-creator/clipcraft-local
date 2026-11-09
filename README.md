@@ -25,8 +25,10 @@ pauses the chain: it recovers at the step where it stopped.
    captures the automation you want (`autoDetect` / `autoRender` + AI clip options);
    it is saved on the video record (`videos.pipeline_json`) so later retries and
    re-runs use exactly the same settings.
-2. **Transcribe** — Deepgram produces the transcript with **word-level
-   timestamps**, stored in SQLite.
+2. **Transcribe** — FFmpeg first creates compact 16 kHz mono MP3 audio (32 kb/s
+   by default), then Deepgram produces the transcript with **word-level timestamps**,
+   stored in SQLite. This avoids raw-WAV upload timeouts on ordinary uplinks; set
+   `DEEPGRAM_AUDIO_FORMAT=flac` for lossless input or `=wav` for the legacy path.
 3. **Detect viral segments** — the Gemini LLM picks the most promising windows and
    writes `{start, end, hookText, ctaText, reason, score}`. If it returns fewer
    clips than requested, a **top-up pass** tops the list up to the exact count.

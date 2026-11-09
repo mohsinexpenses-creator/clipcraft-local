@@ -1,11 +1,93 @@
 import fs from 'fs';
+import path from 'path';
+import type { TranscriptionAudioFormat } from './ffmpeg';
 import { TranscriptData, TranscriptSegment, WordTimestamp } from './types';
 import { AppError, RenderCancelledError, toErrorMessage } from './errors';
 import { resolveDeepgram } from './app-settings';
 
+export interface DeepgramTranscriptionOptions {
+  signal?: AbortSignal;
+  /** Explicit only for callers that generated an extensionless temporary file. */
+  audioFormat?: TranscriptionAudioFormat;
+}
+
+/**
+ * Read for each transcription job. MP3 keeps pre-recorded uploads small enough
+ * for normal residential uplinks; FLAC is lossless and WAV retains the exact
+ * legacy PCM behavior for diagnostics or a custom encoder issue.
+ */
+export function getDeepgramAudioFormat(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): TranscriptionAudioFormat {
+  switch (env.DEEPGRAM_AUDIO_FORMAT?.trim().toLowerCase()) {
+    case 'wav':
+      return 'wav';
+    case 'flac':
+      return 'flac';
+    case 'mp3':
+    case 'mpeg':
+      return 'mp3';
+    default:
+      return 'mp3';
+  }
+}
+
+export function deepgramAudioFileExtension(format: TranscriptionAudioFormat): string {
+  return format;
+}
+
+export function deepgramAudioContentType(format: TranscriptionAudioFormat): string {
+  switch (format) {
+    case 'mp3':
+      return 'audio/mpeg';
+    case 'flac':
+      return 'audio/flac';
+    case 'wav':
+      return 'audio/wav';
+  }
+}
+
+/** Prefer an actual file extension so direct legacy callers keep sending WAV. */
+export function deepgramAudioFormatForPath(
+  audioPath: string,
+  fallback = getDeepgramAudioFormat(),
+): TranscriptionAudioFormat {
+  switch (path.extname(audioPath).toLowerCase()) {
+    case '.mp3':
+    case '.mpeg':
+      return 'mp3';
+    case '.flac':
+      return 'flac';
+    case '.wav':
+    case '.wave':
+      return 'wav';
+    default:
+      return fallback;
+  }
+}
+
+function formatBytes(bytes: number): string {
+  return `${(Math.max(0, bytes) / 1024 / 1024).toFixed(2)} MB`;
+}
+
+/** HTTP 408 SLOW_UPLOAD is transport throughput, not an API-key verdict. */
+export function isDeepgramSlowUpload(status: number, details: string): boolean {
+  return status === 408 && /\bSLOW_UPLOAD\b/i.test(details);
+}
+
+export function deepgramRequestFailureResolution(status: number, details: string): string {
+  if (isDeepgramSlowUpload(status, details)) {
+    return (
+      'Deepgram timed out while receiving the audio upload. This is usually an upload-bandwidth, VPN, proxy, or very-large-audio problem — not an API-key failure. ' +
+      'Retry on a stable connection. ClipCraft now extracts compact 16 kHz mono MP3 by default; set DEEPGRAM_AUDIO_FORMAT=flac for lossless input or set DEEPGRAM_AUDIO_FORMAT=wav only to restore the legacy raw-WAV path.'
+    );
+  }
+  return 'Verify DEEPGRAM_API_KEY, account quota, and network access to api.deepgram.com, then retry.';
+}
+
 export async function transcribeWithDeepgram(
-  audioWavPath: string,
-  options: { signal?: AbortSignal } = {},
+  audioPath: string,
+  options: DeepgramTranscriptionOptions = {},
 ): Promise<TranscriptData> {
   if (options.signal?.aborted) throw new RenderCancelledError();
   // Key and model come from Settings -> AI providers, with `.env.local` underneath.
@@ -18,16 +100,34 @@ export async function transcribeWithDeepgram(
     });
   }
 
+  const audioFormat = options.audioFormat ?? deepgramAudioFormatForPath(audioPath);
+
   try {
-    console.log(`[Deepgram] Sending audio to Deepgram REST API (${model} model)...`);
-    const audioBuffer = fs.readFileSync(audioWavPath);
+    const audioStat = await fs.promises.stat(audioPath);
+    if (!audioStat.isFile() || audioStat.size < 1024) {
+      throw new AppError('Deepgram transcription audio is missing or empty.', {
+        status: 400,
+        details: `${audioPath} (${audioStat.size} bytes)`,
+        resolution: 'Confirm FFmpeg can extract audio from the uploaded video, then retry.',
+      });
+    }
+    const audioBuffer = await fs.promises.readFile(audioPath);
+    if (options.signal?.aborted) throw new RenderCancelledError();
+
+    console.log(
+      `[Deepgram] Sending ${formatBytes(audioStat.size)} ${audioFormat.toUpperCase()} audio ` +
+        `to Deepgram REST API (${model} model)...`,
+    );
 
     const url = `https://api.deepgram.com/v1/listen?model=${encodeURIComponent(model)}&smart_format=true&punctuate=true&paragraphs=true`;
     const response = await fetch(url, {
       method: 'POST',
       headers: {
         Authorization: `Token ${apiKey}`,
-        'Content-Type': 'audio/wav',
+        'Content-Type': deepgramAudioContentType(audioFormat),
+        // A Buffer normally produces this automatically, but making the size
+        // explicit avoids a chunked request through proxy/VPN paths.
+        'Content-Length': String(audioBuffer.byteLength),
       },
       body: audioBuffer,
       signal: options.signal,
@@ -37,9 +137,10 @@ export async function transcribeWithDeepgram(
       const errText = await response.text();
       throw new AppError('Deepgram transcription request failed.', {
         status: 502,
-        details: `HTTP ${response.status}: ${errText}`,
-        resolution:
-          'Verify DEEPGRAM_API_KEY, account quota, and network access to api.deepgram.com, then retry.',
+        details:
+          `HTTP ${response.status}: ${errText} ` +
+          `(upload=${formatBytes(audioStat.size)}, format=${audioFormat})`,
+        resolution: deepgramRequestFailureResolution(response.status, errText),
       });
     }
 
@@ -131,7 +232,7 @@ export async function transcribeWithDeepgram(
       status: 502,
       details: toErrorMessage(error),
       resolution:
-        'Verify DEEPGRAM_API_KEY, network access, and that the uploaded file contains valid audio, then retry.',
+        'Verify network access to api.deepgram.com and that the uploaded file contains valid audio, then retry.',
     });
   }
 }

@@ -806,12 +806,36 @@ export async function getVideoMetadata(
   });
 }
 
+/**
+ * Pre-recorded Deepgram accepts all of these containers. MP3 is the default at
+ * the caller because 16 kHz PCM WAV can become hundreds of MB for long podcasts
+ * and trigger a provider-side SLOW_UPLOAD timeout on ordinary uplinks. WAV is
+ * retained as the explicit legacy/diagnostic fallback.
+ */
+export type TranscriptionAudioFormat = "mp3" | "flac" | "wav";
+
+export function transcriptionAudioCodecArgs(format: TranscriptionAudioFormat): string[] {
+  switch (format) {
+    case "mp3":
+      // 32 kb/s mono is intentionally speech-oriented: it cuts 16 kHz PCM upload
+      // bytes by about eight times while retaining the word-level signal Deepgram needs.
+      return ["-acodec", "libmp3lame", "-b:a", "32k"];
+    case "flac":
+      return ["-acodec", "flac", "-compression_level", "8"];
+    case "wav":
+      return ["-acodec", "pcm_s16le"];
+  }
+}
+
 export async function extractAudio16kMono(
   inputVideoPath: string,
-  outputWavPath: string,
-  options: Pick<RunFfmpegOptions, 'signal' | 'isCancelled'> = {},
+  outputAudioPath: string,
+  options: Pick<RunFfmpegOptions, 'signal' | 'isCancelled'> & {
+    format?: TranscriptionAudioFormat;
+  } = {},
 ): Promise<string> {
-  const outputDir = path.dirname(outputWavPath);
+  const { format = "wav", ...runOptions } = options;
+  const outputDir = path.dirname(outputAudioPath);
   if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
 
   const args = [
@@ -825,24 +849,23 @@ export async function extractAudio16kMono(
     "-vn",
     "-sn",
     "-dn",
-    "-acodec",
-    "pcm_s16le",
+    ...transcriptionAudioCodecArgs(format),
     "-ar",
     "16000",
     "-ac",
     "1",
-    outputWavPath,
+    outputAudioPath,
   ];
 
-  await runFfmpeg(args, { label: "extract-audio-16k-mono", ...options });
+  await runFfmpeg(args, { label: `extract-audio-16k-mono-${format}`, ...runOptions });
 
-  if (!fs.existsSync(outputWavPath) || fs.statSync(outputWavPath).size < 1024) {
-    throw new AppError("Audio extraction produced an empty WAV file.", {
-      details: outputWavPath,
+  if (!fs.existsSync(outputAudioPath) || fs.statSync(outputAudioPath).size < 1024) {
+    throw new AppError("Audio extraction produced an empty transcription file.", {
+      details: outputAudioPath,
       resolution:
         "Confirm the source video actually contains an audio track, then retry.",
     });
   }
 
-  return outputWavPath;
+  return outputAudioPath;
 }
