@@ -6,7 +6,7 @@ import {
   saveSettingsSection,
   setSettingsStoreForTests,
 } from "../lib/app-settings";
-import { getClipsDirValue, getTempDirValue } from "../lib/paths";
+import { getClipsDirValue, getCustomFontsDirValue, getTempDirValue } from "../lib/paths";
 import type { AppSettingsSection } from "../lib/types";
 import { getUploadDirValue } from "../lib/upload";
 
@@ -25,14 +25,18 @@ test("path settings are reread by worker and media path accessors without a rest
     const uploadDir = path.join(os.tmpdir(), "clipcraft-upload-next-job");
     const clipsDir = path.join(os.tmpdir(), "clipcraft-clips-next-job");
     const tempDir = path.join(os.tmpdir(), "clipcraft-temp-next-job");
-    await saveSettingsSection("paths", { uploadDir, clipsDir, tempDir });
+    const fontDir = path.join(os.tmpdir(), "clipcraft-fonts-next-job");
+    await saveSettingsSection("paths", { uploadDir, clipsDir, tempDir, fontDir });
     assert.equal(getUploadDirValue(), uploadDir);
     assert.equal(getClipsDirValue(), clipsDir);
     assert.equal(getTempDirValue(), tempDir);
+    assert.equal(getCustomFontsDirValue(), fontDir);
 
     const changedTempDir = path.join(os.tmpdir(), "clipcraft-temp-changed-live");
-    await saveSettingsSection("paths", { tempDir: changedTempDir });
+    const changedFontDir = path.join(os.tmpdir(), "clipcraft-fonts-changed-live");
+    await saveSettingsSection("paths", { tempDir: changedTempDir, fontDir: changedFontDir });
     assert.equal(getTempDirValue(), changedTempDir);
+    assert.equal(getCustomFontsDirValue(), changedFontDir);
   } finally {
     setSettingsStoreForTests(null);
   }

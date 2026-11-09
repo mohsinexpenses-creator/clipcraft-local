@@ -104,7 +104,6 @@ const THEME_CAPTION_PRESETS: CaptionPreset[] = CAPTION_THEME_CATALOG.filter(
   lineGap: 6,
   lineAlignment: "center",
   captionTheme: theme.id,
-  matchOverlayTheme: true,
 }));
 
 /**
@@ -145,8 +144,7 @@ export const DEFAULT_CAPTION_PRESETS: CaptionPreset[] = [
     lineGap: 6,
     lineAlignment: "center",
     captionTheme: "kinetic-01",
-    matchOverlayTheme: true,
-    isDefault: true,
+      isDefault: true,
   },
   ...THEME_CAPTION_PRESETS,
 ];
@@ -733,6 +731,50 @@ export const RETIRED_OVERLAY_STYLE_PRESET_IDS = RETIRED_OVERLAY_STYLE_PRESETS.ma
 );
 
 export const DEFAULT_OVERLAY_STYLE_PRESETS: OverlayStylePreset[] = [
+  // Flat is intentionally the fresh-install default. `seedDefaults` only
+  // promotes it when a kind has no existing default, so existing user-selected
+  // Signal Stamp/Afterglow rows remain untouched until they explicitly reset.
+  {
+    _id: "hook-flat",
+    kind: "hook",
+    name: "Flat",
+    description: "A clean, low-elevation headline card with no badge",
+    fontFamily: "Poppins, Arial, sans-serif",
+    fontSize: 38,
+    fontWeight: "black",
+    textColor: "#FFFFFF",
+    backgroundColor: "#111827",
+    borderColor: "#111827",
+    borderWidth: 0,
+    borderRadius: 6,
+    surfaceStyle: "flat",
+    textTransform: "uppercase",
+    positionY: 28,
+    captionOffsetPx: 48,
+    animationStyle: "fade",
+    showBadge: false,
+    isDefault: true,
+  },
+  {
+    _id: "cta-flat",
+    kind: "cta",
+    name: "Flat",
+    description: "A clean, low-elevation closing card with no gradient",
+    fontFamily: "Poppins, Arial, sans-serif",
+    fontSize: 34,
+    fontWeight: "black",
+    textColor: "#111827",
+    backgroundColor: "#FFFFFF",
+    borderColor: "#FFFFFF",
+    borderWidth: 0,
+    borderRadius: 6,
+    surfaceStyle: "flat",
+    textTransform: "uppercase",
+    positionY: 74,
+    captionOffsetPx: 44,
+    animationStyle: "fade",
+    isDefault: true,
+  },
   {
     _id: "hook-signal-stamp",
     kind: "hook",
@@ -754,7 +796,7 @@ export const DEFAULT_OVERLAY_STYLE_PRESETS: OverlayStylePreset[] = [
     badgeText: "The Moment",
     badgeBackgroundColor: "#D6F36A",
     badgeTextColor: "#18211A",
-    isDefault: true,
+    isDefault: false,
   },
   {
     _id: "hook-paper-cut",
@@ -793,7 +835,7 @@ export const DEFAULT_OVERLAY_STYLE_PRESETS: OverlayStylePreset[] = [
     positionY: 74,
     captionOffsetPx: 44,
     animationStyle: "typewriter",
-    isDefault: true,
+    isDefault: false,
   },
   {
     _id: "cta-blueprint",

@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { OverlayStylePreset } from '@/lib/types';
+import { CustomFont, OverlayStylePreset } from '@/lib/types';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
@@ -22,6 +22,7 @@ import { buildBackground, parseBackground } from '@/lib/overlay-bg';
 interface OverlayStyleEditorProps {
   kind: 'hook' | 'cta';
   value: OverlayStylePreset;
+  customFonts?: CustomFont[];
   onChange: (preset: OverlayStylePreset) => void;
 }
 
@@ -254,7 +255,12 @@ const BackgroundField: React.FC<{
  * animation of the overlay text. (The TEXT itself is still edited per clip;
  * presets only control how it looks.)
  */
-export const OverlayStyleEditor: React.FC<OverlayStyleEditorProps> = ({ kind, value, onChange }) => {
+export const OverlayStyleEditor: React.FC<OverlayStyleEditorProps> = ({
+  kind,
+  value,
+  customFonts = [],
+  onChange,
+}) => {
   const [presets, setPresets] = useState<OverlayStylePreset[]>([]);
   const [activeId, setActiveId] = useState<string>(value._id);
   const [draft, setDraft] = useState<OverlayStylePreset>(value);
@@ -263,6 +269,15 @@ export const OverlayStyleEditor: React.FC<OverlayStyleEditorProps> = ({ kind, va
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [defaultSuccess, setDefaultSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const overlayFonts = [
+    ...OVERLAY_FONTS,
+    ...customFonts.filter((font, index) =>
+      customFonts.findIndex((candidate) => candidate.family.toLocaleLowerCase() === font.family.toLocaleLowerCase()) === index,
+    ).map((font) => ({
+      label: `${font.family} · custom`,
+      value: `'${font.family}', sans-serif`,
+    })),
+  ];
 
   const loadPresets = useCallback(async (): Promise<OverlayStylePreset[]> => {
     const res = await fetch(`/api/overlay-presets?kind=${kind}`);
@@ -517,10 +532,10 @@ export const OverlayStyleEditor: React.FC<OverlayStyleEditorProps> = ({ kind, va
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {!OVERLAY_FONTS.some((font) => font.value === draft.fontFamily) && (
+                  {!overlayFonts.some((font) => font.value === draft.fontFamily) && (
                     <SelectItem value={draft.fontFamily}>Current saved font</SelectItem>
                   )}
-                  {OVERLAY_FONTS.map((font) => (
+                  {overlayFonts.map((font) => (
                     <SelectItem key={font.value} value={font.value}>{font.label}</SelectItem>
                   ))}
                 </SelectContent>
@@ -633,6 +648,18 @@ export const OverlayStyleEditor: React.FC<OverlayStyleEditorProps> = ({ kind, va
                 max={999}
                 value={draft.borderRadius}
                 onChange={(e) => patch({ borderRadius: Math.max(0, Math.min(999, Number(e.target.value) || 0)) })}
+              />
+            </div>
+
+            <div className="flex items-center justify-between rounded-lg border p-3">
+              <div className="space-y-0.5">
+                <Label htmlFor={`style-flat-${kind}`}>Flat surface</Label>
+                <p className="text-xs text-muted-foreground">No elevation shadow behind the card</p>
+              </div>
+              <Switch
+                id={`style-flat-${kind}`}
+                checked={draft.surfaceStyle === 'flat'}
+                onCheckedChange={(flat) => patch({ surfaceStyle: flat ? 'flat' : 'elevated' })}
               />
             </div>
 

@@ -104,7 +104,7 @@ Both `npm run dev` and `npm run worker` load `.env.local` (via `@next/env`'s
 
 `/settings` (in the sidebar) owns pipeline defaults, render clip defaults, the Gemini key
 pool, Deepgram key + model + engine choice, worker concurrency, profanity audio mode, and
-local upload/output/temp-frame folders plus an optional FFmpeg path. The values are stored
+local upload/output/temp-frame/custom-font folders plus an optional FFmpeg path. The values are stored
 as `app_settings` rows in the same SQLite file as your videos,
 and the rule is: **what you saved there, otherwise the built-in default**. `.env.local` is
 not consulted for any of them — a value can never come from a file you are not looking at,
@@ -134,8 +134,27 @@ Practical consequences worth knowing:
   can create one child folder, and write-probes every selected destination before it is
   saved. Open the app directly on `http://localhost` to use it; a LAN/tunnel deployment
   cannot browse or create folders through that API.
+- **custom font destination:** the Custom font directory is a write-probed local path.
+  It controls future font uploads; registry entries retain the folder used at upload time,
+  so changing the destination does not orphan a selected saved style.
 - `Reset to defaults` deletes a section's row, which leaves the *built-in* default — it does
   not hand the value back to `.env.local`.
+
+### 3.1 Style presets and locally uploaded fonts
+
+Open **Style presets** to select the non-destructive fresh-install **Flat** Hook and CTA
+cards or edit your own card. Existing databases keep the Hook/CTA default you already chose;
+only an explicit reset re-syncs shipped rows. The caption-theme color switch is off by
+default and affects only Hook/CTA card background, border and main text — not their font,
+card geometry, badge, placement or animation.
+
+The Custom fonts panel accepts `.ttf`, `.otf`, `.woff`, and `.woff2` files up to 5 MB. It
+checks the file signature, records a local registry entry, rejects duplicate fingerprints and
+family/weight collisions, and exposes the family in caption, Hook and CTA pickers. Font bytes
+are served exclusively at loopback `/api/fonts/<id>` URLs for the live preview. The worker
+starts a throwaway `127.0.0.1` font server for selected files and Remotion delays its first
+paint until loading has finished. Deleting a font removes its file and registry row; saved presets remain and follow
+their existing CSS fallback rather than failing a queued render.
 
 ## 4. SQLite database and job queue
 
@@ -415,6 +434,7 @@ app/api/clips/             list, create/render, [id] (status/file), [id]/cancel
 app/api/upload/            single-shot multipart upload (file only)
 app/api/upload/session/    resumable chunked upload (no limit) + finalize/abort
 app/api/media/[...path]/   Range-enabled HTTP file server for uploads/ + generated-clips/
+app/api/fonts/             loopback-only custom font bytes plus local upload/delete registry API
 app/api/{caption,overlay,text}-presets/ + prompt-templates/ + startup-validation/
 app/caption-presets/       caption style preset manager (live preview)
 app/prompt-templates/      edit the LLM prompt templates
@@ -430,6 +450,7 @@ lib/llm.ts                 Gemini fallback chain (config array + plain fetch, no
 lib/ai.ts                  prompt templates + JSON parsing + exact-count top-up
 lib/profanity.ts           word masking + render-time mute/beep windows
 lib/overlay-bg.ts          solid/gradient card-background picker helpers
+lib/custom-fonts.ts        font signature validation, local registry file lifecycle + render faces
 lib/presets.ts             default caption/overlay/text presets
 lib/startup-validation.ts  the checks behind /startup-validation
 lib/db.ts                  SQLite schema migrations, prepared helpers, and typed CRUD

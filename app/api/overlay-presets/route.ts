@@ -25,6 +25,9 @@ function coercePreset(body: Record<string, unknown>, fallbackKind: 'hook' | 'cta
     borderColor: String(body.borderColor || 'rgba(255, 255, 255, 0.25)'),
     borderWidth: Number(body.borderWidth ?? 2),
     borderRadius: Number(body.borderRadius ?? 16),
+    ...(body.surfaceStyle === 'flat' || body.surfaceStyle === 'elevated'
+      ? { surfaceStyle: body.surfaceStyle }
+      : {}),
     textTransform: body.textTransform === 'none' ? 'none' : 'uppercase',
     positionY: Number(body.positionY ?? (kind === 'hook' ? 12 : 64)),
     animationStyle: (body.animationStyle as OverlayStylePreset['animationStyle']) || 'pop',

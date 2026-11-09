@@ -4,7 +4,7 @@ import { buildAppSettingsSnapshot, clearSettingsSection, envAiSectionForImport, 
 import { getCaptionPreset, getOverlayStylePreset, listCaptionPresets, listOverlayStylePresets } from '@/lib/db';
 import { getFfmpegPath, getFfprobePath } from '@/lib/ffmpeg';
 import { getUploadDirValue } from '@/lib/upload';
-import { getClipsDirValue, getTempDirValue } from '@/lib/paths';
+import { getClipsDirValue, getCustomFontsDirValue, getTempDirValue } from '@/lib/paths';
 import { AppError, toErrorMessage, toErrorStatus } from '@/lib/errors';
 import { assertLocalFolderBrowserRequest, validateWritableFolder } from '@/lib/folder-browser';
 
@@ -21,11 +21,12 @@ function resolveCurrentPaths(): ResolvedPaths {
       uploadDir: getUploadDirValue(),
       clipsDir: getClipsDirValue(),
       tempDir: getTempDirValue(),
+      fontDir: getCustomFontsDirValue(),
       ffmpegPath: getFfmpegPath(),
       ffprobePath: getFfprobePath(),
     };
   } catch {
-    return { uploadDir: '', clipsDir: '', tempDir: '', ffmpegPath: '', ffprobePath: '' };
+    return { uploadDir: '', clipsDir: '', tempDir: '', fontDir: '', ffmpegPath: '', ffprobePath: '' };
   }
 }
 
@@ -97,7 +98,7 @@ function readSection(body: Record<string, unknown>): AppSettingsSection {
  * preset tables. An empty value means "use the preset the preset table marks default".
  */
 function assertPathFoldersWritable(merged: Record<string, unknown>): void {
-  for (const field of ['uploadDir', 'clipsDir', 'tempDir'] as const) {
+  for (const field of ['uploadDir', 'clipsDir', 'tempDir', 'fontDir'] as const) {
     const value = merged[field];
     if (typeof value !== 'string' || !value.trim()) continue;
     // Persist the canonical path after a successful probe. This removes a

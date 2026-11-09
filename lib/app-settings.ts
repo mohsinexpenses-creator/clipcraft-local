@@ -422,7 +422,7 @@ export function sanitizeSettingsSection(
     case 'paths': {
       const input = record(value, 'Paths & binaries');
       const out: Record<string, unknown> = {};
-      for (const field of ['uploadDir', 'clipsDir', 'tempDir', 'ffmpegPath'] as const) {
+      for (const field of ['uploadDir', 'clipsDir', 'tempDir', 'fontDir', 'ffmpegPath'] as const) {
         if (!(field in input)) continue;
         out[field] = pathString(input[field], PATH_FIELD_LABELS[field]);
       }
@@ -438,6 +438,7 @@ const PATH_FIELD_LABELS: Record<keyof PathSettings, string> = {
   uploadDir: 'Upload directory',
   clipsDir: 'Generated clips directory',
   tempDir: 'Temporary render directory',
+  fontDir: 'Custom font directory',
   ffmpegPath: 'FFmpeg path',
 };
 
@@ -683,12 +684,14 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
     uploadDir: stringValue(pathsStored.uploadDir) ?? DEFAULT_PATH_SETTINGS.uploadDir,
     clipsDir: stringValue(pathsStored.clipsDir) ?? DEFAULT_PATH_SETTINGS.clipsDir,
     tempDir: stringValue(pathsStored.tempDir) ?? DEFAULT_PATH_SETTINGS.tempDir,
+    fontDir: stringValue(pathsStored.fontDir) ?? DEFAULT_PATH_SETTINGS.fontDir,
     ffmpegPath: stringValue(pathsStored.ffmpegPath) ?? DEFAULT_PATH_SETTINGS.ffmpegPath,
   };
   sources.paths = {
     uploadDir: paths.uploadDir ? 'app' : 'default',
     clipsDir: paths.clipsDir ? 'app' : 'default',
     tempDir: paths.tempDir ? 'app' : 'default',
+    fontDir: paths.fontDir ? 'app' : 'default',
     ffmpegPath: paths.ffmpegPath ? 'app' : 'default',
   };
 
@@ -738,6 +741,7 @@ export function getStoredPathSettings(): PathSettings {
       uploadDir: stringValue(stored.uploadDir) ?? '',
       clipsDir: stringValue(stored.clipsDir) ?? '',
       tempDir: stringValue(stored.tempDir) ?? '',
+      fontDir: stringValue(stored.fontDir) ?? '',
       ffmpegPath: stringValue(stored.ffmpegPath) ?? '',
     };
   } catch {

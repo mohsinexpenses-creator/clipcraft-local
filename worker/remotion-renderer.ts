@@ -14,6 +14,8 @@ import {
 import { OverlayFrameSequence } from "./ffmpeg-pipeline";
 import { normalizeFps } from "./ffmpeg-pipeline";
 import { resolveTempDir } from "../lib/paths";
+import { customFontFilesForRender } from "../lib/custom-fonts";
+import { startMediaServer, type ClipMediaServer } from "./clip-http-server";
 import {
   getCaptionActiveRangeRenderingEnabled,
   getRemotionConcurrency,
@@ -395,7 +397,9 @@ export async function prepareRemotionCaptionOverlays(
   const fps = normalizeFps(options.fps);
   const totalDuration = Math.max(0.1, options.totalDuration ?? 0.1);
   const durationInFrames = Math.max(1, Math.round(totalDuration * fps));
-  const inputProps: CaptionOverlayCompositionProps = {
+  // Active ranges depend only on timing/text. Custom font URLs are attached
+  // inside the guarded render lifetime below, after their loopback server starts.
+  const inputPropsBase: CaptionOverlayCompositionProps = {
     hookText: maskProfanity(options.hookText),
     hookDuration: options.hookDuration,
     hookStart: Math.max(0, options.hookStart),
@@ -412,7 +416,7 @@ export async function prepareRemotionCaptionOverlays(
     captionLiftScale: options.captionLiftScale ?? 1,
   };
   const activeRanges = calculateCaptionActiveFrameRanges(
-    inputProps,
+    inputPropsBase,
     fps,
     totalDuration,
   );
@@ -444,6 +448,7 @@ export async function prepareRemotionCaptionOverlays(
   let browser: Awaited<
     ReturnType<typeof import("@remotion/renderer").openBrowser>
   > | null = null;
+  let fontServer: ClipMediaServer | null = null;
 
   try {
     checkCancelled(options.isCancelled, options.signal);
@@ -453,6 +458,35 @@ export async function prepareRemotionCaptionOverlays(
       );
       return { workDir, sequences: [] };
     }
+    const customFontFiles = await customFontFilesForRender(
+      options.preset,
+      options.hookStyle,
+      options.ctaStyle,
+    );
+    if (customFontFiles.length > 0) {
+      const startedFontServer = await startMediaServer(
+        customFontFiles.map((font) => ({
+          route: `fonts/${font.id}.${font.format}`,
+          filePath: font.filePath,
+        })),
+      );
+      fontServer = startedFontServer;
+      log.detail(
+        `Custom font loopback server ready: ${customFontFiles.length} selected face(s) on 127.0.0.1:${startedFontServer.port}.`,
+      );
+    }
+    const fontBaseUrl = fontServer?.baseUrl;
+    const inputProps: CaptionOverlayCompositionProps = {
+      ...inputPropsBase,
+      customFonts: fontBaseUrl
+        ? customFontFiles.map((font) => ({
+            family: font.family,
+            weight: font.weight,
+            source: `${fontBaseUrl}/fonts/${font.id}.${font.format}`,
+            format: font.format,
+          }))
+        : [],
+    };
     const activeFrameCount = activeRanges.reduce(
       (sum, range) => sum + range.frameCount,
       0,
@@ -621,6 +655,8 @@ export async function prepareRemotionCaptionOverlays(
         "Inspect the Remotion log, confirm Chromium is available, and retry the render.",
     });
   } finally {
+    // Close Chromium before withdrawing its loopback font resources, even after
+    // an interrupted sparse render that may still be settling a network request.
     if (browser) {
       const closeStartedAt = Date.now();
       log.info(
@@ -635,6 +671,13 @@ export async function prepareRemotionCaptionOverlays(
         log.warn(
           `[RENDER-DIAG] stage=chromium.browser-close event=failed time_taken_ms=${Date.now() - closeStartedAt} ${renderMemoryUsage()}`,
         );
+      }
+    }
+    if (fontServer) {
+      try {
+        await fontServer.close();
+      } catch {
+        log.warn("Custom font loopback server did not close cleanly.");
       }
     }
   }

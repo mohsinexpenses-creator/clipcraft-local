@@ -4,7 +4,7 @@ import React, { ComponentType } from 'react';
 import { Player } from '@remotion/player';
 import { cn } from 'cn';
 import { CaptionComposition } from '@/remotion/CaptionComposition';
-import { CaptionPreset, OverlayStylePreset } from '@/lib/types';
+import { CaptionPreset, OverlayStylePreset, RemotionCustomFontFace } from '@/lib/types';
 
 interface CaptionPreviewProps {
   preset: CaptionPreset;
@@ -12,6 +12,8 @@ interface CaptionPreviewProps {
   ctaText?: string;
   hookStyle?: OverlayStylePreset;
   ctaStyle?: OverlayStylePreset;
+  /** Locally registered faces for deterministic Player preview loading. */
+  customFonts?: RemotionCustomFontFace[];
   /** Extra classes for the outer 9:16 frame (e.g. sticky-panel sizing). */
   className?: string;
 }
@@ -22,6 +24,7 @@ export const CaptionPreview: React.FC<CaptionPreviewProps> = ({
   ctaText = 'FOLLOW FOR MORE BREAKDOWNS',
   hookStyle,
   ctaStyle,
+  customFonts,
   className,
 }) => {
   const sampleWords = [
@@ -48,6 +51,7 @@ export const CaptionPreview: React.FC<CaptionPreviewProps> = ({
       )}
     >
       <Player
+        key={(customFonts ?? []).map((font) => `${font.family}:${font.weight}:${font.source}`).sort().join('|')}
         component={CaptionComposition as unknown as ComponentType<Record<string, unknown>>}
         durationInFrames={30 * 8}
         fps={30}
@@ -70,6 +74,7 @@ export const CaptionPreview: React.FC<CaptionPreviewProps> = ({
           preset,
           hookStyle,
           ctaStyle,
+          customFonts,
         }}
       />
     </div>

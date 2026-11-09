@@ -141,7 +141,7 @@ export const HookOverlay: React.FC<HookOverlayProps> = ({
           borderRadius: style?.borderRadius ?? 16,
           padding: '20px 24px',
           textAlign: 'center',
-          boxShadow: '0 12px 32px rgba(0, 0, 0, 0.7)',
+          boxShadow: style?.surfaceStyle === 'flat' ? 'none' : '0 12px 32px rgba(0, 0, 0, 0.7)',
           maxWidth: '100%',
         }}
       >

@@ -377,8 +377,8 @@ test('the ai section round-trips its keys without ever returning one in full', a
  */
 test('paths settings: stored values win, empty means automatic, and resolveSettings stays pure', () => {
   const { effective, sources } = resolveSettings({});
-  assert.deepEqual(effective.paths, { uploadDir: '', clipsDir: '', tempDir: '', ffmpegPath: '' });
-  assert.deepEqual(Object.values(sources.paths ?? {}), ['default', 'default', 'default', 'default']);
+  assert.deepEqual(effective.paths, { uploadDir: '', clipsDir: '', tempDir: '', fontDir: '', ffmpegPath: '' });
+  assert.deepEqual(Object.values(sources.paths ?? {}), ['default', 'default', 'default', 'default', 'default']);
 
   const stored = resolveSettings({
     paths: { clipsDir: '/data/clips', ffmpegPath: 'C:\\ffmpeg\\bin\\ffmpeg.exe' },
@@ -387,6 +387,7 @@ test('paths settings: stored values win, empty means automatic, and resolveSetti
   assert.equal(stored.effective.paths.ffmpegPath, 'C:\\ffmpeg\\bin\\ffmpeg.exe');
   assert.equal(stored.effective.paths.uploadDir, '');
   assert.equal(stored.effective.paths.tempDir, '');
+  assert.equal(stored.effective.paths.fontDir, '');
   assert.equal(stored.sources.paths?.clipsDir, 'app');
   assert.equal(stored.sources.paths?.uploadDir, 'default');
 });
@@ -406,9 +407,11 @@ test('paths settings: sanitize trims, clears on empty/null and rejects control c
     await saveSettingsSection('paths', {
       uploadDir: '  /mnt/videos  ',
       tempDir: ' /mnt/work ',
+      fontDir: ' /mnt/fonts ',
     });
     assert.equal(rows.get('paths')?.uploadDir, '/mnt/videos', 'paths are trimmed before storage');
     assert.equal(rows.get('paths')?.tempDir, '/mnt/work');
+    assert.equal(rows.get('paths')?.fontDir, '/mnt/fonts');
 
     // An empty value is the user switching back to the automatic chain.
     await saveSettingsSection('paths', { uploadDir: '' });

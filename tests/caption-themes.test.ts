@@ -111,11 +111,11 @@ test("retired caption themes are absent from the catalog and registry", () => {
   }
 });
 
-test("theme Hook/CTA styling follows the caption accent and preserves saved overlay geometry", () => {
+test("theme color override is default-off and changes only background, border and main text", () => {
   const caption = {
     ...DEFAULT_CAPTION_PRESETS[0],
     captionTheme: "gaming-stream" as const,
-    matchOverlayTheme: true,
+    themeColorOverride: true,
     highlightColor: "#00CC88",
   };
   const hook = DEFAULT_OVERLAY_STYLE_PRESETS.find(
@@ -124,24 +124,32 @@ test("theme Hook/CTA styling follows the caption accent and preserves saved over
   const cta = DEFAULT_OVERLAY_STYLE_PRESETS.find(
     (style) => style.kind === "cta",
   )!;
-  const hookWithFont = { ...hook, fontFamily: "Georgia, 'Times New Roman', serif" };
-  const ctaWithFont = { ...cta, fontFamily: "Rajdhani, sans-serif" };
+  const hookWithFont = {
+    ...hook,
+    fontFamily: "Georgia, 'Times New Roman', serif",
+    borderWidth: 7,
+    borderRadius: 33,
+    animationStyle: "slide-up" as const,
+    badgeBackgroundColor: "#123456",
+  };
+  const ctaWithFont = { ...cta, fontFamily: "Rajdhani, sans-serif", animationStyle: "none" as const };
   const matchedHook = resolveCaptionThemeOverlayStyle(caption, hookWithFont);
   const matchedCta = resolveCaptionThemeOverlayStyle(caption, ctaWithFont);
 
-  assert.equal(matchedHook.fontFamily, hookWithFont.fontFamily);
-  assert.equal(matchedCta.fontFamily, ctaWithFont.fontFamily);
-  assert.equal(matchedHook.fontWeight, hookWithFont.fontWeight);
-  assert.equal(matchedCta.fontWeight, ctaWithFont.fontWeight);
   assert.equal(matchedHook.borderColor, "#00CC88");
-  assert.equal(matchedHook.badgeBackgroundColor, "#00CC88");
   assert.equal(matchedCta.backgroundColor, "#00CC88");
-  assert.equal(matchedHook.fontSize, hookWithFont.fontSize);
-  assert.equal(matchedHook.positionY, hookWithFont.positionY);
-  assert.equal(matchedHook.badgeText, hookWithFont.badgeText);
+  assert.equal(matchedHook.textColor, "#FFFFFF");
+  assert.equal(matchedCta.textColor, "#111111");
+  for (const field of ["fontFamily", "fontWeight", "fontSize", "positionY", "borderWidth", "borderRadius", "animationStyle", "badgeBackgroundColor"] as const) {
+    assert.equal(matchedHook[field], hookWithFont[field], `${field} remains style-owned`);
+  }
+  assert.equal(matchedCta.fontFamily, ctaWithFont.fontFamily);
+  assert.equal(matchedCta.animationStyle, ctaWithFont.animationStyle);
 
-  const disabled = { ...caption, matchOverlayTheme: false };
+  const disabled = { ...caption, themeColorOverride: false };
   assert.equal(resolveCaptionThemeOverlayStyle(disabled, hookWithFont), hookWithFont);
+  const defaultOff = { ...caption, themeColorOverride: undefined };
+  assert.equal(resolveCaptionThemeOverlayStyle(defaultOff, hookWithFont), hookWithFont);
 });
 
 test("caption themes reserve their own band; classic presets keep the classic band", () => {

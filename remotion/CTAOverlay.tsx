@@ -158,7 +158,7 @@ export const CTAOverlay: React.FC<CTAOverlayProps> = ({
           borderRadius: style?.borderRadius ?? 24,
           padding: '18px 22px',
           background: style?.backgroundColor || 'linear-gradient(135deg, rgba(34,197,94,0.94), rgba(14,165,233,0.94))',
-          boxShadow: '0 18px 50px rgba(0, 0, 0, 0.45)',
+          boxShadow: style?.surfaceStyle === 'flat' ? 'none' : '0 18px 50px rgba(0, 0, 0, 0.45)',
           border: `${style?.borderWidth ?? 2}px solid ${style?.borderColor || 'rgba(255,255,255,0.2)'}`,
           textAlign: 'center',
         }}

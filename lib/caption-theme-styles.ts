@@ -265,14 +265,17 @@ function contrastTextColor(background: string, fallback: string): string {
 }
 
 /**
- * Apply the selected caption theme's visual language to Hook or CTA cards while
- * preserving each saved overlay's content, size, badge choice and placement.
+ * Optional shared palette for Hook/CTA cards. It is deliberately opt-in and
+ * deliberately narrow: only the card background, border, and main text are
+ * recolored. Font, weight, size, geometry, animation, badge and copy remain
+ * the selected style preset's own decisions, which keeps the toggle reversible
+ * and visually identical in the Player and worker composition.
  */
 export function resolveCaptionThemeOverlayStyle(
   caption: CaptionPreset,
   overlay: OverlayStylePreset,
 ): OverlayStylePreset {
-  if (!caption.captionTheme || caption.matchOverlayTheme === false) return overlay;
+  if (!caption.captionTheme || caption.themeColorOverride !== true) return overlay;
 
   const theme = getCaptionThemeDefinition(caption.captionTheme);
   if (!theme) return overlay;
@@ -286,16 +289,6 @@ export function resolveCaptionThemeOverlayStyle(
     textColor: isHook ? theme.hook.textColor : accentText,
     backgroundColor: isHook ? theme.hook.backgroundColor : accent,
     borderColor: accent,
-    borderWidth: isHook ? 2 : 0,
-    borderRadius: isHook ? theme.hook.borderRadius : theme.cta.borderRadius,
-    textTransform: 'uppercase',
-    animationStyle: isHook ? theme.hook.animationStyle : theme.cta.animationStyle,
-    ...(isHook
-      ? {
-          badgeBackgroundColor: accent,
-          badgeTextColor: accentText,
-        }
-      : {}),
   };
 }
 

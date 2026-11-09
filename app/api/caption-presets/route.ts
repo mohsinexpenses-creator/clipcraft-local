@@ -75,10 +75,7 @@ function coerceCaptionPreset(body: Record<string, unknown>, id: string): Caption
       ? 'center'
       : undefined;
   const captionTheme = isCaptionThemeName(body.captionTheme) ? body.captionTheme : undefined;
-  const themeWasSpecified = Object.prototype.hasOwnProperty.call(body, 'captionTheme');
-  const matchOverlayTheme = typeof body.matchOverlayTheme === 'boolean'
-    ? body.matchOverlayTheme
-    : Boolean(captionTheme);
+  const themeColorOverride = body.themeColorOverride === true;
 
   return {
     _id: id,
@@ -99,8 +96,8 @@ function coerceCaptionPreset(body: Record<string, unknown>, id: string): Caption
     ...(body.lineGap !== undefined ? { lineGap: boundedNumber(body.lineGap, 4, 0, 80) } : {}),
     ...(lineAlignment ? { lineAlignment } : {}),
     ...(captionTheme ? { captionTheme } : {}),
-    ...(themeWasSpecified || typeof body.matchOverlayTheme === 'boolean'
-      ? { matchOverlayTheme }
+    ...(typeof body.themeColorOverride === 'boolean'
+      ? { themeColorOverride }
       : {}),
     ...(typeof body.isDefault === 'boolean' ? { isDefault: body.isDefault } : {}),
     ...(typeof body.createdAt === 'string' ? { createdAt: body.createdAt } : {}),

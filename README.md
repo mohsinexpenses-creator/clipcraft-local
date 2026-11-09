@@ -85,7 +85,7 @@ Every default the studio asks you for lives in one sidebar page, in six sections
 | AI providers         | Gemini key pool, Deepgram key + model, and which transcription engine to use. Every key field is Test + Save on its own - Test asks the provider, Save stores it (keys are only ever shown back masked) |
 | Worker               | clip / viral-detection concurrency and a per-render Chrome logical-thread budget                                                                                                                        |
 | Profanity            | what happens to the _audio_ of a flagged word (mute / beep / leave it)                                                                                                                                  |
-| Paths & binaries     | upload, generated-clips and transient frame/work folders plus an optional FFmpeg executable                                                                                                            |
+| Paths & binaries     | upload, generated-clips, transient frame/work and future custom-font folders plus an optional FFmpeg executable                                                                                        |
 
 The rule is one line long, in both processes:
 
@@ -114,10 +114,12 @@ applies to the next job except the two loop sizes: **clip and detection concurre
 page says so while such an override is saved).
 
 Path changes are validated with a real write probe and are read again for the next upload,
-render, frame extraction and media request — no web or worker restart is needed. The small
-folder picker intentionally works only when ClipCraft is opened directly on `localhost`;
-it lists directories only, permits creating one child folder, and is not exposed through a
-LAN or Internet deployment.
+render, frame extraction and media request — no web or worker restart is needed. The custom
+font folder controls **future uploads**; each registered font records its own destination,
+so moving the setting never silently orphans an existing saved style. The small folder picker
+intentionally works only when ClipCraft is opened directly on `localhost`; it lists
+directories only, permits creating one child folder, and is not exposed through a LAN or
+Internet deployment.
 
 The `hook/CTA` durations are the one field with a subtlety: the rendered clip is
 `[replayed hook][full segment]`, and the replay length is **the hook interval the prompt
@@ -133,14 +135,21 @@ row created by an older build never picks up a changed default — **Reset to sh
 styles** re-syncs the built-in rows from `lib/presets.ts` while keeping every preset you
 made yourself and the preset you marked default.
 
-The caption theme selector and style gallery include all 13 locally bundled Remotion themes
-(Pop, Karaoke, Kinetic 01/02, Hustle, Grape, Beast, Poppin, Aarit, Soft AI, Gaming Stream,
-Simple One Word, and Podcast). The original eight styles are preserved; Bold Punch remains
-the Kinetic 01 style, and the other twelve themes appear as individually named gallery
-cards. New theme cards are seeded into existing databases on the next app start, without a
-reset. Hook and CTA cards can match the chosen theme's font, accent, card and motion, while
-retaining their existing text and timing. A default you previously chose is preserved
-when built-ins are reset.
+Fresh installs use the **Flat** Hook and CTA cards: clean solid surfaces without an
+elevation shadow. They are seeded non-destructively, so an existing selected default stays
+selected through an upgrade; choosing **Reset to shipped styles** is the explicit way to
+re-sync built-ins. The optional **Use theme colors on Hook + CTA** switch is off by default.
+When enabled, it changes only card background, border and main text colors; the selected
+style still owns its font, sizing, placement, badge and animation in both the live preview
+and the worker render.
+
+The **Custom fonts** panel accepts locally stored `.ttf`, `.otf`, `.woff` and `.woff2`
+files up to 5 MB. Uploads are signature-checked, registry entries prevent duplicate file
+fingerprints or ambiguous family/weight pairs, and a font can be picked for classic captions,
+Hook and CTA cards. Font bytes are served only to a direct loopback browser at
+`/api/fonts/<id>`; the worker starts a throwaway `127.0.0.1` server for only the selected
+font files and blocks Remotion's first paint until they load. Removing a font removes its registry entry and file but leaves saved
+presets intact, allowing their CSS fallback family to render safely.
 
 Caption theme source is vendored under `remotion/caption-themes/vendor` with its MIT
 license. Caption fonts are bundled locally in `public/fonts` (including the theme fonts);

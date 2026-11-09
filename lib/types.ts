@@ -453,6 +453,8 @@ export interface PathSettings {
   clipsDir: string;
   /** Where transient FFmpeg, ASD, and Remotion frame directories are written. */
   tempDir: string;
+  /** Where uploaded custom font files are stored. Empty uses ./custom-fonts. */
+  fontDir: string;
   /** Absolute path to the ffmpeg executable. */
   ffmpegPath: string;
 }
@@ -461,6 +463,7 @@ export const DEFAULT_PATH_SETTINGS: PathSettings = {
   uploadDir: "",
   clipsDir: "",
   tempDir: "",
+  fontDir: "",
   ffmpegPath: "",
 };
 
@@ -481,6 +484,7 @@ export interface ResolvedPaths {
   uploadDir: string;
   clipsDir: string;
   tempDir: string;
+  fontDir: string;
   ffmpegPath: string;
   ffprobePath: string;
 }
@@ -667,6 +671,8 @@ export interface OverlayStylePreset {
   borderColor: string;
   borderWidth: number;
   borderRadius: number;
+  /** Flat cards omit the legacy elevation shadow. */
+  surfaceStyle?: "flat" | "elevated";
   textTransform: "uppercase" | "none";
   /** Vertical position of the card, % from the TOP of the frame. */
   positionY: number;
@@ -682,6 +688,32 @@ export interface OverlayStylePreset {
   isDefault?: boolean;
   createdAt?: string;
   updatedAt?: string;
+}
+
+export type CustomFontFormat = "ttf" | "otf" | "woff" | "woff2";
+
+/** A locally uploaded font registry entry. Font bytes never leave the local app. */
+export interface CustomFont {
+  id: string;
+  /** CSS family name chosen during upload (not an arbitrary CSS declaration). */
+  family: string;
+  weight: CaptionFontWeight;
+  originalName: string;
+  storageName: string;
+  /** Absolute folder captured at upload time, so later folder changes do not orphan it. */
+  directory: string;
+  format: CustomFontFormat;
+  mimeType: string;
+  byteSize: number;
+  createdAt: string;
+}
+
+/** Browser-safe source passed into the preview/Remotion composition. */
+export interface RemotionCustomFontFace {
+  family: string;
+  weight: number;
+  source: string;
+  format?: CustomFontFormat;
 }
 
 export interface FilterPreset {
@@ -766,7 +798,13 @@ export interface CaptionPreset {
   lineAlignment?: "left" | "center" | "right";
   /** One of the Remotion caption themes; theme selection is the only shipped preset mode. */
   captionTheme?: CaptionThemeName;
-  /** When true, Hook and CTA cards inherit the selected theme's font, palette, card and motion. */
+  /**
+   * Opt-in only: apply the selected caption theme's colors to Hook and CTA
+   * cards. It changes only their background, border, and text colors; font,
+   * geometry, animation, badge and content stay owned by the style preset.
+   */
+  themeColorOverride?: boolean;
+  /** @deprecated Phase-2/older records may contain this; it is ignored. */
   matchOverlayTheme?: boolean;
   isDefault?: boolean;
   createdAt?: string;

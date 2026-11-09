@@ -87,7 +87,7 @@ test('SQLite schema is versioned, indexed, WAL-enabled, and has a five-second bu
   const version = db.prepare('SELECT version FROM schema_version WHERE id = 1').get() as
     | { version: number }
     | undefined;
-  assert.deepEqual(version, { version: 11 });
+  assert.deepEqual(version, { version: 12 });
 
   // v3 is the additive pipeline column: the per-video automation settings
   // (auto-detect / auto-render + AI clip options) captured at upload time.
@@ -150,7 +150,7 @@ test('SQLite schema is versioned, indexed, WAL-enabled, and has a five-second bu
     initializeSchema(legacy);
     assert.deepEqual(
       legacy.prepare('SELECT version FROM schema_version WHERE id = 1').get(),
-      { version: 11 }
+      { version: 12 }
     );
     assert.ok(
       legacy.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'app_settings'").get(),
@@ -182,7 +182,7 @@ test('SQLite schema is versioned, indexed, WAL-enabled, and has a five-second bu
     `);
     initializeSchema(legacyWorker);
     const migratedWorker = legacyWorker.prepare(`SELECT value_json FROM app_settings WHERE key = 'worker'`).get() as { value_json: string };
-    assert.deepEqual(legacyWorker.prepare('SELECT version FROM schema_version WHERE id = 1').get(), { version: 11 });
+    assert.deepEqual(legacyWorker.prepare('SELECT version FROM schema_version WHERE id = 1').get(), { version: 12 });
     const value = JSON.parse(migratedWorker.value_json) as Record<string, unknown>;
     assert.equal(value.clipConcurrency, 2);
     assert.equal('remotionConcurrency' in value, false);
@@ -205,6 +205,7 @@ test('SQLite schema is versioned, indexed, WAL-enabled, and has a five-second bu
     'clips',
     'caption_presets',
     'overlay_style_presets',
+    'custom_fonts',
     'text_presets',
     'prompt_templates',
     'jobs',
@@ -228,6 +229,7 @@ test('SQLite schema is versioned, indexed, WAL-enabled, and has a five-second bu
     'jobs_claim_idx',
     'caption_presets_single_default_idx',
     'overlay_style_presets_single_default_idx',
+    'custom_fonts_family_idx',
   ]) {
     assert.ok(indexes.has(index), `missing index ${index}`);
   }

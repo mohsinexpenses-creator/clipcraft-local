@@ -1,6 +1,6 @@
 import React from 'react';
 import { AbsoluteFill, useCurrentFrame, useVideoConfig } from 'remotion';
-import { CaptionPreset, OverlayStylePreset, WordTimestamp } from '../lib/types';
+import { CaptionPreset, OverlayStylePreset, RemotionCustomFontFace, WordTimestamp } from '../lib/types';
 import { getCtaBottomLiftPercent } from './CTAOverlay';
 import { AnimatedWord } from './AnimatedWord';
 import { buildFinalCaptionChunks } from './CaptionComposition';
@@ -9,6 +9,7 @@ import { resolveCaptionThemeOverlayStyle } from '../lib/caption-theme-styles';
 import { CaptionThemeOverlay } from './caption-themes/CaptionThemeOverlay';
 import { CTAOverlay } from './CTAOverlay';
 import { HookOverlay } from './HookOverlay';
+import { useCustomFonts } from './caption-fonts';
 
 /**
  * One transparent, full-duration overlay layer (captions + hook + CTA).
@@ -27,6 +28,8 @@ export interface CaptionOverlayCompositionProps extends Record<string, unknown> 
   preset: CaptionPreset;
   hookStyle?: OverlayStylePreset;
   ctaStyle?: OverlayStylePreset;
+  /** Registered custom faces for the isolated Chromium render. */
+  customFonts?: RemotionCustomFontFace[];
   captionLiftScale?: number;
 }
 
@@ -42,8 +45,10 @@ export const CaptionOverlayComposition: React.FC<CaptionOverlayCompositionProps>
   preset,
   hookStyle,
   ctaStyle,
+  customFonts,
   captionLiftScale = 1,
 }) => {
+  useCustomFonts(customFonts);
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const currentTime = frame / fps;

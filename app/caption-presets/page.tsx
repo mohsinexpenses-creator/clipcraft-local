@@ -2,10 +2,13 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
+  CaptionFontWeight,
   CaptionLineStyle,
   CaptionPreset,
   CaptionThemeName,
+  CustomFont,
   OverlayStylePreset,
+  RemotionCustomFontFace,
 } from "@/lib/types";
 import {
   CAPTION_THEME_CATALOG,
@@ -52,6 +55,7 @@ import {
   Save,
   Search,
   Trash2,
+  Upload,
 } from "lucide-react";
 import { cn } from "cn";
 
@@ -73,6 +77,26 @@ const FONT_OPTIONS = [
   "Impact, 'Arial Black', sans-serif",
   "'Segoe UI', sans-serif",
 ] as const;
+
+function customCssFontFamily(font: Pick<CustomFont, "family">): string {
+  return `'${font.family}', sans-serif`;
+}
+
+function customFontFacesForPreview(fonts: CustomFont[]): RemotionCustomFontFace[] {
+  return fonts.map((font) => ({
+    family: font.family,
+    weight:
+      font.weight === "black"
+        ? 900
+        : font.weight === "extra-bold"
+          ? 800
+          : font.weight === "bold"
+            ? 700
+            : 400,
+    source: `/api/fonts/${encodeURIComponent(font.id)}`,
+    format: font.format,
+  }));
+}
 
 const ANIMATION_OPTIONS = [
   { value: "karaoke", label: "Karaoke" },
@@ -120,6 +144,134 @@ async function getErrorFromResponse(response: Response, fallback: string) {
   }
 }
 
+function CustomFontLibrary({
+  fonts,
+  initialError,
+  onChanged,
+}: {
+  fonts: CustomFont[];
+  initialError: string | null;
+  onChanged: () => Promise<unknown>;
+}) {
+  const [file, setFile] = useState<File | null>(null);
+  const [family, setFamily] = useState("");
+  const [weight, setWeight] = useState<CaptionFontWeight>("normal");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const upload = async () => {
+    if (!file) {
+      setError("Choose a .ttf, .otf, .woff, or .woff2 file first.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const form = new FormData();
+      form.set("file", file);
+      form.set("family", family);
+      form.set("weight", weight);
+      const response = await fetch("/api/fonts", { method: "POST", body: form });
+      if (!response.ok) throw new Error(await getErrorFromResponse(response, "Could not upload that custom font."));
+      await onChanged();
+      setFile(null);
+      setFamily("");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not upload that custom font.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async (font: CustomFont) => {
+    if (!window.confirm(`Remove ${font.family} (${font.weight})? Saved presets will remain and use their CSS fallback until you choose another font.`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/fonts?id=${encodeURIComponent(font.id)}`, { method: "DELETE" });
+      if (!response.ok) throw new Error(await getErrorFromResponse(response, "Could not remove that custom font."));
+      await onChanged();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not remove that custom font.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card className="gap-4">
+      <CardHeader>
+        <CardTitle className="text-base">Custom fonts</CardTitle>
+        <CardDescription>
+          Upload a local display font, then choose it in any caption, Hook or CTA font picker. The direct localhost preview and Remotion render wait for the font load before paint.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {initialError || error ? <p className="text-xs text-destructive">{error ?? initialError}</p> : null}
+        <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_150px_auto] sm:items-end">
+          <div className="space-y-1.5">
+            <Label htmlFor="custom-font-file">Font file</Label>
+            <Input
+              id="custom-font-file"
+              type="file"
+              accept=".ttf,.otf,.woff,.woff2,font/ttf,font/otf,font/woff,font/woff2"
+              onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+              disabled={busy}
+              className="cursor-pointer"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="custom-font-family">Family name</Label>
+            <Input
+              id="custom-font-family"
+              value={family}
+              placeholder="Derived from file name"
+              onChange={(event) => setFamily(event.target.value)}
+              disabled={busy}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label id="custom-font-weight-label">Weight</Label>
+            <Select value={weight} onValueChange={(value) => setWeight((value as CaptionFontWeight) || "normal")}>
+              <SelectTrigger aria-labelledby="custom-font-weight-label"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="normal">Normal</SelectItem>
+                <SelectItem value="bold">Bold</SelectItem>
+                <SelectItem value="extra-bold">Extra bold</SelectItem>
+                <SelectItem value="black">Black</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <Button type="button" onClick={() => void upload()} disabled={busy || !file}>
+            {busy ? <Loader2 className="animate-spin" /> : <Upload />}
+            Upload
+          </Button>
+        </div>
+        <p className="text-[11px] leading-snug text-muted-foreground">
+          Files are signature-checked and limited to 5 MB. Font bytes are served only at localhost; deletes remove the registry entry and file without rewriting saved style presets.
+        </p>
+        {fonts.length ? (
+          <ul className="divide-y rounded-lg border">
+            {fonts.map((font) => (
+              <li key={font.id} className="flex items-center gap-3 px-3 py-2">
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm" style={{ fontFamily: customCssFontFamily(font) }}>{font.family}</span>
+                  <span className="block truncate text-[11px] text-muted-foreground">{font.weight} · {font.originalName} · {Math.max(1, Math.round(font.byteSize / 1024))} KB</span>
+                </span>
+                <Button type="button" size="icon-xs" variant="ghost" className="hover:text-destructive" title={`Remove ${font.family}`} aria-label={`Remove ${font.family}`} disabled={busy} onClick={() => void remove(font)}>
+                  <Trash2 />
+                </Button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">No custom fonts are registered yet. Set the destination folder under Settings → Paths & binaries if the automatic folder is not suitable.</p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function CaptionPresetsPage() {
   const [presets, setPresets] = useState<CaptionPreset[]>([]);
   // Filters the style gallery - with the growing catalogue a flat chip row no
@@ -151,6 +303,8 @@ export default function CaptionPresetsPage() {
   const [ctaStyle, setCtaStyle] = useState<OverlayStylePreset>(
     DEFAULT_OVERLAY_STYLE_PRESETS.find((p) => p.kind === "cta")!,
   );
+  const [customFonts, setCustomFonts] = useState<CustomFont[]>([]);
+  const [customFontError, setCustomFontError] = useState<string | null>(null);
 
   const initializedRef = useRef(false);
 
@@ -167,6 +321,28 @@ export default function CaptionPresetsPage() {
       );
     });
   }, [presets, presetQuery]);
+
+  const loadCustomFonts = useCallback(async (): Promise<CustomFont[]> => {
+    const response = await fetch("/api/fonts");
+    if (!response.ok) {
+      throw new Error(await getErrorFromResponse(response, "Failed to load custom fonts."));
+    }
+    const data = await response.json() as { fonts?: CustomFont[] };
+    return data.fonts ?? [];
+  }, []);
+
+  const refreshCustomFonts = useCallback(async () => {
+    try {
+      const fonts = await loadCustomFonts();
+      setCustomFonts(fonts);
+      setCustomFontError(null);
+      return fonts;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to load custom fonts.";
+      setCustomFontError(message);
+      return [];
+    }
+  }, [loadCustomFonts]);
 
   const loadPresets = useCallback(async (): Promise<CaptionPreset[]> => {
     const res = await fetch("/api/caption-presets");
@@ -209,12 +385,33 @@ export default function CaptionPresetsPage() {
     };
   }, [loadPresets]);
 
+  useEffect(() => {
+    // Queue the first registry read after commit; calling its state-updating
+    // callback directly inside the effect trips React's cascading-render guard.
+    queueMicrotask(() => void refreshCustomFonts());
+  }, [refreshCustomFonts]);
+
   const refreshPresets = useCallback(async () => {
     const list = await loadPresets();
     setPresets(list);
     setErrorMessage(null);
     return list;
   }, [loadPresets]);
+
+  const fontOptions = useMemo(() => {
+    const seenCustomFamilies = new Set<string>();
+    const custom = customFonts.flatMap((font) => {
+      const key = font.family.toLocaleLowerCase();
+      if (seenCustomFamilies.has(key)) return [];
+      seenCustomFamilies.add(key);
+      return [{ value: customCssFontFamily(font), label: `${font.family} · custom`, custom: true }];
+    });
+    return [
+      ...FONT_OPTIONS.map((font) => ({ value: font, label: font.split(",")[0].replace(/['"]/g, ""), custom: false })),
+      ...custom,
+    ];
+  }, [customFonts]);
+  const previewCustomFonts = useMemo(() => customFontFacesForPreview(customFonts), [customFonts]);
 
   const handleSelectPreset = (id: string) => {
     setActivePresetId(id);
@@ -244,7 +441,7 @@ export default function CaptionPresetsPage() {
       animationStyle: "karaoke",
       uppercase: true,
       captionTheme: theme?.id,
-      matchOverlayTheme: true,
+      themeColorOverride: false,
       isDefault: false,
     };
 
@@ -508,6 +705,12 @@ export default function CaptionPresetsPage() {
         </Alert>
       )}
 
+      <CustomFontLibrary
+        fonts={customFonts}
+        initialError={customFontError}
+        onChanged={refreshCustomFonts}
+      />
+
       {/* <div className="grid grid-cols-1 gap-6 lg:grid-cols-12"> */}
       <div className="flex gap-6 ">
         {/* Editor */}
@@ -694,12 +897,12 @@ export default function CaptionPresetsPage() {
                       <div className="space-y-2">
                         <Label id="caption-theme-label">Caption theme</Label>
                         <Select
-                          value={
-                            activePreset.captionTheme ??
-                            CAPTION_THEME_CATALOG[0]?.id ??
-                            "kinetic-01"
-                          }
+                          value={activePreset.captionTheme ?? "classic"}
                           onValueChange={(value) => {
+                            if (value === "classic") {
+                              setActivePreset({ ...activePreset, captionTheme: undefined });
+                              return;
+                            }
                             const theme = getCaptionThemeDefinition(
                               value as CaptionThemeName,
                             );
@@ -707,7 +910,7 @@ export default function CaptionPresetsPage() {
                             setActivePreset({
                               ...activePreset,
                               captionTheme: theme.id,
-                              matchOverlayTheme: true,
+                              themeColorOverride: activePreset.themeColorOverride ?? false,
                               textColor: theme.captionPrimaryColor,
                               highlightColor: theme.captionAccentColor,
                             });
@@ -717,6 +920,7 @@ export default function CaptionPresetsPage() {
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
+                            <SelectItem value="classic">Classic editable</SelectItem>
                             {CAPTION_THEME_CATALOG.map((theme) => (
                               <SelectItem key={theme.id} value={theme.id}>
                                 {theme.label}
@@ -725,43 +929,33 @@ export default function CaptionPresetsPage() {
                           </SelectContent>
                         </Select>
                         <p className="text-xs text-muted-foreground">
-                          {
-                            getCaptionThemeDefinition(activePreset.captionTheme)
-                              ?.description
-                          }{" "}
-                          Theme font:{" "}
-                          {
-                            getCaptionThemeDefinition(
-                              activePreset.captionTheme,
-                            )?.captionFontFamily.split(",")[0]
-                          }
-                          . Size, placement and caption colors remain
-                          adjustable.
+                          {activePreset.captionTheme
+                            ? <>{getCaptionThemeDefinition(activePreset.captionTheme)?.description} Theme font: {getCaptionThemeDefinition(activePreset.captionTheme)?.captionFontFamily.split(",")[0]}. Size, placement and caption colors remain adjustable.</>
+                            : <>Classic editable captions use the selected font family directly, including registered custom fonts.</>}
                         </p>
                         <p className="text-xs text-muted-foreground">
-                          The {CAPTION_THEME_CATALOG.length} theme animations are rendered by Remotion in
-                          headless Chrome.
+                          The {CAPTION_THEME_CATALOG.length} theme animations are rendered by Remotion in headless Chrome.
                         </p>
                       </div>
 
                       <div className="flex items-center justify-between gap-4 rounded-md border bg-muted/30 p-3">
                         <div className="space-y-0.5">
-                          <Label htmlFor="match-overlay-theme">
-                            Match Hook + CTA to theme
+                          <Label htmlFor="theme-color-override">
+                            Use theme colors on Hook + CTA
                           </Label>
                           <p className="text-xs text-muted-foreground">
-                            Applies the theme font, palette, card shape and
-                            motion; saved overlay sizes, badge text and
-                            placement remain.
+                            Optional and off by default. Applies only theme-derived
+                            background, border and main text colors; the selected
+                            style keeps its font, layout, animation and badge.
                           </p>
                         </div>
                         <Switch
-                          id="match-overlay-theme"
-                          checked={activePreset.matchOverlayTheme !== false}
-                          onCheckedChange={(matchOverlayTheme) =>
+                          id="theme-color-override"
+                          checked={activePreset.themeColorOverride === true}
+                          onCheckedChange={(themeColorOverride) =>
                             setActivePreset({
                               ...activePreset,
-                              matchOverlayTheme,
+                              themeColorOverride,
                             })
                           }
                         />
@@ -861,9 +1055,12 @@ export default function CaptionPresetsPage() {
                                       <SelectValue />
                                     </SelectTrigger>
                                     <SelectContent>
-                                      {FONT_OPTIONS.map((font) => (
-                                        <SelectItem key={`${font}-${index}`} value={font}>
-                                          {font.split(",")[0].replace(/['"]/g, "")}
+                                      {!fontOptions.some((font) => font.value === (line.fontFamily ?? activePreset.fontFamily)) ? (
+                                        <SelectItem value={line.fontFamily ?? activePreset.fontFamily}>Current saved font</SelectItem>
+                                      ) : null}
+                                      {fontOptions.map((font) => (
+                                        <SelectItem key={`${font.value}-${index}`} value={font.value}>
+                                          {font.label}{font.custom ? " · custom" : ""}
                                         </SelectItem>
                                       ))}
                                     </SelectContent>
@@ -1136,24 +1333,37 @@ export default function CaptionPresetsPage() {
                       <Label id="font-family-label">Font family</Label>
                       <Select
                         value={activePreset.fontFamily || "Inter, system-ui, sans-serif"}
-                        onValueChange={(value) =>
+                        onValueChange={(value) => {
+                          const fontFamily = value ?? activePreset.fontFamily;
+                          const custom = fontOptions.find((font) => font.value === fontFamily)?.custom === true;
                           setActivePreset({
                             ...activePreset,
-                            fontFamily: value ?? activePreset.fontFamily,
-                          })
-                        }
+                            fontFamily,
+                            // Caption themes ship their own intentional typefaces.
+                            // Selecting a custom family opts into the editable
+                            // renderer so the live preview and final render both
+                            // visibly use the uploaded face.
+                            ...(custom ? { captionTheme: undefined } : {}),
+                          });
+                        }}
                       >
                         <SelectTrigger aria-labelledby="font-family-label">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          {FONT_OPTIONS.map((font) => (
-                            <SelectItem key={font} value={font}>
-                              {font.split(",")[0].replace(/['"]/g, "")}
+                          {!fontOptions.some((font) => font.value === activePreset.fontFamily) ? (
+                            <SelectItem value={activePreset.fontFamily}>Current saved font</SelectItem>
+                          ) : null}
+                          {fontOptions.map((font) => (
+                            <SelectItem key={font.value} value={font.value}>
+                              {font.label}{font.custom ? " · custom" : ""}
                             </SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
+                      {fontOptions.some((font) => font.value === activePreset.fontFamily && font.custom) ? (
+                        <p className="text-[11px] leading-snug text-muted-foreground">Custom caption fonts use the editable renderer so their family is identical in the preview and final render.</p>
+                      ) : null}
                     </div>
 
                     <div className="space-y-2">
@@ -1361,6 +1571,7 @@ export default function CaptionPresetsPage() {
                 key={`hook-${overlayRevision}`}
                 kind="hook"
                 value={hookStyle}
+                customFonts={customFonts}
                 onChange={setHookStyle}
               />
             </TabsContent>
@@ -1370,6 +1581,7 @@ export default function CaptionPresetsPage() {
                 key={`cta-${overlayRevision}`}
                 kind="cta"
                 value={ctaStyle}
+                customFonts={customFonts}
                 onChange={setCtaStyle}
               />
             </TabsContent>
@@ -1399,6 +1611,7 @@ export default function CaptionPresetsPage() {
                 ctaText={sampleCtaText}
                 hookStyle={hookStyle}
                 ctaStyle={ctaStyle}
+                customFonts={previewCustomFonts}
                 className="mt-3 h-[min(56dvh,540px)]"
               />
             </div>

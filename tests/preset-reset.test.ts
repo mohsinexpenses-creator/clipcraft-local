@@ -12,11 +12,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   getDefaultCaptionPreset,
+  getDefaultOverlayStylePreset,
   getCaptionPreset,
   listCaptionPresets,
   resetCaptionPresets,
   resetOverlayStylePresets,
   saveCaptionPreset,
+  setDefaultOverlayStylePreset,
   setDefaultCaptionPreset,
 } from "../lib/db";
 import {
@@ -68,6 +70,20 @@ test("database startup seeds each separate theme card into a pre-existing databa
   );
 });
 
+test("Flat is the fresh-install overlay default without replacing an existing selected default", async (t) => {
+  const { openConnection } = createTemporaryDatabase(t);
+  assert.equal((await getDefaultOverlayStylePreset("hook"))?._id, "hook-flat");
+  assert.equal((await getDefaultOverlayStylePreset("cta"))?._id, "cta-flat");
+
+  await setDefaultOverlayStylePreset("hook-signal-stamp");
+  await setDefaultOverlayStylePreset("cta-afterglow");
+  // Opening another process/connection runs seeding again. It must add current
+  // shipped rows but never silently replace a user's already-selected default.
+  openConnection();
+  assert.equal((await getDefaultOverlayStylePreset("hook"))?._id, "hook-signal-stamp");
+  assert.equal((await getDefaultOverlayStylePreset("cta"))?._id, "cta-afterglow");
+});
+
 test("reset replaces all caption rows with shipped defaults and restores the shipped default", async (t) => {
   createTemporaryDatabase(t);
 
@@ -116,7 +132,7 @@ test("reset replaces all caption rows with shipped defaults and restores the shi
     builtIn.captionTheme,
     "theme id persists in the preset config",
   );
-  assert.equal(restored.matchOverlayTheme, builtIn.matchOverlayTheme);
+  assert.equal(restored.themeColorOverride, builtIn.themeColorOverride);
   assert.equal(restored.textColor, builtIn.textColor);
   assert.equal(restored.highlightColor, builtIn.highlightColor);
 

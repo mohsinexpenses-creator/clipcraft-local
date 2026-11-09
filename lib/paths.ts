@@ -18,6 +18,23 @@ export function resolveTempDir(): string {
   return dir;
 }
 
+/**
+ * Persistent root for locally uploaded custom fonts. The path is reread for
+ * every upload, while existing registry entries retain their original folder
+ * so moving this setting never silently breaks an already saved preset.
+ */
+export function getCustomFontsDirValue(): string {
+  const stored = getStoredPathSettings().fontDir;
+  if (stored) return path.resolve(stored);
+  return path.join(process.cwd(), 'custom-fonts');
+}
+
+export function resolveCustomFontsDir(): string {
+  const dir = getCustomFontsDirValue();
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 
 /**
  * Where rendered 9:16 clips live: the directory saved on the Settings page,

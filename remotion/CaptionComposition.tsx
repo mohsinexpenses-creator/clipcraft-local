@@ -1,6 +1,6 @@
 import React from 'react';
 import { AbsoluteFill, OffthreadVideo, useCurrentFrame, useVideoConfig } from 'remotion';
-import { CaptionPreset, OverlayStylePreset, WordTimestamp } from '../lib/types';
+import { CaptionPreset, OverlayStylePreset, RemotionCustomFontFace, WordTimestamp } from '../lib/types';
 import { AnimatedWord, CaptionChunk } from './AnimatedWord';
 import { getCaptionChunkWordLimit } from '../lib/caption-layout';
 import {
@@ -14,6 +14,7 @@ import { resolveCaptionThemeOverlayStyle } from '../lib/caption-theme-styles';
 import { CaptionThemeOverlay } from './caption-themes/CaptionThemeOverlay';
 import { CTAOverlay } from './CTAOverlay';
 import { HookOverlay } from './HookOverlay';
+import { useCustomFonts } from './caption-fonts';
 
 export interface CaptionCompositionProps {
   /**
@@ -54,6 +55,8 @@ export interface CaptionCompositionProps {
   hookStyle?: OverlayStylePreset;
   /** Visual style of the end-of-clip CTA overlay (style preset). */
   ctaStyle?: OverlayStylePreset;
+  /** Registered custom faces for this isolated preview/render. */
+  customFonts?: RemotionCustomFontFace[];
   /**
    * Scale of the usual caption lift while the CTA card is on screen (1 = default,
    * 0 = captions stay put). The split-screen layout places the CTA clear of the
@@ -173,9 +176,11 @@ export const CaptionComposition: React.FC<CaptionCompositionProps> = ({
   preset,
   hookStyle,
   ctaStyle,
+  customFonts,
   // captionLiftScale is accepted for compatibility but unused: the cards are
   // stacked ABOVE the captions now, so captions never move out of their way.
 }) => {
+  useCustomFonts(customFonts);
   const frame = useCurrentFrame();
   const { fps, durationInFrames } = useVideoConfig();
   const totalDurationInSeconds = durationInFrames / fps;

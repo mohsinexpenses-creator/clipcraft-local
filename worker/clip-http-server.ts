@@ -43,6 +43,14 @@ function contentTypeFor(fileName: string): string {
       return 'image/png';
     case '.webp':
       return 'image/webp';
+    case '.ttf':
+      return 'font/ttf';
+    case '.otf':
+      return 'font/otf';
+    case '.woff':
+      return 'font/woff';
+    case '.woff2':
+      return 'font/woff2';
     default:
       return 'application/octet-stream';
   }

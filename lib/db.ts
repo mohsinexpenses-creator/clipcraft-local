@@ -9,6 +9,7 @@ import {
   BrollPlan,
   CaptionPreset,
   ClipRecord,
+  CustomFont,
   OverlayStylePreset,
   PipelineOptions,
   PromptTemplate,
@@ -116,6 +117,20 @@ interface OverlayStylePresetRow extends CaptionPresetRow {
   kind: OverlayStylePreset["kind"];
 }
 
+interface CustomFontRow {
+  id: string;
+  family: string;
+  font_weight: CustomFont["weight"];
+  original_name: string;
+  storage_name: string;
+  directory: string;
+  format: CustomFont["format"];
+  mime_type: string;
+  byte_size: number;
+  sha256: string;
+  created_at: string;
+}
+
 interface TextPresetRow {
   id: string;
   kind: TextPreset["kind"];
@@ -164,7 +179,7 @@ const VIDEO_SUMMARY_SELECT = `
      FROM clips c WHERE c.video_id = v.id) AS clip_progress
 `;
 
-const CURRENT_SCHEMA_VERSION = 11;
+const CURRENT_SCHEMA_VERSION = 12;
 
 /** Absolute path used by the web process and the worker. */
 export function getDatabasePath(): string {
@@ -636,6 +651,32 @@ function migrateSchemaV11(db: SqliteDatabase): void {
     .run(JSON.stringify(value), new Date().toISOString());
 }
 
+/**
+ * Schema v12: locally uploaded custom font registry. Font metadata stays in
+ * SQLite while the bytes live in the user-selected font directory. The unique
+ * fingerprint and family/weight pair make duplicate uploads deterministic.
+ */
+function migrateSchemaV12(db: SqliteDatabase): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS custom_fonts (
+      id TEXT PRIMARY KEY,
+      family TEXT NOT NULL,
+      font_weight TEXT NOT NULL CHECK (font_weight IN ('normal', 'bold', 'extra-bold', 'black')),
+      original_name TEXT NOT NULL,
+      storage_name TEXT NOT NULL,
+      directory TEXT NOT NULL,
+      format TEXT NOT NULL CHECK (format IN ('ttf', 'otf', 'woff', 'woff2')),
+      mime_type TEXT NOT NULL,
+      byte_size INTEGER NOT NULL CHECK (byte_size > 0),
+      sha256 TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL,
+      UNIQUE(family COLLATE NOCASE, font_weight)
+    );
+    CREATE INDEX IF NOT EXISTS custom_fonts_family_idx
+      ON custom_fonts(family COLLATE NOCASE, font_weight);
+  `);
+}
+
 const SCHEMA_MIGRATIONS: Record<number, (db: SqliteDatabase) => void> = {
   1: migrateSchemaV1,
   2: migrateSchemaV2,
@@ -648,6 +689,7 @@ const SCHEMA_MIGRATIONS: Record<number, (db: SqliteDatabase) => void> = {
   9: migrateSchemaV9,
   10: migrateSchemaV10,
   11: migrateSchemaV11,
+  12: migrateSchemaV12,
 };
 
 export function initializeSchema(db: SqliteDatabase): void {
@@ -1036,6 +1078,21 @@ function mapOverlayStylePreset(row: OverlayStylePresetRow): OverlayStylePreset {
   };
 }
 
+function mapCustomFont(row: CustomFontRow): CustomFont {
+  return {
+    id: row.id,
+    family: row.family,
+    weight: row.font_weight,
+    originalName: row.original_name,
+    storageName: row.storage_name,
+    directory: row.directory,
+    format: row.format,
+    mimeType: row.mime_type,
+    byteSize: row.byte_size,
+    createdAt: row.created_at,
+  };
+}
+
 function mapTextPreset(row: TextPresetRow): TextPreset {
   return {
     _id: row.id,
@@ -1082,6 +1139,68 @@ function removeJobsForRecord(
 ): void {
   // filter is selected from a closed union, never supplied by request data.
   db.prepare(`DELETE FROM jobs WHERE ${filter} = ?`).run(id);
+}
+
+/** All registered local custom fonts, ordered predictably for pickers. */
+export async function listCustomFonts(): Promise<CustomFont[]> {
+  const rows = getDatabase()
+    .prepare(`SELECT * FROM custom_fonts ORDER BY family COLLATE NOCASE, font_weight, created_at`)
+    .all() as CustomFontRow[];
+  return rows.map(mapCustomFont);
+}
+
+export async function getCustomFont(id: string): Promise<CustomFont | null> {
+  const row = getDatabase()
+    .prepare(`SELECT * FROM custom_fonts WHERE id = ?`)
+    .get(id) as CustomFontRow | undefined;
+  return row ? mapCustomFont(row) : null;
+}
+
+/**
+ * Insert one registry entry. The file writer creates the uniquely named file
+ * first and removes it if this throws, so SQLite remains the source of truth.
+ */
+export async function saveCustomFont(font: CustomFont & { sha256: string }): Promise<CustomFont> {
+  const db = getDatabase();
+  try {
+    db.prepare(`
+      INSERT INTO custom_fonts
+        (id, family, font_weight, original_name, storage_name, directory, format, mime_type, byte_size, sha256, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      font.id,
+      font.family,
+      font.weight,
+      font.originalName,
+      font.storageName,
+      font.directory,
+      font.format,
+      font.mimeType,
+      font.byteSize,
+      font.sha256,
+      font.createdAt,
+    );
+  } catch (error) {
+    if ((error as { code?: string }).code?.startsWith('SQLITE_CONSTRAINT')) {
+      throw new AppError('That custom font is already registered.', {
+        status: 409,
+        resolution: 'Use the existing family and weight in the picker, or upload a different font file.',
+      });
+    }
+    throw error;
+  }
+  return { ...font };
+}
+
+/** Remove one registry entry and return it so the caller can remove its file safely. */
+export async function deleteCustomFont(id: string): Promise<CustomFont | null> {
+  const db = getDatabase();
+  return db.transaction(() => {
+    const row = db.prepare(`SELECT * FROM custom_fonts WHERE id = ?`).get(id) as CustomFontRow | undefined;
+    if (!row) return null;
+    db.prepare(`DELETE FROM custom_fonts WHERE id = ?`).run(id);
+    return mapCustomFont(row);
+  }).immediate();
 }
 
 export async function listOverlayStylePresets(

@@ -1634,6 +1634,11 @@ const PATH_FIELDS = [
     hint: "Where sampled frames, overlay PNGs, FFmpeg scratch files and local caches are created. Finished jobs clean their own work; changing this affects the next job only.",
   },
   {
+    key: "fontDir" as const,
+    label: "Custom font directory",
+    hint: "Where future uploaded custom font files are stored. Existing registered fonts retain their original folder so changing this never silently breaks a saved style.",
+  },
+  {
     key: "ffmpegPath" as const,
     label: "FFmpeg path",
     hint: "Absolute path to the ffmpeg executable. Leave empty to use the bundled binary (ffmpeg-static) or whatever is on PATH. ffprobe is looked up beside it.",
@@ -1649,7 +1654,7 @@ function PathsCard({
 }) {
   const [draft, setDraft] = React.useState<Partial<PathSettings>>({});
   const [pickerField, setPickerField] = React.useState<
-    "uploadDir" | "clipsDir" | "tempDir" | null
+    "uploadDir" | "clipsDir" | "tempDir" | "fontDir" | null
   >(null);
   const value = { ...effective.paths, ...draft };
   const resolved = settings.payload?.resolvedPaths;
@@ -1665,7 +1670,7 @@ function PathsCard({
     <SettingsCard
       section="paths"
       title="Paths & binaries"
-      description="Default locations for uploads, rendered clips and transient frames, plus the FFmpeg binary that does the work. Leave a field empty to keep the automatic value shown below it - a saved value takes over from the next upload or render, no restart needed. Folder changes are intentionally available only on localhost."
+      description="Default locations for uploads, rendered clips, transient frames and future custom fonts, plus the FFmpeg binary that does the work. Leave a field empty to keep the automatic value shown below it - a saved value takes over from the next upload or render, no restart needed. Folder changes are intentionally available only on localhost."
       icon={<FolderCog className="size-4" />}
       settings={settings}
       dirty={Object.keys(draft).length > 0}
@@ -1681,7 +1686,9 @@ function PathsCard({
                 ? resolved?.clipsDir
                 : field.key === "tempDir"
                   ? resolved?.tempDir
-                  : resolved?.ffmpegPath || "not found - ffmpeg path unavailable";
+                  : field.key === "fontDir"
+                    ? resolved?.fontDir
+                    : resolved?.ffmpegPath || "not found - ffmpeg path unavailable";
           const canBrowse = field.key !== "ffmpegPath";
           return (
             <div key={field.key} className="space-y-1">
@@ -1742,7 +1749,9 @@ function PathsCard({
                 ? resolved?.uploadDir
                 : pickerField === "clipsDir"
                   ? resolved?.clipsDir
-                  : resolved?.tempDir) ||
+                  : pickerField === "tempDir"
+                    ? resolved?.tempDir
+                    : resolved?.fontDir) ||
                 ""
             : ""
         }
