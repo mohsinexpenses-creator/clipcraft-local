@@ -7,6 +7,8 @@ import { getUploadDirValue } from '@/lib/upload';
 import { getClipsDirValue, getCustomFontsDirValue, getTempDirValue } from '@/lib/paths';
 import { AppError, toErrorMessage, toErrorStatus } from '@/lib/errors';
 import { assertLocalFolderBrowserRequest, validateWritableFolder } from '@/lib/folder-browser';
+import { clearAsdCache } from '@/worker/asd/cache';
+import { clearOverlayFrameCache } from '@/worker/overlay-frame-cache';
 
 export const runtime = 'nodejs';
 
@@ -172,18 +174,33 @@ export async function PUT(request: Request) {
 }
 
 /**
- * POST /api/settings   { action: 'import-env' }
+ * POST /api/settings
  *
- * The one place `.env.local` is read on purpose: copying the keys that file already
- * holds into Settings, so an existing setup is not stranded the moment env stopped being
- * a fallback. It is an explicit click, it writes (it does not shadow), and it can only
- * move secrets - there is no read of them in the response.
+ * `import-env` is the one explicit read of `.env.local`: it copies already-working
+ * provider keys into Settings rather than treating env as a hidden fallback.
+ * `clear-render-caches` is deliberately narrower than deleting media: it removes only
+ * reusable ASD JSON and transparent Remotion-frame entries. Running clips keep their
+ * hard-linked/copied workdir inputs, while source uploads, B-roll downloads, fonts,
+ * rendered MP4s, and SQLite settings are untouched.
  */
 export async function POST(request: Request) {
   try {
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    if (body.action === 'clear-render-caches') {
+      const overlay = clearOverlayFrameCache();
+      clearAsdCache();
+      return NextResponse.json({
+        success: true,
+        cleared: {
+          overlayEntries: overlay.entries,
+          overlayBytes: overlay.bytes,
+          asd: true,
+        },
+      });
+    }
+
     if (body.action !== 'import-env') {
-      throw new AppError('Unsupported action.', { status: 400, resolution: "Send { action: 'import-env' }." });
+      throw new AppError('Unsupported action.', { status: 400, resolution: "Send { action: 'import-env' } or { action: 'clear-render-caches' }." });
     }
 
     const value = await envAiSectionForImport();
@@ -203,7 +220,7 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     return NextResponse.json(
-      { error: toErrorMessage(error, 'Those keys could not be copied.') },
+      { error: toErrorMessage(error, 'That Settings action could not finish.') },
       { status: toErrorStatus(error, 400) }
     );
   }

@@ -266,6 +266,20 @@ confirming the final voice track and B-roll SFX are unchanged. Alpha-video was i
 not added: the existing PNG compositing has not been measured slow enough to justify a new
 codec/encoding branch.
 
+Phase 5 keeps **completed transparent overlay frames** for re-renders in a bounded LRU
+cache (default `<tempDir>/overlay-frame-cache`, 1 GB, 14-day maximum age). Caption/hook/CTA
+sequences are keyed by every visual prop, phase, canvas and selected-font file identity;
+B-roll sequences use their prepared image identity rather than the throwaway loopback port.
+That means an unchanged re-render can bypass Chrome for both layers, while a hook-only text
+or style edit correctly refreshes the combined caption layer and still reuses unchanged
+B-roll cards. The current job always uses hard-linked/copy-fallback frames in its own temp
+workdir, so **Settings → Worker & limits → Clear caches** is safe during a render. The button
+clears only rebuildable ASD results and transparent frames — never uploads, provider image
+downloads, fonts, settings, or finished clips. Set `OVERLAY_RENDER_CACHE_ENABLED=0` for the
+legacy render-every-overlay fallback; `OVERLAY_RENDER_CACHE_MAX_MB` (default `1024`),
+`OVERLAY_RENDER_CACHE_MAX_AGE_DAYS` (default `14`), and `OVERLAY_RENDER_CACHE_DIR` tune the
+cache without a worker restart.
+
 `FFMPEG_OVERLAY_CONCAT=1` (the default) then combines only verified, frame-aligned,
 non-overlapping PNG ranges within the same semantic layer **and physical canvas/origin**
 into one transparent FFconcat stream. This reduces image inputs and overlay stages while

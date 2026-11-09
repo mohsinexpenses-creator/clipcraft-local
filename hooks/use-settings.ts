@@ -50,6 +50,7 @@ export type SettingsBusy =
   | `save:${AppSettingsSection}`
   | `reset:${AppSettingsSection}`
   | "import-env"
+  | "clear-render-caches"
   | "verify:gemini"
   | "verify:deepgram"
   | "verify:pexels"
@@ -251,6 +252,43 @@ export function useSettings() {
     }
   }, [toast]);
 
+  /**
+   * Removes only disposable render accelerators. This deliberately leaves source
+   * media, B-roll downloads, custom fonts, finished clips, and Settings rows alone.
+   */
+  const clearRenderCaches = React.useCallback(async () => {
+    setBusy("clear-render-caches");
+    try {
+      const data = await requestJson<{
+        cleared: { overlayEntries: number; overlayBytes: number; asd: boolean };
+      }>("/api/settings", {
+        method: "POST",
+        body: JSON.stringify({ action: "clear-render-caches" }),
+      });
+      const kib = Math.round(data.cleared.overlayBytes / 1024);
+      toast({
+        title: "Render caches cleared",
+        description:
+          `${data.cleared.overlayEntries} transparent overlay sequence${data.cleared.overlayEntries === 1 ? "" : "s"}` +
+          `${kib ? ` (${kib.toLocaleString()} KB)` : ""} and reusable ASD results will rebuild only when needed.`,
+        tone: "success",
+      });
+      return true;
+    } catch (caught) {
+      toast({
+        title: "Could not clear render caches",
+        description:
+          caught instanceof Error
+            ? caught.message
+            : "The server could not remove the disposable cache entries.",
+        tone: "error",
+      });
+      return false;
+    } finally {
+      setBusy(null);
+    }
+  }, [toast]);
+
   const verify = React.useCallback(
     async (input: {
       target: VerifyTarget | "all";
@@ -318,6 +356,7 @@ export function useSettings() {
     save,
     reset,
     importEnv,
+    clearRenderCaches,
     verify,
   };
 }

@@ -89,6 +89,65 @@ baseline-safe default of `2`; do not raise it until the same representative host
 has a measured concurrency sweep. No alpha-video branch is included: retain the
 single PNG/FFmpeg composite unless measurements show it is still the bottleneck.
 
+## Phase 5 overlay-frame cache / re-render gate
+
+Phase 5 adds a persistent cache of **completed** transparent Remotion PNG sequences.
+It is not a new output codec or a substitute for the existing final FFmpeg composite:
+cache hits are hard-linked (with a copy fallback) into the current job work directory,
+then passed to the same FFmpeg path. Misses render into that job directory first and
+only link/copy normalized, complete frames into an unpublished cache staging directory.
+An atomic publish means a reader never accepts a partial sequence. This makes the
+Settings cache-clear action safe even if it races a live Chrome or FFmpeg job.
+
+| Control | Default | Safe fallback / scope |
+| --- | --- | --- |
+| `OVERLAY_RENDER_CACHE_ENABLED` | `1` | Set `0` to retain the old render-every-overlay behavior. The value is read for every job. |
+| `OVERLAY_RENDER_CACHE_DIR` | `<tempDir>/overlay-frame-cache` | Optional disposable cache root only; never point it at uploads, B-roll downloads, custom fonts, SQLite data, or generated clips. |
+| `OVERLAY_RENDER_CACHE_MAX_MB` | `1024` | LRU cap, bounded to 128–8192 MB. Completed entries are pruned after publish. |
+| `OVERLAY_RENDER_CACHE_MAX_AGE_DAYS` | `14` | Age cap, bounded to 1–90 days and applied at publish-time cleanup. |
+| **Settings → Worker & limits → Clear caches** | — | Deletes only transparent overlay entries and ASD results. It leaves media, B-roll asset downloads, fonts, settings, and completed clips intact. |
+
+Cache keys are canonical SHA-256 values. Caption/hook/CTA keys include the complete
+composition props, exact phase/full-timeline frames, physical canvas, and selected
+custom-font file identity (ID, family, weight, format, bytes, mtime) but never a
+random loopback URL. B-roll keys include item timing, card geometry, canvas, caption
+contrast inputs, and immutable prepared-image identity rather than the temporary
+loopback media-server port. Therefore a visible hook edit **must** invalidate the
+combined caption sequence, while an unchanged B-roll card may still hit its cache.
+
+### Gate 5 manual record
+
+Use the frozen Speaker Focus fixture and keep the source checksum, range, hardware,
+all Phase 1–4 flags, source FPS, B-roll plan, and prepared images fixed. Do not count
+a browser download or a cold Remotion bundle build as a cache hit.
+
+1. Clear render caches, then run once with `OVERLAY_RENDER_CACHE_ENABLED=1` to populate
+   them. Preserve its `[JOB-TIMING]` line and `frame-cache event=stored` diagnostics.
+2. Re-render the unchanged clip with the same settings. Record wall time, individual
+   job stages, output probe, and cache diagnostics. Both unchanged caption and B-roll
+   phases should report `event=hit`; a fully hit layer must not initialize its font
+   server/Remotion bundle/Chrome merely for that layer. Gate target: unchanged total
+   re-render around or below **two minutes** on the representative host.
+3. Change only the hook text (keep caption preset, B-roll plan/images, timing and all
+   other visual inputs fixed), then re-render. Record that caption shows a miss/stored
+   sequence while unchanged B-roll shows a hit. Compare the final output against the
+   expected hook revision and verify B-roll pixels, voice audio, and SFX timing.
+4. Repeat an unchanged render with `OVERLAY_RENDER_CACHE_ENABLED=0` to demonstrate the
+   legacy fallback still paints overlays and remains visually/audio equivalent. Do not
+   treat its timing as a cache-gate success.
+5. Exercise the Settings **Clear caches** control after a hit has been materialized and,
+   if practical, while a cache miss is still rendering. The current job must finish
+   from its own temporary inputs; the next job must rebuild. Also verify an over-cap
+   cache drops least-recently-used completed entries and that uploads, B-roll assets,
+   fonts, settings, and final MP4s remain present.
+
+For every run retain five overlay timestamps as described in the Phase 4 gate,
+reference-frame comparisons, output audio/SFX verification, the final cache directory
+size/age settings, and the complete cache diagnostics. The focused unit tests verify
+key canonicalization, visual-input invalidation, hard-link/copy materialization,
+clear-while-in-use survival, LRU bounds, and hook-only caption invalidation with
+loopback-port-independent B-roll reuse; they do not replace this render gate.
+
 ## Current gate status
 
 This checkout is being implemented in **static-only** mode. There is currently
@@ -98,6 +157,8 @@ output probe, reference frame, SSIM, audio/SFX, or visual-equivalence value is
 asserted here. Those gates are **blocked/deferred**, not estimated. In particular,
 Phase 4 has no cropped/full frame diffs, audio/SFX comparison, or concurrency
 measurement recorded yet; both cropped-canvas flags therefore remain default-off
-and the Chrome cap remains `2`. The static tests only lock the benchmark
-configuration and timing aggregation contract; they are not a substitute for the
-deferred render gates.
+and the Chrome cap remains `2`. Phase 5 has no representative cold/warm re-render
+measurement, no recorded ≤2-minute unchanged re-render, no visual/audio comparison,
+and no manual clear-during-render run yet. The static tests only lock the benchmark,
+timing aggregation, and cache invariants; they are not a substitute for the deferred
+render gates.

@@ -11,6 +11,7 @@ import {
   updateClipForRunningJob,
 } from "../lib/db";
 import { AppError, RenderCancelledError, toErrorMessage } from "../lib/errors";
+import { removePathOrDefer } from "../lib/file-cleanup";
 import { resolveClipsDir } from "../lib/paths";
 import { resolveCaptionThemeOverlayStyle } from "../lib/caption-theme-styles";
 
@@ -130,6 +131,44 @@ interface BrollRenderPreparation {
   sfx: Array<{ filePath: string; atSeconds: number; volume?: number }>;
 }
 
+/**
+ * Prepared Remotion frames are never user media. If Windows/Chrome briefly holds
+ * one open, persist a deferred cleanup row so the worker startup sweep removes it
+ * instead of silently accumulating transient PNG directories.
+ */
+async function cleanupPreparedOverlayFrames(
+  overlays: { workDir: string } | null,
+  kind: "caption-overlay-frames" | "broll-overlay-frames",
+): Promise<void> {
+  if (!overlays) return;
+  try {
+    const removed = await removePathOrDefer(overlays.workDir, kind);
+    if (!removed) {
+      log.warn(`[RENDER-DIAG] stage=${kind} event=temporary-cleanup-deferred directory=${overlays.workDir}`);
+    }
+  } catch (error) {
+    log.warn(
+      `[RENDER-DIAG] stage=${kind} event=temporary-cleanup-failed directory=${overlays.workDir} error=${toErrorMessage(error)}`,
+    );
+  }
+}
+
+/**
+ * Loopback B-roll URLs use a fresh port per render, so cache transparent frames
+ * by the immutable prepared-image identity instead. The content-addressed plan
+ * key plus file metadata catches a locally replaced prepared JPEG safely.
+ */
+function preparedBrollImageCacheIdentity(filePath: string, cacheKey: string): string {
+  try {
+    const stat = fs.statSync(filePath);
+    return `${cacheKey}:${path.basename(filePath)}:${stat.size}:${Math.round(stat.mtimeMs)}`;
+  } catch {
+    // The caller filters missing files before invoking Remotion. Retain a unique
+    // fallback rather than ever reusing pixels for an unreadable replacement.
+    return `${cacheKey}:${path.basename(filePath)}:missing`;
+  }
+}
+
 interface PrepareBrollForRenderOptions {
   brollPlan: ClipRecord["broll"];
   fps: number;
@@ -204,6 +243,7 @@ async function prepareBrollForRender(
         start: item.start,
         end: item.end,
         imageUrl: `${servedMedia.baseUrl}/broll-${index}${path.extname(usable[index].filePath) || ".jpg"}`,
+        cacheIdentity: preparedBrollImageCacheIdentity(usable[index].filePath, item.cacheKey),
         // This matches the legacy renderer exactly. For speaker-focus the anchor
         // has no ASD inputs; for split screen the caller supplies the face bands.
         ...(item.card
@@ -1018,18 +1058,13 @@ export async function processClipJob(
         fileSizeBytes: fs.statSync(finalVideoPath).size,
       };
     } finally {
-      try {
-        fs.rmSync(preparedOverlays.workDir, { recursive: true, force: true });
-      } catch {
-        /* best-effort */
-      }
-      if (preparedBroll) {
-        try {
-          fs.rmSync(preparedBroll.workDir, { recursive: true, force: true });
-        } catch {
-          /* best-effort */
-        }
-      }
+      // FFmpeg has finished (or failed) reading all image2/ffconcat inputs. Use
+      // the durable cleanup queue rather than silently leaving locked PNGs on
+      // Windows, then clear the outer references to avoid a redundant second try.
+      await cleanupPreparedOverlayFrames(preparedOverlays, "caption-overlay-frames");
+      captionOverlaysForCleanup = null;
+      await cleanupPreparedOverlayFrames(preparedBroll, "broll-overlay-frames");
+      brollOverlaysForCleanup = null;
     }
 
     clip.status = "done";
@@ -1066,7 +1101,9 @@ export async function processClipJob(
       // process. Windows may defer this deletion through the normal video/clip
       // deletion sweep, but force removes it on every other platform.
       for (const output of [finalVideoPath, intermediateVideoPath]) {
-        try { fs.rmSync(output, { force: true }); } catch { /* best effort */ }
+        await removePathOrDefer(output, "cancelled-render-output").catch((cleanupError) =>
+          log.warn(`Could not remove cancelled render output ${output}: ${toErrorMessage(cleanupError)}`),
+        );
       }
       // A cancel is not a failure: persist the cancelled state, end the job
       // cleanly (no rethrow -> no retry).
@@ -1098,14 +1135,10 @@ export async function processClipJob(
     // A parallel B-roll branch can finish before later overlay work throws. Clean
     // both directories from this outer scope as well as the normal post-FFmpeg
     // path so cancellation/failure never leaves transparent-frame work behind.
-    for (const overlays of [captionOverlaysForCleanup, brollOverlaysForCleanup]) {
-      if (!overlays) continue;
-      try {
-        fs.rmSync(overlays.workDir, { recursive: true, force: true });
-      } catch {
-        /* best-effort */
-      }
-    }
+    await Promise.all([
+      cleanupPreparedOverlayFrames(captionOverlaysForCleanup, "caption-overlay-frames"),
+      cleanupPreparedOverlayFrames(brollOverlaysForCleanup, "broll-overlay-frames"),
+    ]);
     // The shared queue controller is disposed by worker/index.ts.
     jobTimer.logSummary(jobTimingOutcome);
   }

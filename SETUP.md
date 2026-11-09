@@ -93,6 +93,10 @@ Both `npm run dev` and `npm run worker` load `.env.local` (via `@next/env`'s
 | `REMOTION_TIMEOUT_MINUTES` | `60` | Per-render ceiling. |
 | `BROLL_CARD_CROPPED_CANVAS` | `0` | Experimental landscape-card PNG crop/FFmpeg placement. Keep `0` (the original full canvas) until the Phase 4 five-frame cropped/full and audio/SFX gate is recorded. |
 | `CAPTION_BAND_CROPPED_CANVAS` | `0` | Experimental combined caption/Hook/CTA vertical-band crop. Keep `0` (the original full canvas) until the Phase 4 gate is recorded. |
+| `OVERLAY_RENDER_CACHE_ENABLED` | `1` | Reuse completed transparent caption and B-roll PNG sequences on an unchanged re-render. Set `0` for the old render-every-overlay fallback. Read per job; no worker restart. |
+| `OVERLAY_RENDER_CACHE_DIR` | `<tempDir>/overlay-frame-cache` | Optional directory for only rebuildable transparent frame entries. It never contains uploads, provider images, fonts, SQLite data, or finished clips. |
+| `OVERLAY_RENDER_CACHE_MAX_MB` | `1024` | Bounded LRU cache cap, clamped to 128–8192 MB. |
+| `OVERLAY_RENDER_CACHE_MAX_AGE_DAYS` | `14` | Age sweep when a complete entry is published, clamped to 1–90 days. |
 | **profanity audio mode** | on `/settings` | Chosen on **Settings → Profanity & masking**: `mute` (silence the word), `beep` (1 kHz tone), `off` (leave the audio alone). Captions and overlay text are masked **regardless**; the stored transcript keeps the original words, so changing this only needs a re-render. |
 | `UPLOAD_DIR` | `uploads` | Where source videos + in-progress upload sessions are stored. |
 | `MAX_UPLOAD_MB` | `0` (unlimited) | Optional guard rail for a single upload. Long podcasts need no limit — leave at 0. |
@@ -139,6 +143,13 @@ Practical consequences worth knowing:
 - **custom font destination:** the Custom font directory is a write-probed local path.
   It controls future font uploads; registry entries retain the folder used at upload time,
   so changing the destination does not orphan a selected saved style.
+- **render caches:** **Settings → Worker & limits → Clear caches** removes only reusable
+  active-speaker results and completed transparent caption/B-roll frames. It leaves uploads,
+  B-roll downloads, custom fonts, saved settings, and completed clips alone. A render first
+  hard-links (or copies) a cache hit into its own temporary work directory, so clearing while
+  FFmpeg is running is safe; a cache miss likewise renders in that job directory before a
+  completed sequence is published. Cache locations and limits remain the documented per-job
+  environment controls above.
 - `Reset to defaults` deletes a section's row, which leaves the *built-in* default — it does
   not hand the value back to `.env.local`.
 
@@ -304,7 +315,11 @@ provider chain, and the Remotion renderer, and tells you exactly what to fix.
    `worker/layout.ts`) → transparent caption / hook / CTA frames are painted by
    Remotion in headless Chrome → one FFmpeg graph does the source trim, mirror,
    crop, colour, hook intro, overlay compositing, audio handling and the single
-   final H.264 encode (1080×1920).
+   final H.264 encode (1080×1920). On an unchanged re-render, completed caption
+   and B-roll frame sequences can be materialized from the bounded transparent-frame
+   cache instead, so Chrome is not started for those hits. A hook/text/style change
+   invalidates the combined caption sequence but keeps an unchanged B-roll image/card
+   eligible for its own cache hit.
 6. Output: `generated-clips/001_my_recording/<clip title>.mp4`, tracked in
    SQLite. The dashboard plays it through `/api/media/...` (Range-enabled, so
    seeking works). Each clip in the grid shows its viral score and the AI analysis;
@@ -324,7 +339,9 @@ The worker uses Remotion only to paint transparent PNG overlays; the source vide
 never enters Chrome. On the first run Remotion downloads its browser shell. Check
 the `[Remotion Renderer]` log for bundle/browser errors, then lower **Chrome tabs per
 render** (Settings → Worker & limits) if memory is constrained. Increase
-`REMOTION_TIMEOUT_MINUTES` only for legitimately long overlay sequences.
+`REMOTION_TIMEOUT_MINUTES` only for legitimately long overlay sequences. If an old
+or corrupt reusable sequence is suspected, use **Settings → Worker & limits → Clear
+caches** and retry; the next render safely rebuilds only ASD/frame cache data.
 
 **Rendered clip has no video / black frames**
 The source crop and overlays are composed in the final FFmpeg pass. Check the
@@ -468,6 +485,7 @@ worker/camera-lock.ts      locked split-pane camera (hold still, re-centre only 
 worker/overlay-layout.ts   layout-aware caption / hook / CTA placement (off the faces in a split)
 worker/ffmpeg-pipeline.ts  One final FFmpeg graph: hflip → crop → colour → hook → overlays → H.264
 worker/remotion-renderer.ts transparent overlay PNG sequences (Remotion; optional guarded crop canvases)
+worker/overlay-frame-cache.ts versioned/LRU transparent caption + B-roll frame cache (job-local materialization)
 remotion/                  CaptionComposition + AnimatedWord + Hook/CTA overlays
 scripts/setup-yunet.mjs    YuNet model downloader with SHA-256 verification
 scripts/verify-clip.ts     ffprobe report for resolution, rates, stream timing and bitrates

@@ -49,7 +49,12 @@ export async function removePathOrDefer(
     });
     return true;
   } catch (error) {
-    await enqueueFileCleanup(targetPath, kind, toErrorMessage(error));
+    try {
+      await enqueueFileCleanup(targetPath, kind, toErrorMessage(error));
+    } catch {
+      // A temporary cleanup must never turn a successful render into a failure
+      // merely because SQLite is unavailable while recording its retry.
+    }
     return false;
   }
 }

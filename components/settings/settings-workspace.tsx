@@ -1466,6 +1466,8 @@ function WorkerCard({
         </div>
       </div>
 
+      <RenderCacheControl settings={settings} />
+
       <LeftoverEnvList
         env={settings.env}
         names={[
@@ -1475,6 +1477,34 @@ function WorkerCard({
         ]}
       />
     </SettingsCard>
+  );
+}
+
+/** A narrow, explicitly non-media cleanup: only rebuildable render accelerators. */
+function RenderCacheControl({ settings }: { settings: SettingsController }) {
+  const busy = settings.busy === "clear-render-caches";
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-muted/20 px-3 py-2.5">
+      <div className="min-w-0">
+        <p className="text-[12.5px] font-medium">Render caches</p>
+        <p className="mt-0.5 max-w-sm text-[11px] leading-snug text-muted-foreground">
+          Reusable active-speaker results and transparent B-roll/caption frames speed
+          repeat renders. Clearing them never deletes uploads, B-roll images, fonts,
+          settings, or finished clips.
+        </p>
+      </div>
+      <Button
+        type="button"
+        size="xs"
+        variant="outline"
+        className="shrink-0"
+        disabled={settings.busy !== null}
+        onClick={() => void settings.clearRenderCaches()}
+      >
+        {busy ? <Loader2 className="animate-spin" /> : <Trash2 />}
+        Clear caches
+      </Button>
+    </div>
   );
 }
 
