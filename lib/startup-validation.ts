@@ -391,9 +391,7 @@ async function validateRemotion(): Promise<StartupCheck> {
     details: [
       `Entry: ${path.relative(process.cwd(), entryPoint)}`,
       `Output: ${path.relative(process.cwd(), outputDir)}`,
-      `Concurrency: ${
-        (await loadEffectiveSettings()).worker.remotionConcurrency ?? 'auto (half the CPU threads)'
-      } (Settings -> Worker & limits)`,
+      `Chrome budget: ${(await loadEffectiveSettings()).worker.remotionConcurrencyPercent}% of logical CPU threads (Settings -> Worker & limits)`,
     ].join(' • '),
   });
 }

@@ -88,7 +88,7 @@ Both `npm run dev` and `npm run worker` load `.env.local` (via `@next/env`'s
 | `SPLIT_ZOOM` | `1.5` | Maximum split crop magnification; clamped to `1–2`. Set `1.0` to avoid enlargement. Low-resolution inputs may still need enlargement to fill output. |
 | `PORT` | `3000` | Next.js port. |
 | `ALLOWED_DEV_ORIGINS` | `*.e2b.app` (built in) | Extra hostnames allowed for dev assets (tunnels, LAN). Comma-separated, no scheme/port. |
-| **worker limits** | on `/settings` | Clip concurrency, viral-detection concurrency and Chrome tabs per render are set on **Settings → Worker & limits**. Keep clips at 1 on a normal PC: each job runs FFmpeg plus transparent overlay-frame generation. |
+| **worker limits** | on `/settings` | Clip and viral-detection loop counts plus the Chrome budget are set on **Settings → Worker & limits**. The 10–100% (5% step) Chrome slider defaults to 50% of detected logical CPU threads and is converted per job; keep clips at 1 on a normal PC. |
 | `REMOTION_LOG_LEVEL` | `info` | `verbose` when debugging a render. |
 | `REMOTION_TIMEOUT_MINUTES` | `60` | Per-render ceiling. |
 | **profanity audio mode** | on `/settings` | Chosen on **Settings → Profanity & masking**: `mute` (silence the word), `beep` (1 kHz tone), `off` (leave the audio alone). Captions and overlay text are masked **regardless**; the stored transcript keeps the original words, so changing this only needs a re-render. |
@@ -103,8 +103,9 @@ Both `npm run dev` and `npm run worker` load `.env.local` (via `@next/env`'s
 ### Settings is the only source of truth for those values
 
 `/settings` (in the sidebar) owns pipeline defaults, render clip defaults, the Gemini key
-pool, Deepgram key + model + engine choice, worker concurrency, and the profanity audio
-mode. The values are stored as `app_settings` rows in the same SQLite file as your videos,
+pool, Deepgram key + model + engine choice, worker concurrency, profanity audio mode, and
+local upload/output/temp-frame folders plus an optional FFmpeg path. The values are stored
+as `app_settings` rows in the same SQLite file as your videos,
 and the rule is: **what you saved there, otherwise the built-in default**. `.env.local` is
 not consulted for any of them — a value can never come from a file you are not looking at,
 which is why a row either says `settings` or shows no chip at all.
@@ -127,8 +128,12 @@ Practical consequences worth knowing:
   `.env.local` always was.
 - **clip and detection concurrency need `npm run worker` restarted** — the polling loops are
   sized when the process starts, and the card says so while such an override is saved.
-  Everything else, including Chrome tabs per render, transcription, render defaults and the
-  profanity mode, applies to the next job.
+  Everything else, including the per-job Chrome logical-thread budget, local paths,
+  transcription, render defaults and profanity mode, applies to the next job.
+- **folder browsing is localhost-only.** The Settings folder picker lists directories only,
+  can create one child folder, and write-probes every selected destination before it is
+  saved. Open the app directly on `http://localhost` to use it; a LAN/tunnel deployment
+  cannot browse or create folders through that API.
 - `Reset to defaults` deletes a section's row, which leaves the *built-in* default — it does
   not hand the value back to `.env.local`.
 

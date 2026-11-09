@@ -17,6 +17,9 @@ import { getClipsDirValue } from '@/lib/paths';
  */
 
 export const runtime = 'nodejs';
+// Directory settings are resolved on every request; never cache a route module's
+// old upload/generated-clips root after the user changes it on Settings.
+export const dynamic = 'force-dynamic';
 
 const ALLOWED_DIRS = ['uploads', 'generated-clips', 'public'];
 
@@ -133,8 +136,10 @@ export async function GET(
     const baseHeaders: Record<string, string> = {
       'Content-Type': contentType,
       'Accept-Ranges': 'bytes',
-      // Let the browser cache the finished clip but always revalidate it.
-      'Cache-Control': 'private, max-age=3600, must-revalidate',
+      // The logical uploads/generated-clips roots can change on Settings while
+      // this web process stays alive. Revalidate each request so a browser never
+      // keeps serving a same-named file from the folder that was selected before.
+      'Cache-Control': 'private, max-age=0, must-revalidate',
     };
 
     const range = request.headers.get('range');

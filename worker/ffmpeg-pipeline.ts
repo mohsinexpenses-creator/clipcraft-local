@@ -1,5 +1,4 @@
 import fs from "fs";
-import os from "os";
 import path from "path";
 import { Jimp } from "jimp";
 import { AppError, RenderCancelledError, toErrorMessage } from "../lib/errors";
@@ -16,6 +15,7 @@ import { buildSfxMixPlan, BROLL_SFX_VOLUME } from "../lib/broll/sfx";
 import { buildBrollSfxWav } from "./sfx-mixer";
 import { buildOverlayConcatManifest, type OverlayConcatSource } from "./overlay-concat";
 import { getOverlayThreadQueueSize } from "./render-options";
+import { resolveTempDir } from "../lib/paths";
 import {
   LayoutPlan,
   OUTPUT_HEIGHT,
@@ -790,7 +790,7 @@ export async function processVideoSegment(
       getOverlayConcatEnabled(),
       () => {
         if (!overlayConcatDir) {
-          overlayConcatDir = fs.mkdtempSync(path.join(os.tmpdir(), "clipcraft-overlay-concat-"));
+          overlayConcatDir = fs.mkdtempSync(path.join(resolveTempDir(), "clipcraft-overlay-concat-"));
         }
         return overlayConcatDir;
       },
@@ -846,7 +846,7 @@ export async function processVideoSegment(
         sfx.map((cue) => ({ ...cue, volume: cue.volume ?? sfxVolume })),
         totalDuration,
       );
-      sfxMixDir = fs.mkdtempSync(path.join(os.tmpdir(), "clipcraft-sfx-"));
+      sfxMixDir = fs.mkdtempSync(path.join(resolveTempDir(), "clipcraft-sfx-"));
       const sfxMixPath = path.join(sfxMixDir, "broll-sfx.wav");
       fs.writeFileSync(sfxMixPath, mixedSfx);
       sfxInputIndex = nextInput++;

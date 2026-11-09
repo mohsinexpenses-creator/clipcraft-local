@@ -9,22 +9,38 @@
  * `worker/index.ts` calls this once before the loops start and again before every
  * claimed job, which is why there is deliberately no "only once" latch here.
  */
+import os from 'node:os';
 import { loadEffectiveSettings } from '../lib/app-settings';
 import { setProfanityAudioModeOverride, setProfanityContextPassOverride } from '../lib/profanity';
 
 /**
- * `worker/remotion-renderer.ts` still reads `process.env.REMOTION_CONCURRENCY` at the
- * moment it hands the render off to Remotion, and the renderer is the one piece of the
- * pipeline this feature does not restructure. So a stored value is pushed into the env
- * slot the renderer already understands, instead of threading a new argument through
- * every render call. Written only when it actually changes, and an unset value restores
- * the empty slot ("let Remotion decide", i.e. half the CPU threads).
+ * `worker/remotion-renderer.ts` reads `REMOTION_CONCURRENCY` as a logical Chrome
+ * tab count. The Settings page stores a portable percentage instead; convert it
+ * against the current host's logical-thread count before each job. This means a
+ * 50% setting behaves sensibly after moving the database between machines.
  */
-function syncRemotionSlot(concurrency: number | null): void {
-  const next = concurrency === null ? '' : String(concurrency);
-  if ((process.env.REMOTION_CONCURRENCY ?? '') !== next) {
-    process.env.REMOTION_CONCURRENCY = next;
+export function remotionThreadsFromPercent(
+  percent: number,
+  logicalThreads = availableLogicalThreads(),
+): number {
+  const safeThreads = Math.max(1, Math.floor(logicalThreads) || 1);
+  const safePercent = Math.max(10, Math.min(100, Math.round(percent / 5) * 5));
+  return Math.max(1, Math.min(32, Math.ceil((safeThreads * safePercent) / 100)));
+}
+
+function availableLogicalThreads(): number {
+  // `availableParallelism` respects cgroup/container limits when Node exposes it;
+  // falling back preserves compatibility with older Node releases.
+  try {
+    return typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length;
+  } catch {
+    return 1;
   }
+}
+
+function syncRemotionSlot(percent: number): void {
+  const next = String(remotionThreadsFromPercent(percent));
+  if ((process.env.REMOTION_CONCURRENCY ?? '') !== next) process.env.REMOTION_CONCURRENCY = next;
 }
 
 /**
@@ -35,7 +51,7 @@ function syncRemotionSlot(concurrency: number | null): void {
 export async function applyStoredRuntimeSettings(): Promise<void> {
   try {
     const { worker, profanity } = await loadEffectiveSettings();
-    syncRemotionSlot(worker.remotionConcurrency);
+    syncRemotionSlot(worker.remotionConcurrencyPercent);
     setProfanityAudioModeOverride(profanity.audioMode);
     setProfanityContextPassOverride(profanity.contextPassEnabled);
   } catch (error) {

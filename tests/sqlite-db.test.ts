@@ -87,7 +87,7 @@ test('SQLite schema is versioned, indexed, WAL-enabled, and has a five-second bu
   const version = db.prepare('SELECT version FROM schema_version WHERE id = 1').get() as
     | { version: number }
     | undefined;
-  assert.deepEqual(version, { version: 10 });
+  assert.deepEqual(version, { version: 11 });
 
   // v3 is the additive pipeline column: the per-video automation settings
   // (auto-detect / auto-render + AI clip options) captured at upload time.
@@ -150,7 +150,7 @@ test('SQLite schema is versioned, indexed, WAL-enabled, and has a five-second bu
     initializeSchema(legacy);
     assert.deepEqual(
       legacy.prepare('SELECT version FROM schema_version WHERE id = 1').get(),
-      { version: 10 }
+      { version: 11 }
     );
     assert.ok(
       legacy.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'app_settings'").get(),
@@ -163,6 +163,36 @@ test('SQLite schema is versioned, indexed, WAL-enabled, and has a five-second bu
     );
   } finally {
     legacy.close();
+  }
+
+  // v11 converts the old absolute Chrome tab count once, retaining the worker
+  // row and storing a portable percentage for the per-job logical-thread budget.
+  const legacyWorker = new Database(':memory:');
+  try {
+    legacyWorker.exec(`
+      CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL, applied_at TEXT NOT NULL);
+      INSERT INTO schema_version (id, version, applied_at) VALUES (1, 10, '2025-01-01T00:00:00.000Z');
+      CREATE TABLE app_settings (
+        key TEXT PRIMARY KEY CHECK (key IN ('pipeline', 'render', 'ai', 'worker', 'profanity', 'paths')),
+        value_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO app_settings (key, value_json, updated_at)
+        VALUES ('worker', '{"clipConcurrency":2,"remotionConcurrency":4}', '2025-01-01T00:00:00.000Z');
+    `);
+    initializeSchema(legacyWorker);
+    const migratedWorker = legacyWorker.prepare(`SELECT value_json FROM app_settings WHERE key = 'worker'`).get() as { value_json: string };
+    assert.deepEqual(legacyWorker.prepare('SELECT version FROM schema_version WHERE id = 1').get(), { version: 11 });
+    const value = JSON.parse(migratedWorker.value_json) as Record<string, unknown>;
+    assert.equal(value.clipConcurrency, 2);
+    assert.equal('remotionConcurrency' in value, false);
+    assert.ok(
+      typeof value.remotionConcurrencyPercent === 'number' &&
+        value.remotionConcurrencyPercent >= 10 &&
+        value.remotionConcurrencyPercent <= 100,
+    );
+  } finally {
+    legacyWorker.close();
   }
 
   const tables = new Set(

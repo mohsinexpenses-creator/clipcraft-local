@@ -53,7 +53,7 @@ test('with nothing stored, the built-in defaults win and nothing is marked as ap
     assert.equal(effective.profanity.audioMode, 'mute');
     assert.equal(effective.worker.clipConcurrency, 1);
     assert.equal(effective.worker.viralConcurrency, 1);
-    assert.equal(effective.worker.remotionConcurrency, null);
+    assert.equal(effective.worker.remotionConcurrencyPercent, 50);
     assert.deepEqual(effective.ai.geminiApiKeys, []);
     assert.equal(effective.ai.deepgramApiKey, '');
     assert.equal(effective.pipeline.autoDetect, true);
@@ -83,7 +83,7 @@ test('a value that only exists in .env.local is NOT a setting - the page is the 
       // shows. A half-configured env file can no longer mean a value the user never saw.
       assert.equal(effective.worker.clipConcurrency, 1);
       assert.equal(effective.worker.viralConcurrency, 1);
-      assert.equal(effective.worker.remotionConcurrency, null);
+      assert.equal(effective.worker.remotionConcurrencyPercent, 50);
       assert.equal(effective.profanity.audioMode, 'mute');
       assert.equal(effective.ai.deepgramModel, 'nova-2');
       assert.equal(effective.ai.deepgramApiKey, '');
@@ -135,19 +135,19 @@ test('an empty field never becomes zero, but an explicit zero is respected', () 
   assert.equal(zero.effective.render.ctaDuration, 0);
 });
 
-test('a stored null means "decide for me", and a missing row means the same default', () => {
+test('legacy tab-count records migrate to the 50% logical-thread budget safely', () => {
   withEnv({ REMOTION_CONCURRENCY: '5' }, () => {
     const auto = resolveSettings({ worker: { remotionConcurrency: null } });
-    assert.equal(auto.effective.worker.remotionConcurrency, null);
-    assert.equal(auto.sources.worker?.remotionConcurrency, 'app', 'null is an explicit choice, so it is not "unset"');
+    assert.equal(auto.effective.worker.remotionConcurrencyPercent, 50);
+    assert.equal(auto.sources.worker?.remotionConcurrencyPercent, 'app', 'legacy null is an explicit stored value, migrated to the 50% default');
 
-    // Nothing stored: still auto, because REMOTION_CONCURRENCY is not consulted.
+    // Nothing stored: the page still owns the 50% default, not REMOTION_CONCURRENCY.
     const nothing = resolveSettings({ worker: {} });
-    assert.equal(nothing.effective.worker.remotionConcurrency, null);
-    assert.equal(nothing.sources.worker?.remotionConcurrency, 'default');
+    assert.equal(nothing.effective.worker.remotionConcurrencyPercent, 50);
+    assert.equal(nothing.sources.worker?.remotionConcurrencyPercent, 'default');
 
     const stored = resolveSettings({ worker: { remotionConcurrency: 400 } });
-    assert.equal(stored.effective.worker.remotionConcurrency, 32, 'a hand-written row is clamped');
+    assert.equal(stored.effective.worker.remotionConcurrencyPercent, 100, 'legacy absolute values are safely bounded during migration');
   });
 
   // A `null` caption preset id means "use the preset the preset table marks default".
@@ -176,10 +176,12 @@ test('stored values are clamped on the way in, not silently fixed on read', () =
   assert.equal(pipeline.viral.minClipDuration, 5);
   assert.equal(pipeline.viral.maxClipDuration, 90, 'max clip duration is never taken from a client');
 
-  const worker = sanitizeSettingsSection('worker', { clipConcurrency: '4', viralConcurrency: 2.9, remotionConcurrency: '' });
+  const worker = sanitizeSettingsSection('worker', { clipConcurrency: '4', viralConcurrency: 2.9, remotionConcurrencyPercent: 50 });
   assert.equal(worker.clipConcurrency, 4);
   assert.equal(worker.viralConcurrency, 3, 'loop counts become whole numbers (rounded, never 2.9 slots)');
-  assert.equal(worker.remotionConcurrency, null, 'empty means "let the renderer choose"');
+  assert.equal(worker.remotionConcurrencyPercent, 50, 'percentage is stored directly');
+  assert.throws(() => sanitizeSettingsSection('worker', { remotionConcurrencyPercent: 52 }), /5% steps/);
+  assert.throws(() => sanitizeSettingsSection('worker', { remotionConcurrencyPercent: 5 }), /between 10 and 100/);
 
   const render = sanitizeSettingsSection('render', { hookDuration: 2.34, captionPresetId: '  ' });
   assert.equal(render.hookDuration, 2.3, 'durations are kept to one decimal');
@@ -295,7 +297,7 @@ test('the snapshot reports a restart only for a loop size the app actually store
     assert.deepEqual(stored.restartRequired, ['worker.clipConcurrency']);
     assert.deepEqual(stored.configured, ['worker']);
 
-    await saveSettingsSection('worker', { remotionConcurrency: 3 });
+    await saveSettingsSection('worker', { remotionConcurrencyPercent: 65 });
     assert.deepEqual(
       (await buildAppSettingsSnapshot()).restartRequired,
       ['worker.clipConcurrency'],
@@ -375,8 +377,8 @@ test('the ai section round-trips its keys without ever returning one in full', a
  */
 test('paths settings: stored values win, empty means automatic, and resolveSettings stays pure', () => {
   const { effective, sources } = resolveSettings({});
-  assert.deepEqual(effective.paths, { uploadDir: '', clipsDir: '', ffmpegPath: '' });
-  assert.deepEqual(Object.values(sources.paths ?? {}), ['default', 'default', 'default']);
+  assert.deepEqual(effective.paths, { uploadDir: '', clipsDir: '', tempDir: '', ffmpegPath: '' });
+  assert.deepEqual(Object.values(sources.paths ?? {}), ['default', 'default', 'default', 'default']);
 
   const stored = resolveSettings({
     paths: { clipsDir: '/data/clips', ffmpegPath: 'C:\\ffmpeg\\bin\\ffmpeg.exe' },
@@ -384,6 +386,7 @@ test('paths settings: stored values win, empty means automatic, and resolveSetti
   assert.equal(stored.effective.paths.clipsDir, '/data/clips');
   assert.equal(stored.effective.paths.ffmpegPath, 'C:\\ffmpeg\\bin\\ffmpeg.exe');
   assert.equal(stored.effective.paths.uploadDir, '');
+  assert.equal(stored.effective.paths.tempDir, '');
   assert.equal(stored.sources.paths?.clipsDir, 'app');
   assert.equal(stored.sources.paths?.uploadDir, 'default');
 });
@@ -400,8 +403,12 @@ test('paths settings: sanitize trims, clears on empty/null and rejects control c
   });
 
   try {
-    await saveSettingsSection('paths', { uploadDir: '  /mnt/videos  ' });
+    await saveSettingsSection('paths', {
+      uploadDir: '  /mnt/videos  ',
+      tempDir: ' /mnt/work ',
+    });
     assert.equal(rows.get('paths')?.uploadDir, '/mnt/videos', 'paths are trimmed before storage');
+    assert.equal(rows.get('paths')?.tempDir, '/mnt/work');
 
     // An empty value is the user switching back to the automatic chain.
     await saveSettingsSection('paths', { uploadDir: '' });

@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto";
 import fs from "fs";
+import os from "os";
 import path from "path";
 import Database from "better-sqlite3";
 import {
@@ -163,7 +164,7 @@ const VIDEO_SUMMARY_SELECT = `
      FROM clips c WHERE c.video_id = v.id) AS clip_progress
 `;
 
-const CURRENT_SCHEMA_VERSION = 10;
+const CURRENT_SCHEMA_VERSION = 11;
 
 /** Absolute path used by the web process and the worker. */
 export function getDatabasePath(): string {
@@ -597,6 +598,44 @@ function migrateSchemaV10(db: SqliteDatabase): void {
   }
 }
 
+/**
+ * Schema v11: Settings used to persist an absolute `remotionConcurrency` tab
+ * count. Phase 2 stores a portable percentage instead, so one user’s database
+ * behaves proportionally after moving to a machine with a different CPU count.
+ * This JSON-only migration is deliberately best effort: malformed settings keep
+ * their normal defensive read fallback rather than blocking startup.
+ */
+function migrateSchemaV11(db: SqliteDatabase): void {
+  const row = db
+    .prepare(`SELECT value_json FROM app_settings WHERE key = 'worker'`)
+    .get() as { value_json: string } | undefined;
+  if (!row) return;
+
+  let value: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(row.value_json) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return;
+    value = parsed as Record<string, unknown>;
+  } catch {
+    return;
+  }
+  if (Object.prototype.hasOwnProperty.call(value, 'remotionConcurrencyPercent')) return;
+  if (!Object.prototype.hasOwnProperty.call(value, 'remotionConcurrency')) return;
+
+  const legacy = Number(value.remotionConcurrency);
+  const logicalThreads = Math.max(
+    1,
+    typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length,
+  );
+  const percent = Number.isFinite(legacy) && legacy > 0
+    ? Math.max(10, Math.min(100, Math.ceil(((legacy / logicalThreads) * 100) / 5) * 5))
+    : 50;
+  delete value.remotionConcurrency;
+  value.remotionConcurrencyPercent = percent;
+  db.prepare(`UPDATE app_settings SET value_json = ?, updated_at = ? WHERE key = 'worker'`)
+    .run(JSON.stringify(value), new Date().toISOString());
+}
+
 const SCHEMA_MIGRATIONS: Record<number, (db: SqliteDatabase) => void> = {
   1: migrateSchemaV1,
   2: migrateSchemaV2,
@@ -608,6 +647,7 @@ const SCHEMA_MIGRATIONS: Record<number, (db: SqliteDatabase) => void> = {
   8: migrateSchemaV8,
   9: migrateSchemaV9,
   10: migrateSchemaV10,
+  11: migrateSchemaV11,
 };
 
 export function initializeSchema(db: SqliteDatabase): void {

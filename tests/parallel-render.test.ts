@@ -10,12 +10,21 @@ import {
   getCaptionActiveRangeRenderingEnabled,
   getRemotionConcurrency,
 } from "../worker/remotion-options";
+import { remotionThreadsFromPercent } from "../worker/runtime-settings";
 
 test("speaker-focus B-roll/ASD overlap is on by default and has a sequential rollback", () => {
   assert.equal(getParallelBrollAsdEnabled({}), true);
   assert.equal(getParallelBrollAsdEnabled({ RENDER_PARALLEL_BROLL_ASD: "1" }), true);
   assert.equal(getParallelBrollAsdEnabled({ RENDER_PARALLEL_BROLL_ASD: "0" }), false);
   assert.equal(getParallelBrollAsdEnabled({ RENDER_PARALLEL_BROLL_ASD: "false" }), false);
+});
+
+test("Remotion percent budget becomes a bounded logical-thread tab count per job", () => {
+  assert.equal(remotionThreadsFromPercent(50, 8), 4);
+  assert.equal(remotionThreadsFromPercent(10, 8), 1);
+  assert.equal(remotionThreadsFromPercent(100, 12), 12);
+  assert.equal(remotionThreadsFromPercent(50, 1), 1);
+  assert.equal(remotionThreadsFromPercent(100, 128), 32, "Remotion supported cap remains enforced");
 });
 
 test("parallel B-roll cap leaves capacity for ASD and respects a smaller manual tab count", () => {

@@ -2,6 +2,7 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import type { AsdResult } from "./index";
+import { getTempDirValue } from "../../lib/paths";
 
 /** Bump whenever an ASD algorithm/input interpretation changes. */
 export const ASD_CACHE_VERSION = 1;
@@ -68,7 +69,7 @@ export function getAsdCacheSettings(
   const configuredDirectory = env.ASD_CACHE_DIR?.trim();
   return {
     enabled: !disabled(env.ASD_CACHE_ENABLED),
-    directory: path.resolve(configuredDirectory || path.join(process.cwd(), ".tmp", "asd-cache")),
+    directory: path.resolve(configuredDirectory || path.join(getTempDirValue(), "asd-cache")),
     maxBytes: cacheMaxBytes(env),
   };
 }

@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { AppError } from "../lib/errors";
 import { runFfmpeg } from "../lib/ffmpeg";
+import { resolveTempDir } from "../lib/paths";
 
 /**
  * Frame sampling + pan-math helpers for the 9:16 speaker layout.
@@ -58,8 +59,7 @@ export async function sampleSegmentFrames(
   const boundedJpegQuality = Math.max(2, Math.min(31, Math.round(jpegQuality)));
 
   const tempFramesDir = path.join(
-    process.cwd(),
-    ".tmp",
+    resolveTempDir(),
     `${tmpPrefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
   );
   fs.mkdirSync(tempFramesDir, { recursive: true });

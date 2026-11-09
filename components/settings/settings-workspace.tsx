@@ -11,7 +11,9 @@ import {
   Clipboard,
   Cloud,
   Cpu,
+  ChevronUp,
   FolderCog,
+  FolderOpen,
   Gauge,
   ImageIcon,
   InfoIcon,
@@ -41,7 +43,16 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { Switch } from "@/components/ui/switch";
+import { Slider } from "@/components/ui/slider";
+import {
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   Tooltip,
   TooltipContent,
@@ -1350,14 +1361,11 @@ function WorkerCard({
     Partial<{
       clipConcurrency: number;
       viralConcurrency: number;
-      remotionConcurrency: number | null;
+      remotionConcurrencyPercent: number;
     }>
   >({});
   const value = { ...effective.worker, ...draft };
   const limits = settings.limits?.concurrency;
-  // The draft wins over the saved value: switching Manual on/off must flip the
-  // row immediately, before anything is saved.
-  const autoRemotion = value.remotionConcurrency === null;
 
   const save = async () => {
     if (Object.keys(draft).length === 0) return;
@@ -1425,53 +1433,37 @@ function WorkerCard({
         />
       </Row>
 
-      <div className="space-y-1.5">
+      <div className="space-y-2">
         <Row
-          label="Chrome tabs per render"
-          hint="Each clip render paints its captions and overlays inside ONE headless Chrome - and Chrome renders a page per tab. This setting is how many tabs that single Chrome opens to render frames in parallel: more tabs = a faster render, but each tab needs its own RAM and CPU share. Leave it on Auto unless renders are slow (raise it) or your machine runs out of memory (lower it). Applied on the next render - no restart needed."
-          source={settings.sources.worker?.remotionConcurrency}
+          label="Chrome thread budget"
+          hint="The share of this machine’s logical CPU threads that one Remotion render may use. It is converted to a safe whole Chrome-tab count when each job starts, so the same setting travels cleanly between machines. Applied on the next render - no restart needed."
+          source={settings.sources.worker?.remotionConcurrencyPercent}
+          className="items-start"
         >
-          <div className="flex items-center gap-2">
-            <Switch
-              id="remotion-auto"
-              checked={!autoRemotion}
-              onCheckedChange={(checked) =>
-                setDraft((current) => ({
-                  ...current,
-                  remotionConcurrency: checked
-                    ? (current.remotionConcurrency ??
-                      effective.worker.remotionConcurrency ??
-                      2)
-                    : null,
-                }))
-              }
-              disabled={settings.busy === "save:worker"}
-            />
-            <Label
-              htmlFor="remotion-auto"
-              className="text-[11.5px] font-normal text-muted-foreground"
-            >
-              Manual
-            </Label>
-            <div className="w-[70px]">
-              <NumberField
-                id="remotion-concurrency"
-                value={value.remotionConcurrency ?? 2}
-                min={limits?.remotion.min ?? 1}
-                max={limits?.remotion.max ?? 32}
-                disabled={autoRemotion || settings.busy === "save:worker"}
-                onCommit={(remotionConcurrency) =>
-                  setDraft((current) => ({ ...current, remotionConcurrency }))
-                }
-              />
-            </div>
-          </div>
+          <output
+            htmlFor="remotion-concurrency-percent"
+            className="min-w-11 rounded-md bg-muted px-2 py-1 text-right font-mono text-[12px] tabular-nums"
+          >
+            {value.remotionConcurrencyPercent}%
+          </output>
         </Row>
-        <p className="text-[10.5px] leading-snug text-muted-foreground">
-          {autoRemotion
-            ? "Auto: the renderer opens half of your CPU threads as tabs for every render."
-            : `Manual: every render opens ${value.remotionConcurrency ?? 2} Chrome tab${(value.remotionConcurrency ?? 2) === 1 ? "" : "s"}.`}
-        </p>
+        <Slider
+          id="remotion-concurrency-percent"
+          value={value.remotionConcurrencyPercent}
+          min={limits?.remotionPercent.min ?? 10}
+          max={limits?.remotionPercent.max ?? 100}
+          step={limits?.remotionPercent.step ?? 5}
+          disabled={settings.busy === "save:worker"}
+          aria-label="Chrome thread budget"
+          onValueChange={(remotionConcurrencyPercent) =>
+            setDraft((current) => ({ ...current, remotionConcurrencyPercent }))
+          }
+        />
+        <div className="flex justify-between text-[10.5px] text-muted-foreground">
+          <span>{limits?.remotionPercent.min ?? 10}% minimum</span>
+          <span>Default 50%</span>
+          <span>{limits?.remotionPercent.max ?? 100}% maximum</span>
+        </div>
       </div>
 
       <LeftoverEnvList
@@ -1637,6 +1629,11 @@ const PATH_FIELDS = [
     hint: "Where rendered 9:16 clips are written, one folder per video. Already rendered clips keep playing - the player resolves this folder at request time.",
   },
   {
+    key: "tempDir" as const,
+    label: "Temporary frames & work directory",
+    hint: "Where sampled frames, overlay PNGs, FFmpeg scratch files and local caches are created. Finished jobs clean their own work; changing this affects the next job only.",
+  },
+  {
     key: "ffmpegPath" as const,
     label: "FFmpeg path",
     hint: "Absolute path to the ffmpeg executable. Leave empty to use the bundled binary (ffmpeg-static) or whatever is on PATH. ffprobe is looked up beside it.",
@@ -1651,6 +1648,9 @@ function PathsCard({
   effective: NonNullable<SettingsController["effective"]>;
 }) {
   const [draft, setDraft] = React.useState<Partial<PathSettings>>({});
+  const [pickerField, setPickerField] = React.useState<
+    "uploadDir" | "clipsDir" | "tempDir" | null
+  >(null);
   const value = { ...effective.paths, ...draft };
   const resolved = settings.payload?.resolvedPaths;
   const busy = settings.busy === "save:paths";
@@ -1665,7 +1665,7 @@ function PathsCard({
     <SettingsCard
       section="paths"
       title="Paths & binaries"
-      description="Default locations for uploads and rendered clips, and the FFmpeg binary that does the work. Leave a field empty to keep the automatic value shown below it - a saved value takes over from the next upload or render, no restart needed."
+      description="Default locations for uploads, rendered clips and transient frames, plus the FFmpeg binary that does the work. Leave a field empty to keep the automatic value shown below it - a saved value takes over from the next upload or render, no restart needed. Folder changes are intentionally available only on localhost."
       icon={<FolderCog className="size-4" />}
       settings={settings}
       dirty={Object.keys(draft).length > 0}
@@ -1679,7 +1679,10 @@ function PathsCard({
               ? resolved?.uploadDir
               : field.key === "clipsDir"
                 ? resolved?.clipsDir
-                : resolved?.ffmpegPath || "not found - ffmpeg path unavailable";
+                : field.key === "tempDir"
+                  ? resolved?.tempDir
+                  : resolved?.ffmpegPath || "not found - ffmpeg path unavailable";
+          const canBrowse = field.key !== "ffmpegPath";
           return (
             <div key={field.key} className="space-y-1">
               <Row
@@ -1688,21 +1691,36 @@ function PathsCard({
                 source={settings.sources.paths?.[field.key]}
                 className="items-start"
               >
-                <Input
-                  value={value[field.key]}
-                  onChange={(event) =>
-                    setDraft((currentDraft) => ({
-                      ...currentDraft,
-                      [field.key]: event.target.value,
-                    }))
-                  }
-                  placeholder={inUse}
-                  spellCheck={false}
-                  autoComplete="off"
-                  className="h-8 font-mono text-[11.5px]"
-                  aria-label={field.label}
-                  disabled={busy}
-                />
+                <div className="flex min-w-0 gap-1.5">
+                  <Input
+                    value={value[field.key]}
+                    onChange={(event) =>
+                      setDraft((currentDraft) => ({
+                        ...currentDraft,
+                        [field.key]: event.target.value,
+                      }))
+                    }
+                    placeholder={inUse}
+                    spellCheck={false}
+                    autoComplete="off"
+                    className="h-8 min-w-0 font-mono text-[11.5px]"
+                    aria-label={field.label}
+                    disabled={busy}
+                  />
+                  {canBrowse ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      className="shrink-0"
+                      disabled={busy}
+                      onClick={() => setPickerField(field.key)}
+                    >
+                      <FolderOpen />
+                      Browse
+                    </Button>
+                  ) : null}
+                </div>
               </Row>
               <p
                 className="truncate font-mono text-[10.5px] text-muted-foreground/80"
@@ -1715,7 +1733,243 @@ function PathsCard({
           );
         })}
       </div>
+      <FolderBrowserDialog
+        open={pickerField !== null}
+        initialPath={
+          pickerField
+            ? value[pickerField] ||
+              (pickerField === "uploadDir"
+                ? resolved?.uploadDir
+                : pickerField === "clipsDir"
+                  ? resolved?.clipsDir
+                  : resolved?.tempDir) ||
+                ""
+            : ""
+        }
+        title={pickerField ? PATH_FIELDS.find((field) => field.key === pickerField)?.label ?? "Choose folder" : "Choose folder"}
+        onOpenChange={(open) => {
+          if (!open) setPickerField(null);
+        }}
+        onSelect={(selectedPath) => {
+          if (!pickerField) return;
+          setDraft((currentDraft) => ({ ...currentDraft, [pickerField]: selectedPath }));
+          setPickerField(null);
+        }}
+      />
     </SettingsCard>
+  );
+}
+
+interface FolderListing {
+  path: string;
+  parent: string | null;
+  roots: string[];
+  entries: Array<{ name: string; path: string; isSymlink: boolean }>;
+}
+
+function FolderBrowserDialog({
+  open,
+  initialPath,
+  title,
+  onOpenChange,
+  onSelect,
+}: {
+  open: boolean;
+  initialPath: string;
+  title: string;
+  onOpenChange: (open: boolean) => void;
+  onSelect: (path: string) => void;
+}) {
+  const [listing, setListing] = React.useState<FolderListing | null>(null);
+  const [pathText, setPathText] = React.useState("");
+  const [newFolderName, setNewFolderName] = React.useState("");
+  const [error, setError] = React.useState<string | null>(null);
+  const [busy, setBusy] = React.useState(false);
+
+  const load = React.useCallback(async (requestedPath?: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const query = requestedPath?.trim() ? `?path=${encodeURIComponent(requestedPath.trim())}` : "";
+      const response = await fetch(`/api/settings/folders${query}`);
+      const payload = (await response.json().catch(() => ({}))) as FolderListing & { error?: string };
+      if (!response.ok) throw new Error(payload.error || "Could not browse that folder.");
+      setListing(payload);
+      setPathText(payload.path);
+    } catch (caught) {
+      setListing(null);
+      setError(caught instanceof Error ? caught.message : "Could not browse that folder.");
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    if (!open) return;
+    // Defer the request state transition just like the page-level settings load:
+    // the effect subscribes to dialog visibility, while the async request owns UI state.
+    queueMicrotask(() => void load(initialPath));
+  }, [initialPath, load, open]);
+
+  const create = async () => {
+    if (!listing || !newFolderName.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/settings/folders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ parent: listing.path, name: newFolderName }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as FolderListing & { error?: string };
+      if (!response.ok) throw new Error(payload.error || "Could not create that folder.");
+      setListing(payload);
+      setPathText(payload.path);
+      setNewFolderName("");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not create that folder.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) setNewFolderName("");
+        onOpenChange(nextOpen);
+      }}
+    >
+      <DialogContent size="lg" className="max-h-[84dvh] shadow-none">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <FolderOpen className="size-4 text-primary" />
+            {title}
+          </DialogTitle>
+          <DialogDescription className="text-[12px] leading-snug">
+            Browse or create a local folder. This picker is intentionally available only when ClipCraft is opened directly on localhost.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogBody className="space-y-3">
+          <form
+            className="flex gap-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void load(pathText);
+            }}
+          >
+            <Input
+              value={pathText}
+              onChange={(event) => setPathText(event.target.value)}
+              className="h-8 min-w-0 font-mono text-[11.5px]"
+              aria-label="Folder path"
+              spellCheck={false}
+              autoComplete="off"
+              disabled={busy}
+            />
+            <Button type="submit" size="xs" variant="outline" disabled={busy || !pathText.trim()}>
+              {busy ? <Loader2 className="animate-spin" /> : <FolderOpen />}
+              Go
+            </Button>
+          </form>
+
+          {listing ? (
+            <>
+              <div className="flex flex-wrap gap-1.5">
+                {listing.roots.map((root) => (
+                  <Button
+                    key={root}
+                    type="button"
+                    size="xs"
+                    variant="ghost"
+                    className="max-w-full font-mono text-[10.5px]"
+                    disabled={busy}
+                    onClick={() => void load(root)}
+                    title={root}
+                  >
+                    {root}
+                  </Button>
+                ))}
+              </div>
+              <div className="rounded-lg border">
+                <div className="flex items-center justify-between gap-2 border-b bg-muted/30 px-2.5 py-2">
+                  <code className="min-w-0 truncate text-[10.5px] text-muted-foreground" title={listing.path}>
+                    {listing.path}
+                  </code>
+                  {listing.parent ? (
+                    <Button
+                      type="button"
+                      size="xs"
+                      variant="ghost"
+                      disabled={busy}
+                      onClick={() => void load(listing.parent ?? undefined)}
+                    >
+                      <ChevronUp />
+                      Up
+                    </Button>
+                  ) : null}
+                </div>
+                <div className="max-h-56 overflow-y-auto p-1">
+                  {listing.entries.length ? (
+                    listing.entries.map((entry) => (
+                      <Button
+                        key={entry.path}
+                        type="button"
+                        variant="ghost"
+                        className="h-8 w-full justify-start gap-2 px-2 text-left font-normal"
+                        disabled={busy}
+                        onClick={() => void load(entry.path)}
+                        title={entry.path}
+                      >
+                        <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" />
+                        <span className="min-w-0 truncate text-[12px]">{entry.name}</span>
+                        {entry.isSymlink ? <span className="text-[10px] text-muted-foreground">link</span> : null}
+                      </Button>
+                    ))
+                  ) : (
+                    <p className="px-2 py-5 text-center text-[11.5px] text-muted-foreground">No child folders.</p>
+                  )}
+                </div>
+              </div>
+              <form
+                className="flex gap-2"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void create();
+                }}
+              >
+                <Input
+                  value={newFolderName}
+                  onChange={(event) => setNewFolderName(event.target.value)}
+                  className="h-8 min-w-0 text-[11.5px]"
+                  placeholder="New folder name"
+                  maxLength={120}
+                  disabled={busy}
+                />
+                <Button type="submit" size="xs" variant="outline" disabled={busy || !newFolderName.trim()}>
+                  <Plus />
+                  Create
+                </Button>
+              </form>
+            </>
+          ) : null}
+          {error ? (
+            <p className="rounded-md border border-destructive/30 bg-destructive/5 px-2.5 py-2 text-[11.5px] text-destructive">
+              {error}
+            </p>
+          ) : null}
+        </DialogBody>
+        <DialogFooter>
+          <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button type="button" onClick={() => listing && onSelect(listing.path)} disabled={!listing || busy}>
+            Use this folder
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

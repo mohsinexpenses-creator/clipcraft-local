@@ -1,4 +1,5 @@
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import {
   APP_SETTINGS_SECTIONS,
@@ -52,8 +53,9 @@ import { readAppSettingsSections, saveAppSettingsSection } from './db';
 /**
  * Values a *running* worker process only picks up again after it is restarted: the two
  * polling loops are sized once, at start (`startWorker` in `worker/index.ts`). The
- * Remotion tab count is deliberately NOT here - `worker/runtime-settings.ts` refreshes
- * it before every job, so a change lands on the next render.
+ * Remotion's thread percentage is deliberately NOT here -
+ * `worker/runtime-settings.ts` refreshes its resolved logical-tab count before
+ * every job, so a slider change lands without a worker restart.
  */
 export const RESTART_REQUIRED_PATHS = ['worker.clipConcurrency', 'worker.viralConcurrency'] as const;
 
@@ -247,6 +249,17 @@ function numberIn(
   return step;
 }
 
+function steppedNumberIn(
+  value: unknown,
+  { min, max, step, label }: { min: number; max: number; step: number; label: string },
+): number {
+  const result = numberIn(value, { min, max, label });
+  if (Math.abs((result - min) % step) > Number.EPSILON) {
+    throw badRequest(`${label} must move in ${step}% steps.`, `Choose ${min}% to ${max}% in ${step}% increments.`);
+  }
+  return result;
+}
+
 function textOf(value: unknown, max: number, label: string): string {
   if (typeof value !== 'string') throw badRequest(`${label} must be text.`);
   const trimmed = value.trim();
@@ -384,11 +397,11 @@ export function sanitizeSettingsSection(
       if (input.viralConcurrency !== undefined) {
         out.viralConcurrency = numberIn(input.viralConcurrency, { ...CONCURRENCY_LIMITS.viral, label: 'Viral detection concurrency' });
       }
-      if ('remotionConcurrency' in input) {
-        out.remotionConcurrency =
-          input.remotionConcurrency === null || input.remotionConcurrency === '' || input.remotionConcurrency === undefined
-            ? null
-            : numberIn(input.remotionConcurrency, { ...CONCURRENCY_LIMITS.remotion, label: 'Remotion concurrency' });
+      if ('remotionConcurrencyPercent' in input) {
+        out.remotionConcurrencyPercent = steppedNumberIn(input.remotionConcurrencyPercent, {
+          ...CONCURRENCY_LIMITS.remotionPercent,
+          label: 'Chrome thread percentage',
+        });
       }
       return out;
     }
@@ -409,7 +422,7 @@ export function sanitizeSettingsSection(
     case 'paths': {
       const input = record(value, 'Paths & binaries');
       const out: Record<string, unknown> = {};
-      for (const field of ['uploadDir', 'clipsDir', 'ffmpegPath'] as const) {
+      for (const field of ['uploadDir', 'clipsDir', 'tempDir', 'ffmpegPath'] as const) {
         if (!(field in input)) continue;
         out[field] = pathString(input[field], PATH_FIELD_LABELS[field]);
       }
@@ -424,6 +437,7 @@ export function sanitizeSettingsSection(
 const PATH_FIELD_LABELS: Record<keyof PathSettings, string> = {
   uploadDir: 'Upload directory',
   clipsDir: 'Generated clips directory',
+  tempDir: 'Temporary render directory',
   ffmpegPath: 'FFmpeg path',
 };
 
@@ -457,7 +471,8 @@ export interface StoredSettingsRows {
   pipeline?: PipelineOptions;
   render?: Partial<Record<keyof RenderDefaults, unknown>>;
   ai?: Partial<AiProviderSettings>;
-  worker?: Partial<Record<keyof WorkerSettings, unknown>>;
+  /** `remotionConcurrency` is read only as a Phase 2 legacy migration input. */
+  worker?: Partial<Record<keyof WorkerSettings | 'remotionConcurrency', unknown>>;
   profanity?: Partial<Record<keyof ProfanitySettings, unknown>>;
   paths?: Partial<Record<keyof PathSettings, unknown>>;
 }
@@ -501,16 +516,32 @@ function intInRange(value: unknown, min: number, max: number, fallback: number):
 }
 
 /**
- * A stored `null` is the user's own decision - "let the renderer decide, based on the
- * CPU" - so it must not fall through to anything else. A value that is set is clamped to
- * the same limits the UI offers, because a row can also be written by hand.
+ * Phase 2 migration: old records stored an absolute tab count. Convert it to the
+ * current host's 10–100% logical-thread budget on read; the SQLite v11 migration
+ * persists that result, and any legacy row that somehow remains is completed on
+ * its next save.
  */
-function resolveRemotion(stored: unknown): number | null {
-  if (stored === null) return null;
-  const value = numberValue(stored);
-  return value === undefined
-    ? null
-    : intInRange(value, CONCURRENCY_LIMITS.remotion.min, CONCURRENCY_LIMITS.remotion.max, 1);
+function resolveRemotionPercent(stored: Record<string, unknown>): number {
+  const direct = numberValue(stored.remotionConcurrencyPercent);
+  if (direct !== undefined) {
+    return Math.max(
+      CONCURRENCY_LIMITS.remotionPercent.min,
+      Math.min(CONCURRENCY_LIMITS.remotionPercent.max, Math.round(direct / CONCURRENCY_LIMITS.remotionPercent.step) * CONCURRENCY_LIMITS.remotionPercent.step),
+    );
+  }
+  const legacy = numberValue(stored.remotionConcurrency);
+  if (legacy === undefined) return DEFAULT_WORKER_SETTINGS.remotionConcurrencyPercent;
+  const logicalThreads = Math.max(
+    1,
+    typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length,
+  );
+  return Math.max(
+    CONCURRENCY_LIMITS.remotionPercent.min,
+    Math.min(
+      CONCURRENCY_LIMITS.remotionPercent.max,
+      Math.ceil(((legacy / logicalThreads) * 100) / CONCURRENCY_LIMITS.remotionPercent.step) * CONCURRENCY_LIMITS.remotionPercent.step,
+    ),
+  );
 }
 
 /**
@@ -610,8 +641,10 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
   sources.worker = {
     clipConcurrency: numberValue(workerStored.clipConcurrency) !== undefined ? 'app' : 'default',
     viralConcurrency: numberValue(workerStored.viralConcurrency) !== undefined ? 'app' : 'default',
-    // An explicit `null` is a choice ("let the renderer decide"), so it counts as stored.
-    remotionConcurrency: workerStored.remotionConcurrency !== undefined ? 'app' : 'default',
+    remotionConcurrencyPercent:
+      workerStored.remotionConcurrencyPercent !== undefined || workerStored.remotionConcurrency !== undefined
+        ? 'app'
+        : 'default',
   };
 
   const worker: WorkerSettings = {
@@ -627,7 +660,7 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
       CONCURRENCY_LIMITS.viral.max,
       1
     ),
-    remotionConcurrency: resolveRemotion(workerStored.remotionConcurrency),
+    remotionConcurrencyPercent: resolveRemotionPercent(workerStored),
   };
 
   /* profanity */
@@ -649,11 +682,13 @@ export function resolveSettings(stored: StoredSettingsRows): { effective: AppSet
   const paths: PathSettings = {
     uploadDir: stringValue(pathsStored.uploadDir) ?? DEFAULT_PATH_SETTINGS.uploadDir,
     clipsDir: stringValue(pathsStored.clipsDir) ?? DEFAULT_PATH_SETTINGS.clipsDir,
+    tempDir: stringValue(pathsStored.tempDir) ?? DEFAULT_PATH_SETTINGS.tempDir,
     ffmpegPath: stringValue(pathsStored.ffmpegPath) ?? DEFAULT_PATH_SETTINGS.ffmpegPath,
   };
   sources.paths = {
     uploadDir: paths.uploadDir ? 'app' : 'default',
     clipsDir: paths.clipsDir ? 'app' : 'default',
+    tempDir: paths.tempDir ? 'app' : 'default',
     ffmpegPath: paths.ffmpegPath ? 'app' : 'default',
   };
 
@@ -702,6 +737,7 @@ export function getStoredPathSettings(): PathSettings {
     return {
       uploadDir: stringValue(stored.uploadDir) ?? '',
       clipsDir: stringValue(stored.clipsDir) ?? '',
+      tempDir: stringValue(stored.tempDir) ?? '',
       ffmpegPath: stringValue(stored.ffmpegPath) ?? '',
     };
   } catch {
@@ -747,7 +783,9 @@ function readStoredSectionsFrom(store: SettingsStore): StoredSettingsRows {
     if (row.key === 'pipeline') stored.pipeline = sanitizePipelineOptions(row.value);
     else if (row.key === 'render') stored.render = asRecord(row.value);
     else if (row.key === 'ai') stored.ai = (row.value as Partial<AiProviderSettings>) ?? {};
-    else if (row.key === 'worker') stored.worker = asRecord(row.value);
+    else if (row.key === 'worker') {
+      stored.worker = asRecord(row.value) as StoredSettingsRows['worker'];
+    }
     else if (row.key === 'profanity') stored.profanity = asRecord(row.value);
     else if (row.key === 'paths') stored.paths = asRecord(row.value);
   }
@@ -877,6 +915,15 @@ export async function saveSettingsSection(
     previousRow && typeof previousRow === 'object' && !Array.isArray(previousRow)
       ? { ...(previousRow as Record<string, unknown>), ...sanitized }
       : sanitized;
+  // In-memory test stores and an interrupted schema migration can still expose
+  // the pre-Phase-2 absolute setting. Any worker save completes that migration
+  // atomically with the user’s edit, so the old key never survives a new write.
+  if (section === 'worker' && 'remotionConcurrency' in merged) {
+    if (!('remotionConcurrencyPercent' in merged)) {
+      merged.remotionConcurrencyPercent = resolveRemotionPercent(merged);
+    }
+    delete merged.remotionConcurrency;
+  }
 
   await options.validate?.(merged);
 

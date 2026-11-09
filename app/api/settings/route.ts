@@ -4,8 +4,9 @@ import { buildAppSettingsSnapshot, clearSettingsSection, envAiSectionForImport, 
 import { getCaptionPreset, getOverlayStylePreset, listCaptionPresets, listOverlayStylePresets } from '@/lib/db';
 import { getFfmpegPath, getFfprobePath } from '@/lib/ffmpeg';
 import { getUploadDirValue } from '@/lib/upload';
-import { getClipsDirValue } from '@/lib/paths';
+import { getClipsDirValue, getTempDirValue } from '@/lib/paths';
 import { AppError, toErrorMessage, toErrorStatus } from '@/lib/errors';
+import { assertLocalFolderBrowserRequest, validateWritableFolder } from '@/lib/folder-browser';
 
 export const runtime = 'nodejs';
 
@@ -19,11 +20,12 @@ function resolveCurrentPaths(): ResolvedPaths {
     return {
       uploadDir: getUploadDirValue(),
       clipsDir: getClipsDirValue(),
+      tempDir: getTempDirValue(),
       ffmpegPath: getFfmpegPath(),
       ffprobePath: getFfprobePath(),
     };
   } catch {
-    return { uploadDir: '', clipsDir: '', ffmpegPath: '', ffprobePath: '' };
+    return { uploadDir: '', clipsDir: '', tempDir: '', ffmpegPath: '', ffprobePath: '' };
   }
 }
 
@@ -94,6 +96,16 @@ function readSection(body: Record<string, unknown>): AppSettingsSection {
  * the id is checked here - the only place that has both the settings row and the
  * preset tables. An empty value means "use the preset the preset table marks default".
  */
+function assertPathFoldersWritable(merged: Record<string, unknown>): void {
+  for (const field of ['uploadDir', 'clipsDir', 'tempDir'] as const) {
+    const value = merged[field];
+    if (typeof value !== 'string' || !value.trim()) continue;
+    // Persist the canonical path after a successful probe. This removes a
+    // symlink/relative ambiguity before the long-running worker reads it.
+    merged[field] = validateWritableFolder(value);
+  }
+}
+
 async function assertPresetsExist(sanitized: Record<string, unknown>): Promise<void> {
   if (typeof sanitized.captionPresetId === 'string') {
     const preset = await getCaptionPreset(sanitized.captionPresetId);
@@ -131,9 +143,16 @@ export async function PUT(request: Request) {
   try {
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
     const section = readSection(body);
+    // Paths trigger a real folder create/write probe, so changing them has the
+    // same local-only trust boundary as the folder browser itself.
+    if (section === 'paths') assertLocalFolderBrowserRequest(request);
     const { updatedAt, saved } = await saveSettingsSection(section, body.value, {
       // Rejected before the write, so a bad preset id never lands in the table.
-      ...(section === 'render' ? { validate: assertPresetsExist } : {}),
+      ...(section === 'render'
+        ? { validate: assertPresetsExist }
+        : section === 'paths'
+          ? { validate: assertPathFoldersWritable }
+          : {}),
     });
 
     return NextResponse.json({
@@ -200,6 +219,7 @@ export async function DELETE(request: Request) {
   try {
     const url = new URL(request.url);
     const section = readSection({ section: url.searchParams.get('section') ?? '' });
+    if (section === 'paths') assertLocalFolderBrowserRequest(request);
     await clearSettingsSection(section);
     return NextResponse.json({ success: true, section, snapshot: await settingsPayload() });
   } catch (error) {

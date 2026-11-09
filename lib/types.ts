@@ -397,6 +397,9 @@ export const DEFAULT_AI_SETTINGS: AiProviderSettings = {
 export const CONCURRENCY_LIMITS = {
   clip: { min: 1, max: 8 },
   viral: { min: 1, max: 8 },
+  /** Percentage of detected logical CPU threads granted to one Remotion render. */
+  remotionPercent: { min: 10, max: 100, step: 5 },
+  /** Legacy absolute Chrome-tab value accepted only while migrating old records. */
   remotion: { min: 1, max: 32 },
 } as const;
 
@@ -405,19 +408,24 @@ export interface WorkerSettings {
   clipConcurrency: number;
   /** Simultaneous viral-detection runs (LLM-bound, cheap). */
   viralConcurrency: number;
-  /** Chrome tabs per render; null = half the CPU cores. */
-  remotionConcurrency: number | null;
+  /**
+   * Percentage of logical CPU threads usable by one Remotion render. Legacy
+   * `null`/absolute-tab records are migrated to the 50% shipped default or a
+   * bounded percentage before this effective shape is exposed.
+   */
+  remotionConcurrencyPercent: number;
 }
 
 /**
  * One PC is not a render farm: a single clip render already runs FFmpeg plus a headless
  * Chrome, so "one at a time" is the honest default rather than a conservative guess.
- * `remotionConcurrency: null` means the renderer decides from the CPU count.
+ * A 50% logical-thread budget is the stable default: enough renderer parallelism
+ * without taking every core away from FFmpeg and the worker.
  */
 export const DEFAULT_WORKER_SETTINGS: WorkerSettings = {
   clipConcurrency: 1,
   viralConcurrency: 1,
-  remotionConcurrency: null,
+  remotionConcurrencyPercent: 50,
 };
 
 export interface ProfanitySettings {
@@ -443,6 +451,8 @@ export interface PathSettings {
   uploadDir: string;
   /** Where rendered 9:16 clips are written (one folder per video). */
   clipsDir: string;
+  /** Where transient FFmpeg, ASD, and Remotion frame directories are written. */
+  tempDir: string;
   /** Absolute path to the ffmpeg executable. */
   ffmpegPath: string;
 }
@@ -450,6 +460,7 @@ export interface PathSettings {
 export const DEFAULT_PATH_SETTINGS: PathSettings = {
   uploadDir: "",
   clipsDir: "",
+  tempDir: "",
   ffmpegPath: "",
 };
 
@@ -469,6 +480,7 @@ export interface AppSettings {
 export interface ResolvedPaths {
   uploadDir: string;
   clipsDir: string;
+  tempDir: string;
   ffmpegPath: string;
   ffprobePath: string;
 }

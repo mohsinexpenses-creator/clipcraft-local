@@ -76,24 +76,25 @@ pauses the chain: it recovers at the step where it stopped.
 
 ## Settings (`/settings`)
 
-Every default the studio asks you for lives in one sidebar page, in five sections:
+Every default the studio asks you for lives in one sidebar page, in six sections:
 
 | Section              | What it holds                                                                                                                                                                                           |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Pipeline defaults    | auto-detect / auto-render and the viral-detection request (clip count, duration window, hook/CTA text)                                                                                                  |
 | Render clip defaults | layout, filter preset, caption + hook/CTA style presets, hook/CTA durations                                                                                                             |
 | AI providers         | Gemini key pool, Deepgram key + model, and which transcription engine to use. Every key field is Test + Save on its own - Test asks the provider, Save stores it (keys are only ever shown back masked) |
-| Worker               | clip / viral-detection / Remotion concurrency                                                                                                                                                           |
+| Worker               | clip / viral-detection concurrency and a per-render Chrome logical-thread budget                                                                                                                        |
 | Profanity            | what happens to the _audio_ of a flagged word (mute / beep / leave it)                                                                                                                                  |
+| Paths & binaries     | upload, generated-clips and transient frame/work folders plus an optional FFmpeg executable                                                                                                            |
 
 The rule is one line long, in both processes:
 
 **what you saved on this page, otherwise the built-in default.**
 
-`.env.local` is _not_ a fallback for these five sections — a value can never come from a
+`.env.local` is _not_ a fallback for these six sections — a value can never come from a
 file you are not looking at, so the page and the app cannot disagree. (Everything
-without a form field — binary paths, model files, CRF, upload limits, timeouts — still
-lives in `.env.local` exactly as before.) A row saved here is marked `settings`;
+without a form field — model files, CRF, upload limits and timeouts — still lives in
+`.env.local` exactly as before.) A row saved here is marked `settings`;
 "Reset to defaults" deletes the row and the shipped default applies again. Keys are
 stored in the local SQLite file (same trust boundary as `.env.local` used to be) and the
 API only ever returns them masked — pasting a masked value back means "keep it".
@@ -104,9 +105,19 @@ studio always wins over the default.
 
 The Verify column calls the real upstream APIs with `fetch` and labels each key by its
 mask, so a rotated key is obvious, and unsaved keys can be tested first (paste → test →
-save). Everything applies to the next job except the two loop sizes: **clip and detection
-concurrency need `npm run worker` restarted**, because those are read when its polling
-loops start (the page says so while such an override is saved).
+save). The **Chrome thread budget** is a 10–100% slider in 5% steps (default 50%).
+Before each job the worker converts it to a bounded whole Chrome-tab count using the host's
+available logical threads, so it applies without a restart and remains portable between
+machines. Existing absolute tab-count records migrate safely on startup. Everything else
+applies to the next job except the two loop sizes: **clip and detection concurrency need
+`npm run worker` restarted**, because those are read when its polling loops start (the
+page says so while such an override is saved).
+
+Path changes are validated with a real write probe and are read again for the next upload,
+render, frame extraction and media request — no web or worker restart is needed. The small
+folder picker intentionally works only when ClipCraft is opened directly on `localhost`;
+it lists directories only, permits creating one child folder, and is not exposed through a
+LAN or Internet deployment.
 
 The `hook/CTA` durations are the one field with a subtlety: the rendered clip is
 `[replayed hook][full segment]`, and the replay length is **the hook interval the prompt
@@ -217,9 +228,9 @@ paths. If face evidence is missing, fleeting, or too small, it retries the <=8 f
 480-frame quality path and remembers that quality preference for the immutable source.
 `ASD_INITIAL_PROFILE=legacy-fast` restores the prior 640px first pass and
 `ASD_ADAPTIVE_SAMPLING=0` starts quality-only. Exact ASD outputs are disk-cached by source
-path/size/mtime, clip range and profile/version under `.tmp/asd-cache` (bounded by
-`ASD_CACHE_MAX_MB`, default 512); set `ASD_CACHE_ENABLED=0` or `ASD_CACHE_DIR` to disable
-or relocate it.
+path/size/mtime, clip range and profile/version under the Settings temporary-work
+folder (default `.tmp/asd-cache`, bounded by `ASD_CACHE_MAX_MB`, default 512); set
+`ASD_CACHE_ENABLED=0` or `ASD_CACHE_DIR` to disable or relocate it.
 
 For an image-input queue experiment, `FFMPEG_OVERLAY_THREAD_QUEUE_SIZE` defaults to the
 baseline-safe `2`; benchmark `16` or `32` on the actual render host before retaining either

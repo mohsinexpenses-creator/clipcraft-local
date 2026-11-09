@@ -1,5 +1,4 @@
 import fs from "fs";
-import os from "os";
 import path from "path";
 import { AppError, RenderCancelledError, toErrorMessage } from "../lib/errors";
 import { CaptionPreset, OverlayStylePreset, WordTimestamp } from "../lib/types";
@@ -14,6 +13,7 @@ import {
 } from "../lib/caption-layout";
 import { OverlayFrameSequence } from "./ffmpeg-pipeline";
 import { normalizeFps } from "./ffmpeg-pipeline";
+import { resolveTempDir } from "../lib/paths";
 import {
   getCaptionActiveRangeRenderingEnabled,
   getRemotionConcurrency,
@@ -423,7 +423,7 @@ export async function prepareRemotionCaptionOverlays(
     durationInFrames,
   );
   const remotionConcurrency = getRemotionConcurrency();
-  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "clipcraft-remotion-"));
+  const workDir = fs.mkdtempSync(path.join(resolveTempDir(), "clipcraft-remotion-"));
   const phases: CaptionRenderPhase[] = useActiveRanges
     ? activeRanges.map((range, index) => ({
         name: `remotion overlays ${index + 1}`,
@@ -764,7 +764,7 @@ export async function prepareRemotionBrollOverlays(
   );
   const totalFrames = Math.max(1, Math.ceil(totalDuration * fps));
   const activeRangeRendering = getBrollActiveRangeRenderingEnabled();
-  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "clipcraft-broll-"));
+  const workDir = fs.mkdtempSync(path.join(resolveTempDir(), "clipcraft-broll-"));
   let browser: Awaited<
     ReturnType<typeof import("@remotion/renderer").openBrowser>
   > | null = null;
