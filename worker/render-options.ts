@@ -20,7 +20,25 @@ export function getParallelBrollAsdConcurrencyCap(
   if (Number.isFinite(configured) && configured >= 1 && configured <= 32) {
     return Math.floor(configured);
   }
+  // Deliberately unchanged in Phase 4: a representative render host is needed
+  // before raising this tab cap can be called a win rather than a CPU/RAM loss.
   return 2;
+}
+
+export type BrollAsdParallelLayout = "speaker-focus" | "split-screen";
+
+/**
+ * B-roll that does not need ASD-derived face bands can start alongside active
+ * speaker detection. Speaker-focus cards retain their established fixed anchor;
+ * a split-screen job is also safe when every item is fullscreen. Any landscape
+ * card in split screen waits for ASD so its face-safe seam placement is exact.
+ */
+export function canParallelizeBrollWithAsd(
+  layout: BrollAsdParallelLayout,
+  items: readonly { kind: "fullscreen" | "landscape" }[] | null | undefined,
+): boolean {
+  if (!items || items.length === 0) return false;
+  return layout === "speaker-focus" || items.every((item) => item.kind === "fullscreen");
 }
 
 /**

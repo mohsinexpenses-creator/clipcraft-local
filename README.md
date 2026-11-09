@@ -217,13 +217,16 @@ for the legacy one-sequence renderer; it is enabled by default.
 
 Speaker-focus B-roll rendering now starts beside active-speaker detection by default,
 using the same fixed card anchor, timing, images, caption colour, and final compositing
-order as the sequential path. Split-screen clips deliberately remain sequential because
-their face-safe card placement needs the final ASD face bands. If either concurrent branch
-fails or the job is cancelled, the sibling is aborted and awaited before cleanup; set
+order as the sequential path. A split-screen clip may also overlap ASD when **every**
+B-roll item is fullscreen; only a landscape card needs the final ASD face bands for its
+face-safe seam placement and stays sequential. If either concurrent branch fails or the
+job is cancelled, the sibling is aborted and awaited before cleanup; set
 `RENDER_PARALLEL_BROLL_ASD=0` on CPU- or RAM-constrained workers to restore the sequential
 path. That shared branch caps Chrome tabs at two by default so ASD keeps CPU/RAM;
 `RENDER_PARALLEL_BROLL_CONCURRENCY=1..32` changes that cap while still honoring a smaller
-Chrome-tab setting.
+Chrome-tab setting. The default remains **2** in Phase 4 because no representative render
+host/fixture is available to prove that a higher Chrome tab count is faster rather than
+contentious.
 
 B-roll card decoding/cropping/JPEG preparation now uses two bounded Jimp workers by
 default (`BROLL_IMAGE_PREP_CONCURRENCY=2`); set it to `1` for the prior serial path.
@@ -251,13 +254,26 @@ fragmented timeline, and `0` restores that path explicitly. Caption chunks and t
 style variants are also memoized per Remotion render; neither change alters caption design,
 timing, output resolution, or final encoding.
 
+Phase 4 also provides two deliberately **default-off** pixel-canvas trials:
+`BROLL_CARD_CROPPED_CANVAS=1` paints only a guarded landscape-card rectangle, and
+`CAPTION_BAND_CROPPED_CANVAS=1` paints one guarded full-width vertical band containing
+caption, Hook and CTA artwork. The Remotion children still run in a virtual 1080×1920
+coordinate space; FFmpeg places the resulting transparent PNG at its recorded origin with
+no scale or extra encode. `0` is the full-canvas rollback for either flag, and a crop that
+would not save pixels falls back to the legacy full canvas automatically. Keep both flags
+off until comparing cropped vs. full output at five timestamps for each overlay type and
+confirming the final voice track and B-roll SFX are unchanged. Alpha-video was intentionally
+not added: the existing PNG compositing has not been measured slow enough to justify a new
+codec/encoding branch.
+
 `FFMPEG_OVERLAY_CONCAT=1` (the default) then combines only verified, frame-aligned,
-non-overlapping 1080×1920 PNG ranges within the same semantic layer into one transparent
-FFconcat stream. This reduces image inputs and overlay stages while retaining B-roll below
-captions, the existing hook/CTA paint order, and the sole final H.264 encode. An invalid,
-incomplete, overlapping, or custom-timed sequence automatically keeps the prior direct
-input path. Set `FFMPEG_OVERLAY_CONCAT=0` to roll back every overlay range to direct
-per-sequence compositing when comparing a renderer or FFmpeg build.
+non-overlapping PNG ranges within the same semantic layer **and physical canvas/origin**
+into one transparent FFconcat stream. This reduces image inputs and overlay stages while
+retaining B-roll below captions, the existing hook/CTA paint order, and the sole final H.264
+encode. An invalid, incomplete, overlapping, differently placed, or custom-timed sequence
+automatically keeps the prior direct input path. Set `FFMPEG_OVERLAY_CONCAT=0` to roll back
+every overlay range to direct per-sequence compositing when comparing a renderer or FFmpeg
+build.
 
 For repeatable timing and visual comparisons, use the immutable static speaker-focus
 fixture and the `[JOB-TIMING]` substage contract in
@@ -293,6 +309,7 @@ lib/                    shared server logic
   clip-edits.ts         validates a single-clip edit before it is saved/rendered
   profanity.ts          word masking + render-time mute/beep windows
   overlay-bg.ts         solid/gradient card-background picker helpers
+  overlay-canvas.ts     guarded cropped-overlay canvas geometry and placement
   presets.ts            default caption/overlay/text presets
   upload*.ts            upload policy, resumable sessions, browser client
   db.ts                 typed SQLite tables, schema migrations, and prepared CRUD
@@ -303,7 +320,7 @@ worker/                 the long-running SQLite queue consumer
   yunet-detector.ts     YuNet ONNX pre/post-processing (OpenCV-exact)
   layout.ts             speaker-focus vs split-grid plans (peak-concurrent cells)
   ffmpeg-pipeline.ts    crop/overlay graph and single final H.264 encode
-  remotion-renderer.ts  transparent overlay-frame renderer (Remotion)
+  remotion-renderer.ts  transparent overlay-frame renderer (Remotion; optional guarded crop canvases)
 remotion/               compositions: captions, hook overlay, CTA overlay
 scripts/                setup-yunet.mjs, verify-clip.ts
 models/yunet/           committed YuNet face-detection model (232 KB)

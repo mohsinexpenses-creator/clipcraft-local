@@ -22,3 +22,24 @@ export function getCaptionActiveRangeRenderingEnabled(
 ): boolean {
   return /^(1|true|yes|on)$/i.test(env.CAPTION_ACTIVE_RANGE_RENDERING?.trim() ?? "");
 }
+
+/**
+ * Experimental pixel-saving path: render one conservative full-width vertical
+ * band for caption/hook/CTA artwork and place it back on the final canvas in
+ * FFmpeg. Default-off until a host records the cropped/full five-frame gate.
+ */
+export function getCaptionBandCroppedCanvasEnabled(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): boolean {
+  return /^(1|true|yes|on)$/i.test(env.CAPTION_BAND_CROPPED_CANVAS?.trim() ?? "");
+}
+
+/**
+ * Experimental equivalent for a landscape B-roll card. Fullscreen B-roll is
+ * already the whole canvas and deliberately stays on the legacy full path.
+ */
+export function getBrollCardCroppedCanvasEnabled(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): boolean {
+  return /^(1|true|yes|on)$/i.test(env.BROLL_CARD_CROPPED_CANVAS?.trim() ?? "");
+}

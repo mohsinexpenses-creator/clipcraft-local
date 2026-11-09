@@ -48,6 +48,7 @@ import {
 import { startMediaServer, type ClipMediaServer } from "./clip-http-server";
 import { runParallelRenderBranches } from "./parallel";
 import {
+  canParallelizeBrollWithAsd,
   getParallelBrollAsdConcurrencyCap,
   getParallelBrollAsdEnabled,
 } from "./render-options";
@@ -601,21 +602,20 @@ export async function processClipJob(
     // and the render STOPS - no static-centre crop, no legacy skin track.
     //
     // Speaker-focus B-roll has a fixed anchor, so it can render while ASD reads
-    // and samples the source. Split cards deliberately remain after ASD: their
-    // seam/face bands are part of the visual contract and cannot be guessed.
+    // and samples the source. A split-screen job can now join that overlap when
+    // every item is fullscreen: only landscape cards need ASD's final face bands
+    // for their seam placement and therefore retain the proven sequential path.
     const brollPlan = clip.broll ?? null;
     const parallelBrollRequested = getParallelBrollAsdEnabled();
     const parallelBrollEligible = Boolean(
       parallelBrollRequested &&
-        layout === "speaker-focus" &&
-        brollPlan &&
-        brollPlan.items.length > 0,
+        canParallelizeBrollWithAsd(layout, brollPlan?.items),
     );
     if (parallelBrollRequested && !parallelBrollEligible) {
       log.detail(
         !brollPlan?.items.length
           ? "B-roll/ASD parallel rendering requested, but this clip has no B-roll items."
-          : "B-roll/ASD parallel rendering is skipped for split-screen clips to preserve face-safe card placement.",
+          : "B-roll/ASD parallel rendering is skipped because a split-screen landscape card needs final face-safe placement.",
       );
     }
 
@@ -624,7 +624,9 @@ export async function processClipJob(
     let asd: Awaited<ReturnType<typeof detectSpeakerTimeline>>;
     if (parallelBrollEligible && brollPlan) {
       log.detail(
-        "B-roll/ASD parallel rendering enabled: starting the fixed-anchor B-roll branch beside active-speaker detection.",
+        layout === "speaker-focus"
+          ? "B-roll/ASD parallel rendering enabled: starting the fixed-anchor B-roll branch beside active-speaker detection."
+          : "B-roll/ASD parallel rendering enabled: split-screen fullscreen B-roll does not depend on face-band placement.",
       );
       const [brollPreparation, detectedSpeakerTimeline] =
         await runParallelRenderBranches(
@@ -636,6 +638,8 @@ export async function processClipJob(
                 fps: renderFps,
                 totalDuration,
                 captionPreset: preset,
+                // Any split-screen branch reaching here contains fullscreen-only
+                // B-roll; speaker-focus remains the established fixed-card path.
                 cardLayout: "speaker-focus",
                 // Do not race ASD's planning persistence with background progress
                 // writes. Remotion still emits detailed frame diagnostics; normal

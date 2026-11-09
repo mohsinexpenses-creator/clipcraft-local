@@ -17,6 +17,12 @@ import { buildOverlayConcatManifest, type OverlayConcatSource } from "./overlay-
 import { getOverlayThreadQueueSize } from "./render-options";
 import { resolveTempDir } from "../lib/paths";
 import {
+  FULL_OVERLAY_CANVAS,
+  normalizeOverlayCanvasRegion,
+  sameOverlayCanvasRegion,
+  type OverlayCanvasRegion,
+} from "../lib/overlay-canvas";
+import {
   LayoutPlan,
   OUTPUT_HEIGHT,
   OUTPUT_WIDTH,
@@ -36,6 +42,11 @@ export interface OverlayFrameSequence {
    * can be joined into one concat-demuxer input before final compositing.
    */
   layer?: "broll" | "captions";
+  /**
+   * Physical PNG canvas and its final 1080x1920 origin. Omitted means the
+   * established full transparent 1080x1920 sequence at 0,0.
+   */
+  canvas?: OverlayCanvasRegion;
   /** Expected numbered PNG frames; lets concat reject incomplete sequences safely. */
   frameCount?: number;
 }
@@ -236,6 +247,11 @@ export function buildAudioTimestampReset(audioStartOffsetSeconds = 0): string {
   return `asetpts=PTS-STARTPTS${shift},aresample=async=1000:first_pts=0`;
 }
 
+/** Resolve missing/invalid metadata to the visual-safe legacy full canvas. */
+function resolvedOverlayCanvas(sequence: OverlayFrameSequence): OverlayCanvasRegion {
+  return normalizeOverlayCanvasRegion(sequence.canvas ?? FULL_OVERLAY_CANVAS);
+}
+
 export function buildOverlayFilterStatements(
   overlays: OverlayFrameSequence[],
   inputIndices: number[],
@@ -253,6 +269,7 @@ export function buildOverlayFilterStatements(
     const overlayLabel = `overlay${index}`;
     const outputLabel = index === overlays.length - 1 ? "v" : `vcomp${index}`;
     const start = Math.max(0, overlay.startAtSeconds);
+    const canvas = resolvedOverlayCanvas(overlay);
     // Every normalized image sequence begins at frame 1. Reset its own PTS
     // before translating it to the final timeline; this is essential for the
     // per-item B-roll active ranges, whose source composition frames were
@@ -260,8 +277,10 @@ export function buildOverlayFilterStatements(
     statements.push(
       `[${input}:v]setpts=PTS-STARTPTS${start > 0 ? `+${start.toFixed(4)}/TB` : ""},format=rgba[${overlayLabel}]`,
     );
+    // Cropped Remotion canvases use virtual full-frame coordinates while
+    // painting. This placement restores those pixels exactly without scaling.
     statements.push(
-      `[${lastVideoLabel}][${overlayLabel}]overlay=0:0:format=auto:eof_action=pass:repeatlast=0:shortest=0[${outputLabel}]`,
+      `[${lastVideoLabel}][${overlayLabel}]overlay=${canvas.x}:${canvas.y}:format=auto:eof_action=pass:repeatlast=0:shortest=0[${outputLabel}]`,
     );
     lastVideoLabel = outputLabel;
   });
@@ -300,7 +319,10 @@ function escapeRegex(value: string): string {
 }
 
 /** Keep concat's transparent canvas compatible with the rendered PNG frames. */
-function hasExpectedOverlayPngShape(framePath: string): boolean {
+function hasExpectedOverlayPngShape(
+  framePath: string,
+  canvas: OverlayCanvasRegion,
+): boolean {
   try {
     const descriptor = fs.openSync(framePath, "r");
     try {
@@ -314,8 +336,8 @@ function hasExpectedOverlayPngShape(framePath: string): boolean {
       const colorType = header[25];
       return (
         chunk === "IHDR" &&
-        width === OUTPUT_WIDTH &&
-        height === OUTPUT_HEIGHT &&
+        width === canvas.width &&
+        height === canvas.height &&
         // Greyscale+alpha or truecolor+alpha. Remotion emits the latter.
         (colorType === 4 || colorType === 6)
       );
@@ -333,6 +355,7 @@ function hasExpectedOverlayPngShape(framePath: string): boolean {
  * direct inputs instead of risking a shifted concat timeline.
  */
 function inspectOverlayFrames(sequence: OverlayFrameSequence): OverlayFrameInspection | null {
+  const canvas = resolvedOverlayCanvas(sequence);
   const directory = path.dirname(sequence.inputPattern);
   const template = path.basename(sequence.inputPattern);
   const templateMatch = /^(.*)%0?(\d*)d(.*)$/.exec(template);
@@ -354,7 +377,7 @@ function inspectOverlayFrames(sequence: OverlayFrameSequence): OverlayFrameInspe
           frameNumber,
           framePath,
           bytes: fs.statSync(framePath).size,
-          isExpectedOverlayPng: hasExpectedOverlayPngShape(framePath),
+          isExpectedOverlayPng: hasExpectedOverlayPngShape(framePath, canvas),
         }];
       })
       .sort((a, b) => a.frameNumber - b.frameNumber);
@@ -392,10 +415,11 @@ function directOverlayInput(
 }
 
 /**
- * Make compact ffconcat inputs for contiguous same-layer sparse sequences. The
- * concat demuxer turns many image2 readers and full-timeline blend stages into
- * one timed transparent stream. Any uncertainty (missing/overlapping frames)
- * retains the exact direct overlay path.
+ * Make compact ffconcat inputs for contiguous same-layer, same-canvas sparse
+ * sequences. The concat demuxer turns many image2 readers and full-timeline
+ * blend stages into one timed transparent stream. Any uncertainty
+ * (missing/overlapping frames or a changed crop placement) retains the exact
+ * direct overlay path.
  */
 async function prepareOverlayInputSources(
   overlays: OverlayFrameSequence[],
@@ -411,19 +435,26 @@ async function prepareOverlayInputSources(
     return inspected.map(({ sequence, inspection }) => directOverlayInput(sequence, inspection));
   }
 
-  let blankFramePath: string | null = null;
-  const getBlankFramePath = (): string => {
-    if (!blankFramePath) {
-      blankFramePath = path.join(getConcatDirectory(), "transparent-1080x1920.png");
-    }
-    return blankFramePath;
+  const blankFramePaths = new Map<string, string>();
+  const canvasKey = (canvas: OverlayCanvasRegion): string =>
+    `${canvas.width}x${canvas.height}@${canvas.x},${canvas.y}`;
+  const getBlankFramePath = (canvas: OverlayCanvasRegion): string => {
+    const key = canvasKey(canvas);
+    const existing = blankFramePaths.get(key);
+    if (existing) return existing;
+    const created = path.join(
+      getConcatDirectory(),
+      `transparent-${canvas.width}x${canvas.height}-${canvas.x}-${canvas.y}.png`,
+    );
+    blankFramePaths.set(key, created);
+    return created;
   };
-  const ensureBlankFrame = async (): Promise<string> => {
-    const pathToBlankFrame = getBlankFramePath();
+  const ensureBlankFrame = async (canvas: OverlayCanvasRegion): Promise<string> => {
+    const pathToBlankFrame = getBlankFramePath(canvas);
     if (fs.existsSync(pathToBlankFrame)) return pathToBlankFrame;
-    // All Remotion overlays are 1080x1920 RGBA PNGs. A full-size transparent
-    // frame gives concat gap entries a stable format and never paints black.
-    await new Jimp({ width: OUTPUT_WIDTH, height: OUTPUT_HEIGHT, color: 0x00000000 }).write(
+    // A matching-size transparent frame gives concat gap entries a stable RGBA
+    // format and never paints black, for both full and cropped overlay canvases.
+    await new Jimp({ width: canvas.width, height: canvas.height, color: 0x00000000 }).write(
       pathToBlankFrame as `${string}.png`,
     );
     return pathToBlankFrame;
@@ -435,9 +466,16 @@ async function prepareOverlayInputSources(
   while (index < inspected.length) {
     const first = inspected[index];
     const layer = first.sequence.layer;
+    const canvas = resolvedOverlayCanvas(first.sequence);
     let end = index + 1;
     if (layer) {
-      while (end < inspected.length && inspected[end].sequence.layer === layer) end += 1;
+      while (
+        end < inspected.length &&
+        inspected[end].sequence.layer === layer &&
+        sameOverlayCanvasRegion(inspected[end].sequence.canvas, canvas)
+      ) {
+        end += 1;
+      }
     }
     const group = inspected.slice(index, end);
 
@@ -453,11 +491,11 @@ async function prepareOverlayInputSources(
             startAtSeconds: sequence.startAtSeconds,
             framePaths: inspection!.framePaths,
           } satisfies OverlayConcatSource)),
-          getBlankFramePath(),
+          getBlankFramePath(canvas),
           fps,
         );
         if (manifest) {
-          await ensureBlankFrame();
+          await ensureBlankFrame(canvas);
           manifestIndex += 1;
           const manifestPath = path.join(
             getConcatDirectory(),
@@ -470,6 +508,7 @@ async function prepareOverlayInputSources(
               inputPattern: manifestPath,
               startAtSeconds: 0,
               layer,
+              canvas,
             },
             inputPath: manifestPath,
             kind: "concat",
@@ -798,11 +837,14 @@ export async function processVideoSegment(
 
     for (const source of overlaySources) {
       overlayInputIndices.push(nextInput++);
+      const overlayCanvas = resolvedOverlayCanvas(source.sequence);
+      const overlayCanvasDescription =
+        `${overlayCanvas.width}x${overlayCanvas.height}@${overlayCanvas.x},${overlayCanvas.y}`;
       if (source.kind === "concat") {
         log.info(
           `[RENDER-DIAG] stage=ffmpeg.overlay-concat event=before-input name=${source.sequence.name} ` +
             `source_sequences=${source.sourceSequences} generated_frames=${source.generatedFrames} ` +
-            `total_generated_file_size_bytes=${source.generatedBytes} fps=${ffmpegFpsArg(fps)} ` +
+            `canvas=${overlayCanvasDescription} total_generated_file_size_bytes=${source.generatedBytes} fps=${ffmpegFpsArg(fps)} ` +
             `manifest=${source.inputPath}`,
         );
         // `-r` is an INPUT option for concat's image decoder. Without it, image
@@ -825,7 +867,7 @@ export async function processVideoSegment(
       log.info(
         `[RENDER-DIAG] stage=ffmpeg.overlay-sequence event=before-input name=${source.sequence.name} ` +
           `image_format=${extension} fps=${ffmpegFpsArg(fps)} thread_queue_size=${overlayThreadQueueSize} ` +
-          `frame_range=1-${source.generatedFrames} generated_frames=${source.generatedFrames} output_directory=${sequenceDir} ` +
+          `canvas=${overlayCanvasDescription} frame_range=1-${source.generatedFrames} generated_frames=${source.generatedFrames} output_directory=${sequenceDir} ` +
           `total_generated_file_size_bytes=${source.generatedBytes} ` +
           `timeline_start_seconds=${source.sequence.startAtSeconds}`,
       );

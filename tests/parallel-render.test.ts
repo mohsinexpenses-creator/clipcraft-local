@@ -2,12 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { runParallelRenderBranches } from "../worker/parallel";
 import {
+  canParallelizeBrollWithAsd,
   getOverlayThreadQueueSize,
   getParallelBrollAsdConcurrencyCap,
   getParallelBrollAsdEnabled,
 } from "../worker/render-options";
 import {
+  getBrollCardCroppedCanvasEnabled,
   getCaptionActiveRangeRenderingEnabled,
+  getCaptionBandCroppedCanvasEnabled,
   getRemotionConcurrency,
 } from "../worker/remotion-options";
 import { remotionThreadsFromPercent } from "../worker/runtime-settings";
@@ -17,6 +20,25 @@ test("speaker-focus B-roll/ASD overlap is on by default and has a sequential rol
   assert.equal(getParallelBrollAsdEnabled({ RENDER_PARALLEL_BROLL_ASD: "1" }), true);
   assert.equal(getParallelBrollAsdEnabled({ RENDER_PARALLEL_BROLL_ASD: "0" }), false);
   assert.equal(getParallelBrollAsdEnabled({ RENDER_PARALLEL_BROLL_ASD: "false" }), false);
+});
+
+test("fullscreen-only split B-roll can overlap ASD while face-safe split cards stay sequential", () => {
+  assert.equal(
+    canParallelizeBrollWithAsd("speaker-focus", [{ kind: "landscape" }]),
+    true,
+    "speaker-focus retains its fixed landscape-card anchor",
+  );
+  assert.equal(
+    canParallelizeBrollWithAsd("split-screen", [{ kind: "fullscreen" }]),
+    true,
+    "fullscreen imagery has no ASD-derived card placement",
+  );
+  assert.equal(
+    canParallelizeBrollWithAsd("split-screen", [{ kind: "fullscreen" }, { kind: "landscape" }]),
+    false,
+    "a split landscape card still needs final face bands",
+  );
+  assert.equal(canParallelizeBrollWithAsd("split-screen", []), false);
 });
 
 test("Remotion percent budget becomes a bounded logical-thread tab count per job", () => {
@@ -48,6 +70,12 @@ test("parallel B-roll cap leaves capacity for ASD and respects a smaller manual 
     getCaptionActiveRangeRenderingEnabled({ CAPTION_ACTIVE_RANGE_RENDERING: "yes" }),
     true,
   );
+  // These canvas reductions remain explicit opt-ins until the five-timestamp
+  // cropped/full render gate is recorded on a real host.
+  assert.equal(getCaptionBandCroppedCanvasEnabled({}), false);
+  assert.equal(getCaptionBandCroppedCanvasEnabled({ CAPTION_BAND_CROPPED_CANVAS: "on" }), true);
+  assert.equal(getBrollCardCroppedCanvasEnabled({}), false);
+  assert.equal(getBrollCardCroppedCanvasEnabled({ BROLL_CARD_CROPPED_CANVAS: "1" }), true);
   assert.equal(getOverlayThreadQueueSize({}), 2);
   assert.equal(getOverlayThreadQueueSize({ FFMPEG_OVERLAY_THREAD_QUEUE_SIZE: "16" }), 16);
   assert.equal(getOverlayThreadQueueSize({ FFMPEG_OVERLAY_THREAD_QUEUE_SIZE: "32" }), 32);

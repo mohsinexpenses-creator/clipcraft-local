@@ -2,6 +2,12 @@ import fs from "fs";
 import path from "path";
 import { AppError, RenderCancelledError, toErrorMessage } from "../lib/errors";
 import { CaptionPreset, OverlayStylePreset, WordTimestamp } from "../lib/types";
+import {
+  FULL_OVERLAY_CANVAS,
+  getBrollCardCanvasRegion,
+  getCaptionOverlayCanvasRegion,
+  type OverlayCanvasRegion,
+} from "../lib/overlay-canvas";
 import { maskProfanity, maskTranscriptWords, maskTranscriptWordsFromIndexes } from "../lib/profanity";
 import { log } from "../lib/logger";
 import { CaptionOverlayCompositionProps } from "../remotion/OverlayCompositions";
@@ -17,7 +23,9 @@ import { resolveTempDir } from "../lib/paths";
 import { customFontFilesForRender } from "../lib/custom-fonts";
 import { startMediaServer, type ClipMediaServer } from "./clip-http-server";
 import {
+  getBrollCardCroppedCanvasEnabled,
   getCaptionActiveRangeRenderingEnabled,
+  getCaptionBandCroppedCanvasEnabled,
   getRemotionConcurrency,
 } from "./remotion-options";
 
@@ -415,6 +423,19 @@ export async function prepareRemotionCaptionOverlays(
     ctaStyle: options.ctaStyle,
     captionLiftScale: options.captionLiftScale ?? 1,
   };
+  const captionBandCropEnabled = getCaptionBandCroppedCanvasEnabled();
+  const renderRegion = captionBandCropEnabled
+    ? getCaptionOverlayCanvasRegion({
+        preset: options.preset,
+        hookText: inputPropsBase.hookText,
+        hookDuration: options.hookDuration,
+        hookStyle: options.hookStyle,
+        ctaText: inputPropsBase.ctaText,
+        ctaDuration: options.ctaDuration,
+        ctaStyle: options.ctaStyle,
+      }) ?? undefined
+    : undefined;
+  inputPropsBase.renderRegion = renderRegion;
   const activeRanges = calculateCaptionActiveFrameRanges(
     inputPropsBase,
     fps,
@@ -491,11 +512,14 @@ export async function prepareRemotionCaptionOverlays(
       (sum, range) => sum + range.frameCount,
       0,
     );
+    const renderCanvas = renderRegion ?? FULL_OVERLAY_CANVAS;
     log.info(
       `[RENDER-DIAG] stage=caption.phase-model event=active ` +
         `mode=${useActiveRanges ? "sparse-active-ranges" : "full-timeline"} ` +
         `requested=${activeRangeEnabled ? 1 : 0} active_sequences=${activeRanges.length} ` +
         `active_frames=${activeFrameCount}/${durationInFrames} ` +
+        `canvas=${renderCanvas.width}x${renderCanvas.height}@${renderCanvas.x},${renderCanvas.y} ` +
+        `cropped_canvas=${renderRegion ? 1 : 0} cropped_canvas_requested=${captionBandCropEnabled ? 1 : 0} ` +
         `concurrency=${remotionConcurrency ?? "auto"}`,
     );
 
@@ -558,8 +582,8 @@ export async function prepareRemotionCaptionOverlays(
             renderFrames({
               composition: {
                 ...composition,
-                width: 1080,
-                height: 1920,
+                width: renderCanvas.width,
+                height: renderCanvas.height,
                 fps,
                 durationInFrames,
               },
@@ -629,6 +653,7 @@ export async function prepareRemotionCaptionOverlays(
         startAtSeconds: phase.startAtSeconds,
         layer: "captions",
         frameCount: phase.frameCount,
+        ...(renderRegion ? { canvas: renderRegion } : {}),
       });
       completedFrames += phase.frameCount;
     }
@@ -788,6 +813,8 @@ interface BrollRenderPhase {
   frameCount: number;
   startAtSeconds: number;
   outputDir: string;
+  /** Small landscape-card canvas, or undefined for the legacy full canvas. */
+  renderRegion?: OverlayCanvasRegion;
 }
 
 /**
@@ -814,6 +841,7 @@ export async function prepareRemotionBrollOverlays(
   let cancelBridge: Awaited<ReturnType<typeof remotionCancelBridge>> | null = null;
 
   const activeRanges = calculateBrollActiveFrameRanges(options.items, fps, totalDuration);
+  const croppedCardCanvasEnabled = getBrollCardCroppedCanvasEnabled();
   const remotionConcurrency = getRemotionConcurrency(process.env, {
     maxConcurrency: options.maxConcurrency,
   });
@@ -829,6 +857,9 @@ export async function prepareRemotionBrollOverlays(
           workDir,
           `item-${String(index + 1).padStart(3, "0")}-${safeBrollDirectoryPart(range.item.id)}`,
         ),
+        ...(croppedCardCanvasEnabled && range.item.kind === "landscape" && range.item.card
+          ? { renderRegion: getBrollCardCanvasRegion(range.item.card) }
+          : {}),
       }))
     : [
         {
@@ -894,6 +925,7 @@ export async function prepareRemotionBrollOverlays(
       `[RENDER-DIAG] stage=broll.phase-model event=active render_api=renderFrames ` +
         `mode=${activeRangeRendering ? "per-item-active-range" : "legacy-full-timeline"} ` +
         `fps=${fps} total_frame_range=0-${totalFrames - 1} active_sequences=${phases.length} ` +
+        `cropped_card_canvas_requested=${croppedCardCanvasEnabled ? 1 : 0} ` +
         `concurrency=${remotionConcurrency ?? "auto"}`,
     );
 
@@ -908,12 +940,15 @@ export async function prepareRemotionBrollOverlays(
         items: phase.items,
         captionTextColor: options.captionTextColor,
         captionBand: options.captionBand,
+        renderRegion: phase.renderRegion,
       };
+      const renderCanvas = phase.renderRegion ?? FULL_OVERLAY_CANVAS;
       const itemDescription = phase.items.map((item) => `${item.id}:${item.kind}`).join(",");
       log.info(
         `[RENDER-DIAG] stage=broll.item-render event=before items=${itemDescription} ` +
           `mode=${activeRangeRendering ? "active-range" : "combined-timeline"} image_format=png ` +
-          `canvas=1080x1920 frame_range=${phase.startFrame}-${phase.endFrame} ` +
+          `canvas=${renderCanvas.width}x${renderCanvas.height}@${renderCanvas.x},${renderCanvas.y} ` +
+          `cropped_canvas=${phase.renderRegion ? 1 : 0} frame_range=${phase.startFrame}-${phase.endFrame} ` +
           `planned_frames=${phase.frameCount} timeline_start_seconds=${phase.startAtSeconds.toFixed(6)} ` +
           `output_directory=${phase.outputDir} ${renderMemoryUsage()}`,
       );
@@ -927,8 +962,8 @@ export async function prepareRemotionBrollOverlays(
             renderFrames({
               composition: {
                 ...composition,
-                width: 1080,
-                height: 1920,
+                width: renderCanvas.width,
+                height: renderCanvas.height,
                 fps,
                 durationInFrames: totalFrames,
               },
@@ -998,6 +1033,7 @@ export async function prepareRemotionBrollOverlays(
         startAtSeconds: phase.startAtSeconds,
         layer: "broll",
         frameCount: phase.frameCount,
+        ...(phase.renderRegion ? { canvas: phase.renderRegion } : {}),
       });
       log.info(
         `[RENDER-DIAG] stage=broll.item-render event=after items=${itemDescription} ` +

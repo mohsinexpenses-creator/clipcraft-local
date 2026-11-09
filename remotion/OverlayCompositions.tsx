@@ -1,6 +1,8 @@
 import React from 'react';
 import { AbsoluteFill, useCurrentFrame, useVideoConfig } from 'remotion';
 import { CaptionPreset, OverlayStylePreset, RemotionCustomFontFace, WordTimestamp } from '../lib/types';
+import type { OverlayCanvasRegion } from '../lib/overlay-canvas';
+import { CroppedOverlayCanvas } from './CroppedOverlayCanvas';
 import { getCtaBottomLiftPercent } from './CTAOverlay';
 import { AnimatedWord } from './AnimatedWord';
 import { buildFinalCaptionChunks } from './CaptionComposition';
@@ -31,6 +33,11 @@ export interface CaptionOverlayCompositionProps extends Record<string, unknown> 
   /** Registered custom faces for the isolated Chromium render. */
   customFonts?: RemotionCustomFontFace[];
   captionLiftScale?: number;
+  /**
+   * Optional physical PNG canvas. Children retain the virtual 1080x1920
+   * coordinate space and FFmpeg restores this crop at the matching origin.
+   */
+  renderRegion?: OverlayCanvasRegion;
 }
 
 export const CaptionOverlayComposition: React.FC<CaptionOverlayCompositionProps> = ({
@@ -47,6 +54,7 @@ export const CaptionOverlayComposition: React.FC<CaptionOverlayCompositionProps>
   ctaStyle,
   customFonts,
   captionLiftScale = 1,
+  renderRegion,
 }) => {
   useCustomFonts(customFonts);
   const frame = useCurrentFrame();
@@ -92,41 +100,43 @@ export const CaptionOverlayComposition: React.FC<CaptionOverlayCompositionProps>
   );
 
   return (
-    <AbsoluteFill>
-      {hookVisibleDuration > 0.05 && hookText.trim() ? (
-        <HookOverlay
-          hookText={hookText}
-          hookDurationInSeconds={hookVisibleDuration}
-          frame={frame}
-          fps={fps}
-          style={themedHookStyle}
-        />
-      ) : null}
-      {preset.captionTheme ? (
-        <CaptionThemeOverlay
-          chunks={chunks}
-          preset={preset}
-          bottomLiftPercent={captionLift}
-        />
-      ) : (
-        <AnimatedWord
-          chunks={chunks}
-          frame={frame}
-          fps={fps}
-          preset={preset}
-          bottomLiftPercent={captionLift}
-        />
-      )}
-      {ctaDuration > 0 && ctaText.trim() ? (
-        <CTAOverlay
-          ctaText={ctaText}
-          ctaDurationInSeconds={ctaDuration}
-          totalDurationInSeconds={totalDuration}
-          frame={frame}
-          fps={fps}
-          style={themedCtaStyle}
-        />
-      ) : null}
-    </AbsoluteFill>
+    <CroppedOverlayCanvas region={renderRegion}>
+      <AbsoluteFill>
+        {hookVisibleDuration > 0.05 && hookText.trim() ? (
+          <HookOverlay
+            hookText={hookText}
+            hookDurationInSeconds={hookVisibleDuration}
+            frame={frame}
+            fps={fps}
+            style={themedHookStyle}
+          />
+        ) : null}
+        {preset.captionTheme ? (
+          <CaptionThemeOverlay
+            chunks={chunks}
+            preset={preset}
+            bottomLiftPercent={captionLift}
+          />
+        ) : (
+          <AnimatedWord
+            chunks={chunks}
+            frame={frame}
+            fps={fps}
+            preset={preset}
+            bottomLiftPercent={captionLift}
+          />
+        )}
+        {ctaDuration > 0 && ctaText.trim() ? (
+          <CTAOverlay
+            ctaText={ctaText}
+            ctaDurationInSeconds={ctaDuration}
+            totalDurationInSeconds={totalDuration}
+            frame={frame}
+            fps={fps}
+            style={themedCtaStyle}
+          />
+        ) : null}
+      </AbsoluteFill>
+    </CroppedOverlayCanvas>
   );
 };

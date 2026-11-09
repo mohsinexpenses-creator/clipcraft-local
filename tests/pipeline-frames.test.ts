@@ -197,6 +197,22 @@ test('transparent overlays are composited into the base filter graph before the 
   ));
 });
 
+test('cropped transparent canvases are placed at their exact virtual-canvas origin', () => {
+  const graph = buildOverlayFilterStatements([
+    {
+      name: 'cropped landscape card',
+      inputPattern: '/tmp/card/ov_%05d.png',
+      startAtSeconds: 12.5,
+      canvas: { x: 122, y: 1071, width: 836, height: 537 },
+    },
+  ], [2]);
+  assert.ok(graph[0].includes('[2:v]setpts=PTS-STARTPTS+12.5000/TB,format=rgba[overlay0]'));
+  assert.equal(
+    graph[1],
+    '[vbase][overlay0]overlay=122:1071:format=auto:eof_action=pass:repeatlast=0:shortest=0[v]',
+  );
+});
+
 test('B-roll sequences are composited BEFORE the caption layer, whatever their start times', () => {
   // The renderer passes B-roll first and the caption/hook/CTA sequence last. The
   // order of the overlay statements IS the paint order, so the captions must be the

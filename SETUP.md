@@ -91,6 +91,8 @@ Both `npm run dev` and `npm run worker` load `.env.local` (via `@next/env`'s
 | **worker limits** | on `/settings` | Clip and viral-detection loop counts plus the Chrome budget are set on **Settings → Worker & limits**. The 10–100% (5% step) Chrome slider defaults to 50% of detected logical CPU threads and is converted per job; keep clips at 1 on a normal PC. |
 | `REMOTION_LOG_LEVEL` | `info` | `verbose` when debugging a render. |
 | `REMOTION_TIMEOUT_MINUTES` | `60` | Per-render ceiling. |
+| `BROLL_CARD_CROPPED_CANVAS` | `0` | Experimental landscape-card PNG crop/FFmpeg placement. Keep `0` (the original full canvas) until the Phase 4 five-frame cropped/full and audio/SFX gate is recorded. |
+| `CAPTION_BAND_CROPPED_CANVAS` | `0` | Experimental combined caption/Hook/CTA vertical-band crop. Keep `0` (the original full canvas) until the Phase 4 gate is recorded. |
 | **profanity audio mode** | on `/settings` | Chosen on **Settings → Profanity & masking**: `mute` (silence the word), `beep` (1 kHz tone), `off` (leave the audio alone). Captions and overlay text are masked **regardless**; the stored transcript keeps the original words, so changing this only needs a re-render. |
 | `UPLOAD_DIR` | `uploads` | Where source videos + in-progress upload sessions are stored. |
 | `MAX_UPLOAD_MB` | `0` (unlimited) | Optional guard rail for a single upload. Long podcasts need no limit — leave at 0. |
@@ -450,6 +452,7 @@ lib/llm.ts                 Gemini fallback chain (config array + plain fetch, no
 lib/ai.ts                  prompt templates + JSON parsing + exact-count top-up
 lib/profanity.ts           word masking + render-time mute/beep windows
 lib/overlay-bg.ts          solid/gradient card-background picker helpers
+lib/overlay-canvas.ts      guarded cropped-overlay canvas geometry and FFmpeg origins
 lib/custom-fonts.ts        font signature validation, local registry file lifecycle + render faces
 lib/presets.ts             default caption/overlay/text presets
 lib/startup-validation.ts  the checks behind /startup-validation
@@ -464,7 +467,7 @@ worker/layout.ts           speaker-focus vs split-grid plans (peak-concurrent ce
 worker/camera-lock.ts      locked split-pane camera (hold still, re-centre only when the head leaves)
 worker/overlay-layout.ts   layout-aware caption / hook / CTA placement (off the faces in a split)
 worker/ffmpeg-pipeline.ts  One final FFmpeg graph: hflip → crop → colour → hook → overlays → H.264
-worker/remotion-renderer.ts transparent full-timeline overlay PNG sequence (Remotion)
+worker/remotion-renderer.ts transparent overlay PNG sequences (Remotion; optional guarded crop canvases)
 remotion/                  CaptionComposition + AnimatedWord + Hook/CTA overlays
 scripts/setup-yunet.mjs    YuNet model downloader with SHA-256 verification
 scripts/verify-clip.ts     ffprobe report for resolution, rates, stream timing and bitrates

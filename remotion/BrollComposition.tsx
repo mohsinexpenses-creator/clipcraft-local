@@ -8,7 +8,9 @@ import {
 } from "remotion";
 import { brollFrameStyle } from "../lib/broll/animation";
 import { captionContrastTreatment } from "../lib/broll/crop";
+import type { OverlayCanvasRegion } from "../lib/overlay-canvas";
 import type { BrollCardRect } from "../lib/types";
+import { CroppedOverlayCanvas } from "./CroppedOverlayCanvas";
 
 /**
  * One B-roll item, painted on a transparent canvas.
@@ -130,41 +132,45 @@ export interface BrollTimelineCompositionProps extends Record<string, unknown> {
   items: BrollTimelineItem[];
   captionTextColor?: string;
   captionBand?: { top: number; bottom: number };
+  /** Optional cropped physical canvas; children keep virtual 1080x1920 coordinates. */
+  renderRegion?: OverlayCanvasRegion;
 }
 
 /** Paint all scheduled B-roll on one transparent timeline for FFmpeg. */
 export const BrollTimelineComposition: React.FC<
   BrollTimelineCompositionProps
-> = ({ items, captionTextColor, captionBand }) => {
+> = ({ items, captionTextColor, captionBand, renderRegion }) => {
   const { fps } = useVideoConfig();
 
   return (
-    <AbsoluteFill style={{ backgroundColor: "transparent" }}>
-      {items.map((item) => {
-        const from = Math.max(0, Math.round(item.start * fps));
-        const durationInFrames = Math.max(
-          1,
-          Math.round((item.end - item.start) * fps),
-        );
+    <CroppedOverlayCanvas region={renderRegion}>
+      <AbsoluteFill style={{ backgroundColor: "transparent" }}>
+        {items.map((item) => {
+          const from = Math.max(0, Math.round(item.start * fps));
+          const durationInFrames = Math.max(
+            1,
+            Math.round((item.end - item.start) * fps),
+          );
 
-        return (
-          <Sequence
-            key={item.id}
-            from={from}
-            durationInFrames={durationInFrames}
-            layout="none"
-          >
-            <BrollOverlayComposition
-              kind={item.kind}
-              imageUrl={item.imageUrl}
-              card={item.card}
-              durationSeconds={item.end - item.start}
-              captionTextColor={captionTextColor}
-              captionBand={captionBand}
-            />
-          </Sequence>
-        );
-      })}
-    </AbsoluteFill>
+          return (
+            <Sequence
+              key={item.id}
+              from={from}
+              durationInFrames={durationInFrames}
+              layout="none"
+            >
+              <BrollOverlayComposition
+                kind={item.kind}
+                imageUrl={item.imageUrl}
+                card={item.card}
+                durationSeconds={item.end - item.start}
+                captionTextColor={captionTextColor}
+                captionBand={captionBand}
+              />
+            </Sequence>
+          );
+        })}
+      </AbsoluteFill>
+    </CroppedOverlayCanvas>
   );
 };
