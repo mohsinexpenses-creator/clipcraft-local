@@ -23,6 +23,10 @@ test("theme-only seed keeps the shipped caption themes and preserves custom rows
 
   assert.equal(DEFAULT_CAPTION_PRESETS.length, CAPTION_THEME_NAMES.length);
   assert.ok(
+    DEFAULT_CAPTION_PRESETS.every((preset) => preset.captionScale === 100),
+    "shipped caption themes use a full-size default scale",
+  );
+  assert.ok(
     DEFAULT_CAPTION_PRESETS.every((preset) =>
       preset._id.startsWith("caption-theme-"),
     ),

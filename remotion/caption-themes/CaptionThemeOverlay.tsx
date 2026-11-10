@@ -58,7 +58,7 @@ export const CaptionThemeOverlay: React.FC<CaptionThemeOverlayProps> = ({
             theme={theme}
             primaryColor={preset.textColor}
             secondaryColor={preset.highlightColor}
-            fontSize={preset.fontSize * captionScale}
+            fontSize={preset.fontSize}
           />
         </div>
       </div>

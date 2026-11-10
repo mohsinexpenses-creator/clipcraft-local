@@ -154,7 +154,6 @@ export const HookOverlay: React.FC<HookOverlayProps> = ({
             lineHeight: 1.2,
             textTransform: style?.textTransform === 'none' ? 'none' : 'uppercase',
             letterSpacing: 1,
-            textShadow: '2px 2px 8px rgba(0, 0, 0, 0.9)',
             display: 'block',
           }}
         >

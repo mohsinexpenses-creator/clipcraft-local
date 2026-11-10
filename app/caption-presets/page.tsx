@@ -431,7 +431,7 @@ export default function CaptionPresetsPage() {
       name: "Custom preset",
       fontFamily: theme?.captionFontFamily ?? "Inter, sans-serif",
       fontSize: 50,
-      captionScale: 70,
+      captionScale: 100,
       fontWeight: "bold",
       textColor: theme?.captionPrimaryColor ?? "#FFFFFF",
       highlightColor: theme?.captionAccentColor ?? "#FFE600",
@@ -1438,14 +1438,14 @@ export default function CaptionPresetsPage() {
                       <div className="flex items-center justify-between">
                         <Label>Caption scale</Label>
                         <span className="text-xs font-medium text-muted-foreground tabular-nums">
-                          {activePreset.captionScale ?? 70}%
+                          {activePreset.captionScale ?? 100}%
                         </span>
                       </div>
                       <Slider
                         min={40}
                         max={100}
                         step={5}
-                        value={activePreset.captionScale ?? 70}
+                        value={activePreset.captionScale ?? 100}
                         onValueChange={(v) =>
                           setActivePreset({
                             ...activePreset,
