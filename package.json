@@ -15,6 +15,7 @@
     "test:worker": "tsx --test tests/*.test.ts",
     "verify:clip": "tsx scripts/verify-clip.ts",
     "verify:broll": "tsx scripts/verify-broll.ts",
+    "verify:broll-cropped-canvas": "tsx scripts/verify-broll-cropped-canvas.ts",
     "generate:sfx": "node scripts/generate-broll-sfx.mjs"
   },
   "dependencies": {

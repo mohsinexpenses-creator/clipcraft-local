@@ -12,9 +12,10 @@ import { getTempDirValue } from "../lib/paths";
  * Bump this whenever the transparent Remotion composition, its bundled assets,
  * or the interpretation of a cache-key field changes. Cache directories are
  * deliberately disposable, so an explicit version is safer than guessing from
- * a source checkout timestamp.
+ * a source checkout timestamp. Version 2 invalidates B-roll crop frames from
+ * before phase-specific resolved composition props were applied.
  */
-export const OVERLAY_FRAME_CACHE_VERSION = 1;
+export const OVERLAY_FRAME_CACHE_VERSION = 2;
 
 const DEFAULT_OVERLAY_FRAME_CACHE_MAX_MB = 1_024;
 const MIN_OVERLAY_FRAME_CACHE_MAX_MB = 128;

@@ -82,6 +82,30 @@ matching full-canvas frame (pixel diff / SSIM plus human review), then verify th
 output audio stream and every B-roll SFX cue are unchanged. Record the flags,
 exact timestamps, comparison method/results, and full `[JOB-TIMING]` lines.
 
+### B-roll card automated regression gate
+
+Run the browser-backed card check before any representative clip run:
+
+```bash
+npm run verify:broll-cropped-canvas
+```
+
+It creates a deterministic landscape card and uses the worker's **one-time
+`selectComposition()` plus per-phase resolved-prop override**. It renders the
+card's start, middle, and end frames on both the original 1080×1920 canvas and
+the guarded crop. Each cropped PNG is composited at `region.x,region.y` onto a
+transparent 1080×1920 image and must be byte-identical or have premultiplied
+RGBA SSIM ≥ `0.999`; the middle frame must contain visible card pixels. The
+command deliberately needs only a Remotion Chrome executable, not FFmpeg or a
+clip database. A missing browser is a failed/deferred gate, never a pass.
+
+The worker also checks every cropped-card cache hit and fresh render for an
+all-transparent sequence. It logs `broll.cropped-canvas-safety` and retries
+only that card using the full 1080×1920 canvas. A newly rendered failed crop is
+not published into the cache, and the cache schema version is bumped so prior
+resolved-prop output cannot be reused. This is a runtime safety net, not a
+substitute for the visual or representative audio/SFX gates.
+
 The split-screen parallel broadened path is also gated: a split clip with
 fullscreen-only B-roll may overlap ASD, while any split landscape card must retain
 the sequential face-band path. `RENDER_PARALLEL_BROLL_CONCURRENCY` remains at its
@@ -150,15 +174,18 @@ loopback-port-independent B-roll reuse; they do not replace this render gate.
 
 ## Current gate status
 
-This checkout is being implemented in **static-only** mode. There is currently
-no usable FFmpeg/FFprobe executable, no normal source-media fixture, and no
-working local Headless Chrome path for Remotion, so no real render duration,
-output probe, reference frame, SSIM, audio/SFX, or visual-equivalence value is
+This checkout remains **blocked for representative-media measurements**. The
+browser-backed `npm run verify:broll-cropped-canvas` command was attempted in this
+sandbox, but Remotion could not obtain Chrome Headless Shell (`ECONNRESET` before
+a TLS connection to its browser-download endpoint), so it did not render frames
+and recorded no pixel/SSIM pass. There is also no usable FFmpeg/FFprobe executable
+or normal source-media fixture here. Consequently no real render duration, output
+probe, reference frame, audio/SFX, card-visibility, or visual-equivalence value is
 asserted here. Those gates are **blocked/deferred**, not estimated. In particular,
 Phase 4 has no cropped/full frame diffs, audio/SFX comparison, or concurrency
 measurement recorded yet; both cropped-canvas flags therefore remain default-off
 and the Chrome cap remains `2`. Phase 5 has no representative cold/warm re-render
 measurement, no recorded ≤2-minute unchanged re-render, no visual/audio comparison,
 and no manual clear-during-render run yet. The static tests only lock the benchmark,
-timing aggregation, and cache invariants; they are not a substitute for the deferred
-render gates.
+timing aggregation, cache invariants, and cropped-card fallback behavior; they are
+not a substitute for the deferred render gates.

@@ -12,6 +12,7 @@ import {
 import { maskProfanity, maskTranscriptWords, maskTranscriptWordsFromIndexes } from "../lib/profanity";
 import { log } from "../lib/logger";
 import { CaptionOverlayCompositionProps } from "../remotion/OverlayCompositions";
+import type { VideoConfig } from "remotion/no-react";
 import { buildFinalCaptionChunks } from "../remotion/CaptionComposition";
 import {
   CAPTION_HOLD_AFTER_SECONDS,
@@ -982,6 +983,36 @@ export interface BrollOverlayItem {
   card?: { x: number; y: number; width: number; height: number };
 }
 
+/**
+ * The complete prop set for one B-roll render phase. Keeping this one object
+ * for both `renderFrames.inputProps` and the resolved composition prevents a
+ * phase's small physical canvas from being paired with a stale full-canvas
+ * `renderRegion` (or with another phase's timeline item).
+ */
+export interface BrollPhaseInputProps extends Record<string, unknown> {
+  items: BrollOverlayItem[];
+  captionTextColor?: string;
+  captionBand?: { top: number; bottom: number };
+  renderRegion?: OverlayCanvasRegion;
+}
+
+/**
+ * `selectComposition()` resolves and returns `composition.props`. Remotion then
+ * serializes that field when painting frames; `renderFrames.inputProps` alone is
+ * not a replacement for it. Selection stays a one-time operation, while this
+ * cheap per-phase override keeps the resolved props identical to the render
+ * props without paying a Chromium composition-selection cost for every card.
+ */
+export function withBrollPhaseCompositionProps(
+  composition: VideoConfig,
+  phaseInputProps: BrollPhaseInputProps,
+): VideoConfig {
+  return {
+    ...composition,
+    props: { ...phaseInputProps },
+  };
+}
+
 /** Build a B-roll frame key that remains stable across fresh loopback servers. */
 export function buildBrollOverlayFrameCacheKey(input: {
   items: readonly BrollOverlayItem[];
@@ -1108,6 +1139,104 @@ interface BrollRenderPhase {
   renderRegion?: OverlayCanvasRegion;
 }
 
+export type PngSequenceVisibility =
+  | { kind: "visible"; inspectedFrames: number }
+  | { kind: "fully-transparent"; inspectedFrames: number }
+  | { kind: "unreadable"; inspectedFrames: number; detail: string };
+
+/**
+ * Inspect only as much of an RGBA PNG sequence as necessary to find visible
+ * artwork. The normal card path exits after its first non-transparent entrance
+ * frame; decoding every frame is reserved for the suspicious all-empty case.
+ */
+export async function inspectPngSequenceVisibility(
+  outputDir: string,
+): Promise<PngSequenceVisibility> {
+  let framePaths: string[];
+  try {
+    framePaths = fs
+      .readdirSync(outputDir)
+      .filter((file) => file.toLowerCase().endsWith(".png"))
+      .sort((first, second) => first.localeCompare(second, undefined, { numeric: true }))
+      .map((file) => path.join(outputDir, file));
+  } catch (error) {
+    return { kind: "unreadable", inspectedFrames: 0, detail: toErrorMessage(error) };
+  }
+
+  if (framePaths.length === 0) {
+    return {
+      kind: "unreadable",
+      inspectedFrames: 0,
+      detail: "No PNG frames were available for transparency inspection.",
+    };
+  }
+
+  let Jimp: typeof import("jimp").Jimp;
+  try {
+    ({ Jimp } = await import("jimp"));
+  } catch (error) {
+    return { kind: "unreadable", inspectedFrames: 0, detail: toErrorMessage(error) };
+  }
+
+  let inspectedFrames = 0;
+  for (const framePath of framePaths) {
+    try {
+      const image = await Jimp.read(framePath);
+      inspectedFrames += 1;
+      const rgba = image.bitmap.data;
+      for (let offset = 3; offset < rgba.length; offset += 4) {
+        if (rgba[offset] !== 0) return { kind: "visible", inspectedFrames };
+      }
+    } catch (error) {
+      return { kind: "unreadable", inspectedFrames, detail: toErrorMessage(error) };
+    }
+  }
+
+  return { kind: "fully-transparent", inspectedFrames };
+}
+
+/**
+ * A crop can be technically valid yet paint nothing if the physical render
+ * canvas and Remotion's resolved props disagree. Never pass such a sequence to
+ * FFmpeg: retry only this phase on the proven full-canvas path. A cache hit is
+ * inspected too, so an old bad cropped entry cannot keep cards invisible.
+ */
+async function fallbackForTransparentCroppedBrollSequence(
+  phase: BrollRenderPhase,
+  source: "cache" | "renderer",
+): Promise<BrollRenderPhase | null> {
+  if (!phase.renderRegion) return null;
+  const visibility = await inspectPngSequenceVisibility(phase.outputDir);
+  if (visibility.kind === "visible") return null;
+
+  const itemDescription = phase.items.map((item) => `${item.id}:${item.kind}`).join(",");
+  if (visibility.kind === "unreadable") {
+    // An inspection problem must not masquerade as an empty sequence. The
+    // regular frame-count/cache guards remain authoritative in that case.
+    log.warn(
+      `[RENDER-DIAG] stage=broll.cropped-canvas-safety event=inspection-unavailable ` +
+        `source=${source} items=${itemDescription} inspected_frames=${visibility.inspectedFrames} ` +
+        `output_directory=${phase.outputDir} error=${visibility.detail}`,
+    );
+    return null;
+  }
+
+  log.warn(
+    `[RENDER-DIAG] stage=broll.cropped-canvas-safety event=transparent-sequence-fallback ` +
+      `source=${source} items=${itemDescription} inspected_frames=${visibility.inspectedFrames} ` +
+      `cropped_canvas=${phase.renderRegion.width}x${phase.renderRegion.height}@${phase.renderRegion.x},${phase.renderRegion.y} ` +
+      `fallback_canvas=${FULL_OVERLAY_CANVAS.width}x${FULL_OVERLAY_CANVAS.height}@0,0 ` +
+      `output_directory=${phase.outputDir}`,
+  );
+  return {
+    ...phase,
+    // Keep the failed crop in this job-only workdir for diagnostics, but make
+    // the fallback a distinct sequence/cache materialization target.
+    outputDir: `${phase.outputDir}-full-canvas-fallback`,
+    renderRegion: undefined,
+  };
+}
+
 /**
  * Render only each item's active frames. Each range remains in the full
  * composition clock while Remotion paints it, then is normalized to frame 1 and
@@ -1198,10 +1327,14 @@ export async function prepareRemotionBrollOverlays(
         () => renderer!.openBrowser("chrome", {}),
         "browser=chrome",
       );
-      const compositionInputProps = {
+      // This one-time selection supplies static composition metadata. Its
+      // resolved props are deliberately replaced for each phase below; passing
+      // `inputProps` to renderFrames alone does not replace `composition.props`.
+      const compositionInputProps: BrollPhaseInputProps = {
         items: options.items,
         captionTextColor: options.captionTextColor,
         captionBand: options.captionBand,
+        renderRegion: undefined,
       };
       composition = await timedRenderStage(
         "remotion.select-composition",
@@ -1235,208 +1368,229 @@ export async function prepareRemotionBrollOverlays(
     let completedFrames = 0;
     const sequences: OverlayFrameSequence[] = [];
 
-    for (const phase of phases) {
-      checkCancelled(options.isCancelled, options.signal);
-      const renderCanvas = phase.renderRegion ?? FULL_OVERLAY_CANVAS;
-      const phaseInfo: OverlayFrameCachePhase = {
-        startFrame: phase.startFrame,
-        endFrame: phase.endFrame,
-        frameCount: phase.frameCount,
-        startAtSeconds: phase.startAtSeconds,
-      };
-      const descriptor = cacheDescriptor(
-        "broll",
-        buildBrollOverlayFrameCacheKey({
+    for (const scheduledPhase of phases) {
+      // A fully transparent cropped cache entry/render is unsafe to composite:
+      // retry that one card on the established full canvas without re-selecting
+      // the composition or reopening Chromium.
+      let phase = scheduledPhase;
+      while (true) {
+        checkCancelled(options.isCancelled, options.signal);
+        const renderCanvas = phase.renderRegion ?? FULL_OVERLAY_CANVAS;
+        const phaseInfo: OverlayFrameCachePhase = {
+          startFrame: phase.startFrame,
+          endFrame: phase.endFrame,
+          frameCount: phase.frameCount,
+          startAtSeconds: phase.startAtSeconds,
+        };
+        const descriptor = cacheDescriptor(
+          "broll",
+          buildBrollOverlayFrameCacheKey({
+            items: phase.items,
+            phase: phaseInfo,
+            fps,
+            totalFrames,
+            canvas: renderCanvas,
+            captionTextColor: options.captionTextColor,
+            captionBand: options.captionBand,
+          }),
+          phaseInfo,
+          renderCanvas,
+        );
+        const cached = readOverlayFrameCache(cacheSettings, descriptor);
+        if (cached) {
+          const cachedPattern = materializeOverlayFrameCache(cached, phase.outputDir);
+          if (cachedPattern) {
+            log.info(
+              `[RENDER-DIAG] stage=broll.frame-cache event=hit key=${descriptor.key.slice(0, 12)} ` +
+                `frames=${phase.frameCount} output_directory=${phase.outputDir}`,
+            );
+            const fallbackPhase = await fallbackForTransparentCroppedBrollSequence(phase, "cache");
+            if (fallbackPhase) {
+              phase = fallbackPhase;
+              continue;
+            }
+            sequences.push({
+              name: phase.name,
+              inputPattern: cachedPattern,
+              startAtSeconds: phase.startAtSeconds,
+              layer: "broll",
+              frameCount: phase.frameCount,
+              ...(phase.renderRegion ? { canvas: phase.renderRegion } : {}),
+            });
+            completedFrames += phase.frameCount;
+            options.onProgress?.(Math.round((completedFrames / totalFramesForProgress) * 100));
+            break;
+          }
+          log.warn(
+            `[RENDER-DIAG] stage=broll.frame-cache event=materialize-fallback key=${descriptor.key.slice(0, 12)}`,
+          );
+        }
+
+        await ensureRenderer();
+        checkCancelled(options.isCancelled, options.signal);
+        if (!renderer || !composition || !browser || !bundleDir) {
+          throw new AppError("Remotion renderer did not initialize a Chromium instance.");
+        }
+        const activeRenderer = renderer as Awaited<typeof import("@remotion/renderer")>;
+        const activeComposition = composition as Awaited<
+          ReturnType<typeof import("@remotion/renderer").selectComposition>
+        >;
+        const activeBrowser = browser as NonNullable<typeof browser>;
+        const activeBundleDir = bundleDir;
+        // Keep Chromium output in this job workdir until the final FFmpeg pass is
+        // done. Cache publication is a later best-effort link/copy of complete
+        // frames, so Settings -> Clear caches cannot disrupt this active render.
+        const renderOutputDir = phase.outputDir;
+        fs.mkdirSync(renderOutputDir, { recursive: true });
+        const phaseInputProps: BrollPhaseInputProps = {
           items: phase.items,
-          phase: phaseInfo,
-          fps,
-          totalFrames,
-          canvas: renderCanvas,
           captionTextColor: options.captionTextColor,
           captionBand: options.captionBand,
-        }),
-        phaseInfo,
-        renderCanvas,
-      );
-      const cached = readOverlayFrameCache(cacheSettings, descriptor);
-      if (cached) {
-        const cachedPattern = materializeOverlayFrameCache(cached, phase.outputDir);
-        if (cachedPattern) {
-          log.info(
-            `[RENDER-DIAG] stage=broll.frame-cache event=hit key=${descriptor.key.slice(0, 12)} ` +
-              `frames=${phase.frameCount} output_directory=${phase.outputDir}`,
+          renderRegion: phase.renderRegion,
+        };
+        const itemDescription = phase.items.map((item) => `${item.id}:${item.kind}`).join(",");
+        log.info(
+          `[RENDER-DIAG] stage=broll.item-render event=before items=${itemDescription} ` +
+            `mode=${activeRangeRendering ? "active-range" : "combined-timeline"} image_format=png ` +
+            `canvas=${renderCanvas.width}x${renderCanvas.height}@${renderCanvas.x},${renderCanvas.y} ` +
+            `cropped_canvas=${phase.renderRegion ? 1 : 0} frame_range=${phase.startFrame}-${phase.endFrame} ` +
+            `planned_frames=${phase.frameCount} timeline_start_seconds=${phase.startAtSeconds.toFixed(6)} ` +
+            `output_directory=${renderOutputDir} ${renderMemoryUsage()}`,
+        );
+        log.info(
+          `[RENDER-DIAG] stage=broll.frame-cache event=miss key=${descriptor.key.slice(0, 12)} ` +
+            `frames=${phase.frameCount} cache_write=${cacheSettings.enabled ? 1 : 0}`,
+        );
+
+        let lastLoggedFrames = 0;
+        const renderStartedAt = Date.now();
+        await timedRenderStage(
+          "broll.render-frames",
+          () =>
+            withTimeout(
+              activeRenderer.renderFrames({
+                composition: {
+                  // Remotion renders resolved `composition.props`; make them
+                  // exactly the same phase props supplied as `inputProps`.
+                  ...withBrollPhaseCompositionProps(activeComposition, phaseInputProps),
+                  id: "BrollTimelineComposition",
+                  width: renderCanvas.width,
+                  height: renderCanvas.height,
+                  fps,
+                  durationInFrames: totalFrames,
+                },
+                serveUrl: activeBundleDir,
+                inputProps: phaseInputProps,
+                outputDir: renderOutputDir,
+                imageFormat: "png",
+                frameRange: [phase.startFrame, phase.endFrame],
+                cancelSignal: cancelBridge?.cancelSignal,
+                puppeteerInstance: activeBrowser,
+                concurrency: remotionConcurrency,
+                onStart: () =>
+                  log.info(
+                    `[RENDER-DIAG] stage=broll.render-frames event=renderer-started image_format=png ` +
+                      `frame_range=${phase.startFrame}-${phase.endFrame} planned_frames=${phase.frameCount} ` +
+                      `output_dir=${renderOutputDir} ${renderMemoryUsage()}`,
+                  ),
+                onFrameUpdate: (framesRendered) => {
+                  const progressInterval = Math.max(1, Math.ceil(phase.frameCount / 10));
+                  if (
+                    framesRendered === phase.frameCount ||
+                    framesRendered - lastLoggedFrames >= progressInterval
+                  ) {
+                    lastLoggedFrames = framesRendered;
+                    log.info(
+                      `[RENDER-DIAG] stage=broll.render-frames event=frame-progress ` +
+                        `frames=${framesRendered}/${phase.frameCount} elapsed_ms=${Date.now() - renderStartedAt} ` +
+                        `${renderMemoryUsage()}`,
+                    );
+                  }
+                  options.onProgress?.(
+                    Math.round(((completedFrames + framesRendered) / totalFramesForProgress) * 100),
+                  );
+                },
+                logLevel:
+                  (process.env.REMOTION_LOG_LEVEL?.trim() as
+                    | "info"
+                    | "verbose"
+                    | "warn"
+                    | "error") || "info",
+              }),
+              getRenderTimeoutMs(),
+              "broll.render-frames",
+              () => cancelBridge?.cancel(),
+            ),
+          `composition=BrollTimelineComposition image_format=png frame_range=${phase.startFrame}-${phase.endFrame} ` +
+            `planned_frames=${phase.frameCount} items=${itemDescription} output_dir=${renderOutputDir}`,
+          { stage: "render-frames", report: options.onStageTiming },
+        );
+        checkCancelled(options.isCancelled, options.signal);
+
+        const generatedStats = frameOutputStats(renderOutputDir);
+        if (generatedStats.count !== phase.frameCount) {
+          throw new AppError(
+            `B-roll renderer produced ${generatedStats.count} frames for ${phase.name}; expected ${phase.frameCount}.`,
+            {
+              details: `frame_range=${phase.startFrame}-${phase.endFrame}, output=${renderOutputDir}`,
+              resolution: "Retry the render; if it repeats, disable BROLL_ACTIVE_RANGE_RENDERING for the legacy renderer.",
+            },
           );
-          sequences.push({
-            name: phase.name,
-            inputPattern: cachedPattern,
-            startAtSeconds: phase.startAtSeconds,
-            layer: "broll",
-            frameCount: phase.frameCount,
-            ...(phase.renderRegion ? { canvas: phase.renderRegion } : {}),
-          });
-          completedFrames += phase.frameCount;
-          options.onProgress?.(Math.round((completedFrames / totalFramesForProgress) * 100));
+        }
+
+        const fallbackPhase = await fallbackForTransparentCroppedBrollSequence(phase, "renderer");
+        if (fallbackPhase) {
+          phase = fallbackPhase;
           continue;
         }
-        log.warn(
-          `[RENDER-DIAG] stage=broll.frame-cache event=materialize-fallback key=${descriptor.key.slice(0, 12)}`,
+
+        const inputPattern = normalizeFrameSequence(renderOutputDir, "png", options.onStageTiming);
+        const stagingDirectory = createOverlayFrameCacheStagingDirectory(
+          cacheSettings,
+          "broll",
+          descriptor.key,
         );
-      }
-
-      await ensureRenderer();
-      checkCancelled(options.isCancelled, options.signal);
-      if (!renderer || !composition || !browser || !bundleDir) {
-        throw new AppError("Remotion renderer did not initialize a Chromium instance.");
-      }
-      const activeRenderer = renderer as Awaited<typeof import("@remotion/renderer")>;
-      const activeComposition = composition as Awaited<
-        ReturnType<typeof import("@remotion/renderer").selectComposition>
-      >;
-      const activeBrowser = browser as NonNullable<typeof browser>;
-      const activeBundleDir = bundleDir;
-      // Keep Chromium output in this job workdir until the final FFmpeg pass is
-      // done. Cache publication is a later best-effort link/copy of complete
-      // frames, so Settings -> Clear caches cannot disrupt this active render.
-      const renderOutputDir = phase.outputDir;
-      fs.mkdirSync(renderOutputDir, { recursive: true });
-      const phaseInputProps = {
-        items: phase.items,
-        captionTextColor: options.captionTextColor,
-        captionBand: options.captionBand,
-        renderRegion: phase.renderRegion,
-      };
-      const itemDescription = phase.items.map((item) => `${item.id}:${item.kind}`).join(",");
-      log.info(
-        `[RENDER-DIAG] stage=broll.item-render event=before items=${itemDescription} ` +
-          `mode=${activeRangeRendering ? "active-range" : "combined-timeline"} image_format=png ` +
-          `canvas=${renderCanvas.width}x${renderCanvas.height}@${renderCanvas.x},${renderCanvas.y} ` +
-          `cropped_canvas=${phase.renderRegion ? 1 : 0} frame_range=${phase.startFrame}-${phase.endFrame} ` +
-          `planned_frames=${phase.frameCount} timeline_start_seconds=${phase.startAtSeconds.toFixed(6)} ` +
-          `output_directory=${renderOutputDir} ${renderMemoryUsage()}`,
-      );
-      log.info(
-        `[RENDER-DIAG] stage=broll.frame-cache event=miss key=${descriptor.key.slice(0, 12)} ` +
-          `frames=${phase.frameCount} cache_write=${cacheSettings.enabled ? 1 : 0}`,
-      );
-
-      let lastLoggedFrames = 0;
-      const renderStartedAt = Date.now();
-      await timedRenderStage(
-        "broll.render-frames",
-        () =>
-          withTimeout(
-            activeRenderer.renderFrames({
-              composition: {
-                ...activeComposition,
-                id: "BrollTimelineComposition",
-                width: renderCanvas.width,
-                height: renderCanvas.height,
-                fps,
-                durationInFrames: totalFrames,
-              },
-              serveUrl: activeBundleDir,
-              inputProps: phaseInputProps,
-              outputDir: renderOutputDir,
-              imageFormat: "png",
-              frameRange: [phase.startFrame, phase.endFrame],
-              cancelSignal: cancelBridge?.cancelSignal,
-              puppeteerInstance: activeBrowser,
-              concurrency: remotionConcurrency,
-              onStart: () =>
-                log.info(
-                  `[RENDER-DIAG] stage=broll.render-frames event=renderer-started image_format=png ` +
-                    `frame_range=${phase.startFrame}-${phase.endFrame} planned_frames=${phase.frameCount} ` +
-                    `output_dir=${renderOutputDir} ${renderMemoryUsage()}`,
-                ),
-              onFrameUpdate: (framesRendered) => {
-                const progressInterval = Math.max(1, Math.ceil(phase.frameCount / 10));
-                if (
-                  framesRendered === phase.frameCount ||
-                  framesRendered - lastLoggedFrames >= progressInterval
-                ) {
-                  lastLoggedFrames = framesRendered;
-                  log.info(
-                    `[RENDER-DIAG] stage=broll.render-frames event=frame-progress ` +
-                      `frames=${framesRendered}/${phase.frameCount} elapsed_ms=${Date.now() - renderStartedAt} ` +
-                      `${renderMemoryUsage()}`,
-                  );
-                }
-                options.onProgress?.(
-                  Math.round(((completedFrames + framesRendered) / totalFramesForProgress) * 100),
-                );
-              },
-              logLevel:
-                (process.env.REMOTION_LOG_LEVEL?.trim() as
-                  | "info"
-                  | "verbose"
-                  | "warn"
-                  | "error") || "info",
-            }),
-            getRenderTimeoutMs(),
-            "broll.render-frames",
-            () => cancelBridge?.cancel(),
-          ),
-        `composition=BrollTimelineComposition image_format=png frame_range=${phase.startFrame}-${phase.endFrame} ` +
-          `planned_frames=${phase.frameCount} items=${itemDescription} output_dir=${renderOutputDir}`,
-        { stage: "render-frames", report: options.onStageTiming },
-      );
-      checkCancelled(options.isCancelled, options.signal);
-
-      const generatedStats = frameOutputStats(renderOutputDir);
-      if (generatedStats.count !== phase.frameCount) {
-        throw new AppError(
-          `B-roll renderer produced ${generatedStats.count} frames for ${phase.name}; expected ${phase.frameCount}.`,
-          {
-            details: `frame_range=${phase.startFrame}-${phase.endFrame}, output=${renderOutputDir}`,
-            resolution: "Retry the render; if it repeats, disable BROLL_ACTIVE_RANGE_RENDERING for the legacy renderer.",
-          },
-        );
-      }
-      const inputPattern = normalizeFrameSequence(renderOutputDir, "png", options.onStageTiming);
-      const stagingDirectory = createOverlayFrameCacheStagingDirectory(
-        cacheSettings,
-        "broll",
-        descriptor.key,
-      );
-      if (stagingDirectory) {
-        cacheStagingDirectories.add(stagingDirectory);
-        if (stageNormalizedOverlayFrames(renderOutputDir, stagingDirectory, phase.frameCount)) {
-          const published = publishOverlayFrameCache(cacheSettings, descriptor, stagingDirectory);
-          cacheStagingDirectories.delete(stagingDirectory);
-          if (published) {
-            enforceOverlayFrameCacheLimit(cacheSettings);
-            log.info(
-              `[RENDER-DIAG] stage=broll.frame-cache event=stored key=${descriptor.key.slice(0, 12)} ` +
-                `frames=${phase.frameCount} bytes=${generatedStats.bytes}`,
-            );
+        if (stagingDirectory) {
+          cacheStagingDirectories.add(stagingDirectory);
+          if (stageNormalizedOverlayFrames(renderOutputDir, stagingDirectory, phase.frameCount)) {
+            const published = publishOverlayFrameCache(cacheSettings, descriptor, stagingDirectory);
+            cacheStagingDirectories.delete(stagingDirectory);
+            if (published) {
+              enforceOverlayFrameCacheLimit(cacheSettings);
+              log.info(
+                `[RENDER-DIAG] stage=broll.frame-cache event=stored key=${descriptor.key.slice(0, 12)} ` +
+                  `frames=${phase.frameCount} bytes=${generatedStats.bytes}`,
+              );
+            } else {
+              removeOverlayFrameCacheStaging(stagingDirectory);
+              log.warn(
+                `[RENDER-DIAG] stage=broll.frame-cache event=publish-fallback key=${descriptor.key.slice(0, 12)}`,
+              );
+            }
           } else {
-            removeOverlayFrameCacheStaging(stagingDirectory);
+            cacheStagingDirectories.delete(stagingDirectory);
             log.warn(
-              `[RENDER-DIAG] stage=broll.frame-cache event=publish-fallback key=${descriptor.key.slice(0, 12)}`,
+              `[RENDER-DIAG] stage=broll.frame-cache event=stage-fallback key=${descriptor.key.slice(0, 12)}`,
             );
           }
-        } else {
-          cacheStagingDirectories.delete(stagingDirectory);
-          log.warn(
-            `[RENDER-DIAG] stage=broll.frame-cache event=stage-fallback key=${descriptor.key.slice(0, 12)}`,
-          );
         }
+        sequences.push({
+          name: phase.name,
+          inputPattern,
+          startAtSeconds: phase.startAtSeconds,
+          layer: "broll",
+          frameCount: phase.frameCount,
+          ...(phase.renderRegion ? { canvas: phase.renderRegion } : {}),
+        });
+        log.info(
+          `[RENDER-DIAG] stage=broll.item-render event=after items=${itemDescription} ` +
+            `generated_frames=${generatedStats.count} output_directory=${renderOutputDir} ` +
+            `total_generated_file_size_bytes=${generatedStats.bytes} time_taken_ms=${Date.now() - renderStartedAt} ` +
+            `${renderMemoryUsage()}`,
+        );
+        completedFrames += phase.frameCount;
+        break;
       }
-      sequences.push({
-        name: phase.name,
-        inputPattern,
-        startAtSeconds: phase.startAtSeconds,
-        layer: "broll",
-        frameCount: phase.frameCount,
-        ...(phase.renderRegion ? { canvas: phase.renderRegion } : {}),
-      });
-      log.info(
-        `[RENDER-DIAG] stage=broll.item-render event=after items=${itemDescription} ` +
-          `generated_frames=${generatedStats.count} output_directory=${renderOutputDir} ` +
-          `total_generated_file_size_bytes=${generatedStats.bytes} time_taken_ms=${Date.now() - renderStartedAt} ` +
-          `${renderMemoryUsage()}`,
-      );
-      completedFrames += phase.frameCount;
     }
 
     log.ok(

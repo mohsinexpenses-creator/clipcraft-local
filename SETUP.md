@@ -92,7 +92,7 @@ Both `npm run dev` and `npm run worker` load `.env.local` (via `@next/env`'s
 | **worker limits** | on `/settings` | Clip and viral-detection loop counts plus the Chrome budget are set on **Settings → Worker & limits**. The 10–100% (5% step) Chrome slider defaults to 50% of detected logical CPU threads and is converted per job; keep clips at 1 on a normal PC. |
 | `REMOTION_LOG_LEVEL` | `info` | `verbose` when debugging a render. |
 | `REMOTION_TIMEOUT_MINUTES` | `60` | Per-render ceiling. |
-| `BROLL_CARD_CROPPED_CANVAS` | `0` | Experimental landscape-card PNG crop/FFmpeg placement. Keep `0` (the original full canvas) until the Phase 4 five-frame cropped/full and audio/SFX gate is recorded. |
+| `BROLL_CARD_CROPPED_CANVAS` | `0` | Experimental landscape-card PNG crop/FFmpeg placement. Keep `0` (the original full canvas) until `npm run verify:broll-cropped-canvas` passes and the representative clip/audio/SFX gate is recorded. A fully transparent cropped sequence automatically retries on the full canvas. |
 | `CAPTION_BAND_CROPPED_CANVAS` | `0` | Experimental combined caption/Hook/CTA vertical-band crop. Keep `0` (the original full canvas) until the Phase 4 gate is recorded. |
 | `OVERLAY_RENDER_CACHE_ENABLED` | `1` | Reuse completed transparent caption and B-roll PNG sequences on an unchanged re-render. Set `0` for the old render-every-overlay fallback. Read per job; no worker restart. |
 | `OVERLAY_RENDER_CACHE_DIR` | `<tempDir>/overlay-frame-cache` | Optional directory for only rebuildable transparent frame entries. It never contains uploads, provider images, fonts, SQLite data, or finished clips. |

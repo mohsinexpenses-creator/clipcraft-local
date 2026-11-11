@@ -262,11 +262,14 @@ Phase 4 also provides two deliberately **default-off** pixel-canvas trials:
 caption, Hook and CTA artwork. The Remotion children still run in a virtual 1080×1920
 coordinate space; FFmpeg places the resulting transparent PNG at its recorded origin with
 no scale or extra encode. `0` is the full-canvas rollback for either flag, and a crop that
-would not save pixels falls back to the legacy full canvas automatically. Keep both flags
-off until comparing cropped vs. full output at five timestamps for each overlay type and
-confirming the final voice track and B-roll SFX are unchanged. Alpha-video was intentionally
-not added: the existing PNG compositing has not been measured slow enough to justify a new
-codec/encoding branch.
+would not save pixels falls back to the legacy full canvas automatically. Before enabling
+B-roll cards, run `npm run verify:broll-cropped-canvas`: it renders start/middle/end sample
+card frames at both canvas sizes and requires exact pixels or SSIM ≥ 0.999 after placing the
+crop back at its origin. During a real render, an all-transparent cropped card sequence logs
+a warning and automatically retries just that card on the full canvas. Keep both flags off
+until this visual check plus the five-timestamp overlay, voice-track, and B-roll-SFX review
+are recorded. Alpha-video was intentionally not added: the existing PNG compositing has not
+been measured slow enough to justify a new codec/encoding branch.
 
 Phase 5 keeps **completed transparent overlay frames** for re-renders in a bounded LRU
 cache (default `<tempDir>/overlay-frame-cache`, 1 GB, 14-day maximum age). Caption/hook/CTA
