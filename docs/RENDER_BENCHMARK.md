@@ -174,18 +174,31 @@ loopback-port-independent B-roll reuse; they do not replace this render gate.
 
 ## Current gate status
 
-This checkout remains **blocked for representative-media measurements**. The
-browser-backed `npm run verify:broll-cropped-canvas` command was attempted in this
-sandbox, but Remotion could not obtain Chrome Headless Shell (`ECONNRESET` before
-a TLS connection to its browser-download endpoint), so it did not render frames
-and recorded no pixel/SSIM pass. There is also no usable FFmpeg/FFprobe executable
-or normal source-media fixture here. Consequently no real render duration, output
-probe, reference frame, audio/SFX, card-visibility, or visual-equivalence value is
-asserted here. Those gates are **blocked/deferred**, not estimated. In particular,
-Phase 4 has no cropped/full frame diffs, audio/SFX comparison, or concurrency
-measurement recorded yet; both cropped-canvas flags therefore remain default-off
-and the Chrome cap remains `2`. Phase 5 has no representative cold/warm re-render
-measurement, no recorded ≤2-minute unchanged re-render, no visual/audio comparison,
-and no manual clear-during-render run yet. The static tests only lock the benchmark,
-timing aggregation, cache invariants, and cropped-card fallback behavior; they are
-not a substitute for the deferred render gates.
+The automated B-roll card gate has a measured pass in this sandbox. With its
+756×425 deterministic card and guarded 836×537 crop, the start/middle/end result
+was: frame `0` exact; frame `30` SSIM `0.999999` with 124 differing pixels; frame
+`59` SSIM `0.999995` with 40,727 differing pixels. All values meet the `0.999`
+threshold after recompositing the crop at its virtual origin.
+
+A direct worker smoke run also used all four relevant experimental flags at `1`
+(`BROLL_ACTIVE_RANGE_RENDERING`, `BROLL_CARD_CROPPED_CANVAS`,
+`CAPTION_ACTIVE_RANGE_RENDERING`, and `CAPTION_BAND_CROPPED_CANVAS`) with a
+2-second, 30fps data-URL landscape card and the frame cache disabled. Its crop
+sequence was visibly non-transparent (the detector found pixels by frame 2) and
+its `broll.render-frames` stage took **4,063 ms**, compared with **5,163 ms** for
+the same card on the full 1080×1920 canvas (60 frames each). This is a controlled
+B-roll smoke comparison, not a representative final-clip benchmark: the full run
+still had a cold bundle, and neither run used FFmpeg compositing, source-video
+frames, audio, or SFX.
+
+This checkout remains **blocked for representative-media measurements**: there is
+no usable FFmpeg/FFprobe executable or normal source-media fixture here. Therefore
+no real sample clip was re-rendered, and no final-output probe, source-media
+reference frame, audio/SFX, or end-to-end card-visibility value is asserted. Those
+remaining gates are **blocked/deferred**, not estimated. The template flags remain
+default-off pending that broader review, and the Chrome cap remains `2`. Phase 5
+still has no representative cold/warm re-render measurement, no recorded
+≤2-minute unchanged re-render, no visual/audio comparison, and no manual
+clear-during-render run. The static tests lock the benchmark, timing aggregation,
+cache invariants, and cropped-card fallback behavior; they are not a substitute
+for the deferred render gates.
