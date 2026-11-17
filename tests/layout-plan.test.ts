@@ -14,6 +14,7 @@ import {
   flattenAndDecimate,
   MAX_CELL_UPSCALE,
   PanPoint,
+  SPEAKER_FOCUS_HOLD_SECONDS,
   SPEAKER_SWITCH_CADENCE_SECONDS,
   SPEAKER_SWITCH_HOLD_SECONDS,
 } from '../worker/layout';
@@ -140,10 +141,10 @@ test('speaker-focus plan follows the talking person and glides at the change', (
 });
 
 test('speaker-focus briefly shows another visible person then returns to the speaker', () => {
-  const speaker = panTrack(1, Array.from({ length: 60 }, () => 400), 0.25, 240);
-  const listener = panTrack(2, Array.from({ length: 60 }, () => 1500), 0.25, 240);
+  const speaker = panTrack(1, Array.from({ length: 80 }, () => 400), 0.25, 240);
+  const listener = panTrack(2, Array.from({ length: 80 }, () => 1500), 0.25, 240);
   const plan = buildSinglePlan(
-    asd([speaker, listener], [{ trackId: 1, t0: 0, t1: 15 }]),
+    asd([speaker, listener], [{ trackId: 1, t0: 0, t1: 20 }]),
     1920,
     1080,
     0.32
@@ -152,11 +153,70 @@ test('speaker-focus briefly shows another visible person then returns to the spe
   const hasPointNear = (time: number, x: number) =>
     plan.points.some((point) => Math.abs(point.t - time) < 0.001 && point.x === x);
   assert.equal(SPEAKER_SWITCH_HOLD_SECONDS, 2, 'named switch hold is exactly two seconds');
-  assert.ok(hasPointNear(3.85, 1500), 'glides to listener after the speaker focus interval');
-  assert.ok(hasPointNear(5.85, 1500), 'holds listener for the full two seconds');
-  assert.ok(hasPointNear(6, 400), 'glides back to speaker after the hold');
-  assert.ok(hasPointNear(9.85, 1500), 'next listener switch starts roughly six seconds later');
-  assert.equal(9.85 - 3.85, SPEAKER_SWITCH_CADENCE_SECONDS);
+  assert.equal(SPEAKER_FOCUS_HOLD_SECONDS, 6, 'speaker focus lasts six seconds');
+  assert.ok(hasPointNear(5.85, 400), 'begins the cutaway glide after six seconds');
+  assert.ok(hasPointNear(6, 1500), 'reaches the listener at six seconds');
+  assert.ok(hasPointNear(8.15, 400), 'returns to the speaker after the two-second hold');
+  assert.ok(hasPointNear(14, 1500), 'next listener cutaway follows the full cycle');
+  assert.equal(14 - 6, SPEAKER_SWITCH_CADENCE_SECONDS);
+});
+
+test('motionless image faces do not become speaker-focus or split-screen people', () => {
+  const first = panTrack(1, Array.from({ length: 80 }, () => 400), 0.25, 240);
+  const second = panTrack(2, Array.from({ length: 80 }, () => 1500), 0.25, 240);
+  const photo = panTrack(3, Array.from({ length: 80 }, () => 1800), 0.25, 240);
+  photo.points = photo.points.map((point) => ({ ...point, motion: 0 }));
+
+  const speakerPlan = buildSinglePlan(
+    asd([first, photo], [
+      { trackId: 1, t0: 0, t1: 5 },
+      { trackId: 3, t0: 5, t1: 10 },
+      { trackId: 1, t0: 10, t1: 20 },
+    ]),
+    1920,
+    1080,
+    0.32
+  );
+  assert.ok(speakerPlan.points.every((point) => point.x < 1000), 'the photo never becomes a camera target');
+
+  const splitPlan = buildLayoutPlan(
+    asd([first, second, photo], [{ trackId: 1, t0: 0, t1: 20 }]),
+    'split-screen',
+    1920,
+    1080
+  );
+  assert.equal(splitPlan.mode, 'split');
+  if (splitPlan.mode === 'split') assert.equal(splitPlan.cells.length, 2);
+});
+
+test('speaker-focus camera path follows face movement within a speaker segment', () => {
+  const moving = panTrack(1, Array.from({ length: 40 }, (_, index) => 400 + index * 15));
+  const plan = buildSinglePlan(
+    asd([moving], [{ trackId: 1, t0: 0, t1: 10 }]),
+    1920,
+    1080,
+    0.32
+  );
+
+  assert.equal(plan.points[0].x, 400, 'starts at the first face position');
+  assert.ok(plan.points.length >= 2, 'emits a moving camera path');
+  assert.ok(plan.points[plan.points.length - 1].x >= 900, 'ends near the latest face position');
+});
+
+test('new live face is centered within 0.5 seconds, then focus returns to the speaker', () => {
+  const speaker = panTrack(1, Array.from({ length: 48 }, () => 400), 0.25, 240);
+  const entrant = panTrack(2, Array.from({ length: 32 }, () => 1500), 0.25, 240, 4);
+  const plan = buildSinglePlan(
+    asd([speaker, entrant], [{ trackId: 1, t0: 0, t1: 12 }]),
+    1920,
+    1080,
+    0.32
+  );
+
+  const hasPointNear = (time: number, x: number) =>
+    plan.points.some((point) => Math.abs(point.t - time) < 0.001 && point.x === x);
+  assert.ok(hasPointNear(4.15, 1500), 'new face is centered 0.15 seconds after appearing');
+  assert.ok(hasPointNear(6.3, 400), 'camera returns to the active speaker after the brief visit');
 });
 
 test('split-screen plan builds adaptive cells (one per person, no emphasis layer)', () => {

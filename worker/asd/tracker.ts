@@ -60,6 +60,16 @@ export interface Track {
   missed: number;
 }
 
+/** A tracked face needs measurable temporal change; a frozen photo is not a person. */
+export function isLikelyLiveTrack(track: Track): boolean {
+  return (
+    track.points.length >= 2 &&
+    track.points.some(
+      (point) => point.motion !== null && point.motion >= 0.012,
+    )
+  );
+}
+
 export interface TrackerOptions {
   /** How many consecutive missed frames before a track is closed. */
   maxMissed?: number;

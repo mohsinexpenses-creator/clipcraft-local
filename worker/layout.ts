@@ -21,7 +21,7 @@
 
 import { AsdResult } from './asd';
 import { FaceTrackPoint, decimateTrack, evenSize, smoothTrack } from './frame-sampler';
-import { Track } from './asd/tracker';
+import { isLikelyLiveTrack, Track } from './asd/tracker';
 import {
   CameraMove,
   CameraPath,
@@ -309,6 +309,30 @@ function trackToPanPoints(track: Track, srcW: number, deadZonePx = 6): PanPoint[
   return flattenAndDecimate(points, 24, deadZonePx);
 }
 
+function trackToResponsivePanPoints(track: Track): PanPoint[] {
+  return flattenAndDecimate(
+    track.points.map((point) => ({ t: point.t, x: point.cx, y: point.cy })),
+    24,
+    8,
+  );
+}
+
+function positionAt(points: PanPoint[], time: number, fallback: PanPoint): PanPoint {
+  if (points.length === 0 || time < points[0].t) return { ...fallback, t: time };
+  for (let index = 1; index < points.length; index += 1) {
+    const before = points[index - 1];
+    const after = points[index];
+    if (time > after.t) continue;
+    const progress = (time - before.t) / Math.max(1e-6, after.t - before.t);
+    return {
+      t: time,
+      x: before.x + (after.x - before.x) * progress,
+      y: before.y + (after.y - before.y) * progress,
+    };
+  }
+  return { ...points[points.length - 1], t: time };
+}
+
 /** How long (s) the crop window glides from one speaker to the next. */
 const SPEAKER_GLIDE_SECONDS = 0.15;
 /**
@@ -317,11 +341,11 @@ const SPEAKER_GLIDE_SECONDS = 0.15;
  * keyframe detail, and every listener cutaway must hold for exactly two seconds.
  */
 export const SPEAKER_SWITCH_HOLD_SECONDS = 2;
-/** Keep listener-switch starts roughly six seconds apart during long monologues. */
-export const SPEAKER_SWITCH_CADENCE_SECONDS = 6;
-/** Time remaining on the active speaker between cutaways (6 - 2 = 4 seconds). */
-export const SPEAKER_FOCUS_HOLD_SECONDS =
-  SPEAKER_SWITCH_CADENCE_SECONDS - SPEAKER_SWITCH_HOLD_SECONDS;
+/** Keep the active speaker in focus for six seconds before a listener cutaway. */
+export const SPEAKER_FOCUS_HOLD_SECONDS = 6;
+/** Total cycle: six seconds on the speaker, then a two-second listener cutaway. */
+export const SPEAKER_SWITCH_CADENCE_SECONDS =
+  SPEAKER_FOCUS_HOLD_SECONDS + SPEAKER_SWITCH_HOLD_SECONDS;
 
 /** Median of a number array (unlike the mean, it rejects outlier sightings). */
 function median(values: number[]): number {
@@ -331,29 +355,8 @@ function median(values: number[]): number {
   return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
-/**
- * The camera path for speaker-focus: ONE stable anchor per speaker segment.
- *
- * While a person speaks the crop window stays LOCKED on that person's median
- * centre - the old per-sample chase (which drifted with every minor head or
- * body movement) is gone. The MEDIAN (not the mean) rejects outliers from
- * brief occlusions and head turns.
- *
- * The crop filter smoothstep-eases between keyframes, so "lock on A until B is
- * judged the speaker, then a fast glide to B" needs explicit keyframes:
- *   - at seg.t0       : the previous speaker's anchor (still locked on A at the
- *                      exact moment B starts - no creeping toward B early),
- *   - at t0 + 0.15s   : this segment's anchor (the glide is complete),
- *   - at seg.t1       : the same anchor again (locked for the rest of the
- *                      segment - without this the window would ramp toward the
- *                      NEXT speaker during the current speaker's segment).
- * No EMA/slew smoothing is applied: the keyframes themselves encode the
- * lock + 0.15s glide, and re-smoothing them would blur the lock.
- */
-// `_srcW` is intentionally part of the signature (the pan expressions clamp
-// against the source size downstream); the anchor maths works in source px.
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-function buildSpeakerPath(asd: AsdResult, _srcW: number): PanPoint[] {
+/** Build a responsive speaker path with short, bounded non-speaker visits. */
+function buildSpeakerPath(asd: AsdResult, srcW: number): PanPoint[] {
   const byId = new Map<number, Track>();
   for (const track of asd.tracks) byId.set(track.id, track);
 
@@ -372,22 +375,34 @@ function buildSpeakerPath(asd: AsdResult, _srcW: number): PanPoint[] {
     if (inSegment.length === 0) continue;
     const x = median(inSegment.map((p) => p.cx));
     const y = median(inSegment.map((p) => p.cy));
-
-    if (prev === null) {
-      points.push({ t: seg.t0, x, y });
-    } else {
-      // Speaker switch: hold the previous anchor at the boundary (robust even
-      // with a gap between segments), then glide to the new anchor.
-      points.push({ t: seg.t0, x: prev.x, y: prev.y });
-      points.push({ t: Math.min(seg.t0 + SPEAKER_GLIDE_SECONDS, seg.t1), x, y });
-    }
+    const speakerPath = trackToResponsivePanPoints(track);
+    const speakerAtStart = positionAt(speakerPath, seg.t0, { t: seg.t0, x, y });
+    const speakerAtEnd = positionAt(speakerPath, seg.t1, { t: seg.t1, x, y });
+    let segmentPoints: PanPoint[] = [
+      ...(prev === null
+        ? [speakerAtStart]
+        : [
+            { t: seg.t0, x: prev.x, y: prev.y },
+            {
+              ...speakerAtStart,
+              t: Math.min(seg.t0 + SPEAKER_GLIDE_SECONDS, seg.t1),
+            },
+          ]),
+      ...speakerPath.filter((point) => point.t > seg.t0 && point.t < seg.t1),
+      speakerAtEnd,
+    ];
 
     const listeners = asd.tracks
       .filter((candidate) => candidate.id !== track.id)
       .map((candidate) => {
+        if (
+          !isLikelyLiveTrack(candidate) ||
+          candidate.avgW < Math.max(24, srcW * 0.02)
+        ) return null;
         const visible = candidate.points.filter((p) => p.t >= seg.t0 && p.t <= seg.t1);
-        if (visible.length === 0) return null;
+        if (visible.length < 2) return null;
         return {
+          track: candidate,
           x: median(visible.map((p) => p.cx)),
           y: median(visible.map((p) => p.cy)),
           firstSeen: visible[0].t,
@@ -397,37 +412,104 @@ function buildSpeakerPath(asd: AsdResult, _srcW: number): PanPoint[] {
       .filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== null);
 
     let cursor = seg.t0 + SPEAKER_FOCUS_HOLD_SECONDS;
-    let listenerIndex = 0;
     while (
-      cursor + SPEAKER_SWITCH_HOLD_SECONDS <= seg.t1 &&
+      cursor + SPEAKER_SWITCH_HOLD_SECONDS + SPEAKER_GLIDE_SECONDS <= seg.t1 &&
       listeners.length > 0
     ) {
-      const listener = listeners[listenerIndex % listeners.length];
-      const cutawayStart = Math.max(cursor - SPEAKER_GLIDE_SECONDS * 2, listener.firstSeen);
-      const listenerStart = cutawayStart + SPEAKER_GLIDE_SECONDS;
+      const cutawayStart = cursor - SPEAKER_GLIDE_SECONDS;
+      const listenerStart = cursor;
       const listenerEnd = listenerStart + SPEAKER_SWITCH_HOLD_SECONDS;
       const returnEnd = listenerEnd + SPEAKER_GLIDE_SECONDS;
-      if (listener.lastSeen >= listenerEnd && returnEnd <= seg.t1) {
-        points.push(
-          { t: cutawayStart, x, y },
-          { t: listenerStart, x: listener.x, y: listener.y },
-          { t: listenerEnd, x: listener.x, y: listener.y },
-          { t: returnEnd, x, y }
+      const available = listeners.filter(
+        (listener) => listener.firstSeen <= listenerStart && listener.lastSeen >= listenerEnd,
+      );
+      if (available.length > 0) {
+        const randomValue = Math.abs(
+          Math.sin((track.id + 1) * 12.9898 + listenerStart * 78.233) * 43758.5453,
         );
-        cursor = returnEnd + SPEAKER_FOCUS_HOLD_SECONDS;
-      } else {
-        cursor += SPEAKER_FOCUS_HOLD_SECONDS;
+        const listener = available[Math.floor((randomValue % 1) * available.length)];
+        const listenerPath = trackToResponsivePanPoints(listener.track);
+        const listenerStartPoint = positionAt(listenerPath, listenerStart, {
+          t: listenerStart,
+          x: listener.x,
+          y: listener.y,
+        });
+        const listenerEndPoint = positionAt(listenerPath, listenerEnd, {
+          t: listenerEnd,
+          x: listener.x,
+          y: listener.y,
+        });
+        segmentPoints = segmentPoints.filter(
+          (point) => point.t < cutawayStart || point.t > returnEnd,
+        );
+        segmentPoints.push(
+          positionAt(speakerPath, cutawayStart, { t: cutawayStart, x, y }),
+          listenerStartPoint,
+          ...listenerPath.filter(
+            (point) => point.t > listenerStart && point.t < listenerEnd,
+          ),
+          listenerEndPoint,
+          positionAt(speakerPath, returnEnd, { t: returnEnd, x, y }),
+        );
       }
-      listenerIndex += 1;
+      cursor += SPEAKER_SWITCH_CADENCE_SECONDS;
     }
 
-    // Lock the anchor for the remainder of the segment.
-    points.push({ t: seg.t1, x, y });
+    const entrants = asd.tracks
+      .filter(
+        (candidate) =>
+          candidate.id !== track.id &&
+          isLikelyLiveTrack(candidate) &&
+          candidate.avgW >= Math.max(24, srcW * 0.02),
+      )
+      .map((candidate) => ({ track: candidate, firstSeen: candidate.points[0]?.t ?? Infinity }))
+      .filter(
+        (entrant) =>
+          entrant.firstSeen > seg.t0 + 0.001 &&
+          entrant.firstSeen < seg.t1 &&
+          entrant.track.points[entrant.track.points.length - 1].t >=
+            entrant.firstSeen + SPEAKER_GLIDE_SECONDS + SPEAKER_SWITCH_HOLD_SECONDS,
+      )
+      .sort((a, b) => a.firstSeen - b.firstSeen);
 
-    prev = { x, y };
+    for (const entrant of entrants) {
+      const visitStart = entrant.firstSeen;
+      const faceStart = visitStart + SPEAKER_GLIDE_SECONDS;
+      const faceEnd = faceStart + SPEAKER_SWITCH_HOLD_SECONDS;
+      const returnEnd = faceEnd + SPEAKER_GLIDE_SECONDS;
+      if (returnEnd > seg.t1) continue;
+
+      const entrantPath = trackToResponsivePanPoints(entrant.track);
+      const faceStartPoint = positionAt(entrantPath, faceStart, {
+        t: faceStart,
+        x: entrant.track.points[0].cx,
+        y: entrant.track.points[0].cy,
+      });
+      const faceEndPoint = positionAt(entrantPath, faceEnd, faceStartPoint);
+      segmentPoints = segmentPoints.filter(
+        (point) => point.t < visitStart || point.t > returnEnd,
+      );
+      segmentPoints.push(
+        positionAt(speakerPath, visitStart, { t: visitStart, x, y }),
+        faceStartPoint,
+        ...entrantPath.filter((point) => point.t > faceStart && point.t < faceEnd),
+        faceEndPoint,
+        positionAt(speakerPath, returnEnd, { t: returnEnd, x, y }),
+      );
+    }
+
+    points.push(...segmentPoints);
+    prev = { x: speakerAtEnd.x, y: speakerAtEnd.y };
   }
 
-  return points;
+  const ordered = points.sort((a, b) => a.t - b.t);
+  const deduplicated: PanPoint[] = [];
+  for (const point of ordered) {
+    const last = deduplicated[deduplicated.length - 1];
+    if (last && Math.abs(last.t - point.t) < 1e-6) deduplicated[deduplicated.length - 1] = point;
+    else deduplicated.push(point);
+  }
+  return flattenAndDecimate(deduplicated, 24, 8);
 }
 
 /** Largest 9:16 window that fits inside the source (even dimensions). */
@@ -462,13 +544,26 @@ export function buildSinglePlan(
   faceAnchorY: number
 ): SinglePlan {
   const { w: cropW, h: cropH } = largest916Window(srcW, srcH);
-  let points = buildSpeakerPath(asd, srcW);
+  const cameraTracks = asd.tracks.filter(isLikelyLiveTrack);
+  const cameraTrackIds = new Set(cameraTracks.map((track) => track.id));
+  const cameraAsd = {
+    ...asd,
+    tracks: cameraTracks,
+    speakerSegments: asd.speakerSegments.map((segment) => ({
+      ...segment,
+      trackId:
+        segment.trackId !== null && cameraTrackIds.has(segment.trackId)
+          ? segment.trackId
+          : null,
+    })),
+  };
+  let points = buildSpeakerPath(cameraAsd, srcW);
 
   // Fallback: the audio+visual speaker fusion can come back empty (short clip,
   // low voice energy, ...). The window must still follow SOMEONE - use the
   // most visible track instead of freezing a static centred crop.
   if (points.length <= 1) {
-    const best = asd.tracks
+    const best = cameraTracks
       .filter((track) => track.points.length >= 2)
       .sort((a, b) => b.visibleTime * b.avgW - a.visibleTime * a.avgW)[0];
     if (best) points = trackToPanPoints(best, srcW);
@@ -717,8 +812,12 @@ function buildSplitPlan(
   // on 720p and 4K) - this kills specks and tiny false positives.
   const minPersonW = Math.max(24, srcW * MIN_PERSON_FACE_FRACTION);
   const candidateTracks = asd.tracks.filter(
-    (track) => track.points.length >= 2 && track.avgW >= minPersonW
+    (track) =>
+      isLikelyLiveTrack(track) &&
+      track.points.length >= 2 &&
+      track.avgW >= minPersonW
   );
+  const liveTracks = asd.tracks.filter(isLikelyLiveTrack);
 
   // The biggest face among the speakers: listeners must be comparable in size.
   const biggestSpeakerW = candidateTracks
@@ -753,8 +852,8 @@ function buildSplitPlan(
   // People ARE on screen but none passed the filters (tiny faces in a wide
   // shot, fragmented short tracks, ...). Show the most visible people anyway -
   // never silently degrade to a static centred crop.
-  if (relevant.length === 0 && asd.tracks.length > 0) {
-    relevant = [...asd.tracks]
+  if (relevant.length === 0 && liveTracks.length > 0) {
+    relevant = [...liveTracks]
       .filter((track) => track.points.length > 0)
       .sort((x, y) => y.visibleTime * y.avgW - x.visibleTime * x.avgW)
       .slice(0, 2);

@@ -8,7 +8,7 @@ import {
 } from '../frame-sampler';
 import { detectFacesYunet, loadYuNet, yunetModelPresent, type YuNetRuntime } from '../yunet-detector';
 import { computeVoiceEnvelope, extractPcmMono } from './audio';
-import { Tracker, Track, FrameDetection } from './tracker';
+import { isLikelyLiveTrack, Tracker, Track, FrameDetection } from './tracker';
 import { SpeakerSegment, buildSpeakerTimeline } from './speaker';
 import {
   ASD_QUALITY_SAMPLE_WIDTH,
@@ -59,7 +59,7 @@ import {
  */
 
 export interface AsdResult {
-  /** Every tracked person (points in MIRRORED source pixels, t clip-relative). */
+  /** Motion-qualified face tracks (points in MIRRORED source pixels, t clip-relative). */
   tracks: Track[];
   /** Per-time active speaker (merged runs). */
   speakerSegments: SpeakerSegment[];
@@ -68,7 +68,7 @@ export interface AsdResult {
   method: 'yunet+audio-visual' | 'yunet-visual' | 'yunet';
   hasLandmarks: boolean;
   hasAudio: boolean;
-  /** Busiest frame (how many faces at once). */
+  /** Peak concurrent motion-qualified face tracks. */
   maxFacesSeen: number;
   framesUsed: number;
   framesTotal: number;
@@ -177,6 +177,45 @@ function medianOf(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function maxConcurrentTracks(tracks: Track[]): number {
+  const buckets = new Map<number, Set<number>>();
+  for (const track of tracks) {
+    for (const point of track.points) {
+      const key = Math.round(point.t * 4);
+      const bucket = buckets.get(key) ?? new Set<number>();
+      bucket.add(track.id);
+      buckets.set(key, bucket);
+    }
+  }
+  let maximum = 0;
+  for (const bucket of buckets.values()) maximum = Math.max(maximum, bucket.size);
+  return maximum;
+}
+
+function keepLiveTracks(result: AsdResult): AsdResult {
+  const tracks = result.tracks.filter(isLikelyLiveTrack);
+  const ids = new Set(tracks.map((track) => track.id));
+  const speakerSegments = result.speakerSegments.map((segment) => ({
+    ...segment,
+    trackId:
+      segment.trackId !== null && ids.has(segment.trackId)
+        ? segment.trackId
+        : null,
+  }));
+  const speakerIds = new Set(
+    speakerSegments
+      .map((segment) => segment.trackId)
+      .filter((id): id is number => id !== null),
+  );
+  return {
+    ...result,
+    tracks,
+    speakerSegments,
+    speakerCount: speakerIds.size,
+    maxFacesSeen: maxConcurrentTracks(tracks),
+  };
 }
 
 interface FrameAnalysis {
@@ -520,7 +559,7 @@ export async function detectSpeakerTimeline(
         `[ASD-CACHE] event=hit profile=${requestedInitialProfile} source=${sourceIdentity?.key.slice(0, 12)} ` +
           `window=${start.toFixed(3)}+${duration.toFixed(3)}s`,
       );
-      return cached;
+      return keepLiveTracks(cached);
     }
   }
   if (cacheSettings.enabled) {
@@ -641,14 +680,19 @@ export async function detectSpeakerTimeline(
       );
     }
 
+    analysis.tracks = analysis.tracks.filter(isLikelyLiveTrack);
+    analysis.maxFacesSeen = maxConcurrentTracks(analysis.tracks);
+
     if (analysis.tracks.length === 0) {
       throw new AppError(
-        `No faces were detected in this clip window (0 of ${frames.length} sampled frames contained a face).`,
+        analysis.framesUsed === 0
+          ? `No faces were detected in this clip window (0 of ${frames.length} sampled frames contained a face).`
+          : `No live faces were detected in this clip window (${analysis.framesUsed} sampled frames contained only static or motionless faces).`,
         {
           details:
-            'The 9:16 layouts crop and pan around detected faces, and no fallback detector is used - the render stops here instead of producing a static centre crop.',
+            'The 9:16 layouts follow people with measurable face motion; a still image is not treated as a person, and no fallback detector is used.',
           resolution:
-            'Make sure a face is visible and well lit in this part of the video (avoid extreme angles, heavy occlusion or a tiny face in a very wide shot), or pick a different window, then re-render the clip.',
+            'Choose a window with a visible, moving person (avoid still photos, extreme angles, heavy occlusion or tiny faces in a very wide shot), then re-render.',
         }
       );
     }

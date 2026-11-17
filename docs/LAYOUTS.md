@@ -7,7 +7,7 @@ is a per-clip choice with two options — plus automatic tracking of **who is ta
 
 | Layout | What it looks like | Best for |
 | --- | --- | --- |
-| **Speaker focus** | A single full-height 9:16 window slides along the source and **follows the active speaker**. When the speaker changes, the frame glides to the new person (~0.6s camera-like pan). | Podcasts, interviews, one dominant talker. |
+| **Speaker focus** | A single full-height 9:16 window follows the active speaker's sampled face position. New live faces are framed within 0.15s; during long turns, a random live listener gets a two-second cutaway after each six-second speaker hold. | Podcasts, interviews, one dominant talker. |
 | **Split screen (multi-person split)** | An adaptive grid of stacked crops (up to 4 people — a 2-person clip gets two stacked 1080×960 panes: the person sitting **left** is always the **top** pane, the **right** person the **bottom** one, so the layout never swaps mid-clip). Each pane is a **locked camera**: it is placed on its person at the start and then holds perfectly still — it only glides to re-centre them if their head actually leaves the frame. Nothing is drawn over the panes (no speaker highlight frame), and the captions / hook / CTA are placed so they never cover a face ([details](./OVERLAYS.md#overlays-follow-the-layout)). | Two-person conversations, panels. |
 
 Pick the layout per clip in **Generate → clip card → "Layout (9:16 output)"**, or send
@@ -41,7 +41,11 @@ The worker pipeline (`worker/asd/` + `worker/layout.ts`):
 3. **Tracks** detections across samples with an identity-free constant-velocity
    nearest-neighbour tracker (`worker/asd/tracker.ts`): stable "Person A/B/C" ids with a
    keep-alive grace period so a person survives a mic swing, a hand, or a brief overlap
-   without losing their framing. **No face recognition** — we never learn who anyone is.
+   without losing their framing. A track needs at least one sample-to-sample face change
+   of 0.012 or greater to count as a live person; still/frozen images are excluded from
+   speaker scoring, camera targets and person counts. This is a motion heuristic, not
+   identity recognition, so an image that itself moves may still appear live.
+   **No face recognition** — we never learn who anyone is.
 4. **Scores** who is talking per 0.6 s window, decided every 0.25 s
    (`worker/asd/speaker.ts`), with multiple cues:
    - **voice-gated motion** (the strongest cue) — how much a face moves *while the
@@ -69,10 +73,12 @@ The worker pipeline (`worker/asd/` + `worker/layout.ts`):
    challenger's rises high (they clearly started) — this is what kills the "frame
    lingers on the non-speaker after a turn change" behaviour. A single visible face is
    always the speaker.
-6. Turns decisions into a **layout plan** (`worker/layout.ts`). Speaker focus: ONE
-   stable anchor per speaker segment — the window stays LOCKED on the speaker's median
-   position while they talk, then a fast 0.15 s *glide* to the next speaker's anchor
-   (explicit keyframes, no drift). Split screen: the grid is sized by how many people
+6. Turns decisions into a **layout plan** (`worker/layout.ts`). Speaker focus follows
+   sampled face positions rather than holding a segment-wide median. Speaker changes
+   glide in 0.15 s; a newly appearing live face is centered within 0.15 s and gets a
+   brief two-second visit before focus returns to the speaker. During a long speaker
+   segment, a pseudo-random eligible listener is shown for two seconds after each
+   six-second speaker hold. Split screen: the grid is sized by how many people
    **share the screen at the busiest moment** (never more panes than that, so
    fragmented track ids can't inflate 2 people into 3–4), but **two co-existing people
    always get two panes even if only one was judged the speaker** — the split is a
