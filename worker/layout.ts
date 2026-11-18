@@ -334,7 +334,7 @@ function positionAt(points: PanPoint[], time: number, fallback: PanPoint): PanPo
 }
 
 /** How long (s) the crop window glides from one speaker to the next. */
-const SPEAKER_GLIDE_SECONDS = 0.15;
+export const SPEAKER_GLIDE_SECONDS = 0.12;
 /**
  * Actual time the camera holds a listener during a speaker-switch cutaway.
  * Keep this named/exported: it is a visible product timing, not an incidental

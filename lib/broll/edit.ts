@@ -147,6 +147,47 @@ export async function removeBrollItem(clipId: string, itemId: string): Promise<B
   return nextPlan;
 }
 
+/** Remove every image from a plan in one update, so callers can queue one render. */
+export async function removeAllBrollItems(clipId: string): Promise<BrollPlan> {
+  const plan = requirePlan(await getClipBrollPlan(clipId));
+  const removedCount = plan.items.length;
+  const nextPlan: BrollPlan = {
+    ...plan,
+    generatedAt: new Date().toISOString(),
+    items: [],
+    counts: { ...plan.counts, fullscreen: 0, landscape: 0 },
+    notes: removedCount > 0
+      ? [...(plan.notes ?? []), `Removed all ${removedCount} B-roll items from the plan.`]
+      : plan.notes,
+  };
+  await saveClipBrollPlan(clipId, nextPlan);
+  return nextPlan;
+}
+
+/** Remove a reviewed set of images in one plan write, without partial renders. */
+export async function removeBrollItems(clipId: string, itemIds: string[]): Promise<BrollPlan> {
+  const plan = requirePlan(await getClipBrollPlan(clipId));
+  const removeIds = new Set(itemIds);
+  const items = plan.items.filter((item) => !removeIds.has(item.id));
+  const removedCount = plan.items.length - items.length;
+  if (removedCount === 0) {
+    throw new AppError("None of those B-roll images are in the plan.", { status: 404 });
+  }
+  const nextPlan: BrollPlan = {
+    ...plan,
+    generatedAt: new Date().toISOString(),
+    items,
+    counts: {
+      ...plan.counts,
+      fullscreen: items.filter((item) => item.kind === "fullscreen").length,
+      landscape: items.filter((item) => item.kind === "landscape").length,
+    },
+    notes: [...(plan.notes ?? []), `Removed ${removedCount} reviewed B-roll items from the plan.`],
+  };
+  await saveClipBrollPlan(clipId, nextPlan);
+  return nextPlan;
+}
+
 /**
  * Recompute the card rectangles of an existing plan (used when the caption preset
  * changed and a card would now sit on the captions).

@@ -29,6 +29,7 @@ export interface BrollPlanPanelProps {
   error?: string
   busy?: boolean
   onRerun: () => void
+  onRemoveAll: () => void
   onSwap: (itemId: string) => void
   onRemove: (itemId: string) => void
 }
@@ -46,6 +47,7 @@ export function BrollPlanPanel({
   error,
   busy,
   onRerun,
+  onRemoveAll,
   onSwap,
   onRemove,
 }: BrollPlanPanelProps) {
@@ -182,6 +184,12 @@ export function BrollPlanPanel({
                 {busy || running ? <Loader2 className="animate-spin" /> : <RefreshCw />}
                 Re-run B-roll
               </Button>
+              {items.length > 0 ? (
+                <Button size="xs" variant="outline" onClick={onRemoveAll} disabled={busy || running}>
+                  <Trash2 />
+                  Remove all
+                </Button>
+              ) : null}
             </div>
           ) : (
             <Button size="xs" variant="outline" onClick={onRerun} disabled={busy || running}>

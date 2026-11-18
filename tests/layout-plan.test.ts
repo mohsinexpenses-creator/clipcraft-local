@@ -15,6 +15,7 @@ import {
   MAX_CELL_UPSCALE,
   PanPoint,
   SPEAKER_FOCUS_HOLD_SECONDS,
+  SPEAKER_GLIDE_SECONDS,
   SPEAKER_SWITCH_CADENCE_SECONDS,
   SPEAKER_SWITCH_HOLD_SECONDS,
 } from '../worker/layout';
@@ -138,6 +139,7 @@ test('speaker-focus plan follows the talking person and glides at the change', (
   const lastX = plan.points[plan.points.length - 1].x;
   assert.ok(firstX < 800, `starts on the left speaker (x=${firstX})`);
   assert.ok(lastX > 1100, `ends on the right speaker (x=${lastX})`);
+  assert.equal(SPEAKER_GLIDE_SECONDS, 0.12, 'camera transition completes within 0.2 seconds');
 });
 
 test('speaker-focus briefly shows another visible person then returns to the speaker', () => {
@@ -154,9 +156,9 @@ test('speaker-focus briefly shows another visible person then returns to the spe
     plan.points.some((point) => Math.abs(point.t - time) < 0.001 && point.x === x);
   assert.equal(SPEAKER_SWITCH_HOLD_SECONDS, 2, 'named switch hold is exactly two seconds');
   assert.equal(SPEAKER_FOCUS_HOLD_SECONDS, 6, 'speaker focus lasts six seconds');
-  assert.ok(hasPointNear(5.85, 400), 'begins the cutaway glide after six seconds');
+  assert.ok(hasPointNear(5.88, 400), 'begins the cutaway glide after six seconds');
   assert.ok(hasPointNear(6, 1500), 'reaches the listener at six seconds');
-  assert.ok(hasPointNear(8.15, 400), 'returns to the speaker after the two-second hold');
+  assert.ok(hasPointNear(8.12, 400), 'returns to the speaker after the two-second hold');
   assert.ok(hasPointNear(14, 1500), 'next listener cutaway follows the full cycle');
   assert.equal(14 - 6, SPEAKER_SWITCH_CADENCE_SECONDS);
 });
@@ -215,8 +217,8 @@ test('new live face is centered within 0.5 seconds, then focus returns to the sp
 
   const hasPointNear = (time: number, x: number) =>
     plan.points.some((point) => Math.abs(point.t - time) < 0.001 && point.x === x);
-  assert.ok(hasPointNear(4.15, 1500), 'new face is centered 0.15 seconds after appearing');
-  assert.ok(hasPointNear(6.3, 400), 'camera returns to the active speaker after the brief visit');
+  assert.ok(hasPointNear(4.12, 1500), 'new face is centered within 0.2 seconds after appearing');
+  assert.ok(hasPointNear(6.24, 400), 'camera returns to the active speaker after the brief visit');
 });
 
 test('split-screen plan builds adaptive cells (one per person, no emphasis layer)', () => {

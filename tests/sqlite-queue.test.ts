@@ -30,6 +30,7 @@ import {
   watchJobClaim,
 } from '../lib/queue';
 import { createTemporaryDatabase } from './sqlite-test-helpers';
+import { validClip } from './viral-fixtures';
 
 function video(id: string): VideoRecord {
   const now = new Date().toISOString();
@@ -404,6 +405,20 @@ test('render queue uniqueness is per clip, and enqueue resets its visible clip s
   );
   assert.equal((await getClip(activeClip._id))?.status, 'processing');
   assert.equal(getJob(activeJob.id, db)?.status, 'running');
+});
+
+test('render enqueue persists packaging title edits atomically with the job', async (t) => {
+  createTemporaryDatabase(t);
+  const source = video('video-packaging-title');
+  const record = clip('clip-packaging-title', source._id);
+  record.aiAnalysis = validClip();
+  record.aiAnalysis.viral_packaging.video_title = 'Original title';
+  await saveVideo(source);
+  await saveClip(record);
+
+  await enqueueClipJob({ ...renderPayload(record), packagingTitle: 'Corrected title' });
+
+  assert.equal((await getClip(record._id))?.aiAnalysis?.viral_packaging.video_title, 'Corrected title');
 });
 
 test('a failed render is terminal until an explicit enqueue resets it', async (t) => {

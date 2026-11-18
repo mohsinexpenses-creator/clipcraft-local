@@ -63,8 +63,8 @@ export interface SpeakerTimelineResult {
 }
 
 /** Windows shorter than this are merged, longer ones split, in the decision. */
-const WINDOW_SECONDS = 0.6;
-const STEP_SECONDS = 0.25;
+const WINDOW_SECONDS = 0.3;
+const STEP_SECONDS = 0.1;
 /** A window is "voiced" when the mean voice energy is at least this. */
 const VOICE_THRESHOLD = 0.18;
 /**
@@ -78,7 +78,7 @@ const VOICE_GATE = 0.15;
  */
 const SWITCH_MARGIN = 1.1;
 /** Once a speaker is chosen, they are kept for at least this long. */
-const MIN_HOLD_SECONDS = 0.4;
+const MIN_HOLD_SECONDS = 0.15;
 /**
  * Reactive switch: below this normalised voice-gated motion an incumbent has
  * clearly STOPPED talking...

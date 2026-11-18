@@ -38,6 +38,7 @@ type ClipEditField =
   | 'ctaStylePresetId';
 
 export type ClipEdits = Pick<ClipRecord, ClipEditField> & {
+  title?: string;
   hookStart?: string;
   hookEnd?: string;
 };
@@ -86,6 +87,12 @@ export function sanitizeClipEdits(
   bounds: { duration?: number } = {}
 ): Partial<ClipEdits> {
   const edits: Partial<ClipEdits> = {};
+
+  const title = readText(body.title, 'title');
+  if (title !== undefined) {
+    if (!title) throw new AppError('Clip title cannot be empty.', { status: 400 });
+    edits.title = title;
+  }
 
   const start = readNumber(body.start, 'start');
   const end = readNumber(body.end, 'end');
@@ -172,8 +179,18 @@ export function sanitizeClipEdits(
 }
 
 export function applyClipEdits(clip: ClipRecord, edits: Partial<ClipEdits>): ClipRecord {
-  const { hookStart, hookEnd, ...clipFields } = edits;
+  const { hookStart, hookEnd, title, ...clipFields } = edits;
   const updated = { ...clip, ...clipFields };
+
+  if (title !== undefined) {
+    if (!clip.aiAnalysis) {
+      throw new AppError('A packaging title can only be edited on an analyzed clip.', { status: 400 });
+    }
+    updated.aiAnalysis = {
+      ...clip.aiAnalysis,
+      viral_packaging: { ...clip.aiAnalysis.viral_packaging, video_title: title },
+    };
+  }
 
   if (hookStart !== undefined || hookEnd !== undefined) {
     if (!clip.aiAnalysis || hookStart === undefined || hookEnd === undefined) {

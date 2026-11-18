@@ -58,6 +58,8 @@ import { anchoredCardRect } from "../lib/broll/card";
 import { buildBrollSfxCues } from "../lib/broll/sfx";
 import { captionReservedBand } from "../lib/overlay-stack";
 import { buildClipFileName } from "./clip-file-name";
+import { wordWithinClip } from "../lib/clip-time";
+import { shiftBrollTimeline } from "../lib/broll/timing";
 import { loadEffectiveSettings } from "../lib/app-settings";
 import {
   findContextCensorWordIndexes,
@@ -172,6 +174,7 @@ function preparedBrollImageCacheIdentity(filePath: string, cacheKey: string): st
 interface PrepareBrollForRenderOptions {
   brollPlan: ClipRecord["broll"];
   fps: number;
+  hookDuration: number;
   totalDuration: number;
   captionPreset: CaptionPreset;
   cardLayout: "speaker-focus" | "split-screen";
@@ -237,7 +240,7 @@ async function prepareBrollForRender(
     const preparedBroll = await prepareRemotionBrollOverlays({
       fps: options.fps,
       totalDuration: options.totalDuration,
-      items: usable.map(({ item }, index) => ({
+      items: shiftBrollTimeline(usable.map(({ item }, index) => ({
         id: item.id,
         kind: item.kind,
         start: item.start,
@@ -253,7 +256,7 @@ async function prepareBrollForRender(
               }),
             }
           : {}),
-      })),
+      })), options.hookDuration),
       captionTextColor: options.captionPreset.textColor,
       captionBand,
       onProgress: options.onProgress,
@@ -269,7 +272,7 @@ async function prepareBrollForRender(
     let sfx: BrollRenderPreparation["sfx"] = [];
     if (brollPlan.options.sfx) {
       sfx = buildBrollSfxCues(
-        usable.map(({ item }) => ({ start: item.start, end: item.end })),
+        shiftBrollTimeline(usable.map(({ item }) => ({ start: item.start, end: item.end })), options.hookDuration),
         { totalDuration: options.totalDuration, enabled: true },
       )
         .map((cue) => ({
@@ -483,12 +486,10 @@ export async function processClipJob(
           word.end >= start - WORD_SLACK_SECONDS &&
           word.start <= end + WORD_SLACK_SECONDS,
       )
-      .map((word) => ({
-        ...word,
-        // Relative to the segment start; the composition adds hookDuration back on.
-        start: Math.max(0, word.start - start),
-        end: Math.max(0.1, word.end - start),
-      }));
+      .flatMap((word) => {
+        const relative = wordWithinClip(word, start, end);
+        return relative ? [relative] : [];
+      });
 
     if (clipWords.length === 0) {
       throw new AppError(
@@ -676,6 +677,7 @@ export async function processClipJob(
               prepareBrollForRender({
                 brollPlan,
                 fps: renderFps,
+                hookDuration: safeHookDuration,
                 totalDuration,
                 captionPreset: preset,
                 // Any split-screen branch reaching here contains fullscreen-only
@@ -953,6 +955,7 @@ export async function processClipJob(
         prepareBrollForRender({
           brollPlan,
           fps: renderFps,
+          hookDuration: safeHookDuration,
           totalDuration,
           captionPreset: captionPresetForRender,
           cardLayout,

@@ -582,6 +582,12 @@ export async function enqueueClipJob(
   if (jobData.hookText !== undefined) clip.hookText = jobData.hookText;
   if (jobData.ctaText !== undefined) clip.ctaText = jobData.ctaText;
   if (jobData.ctaDuration !== undefined) clip.ctaDuration = jobData.ctaDuration;
+  if (jobData.packagingTitle && clip.aiAnalysis) {
+    clip.aiAnalysis = {
+      ...clip.aiAnalysis,
+      viral_packaging: { ...clip.aiAnalysis.viral_packaging, video_title: jobData.packagingTitle },
+    };
+  }
   clip.filterPreset = jobData.filterPreset;
   clip.captionPresetId = jobData.captionPresetId;
   if (jobData.layout !== undefined) clip.layout = jobData.layout;

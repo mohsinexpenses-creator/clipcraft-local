@@ -929,6 +929,7 @@ function DashboardContent() {
                           }
                           brollBusy={busy === `broll:${clip._id}` || busy === `broll-edit:${clip._id}`}
                           onRerunBroll={(target) => void pipeline.rerunBroll(target)}
+                          onRemoveAllBroll={(target) => void pipeline.removeAllBroll(target)}
                           onBrollEdit={(target, action, itemId) =>
                             void pipeline.editBroll(target, action, itemId)
                           }

@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import {
   buildAsdResultCacheKey,
+  ASD_CACHE_VERSION,
   enforceAsdCacheLimit,
   getAsdCacheSettings,
   getAsdSourceIdentity,
@@ -74,6 +75,10 @@ test("ASD cache key includes immutable source metadata, clip window, and detecto
   } finally {
     fs.rmSync(fixture.root, { recursive: true, force: true });
   }
+});
+
+test("ASD cache version invalidates speaker timelines after cadence changes", () => {
+  assert.equal(ASD_CACHE_VERSION, 3);
 });
 
 test("ASD result and source-quality caches are reusable and opt-out safely", () => {

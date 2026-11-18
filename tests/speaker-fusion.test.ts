@@ -107,7 +107,7 @@ test('audio-correlated face motion picks the talking speaker, then follows the c
   assert.equal(last?.trackId, 2, 'B takes over when they start talking');
 
   for (const sw of switches(segments)) {
-    assert.ok(sw.t >= 0.8, `switch at ${sw.t}s respects the 0.8s minimum hold`);
+    assert.ok(sw.t >= 0.15, `switch at ${sw.t}s respects the 0.15s minimum hold`);
   }
 });
 
@@ -195,8 +195,37 @@ test('reactive turn change: a new speaker takes the frame within ~1.5s of starti
   }
 });
 
+test('reactive turn change is detected within 0.2 seconds at the 8 fps speaker cadence', () => {
+  const fps = 8;
+  const duration = 4;
+  const voice = Array.from({ length: duration * fps }, (_, i) => (i % 8 < 4 ? 0.1 : 0.9));
+  const track = (id: number, x: number, activeFrom: number): Track => {
+    const points = Array.from({ length: duration * fps }, (_, i) => ({
+      t: i / fps,
+      cx: x,
+      cy: 400,
+      w: 240,
+      mouthOpen: null,
+      motion: (id === 1 ? i < activeFrom * fps : i >= activeFrom * fps)
+        ? (voice[i] > 0.5 ? 0.9 : 0.1)
+        : 0.03,
+    }));
+    return { id, points, visibleTime: duration, avgW: 240, maxW: 240, cx: x, cy: 400, vx: 0, vy: 0, lastT: duration, missed: 0 };
+  };
+  const result = buildSpeakerTimeline({
+    duration,
+    fps,
+    voice,
+    tracks: [track(1, 500, 0), track(2, 1400, 2)],
+    frameWidth: FRAME_WIDTH,
+  });
+  const switched = switches(result.segments).find((entry) => entry.to === 2);
+  assert.ok(switched, JSON.stringify(result.segments));
+  assert.ok(switched.t - 2 < 0.2, `switched after ${(switched.t - 2).toFixed(3)}s`);
+});
+
 test('hysteresis: a marginal challenger cannot flip the frame every window', () => {
-  // Alternating near-tie scores: the 1.3x margin + 0.8s hold must keep the
+  // Alternating near-tie scores: the 1.1x margin + 0.15s hold must keep the
   // number of switches small and well-spaced.
   const voice = patternVoice();
   const a = makeTrack(1, { cx: 500, w: 240, motion: (i) => (i % 2 === 0 ? 0.55 : 0.45) });
@@ -211,9 +240,9 @@ test('hysteresis: a marginal challenger cannot flip the frame every window', () 
   });
 
   const sw = switches(segments);
-  assert.ok(sw.length <= Math.floor(DURATION / 0.8), `too many switches: ${sw.length}`);
+  assert.ok(sw.length <= Math.floor(DURATION / 0.4), `too many switches: ${sw.length}`);
   for (let i = 1; i < sw.length; i += 1) {
-    assert.ok(sw[i].t - sw[i - 1].t >= 0.8, `switches ${sw[i - 1].t} -> ${sw[i].t} too close`);
+    assert.ok(sw[i].t - sw[i - 1].t >= 0.15, `switches ${sw[i - 1].t} -> ${sw[i].t} too close`);
   }
 });
 

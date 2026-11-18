@@ -3,7 +3,7 @@ import { getClip, updateClip } from '@/lib/db';
 import { AppError, toErrorMessage, toErrorStatus } from '@/lib/errors';
 import { enqueueBrollJob, enqueueClipJob } from '@/lib/queue';
 import { jobDataFromClip } from '@/lib/pipeline';
-import { getClipBrollSummary, removeBrollItem, swapBrollItem } from '@/lib/broll/edit';
+import { getClipBrollSummary, removeAllBrollItems, removeBrollItems, removeBrollItem, swapBrollItem } from '@/lib/broll/edit';
 
 export const runtime = 'nodejs';
 
@@ -11,7 +11,7 @@ export const runtime = 'nodejs';
  * B-roll for ONE clip - the clip grid's only B-roll surface.
  *
  *   GET  -> the stored plan (thumbnails, type, time range, attribution) + status
- *   POST -> { action: 'rerun' | 'swap' | 'remove', itemId? }
+ *   POST -> { action: 'rerun' | 'swap' | 'remove' | 'remove-all' | 'remove-many', itemId?, itemIds?, render? }
  *
  * Swapping uses the alternatives recorded with the plan, so it never triggers a new
  * provider search and can never quietly substitute a different subject. Both edits
@@ -57,18 +57,34 @@ export async function POST(
       return NextResponse.json({ queued: true, status: 'pending' });
     }
 
-    if (action !== 'swap' && action !== 'remove') {
+    if (action !== 'swap' && action !== 'remove' && action !== 'remove-all' && action !== 'remove-many') {
       return NextResponse.json(
-        { error: "action must be one of 'rerun', 'swap' or 'remove'" },
+        { error: "action must be one of 'rerun', 'swap', 'remove', 'remove-all' or 'remove-many'" },
         { status: 400 }
       );
     }
-    if (!itemId) {
+    if ((action === 'swap' || action === 'remove') && !itemId) {
       return NextResponse.json({ error: 'itemId is required for this action.' }, { status: 400 });
+    }
+    const itemIds = Array.isArray(body.itemIds) && body.itemIds.every((value) => typeof value === 'string')
+      ? body.itemIds as string[]
+      : [];
+    if (action === 'remove-many' && itemIds.length === 0) {
+      return NextResponse.json({ error: 'itemIds must contain at least one item id.' }, { status: 400 });
     }
 
     const plan =
-      action === 'swap' ? await swapBrollItem(clip._id, itemId) : await removeBrollItem(clip._id, itemId);
+      action === 'swap'
+        ? await swapBrollItem(clip._id, itemId)
+        : action === 'remove'
+          ? await removeBrollItem(clip._id, itemId)
+          : action === 'remove-many'
+            ? await removeBrollItems(clip._id, itemIds)
+            : await removeAllBrollItems(clip._id);
+
+    if ((action === 'remove-all' || action === 'remove-many') && body.render === false) {
+      return NextResponse.json({ plan, renderQueued: false });
+    }
 
     // The plan changed, so the rendered file is now stale. Queue a render, but a
     // clip that is already rendering keeps working: the user can render again.

@@ -107,6 +107,16 @@ test('a non-empty hook text without an explicit duration re-enables the hook int
   assert.equal(edits.hookDuration, 3);
 });
 
+test('clip title edits update packaging without replacing other AI analysis', () => {
+  const clip = { aiAnalysis: validClip() } as unknown as ClipRecord;
+  const edits = sanitizeClipEdits({ title: 'The Stripper\'s Number Sparks a Love Is Blind Debate' });
+  const updated = applyClipEdits(clip, edits);
+
+  assert.equal(updated.aiAnalysis?.viral_packaging.video_title, 'The Stripper\'s Number Sparks a Love Is Blind Debate');
+  assert.equal(updated.aiAnalysis?.rank, clip.aiAnalysis?.rank);
+  assert.throws(() => sanitizeClipEdits({ title: '  ' }), /cannot be empty/);
+});
+
 test('hook timestamps are sanitized and applied to the existing AI analysis', () => {
   const clip = { aiAnalysis: validClip() } as unknown as ClipRecord;
   const edits = sanitizeClipEdits({ hookStart: '18.25', hookEnd: '22.5' });

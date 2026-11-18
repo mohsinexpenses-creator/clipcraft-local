@@ -48,6 +48,7 @@ import {
  */
 
 interface Draft {
+  title: string;
   start: string;
   end: string;
   hookStart: string;
@@ -83,6 +84,7 @@ function draftFrom(clip: ClipRecord, captionPresets: CaptionPreset[]): Draft {
   const hookEnd = hookTimestamp ? parseHookTimestamp(hookTimestamp.end) : null;
 
   return {
+    title: clip.aiAnalysis?.viral_packaging.video_title ?? "",
     start: clip.start.toFixed(1),
     end: clip.end.toFixed(1),
     hookStart: hookStart === null ? "" : String(hookStart),
@@ -193,6 +195,7 @@ function ClipEditForm({
     const edits = {
       start: Number(draft.start),
       end: Number(draft.end),
+      ...(clip.aiAnalysis ? { title: draft.title.trim() } : {}),
       ...(clip.aiAnalysis
         ? {
             hookStart: draft.hookStart,
@@ -265,6 +268,18 @@ function ClipEditForm({
 
           {/* form */}
           <div className="space-y-5">
+            {clip.aiAnalysis && (
+              <Section title="Packaging title" icon={<Type />} description="Use a title that matches the actual clip.">
+                <Field label="Clip title">
+                  <Input
+                    value={draft.title}
+                    maxLength={200}
+                    onChange={(event) => patch({ title: event.target.value })}
+                  />
+                </Field>
+              </Section>
+            )}
+
             <Section title="Clip window" icon={<Clock />} description="Seconds inside the source video.">
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
                 <Field label="Start (s)">

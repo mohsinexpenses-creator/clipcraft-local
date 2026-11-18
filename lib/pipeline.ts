@@ -110,6 +110,9 @@ export async function jobDataFromClip(
   return {
     clipId: clip._id,
     videoId: clip.videoId,
+    ...(clip.aiAnalysis?.viral_packaging.video_title
+      ? { packagingTitle: clip.aiAnalysis.viral_packaging.video_title }
+      : {}),
     start: clip.start,
     end: clip.end,
     hookDuration: clip.hookDuration ?? 0,

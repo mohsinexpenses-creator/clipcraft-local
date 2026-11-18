@@ -28,6 +28,7 @@ import { buildBrollPlan } from "../lib/broll/plan";
 import type { FaceZoneRect } from "../lib/broll/card";
 import { mapFaceToCanvas } from "../lib/broll/card";
 import { createBrollDeps } from "./broll-sources";
+import { wordWithinClip } from "../lib/clip-time";
 
 /** Words are matched to the clip window with the same slack the renderer uses. */
 const WORD_SLACK_SECONDS = 0.35;
@@ -41,12 +42,10 @@ export interface BrollJobResult {
 function clipWordsFor(videoWords: readonly WordTimestamp[], start: number, end: number): WordTimestamp[] {
   return videoWords
     .filter((word) => word.end >= start - WORD_SLACK_SECONDS && word.start <= end + WORD_SLACK_SECONDS)
-    .map((word) => ({
-      word: word.word,
-      // Clip-relative, exactly like the caption pipeline.
-      start: Math.max(0, word.start - start),
-      end: Math.max(0.1, word.end - start),
-    }));
+    .flatMap((word) => {
+      const relative = wordWithinClip(word, start, end);
+      return relative ? [relative] : [];
+    });
 }
 
 /**

@@ -126,6 +126,7 @@ export interface ClipTileProps {
   onCancel: (clip: ClipRecord) => void;
   onDelete: (clip: ClipRecord) => void;
   onRerunBroll: (clip: ClipRecord) => void;
+  onRemoveAllBroll: (clip: ClipRecord) => void;
   onBrollEdit: (clip: ClipRecord, action: "swap" | "remove", itemId: string) => void;
 }
 
@@ -139,6 +140,7 @@ export function ClipTile({
   onCancel,
   onDelete,
   onRerunBroll,
+  onRemoveAllBroll,
   onBrollEdit,
 }: ClipTileProps) {
   const videoRef = React.useRef<HTMLVideoElement | null>(null);
@@ -407,6 +409,7 @@ export function ClipTile({
         error={clip.brollError}
         busy={brollBusy}
         onRerun={() => onRerunBroll(clip)}
+                onRemoveAll={() => onRemoveAllBroll(clip)}
         onSwap={(itemId) => onBrollEdit(clip, "swap", itemId)}
         onRemove={(itemId) => onBrollEdit(clip, "remove", itemId)}
       />

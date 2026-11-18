@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { shiftBrollTimeline } from "../lib/broll/timing";
 import {
   calculateBrollActiveFrameRanges,
   getBrollActiveRangeRenderingEnabled,
@@ -52,4 +53,16 @@ test("B-roll active-range rendering is on by default and has a documented rollba
   assert.equal(getBrollActiveRangeRenderingEnabled({ BROLL_ACTIVE_RANGE_RENDERING: "0" }), false);
   assert.equal(getBrollActiveRangeRenderingEnabled({ BROLL_ACTIVE_RANGE_RENDERING: "false" }), false);
   assert.equal(getBrollActiveRangeRenderingEnabled({ BROLL_ACTIVE_RANGE_RENDERING: "1" }), true);
+});
+
+test("B-roll base-clip ranges shift after the prepended hook on the final timeline", () => {
+  const shifted = shiftBrollTimeline([
+    { start: 32.06, end: 34.56 },
+    { start: 53.81, end: 56.31 },
+  ], 3.14);
+
+  assert.ok(Math.abs(shifted[0].start - 35.2) < 1e-9);
+  assert.ok(Math.abs(shifted[0].end - 37.7) < 1e-9);
+  assert.ok(Math.abs(shifted[1].start - 56.95) < 1e-9);
+  assert.ok(Math.abs(shifted[1].end - 59.45) < 1e-9);
 });

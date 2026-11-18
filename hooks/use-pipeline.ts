@@ -324,6 +324,25 @@ export function usePipeline(selectedVideoId: string | null) {
     [run]
   );
 
+  const removeAllBroll = React.useCallback(
+    (clip: ClipRecord) =>
+      run(
+        `broll-edit:${clip._id}`,
+        async () => {
+          await requestJson(`/api/clips/${clip._id}/broll`, {
+            method: "POST",
+            body: JSON.stringify({ action: "remove-all", render: false }),
+          });
+          return await requestJson("/api/clips", {
+            method: "POST",
+            body: JSON.stringify({ clipId: clip._id, videoId: clip.videoId }),
+          });
+        },
+        { success: "All B-roll removed — re-rendering this clip." }
+      ),
+    [run]
+  );
+
   const editBroll = React.useCallback(
     (clip: ClipRecord, action: "swap" | "remove", itemId: string) =>
       run(
@@ -339,6 +358,25 @@ export function usePipeline(selectedVideoId: string | null) {
               ? "Image swapped — re-rendering this clip."
               : "Image removed — re-rendering this clip.",
         }
+      ),
+    [run]
+  );
+
+  const removeBrollItems = React.useCallback(
+    (clip: ClipRecord, itemIds: string[]) =>
+      run(
+        `broll-edit:${clip._id}`,
+        async () => {
+          await requestJson(`/api/clips/${clip._id}/broll`, {
+            method: "POST",
+            body: JSON.stringify({ action: "remove-many", itemIds, render: false }),
+          });
+          return await requestJson("/api/clips", {
+            method: "POST",
+            body: JSON.stringify({ clipId: clip._id, videoId: clip.videoId }),
+          });
+        },
+        { success: "B-roll plan updated — re-rendering this clip." }
       ),
     [run]
   );
@@ -485,7 +523,9 @@ export function usePipeline(selectedVideoId: string | null) {
     saveClip,
     cancelClip,
     rerunBroll,
+    removeAllBroll,
     editBroll,
+    removeBrollItems,
     cancelPipeline,
     applyRenderDefaults,
     deleteClip,

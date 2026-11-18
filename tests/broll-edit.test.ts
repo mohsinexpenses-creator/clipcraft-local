@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { Jimp } from 'jimp';
 import { getClip, getClipBrollPlan, saveClip, saveClipBrollPlan, saveVideo } from '../lib/db';
-import { removeBrollItem, swapBrollItem } from '../lib/broll/edit';
+import { removeAllBrollItems, removeBrollItems, removeBrollItem, swapBrollItem } from '../lib/broll/edit';
 import type { BrollHttpResponse, BrollFetch } from '../lib/broll/http';
 import { DEFAULT_BROLL_OPTIONS, type BrollItem, type BrollPlan, type ClipRecord, type VideoRecord } from '../lib/types';
 import { createTemporaryDatabase } from './sqlite-test-helpers';
@@ -178,6 +178,40 @@ test('remove drops exactly one item and refreshes the counts', async (t) => {
   const stored = await getClip(clip._id);
   assert.equal(stored?.broll?.items.length, 1);
   assert.equal(stored?.brollStatus, 'done');
+});
+
+test('remove all clears the plan and resets its image counts in one update', async (t) => {
+  createTemporaryDatabase(t);
+  const video = makeVideo('video-remove-all');
+  await saveVideo(video);
+  const clip = makeClip('clip-remove-all', video._id);
+  await saveClip(clip);
+  await saveClipBrollPlan(clip._id, makePlan([landscapeItem('card-one', []), landscapeItem('card-two', [])]));
+
+  const plan = await removeAllBrollItems(clip._id);
+  assert.deepEqual(plan.items, []);
+  assert.equal(plan.counts.fullscreen, 0);
+  assert.equal(plan.counts.landscape, 0);
+  assert.ok(plan.notes?.some((note) => note.includes('all 2 B-roll items')));
+  assert.deepEqual((await getClipBrollPlan(clip._id))?.items, []);
+});
+
+test('remove many preserves unselected items and updates counts atomically', async (t) => {
+  createTemporaryDatabase(t);
+  const video = makeVideo('video-remove-many');
+  await saveVideo(video);
+  const clip = makeClip('clip-remove-many', video._id);
+  await saveClip(clip);
+  await saveClipBrollPlan(clip._id, makePlan([
+    landscapeItem('keep-card', []),
+    landscapeItem('remove-card-1', []),
+    landscapeItem('remove-card-2', []),
+  ]));
+
+  const plan = await removeBrollItems(clip._id, ['remove-card-1', 'remove-card-2']);
+  assert.deepEqual(plan.items.map((item) => item.id), ['keep-card']);
+  assert.equal(plan.counts.landscape, 1);
+  assert.ok(plan.notes?.some((note) => note.includes('Removed 2 reviewed')));
 });
 
 test('editing a clip with no plan is a 404 with guidance', async (t) => {

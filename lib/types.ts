@@ -901,6 +901,8 @@ export interface ClipRecord {
 export interface JobData {
   clipId: string;
   videoId: string;
+  /** Packaging title snapshot applied atomically with the render request. */
+  packagingTitle?: string;
   start: number;
   end: number;
   /** 0 disables the hook intro; positive enables it (AI timestamps determine the duration when valid). */
