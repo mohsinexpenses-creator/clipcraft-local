@@ -346,7 +346,7 @@ function median(values: number[]): number {
 }
 
 /** Build a responsive speaker path with short, bounded non-speaker visits. */
-function buildSpeakerPath(asd: AsdResult, srcW: number): PanPoint[] {
+function buildSpeakerPath(asd: AsdResult): PanPoint[] {
   const byId = new Map<number, Track>();
   for (const track of asd.tracks) byId.set(track.id, track);
 
@@ -452,7 +452,7 @@ export function buildSinglePlan(
           : null,
     })),
   };
-  let points = buildSpeakerPath(cameraAsd, srcW);
+  let points = buildSpeakerPath(cameraAsd);
 
   // Fallback: the audio+visual speaker fusion can come back empty (short clip,
   // low voice energy, ...). The window must still follow SOMEONE - use the

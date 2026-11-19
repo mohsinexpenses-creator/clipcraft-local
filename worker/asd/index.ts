@@ -640,10 +640,7 @@ export async function detectSpeakerTimeline(
       skipFullFrameOnWideShots,
     );
 
-    // Single-attempt policy: do not re-extract or re-run YuNet at a higher
-    // quality profile. If this pass lacks usable faces, fail with the explicit
-    // detection error below rather than spending time on a hidden second pass.
-    let profile = initial;
+    // Single-attempt policy: no higher-quality re-extraction or second YuNet pass.
 
     analysis.tracks = analysis.tracks.filter(isLikelyLiveTrack);
     analysis.maxFacesSeen = maxConcurrentTracks(analysis.tracks);
