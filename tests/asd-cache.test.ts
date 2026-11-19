@@ -78,7 +78,7 @@ test("ASD cache key includes immutable source metadata, clip window, and detecto
 });
 
 test("ASD cache version invalidates speaker timelines after cadence changes", () => {
-  assert.equal(ASD_CACHE_VERSION, 4);
+  assert.equal(ASD_CACHE_VERSION, 5);
 });
 
 test("ASD result and source-quality caches are reusable and opt-out safely", () => {

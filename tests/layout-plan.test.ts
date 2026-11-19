@@ -14,10 +14,7 @@ import {
   flattenAndDecimate,
   MAX_CELL_UPSCALE,
   PanPoint,
-  SPEAKER_FOCUS_HOLD_SECONDS,
   SPEAKER_GLIDE_SECONDS,
-  SPEAKER_SWITCH_CADENCE_SECONDS,
-  SPEAKER_SWITCH_HOLD_SECONDS,
 } from '../worker/layout';
 import { AsdResult } from '../worker/asd/index';
 import { Track } from '../worker/asd/tracker';
@@ -139,10 +136,10 @@ test('speaker-focus plan follows the talking person and glides at the change', (
   const lastX = plan.points[plan.points.length - 1].x;
   assert.ok(firstX < 800, `starts on the left speaker (x=${firstX})`);
   assert.ok(lastX > 1100, `ends on the right speaker (x=${lastX})`);
-  assert.equal(SPEAKER_GLIDE_SECONDS, 0.12, 'camera transition completes within 0.2 seconds');
+  assert.equal(SPEAKER_GLIDE_SECONDS, 0.1, 'camera transition completes in about three frames at 30fps');
 });
 
-test('speaker-focus briefly shows another visible person then returns to the speaker', () => {
+test('speaker-focus does not cut away from the active speaker to a silent listener', () => {
   const speaker = panTrack(1, Array.from({ length: 80 }, () => 400), 0.25, 240);
   const listener = panTrack(2, Array.from({ length: 80 }, () => 1500), 0.25, 240);
   const plan = buildSinglePlan(
@@ -152,17 +149,25 @@ test('speaker-focus briefly shows another visible person then returns to the spe
     0.32
   );
 
-  const hasPointNear = (time: number, x: number) =>
-    plan.points.some((point) => Math.abs(point.t - time) < 0.001 && point.x === x);
-  assert.equal(SPEAKER_SWITCH_HOLD_SECONDS, 2, 'named switch hold is exactly two seconds');
-  assert.equal(SPEAKER_FOCUS_HOLD_SECONDS, 6, 'speaker focus lasts six seconds');
-  assert.ok(hasPointNear(5.88, 400), 'begins the cutaway glide after six seconds');
-  assert.ok(hasPointNear(6, 1500), 'reaches the listener at six seconds');
-  assert.ok(hasPointNear(8.12, 400), 'returns to the speaker after the two-second hold');
-  assert.ok(hasPointNear(14, 1500), 'next listener cutaway follows the full cycle');
-  assert.equal(14 - 6, SPEAKER_SWITCH_CADENCE_SECONDS);
+  assert.ok(plan.points.every((point) => point.x < 1000), 'camera remains on the active speaker');
+  assert.ok(!plan.points.some((point) => point.x > 1000), 'silent listener is never selected by a timer');
 });
 
+test('speaker-focus rapidly moves to the next active speaker', () => {
+  const a = panTrack(1, Array.from({ length: 40 }, () => 400));
+  const b = panTrack(2, Array.from({ length: 40 }, () => 1500));
+  const plan = buildSinglePlan(
+    asd([a, b], [
+      { trackId: 1, t0: 0, t1: 5 },
+      { trackId: 2, t0: 5, t1: 10 },
+    ]),
+    1920,
+    1080,
+    0.32
+  );
+  assert.ok(plan.points.some((point) => Math.abs(point.t - 5.1) < 0.001 && point.x > 1100),
+    'camera reaches speaker B within 0.1 seconds of the turn change');
+});
 test('motionless image faces do not become speaker-focus or split-screen people', () => {
   const first = panTrack(1, Array.from({ length: 80 }, () => 400), 0.25, 240);
   const second = panTrack(2, Array.from({ length: 80 }, () => 1500), 0.25, 240);

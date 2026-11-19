@@ -16,7 +16,6 @@ import {
   getAdaptiveAsdSamplingEnabled,
   getAsdDetectionConcurrency,
   getAsdInitialProfile,
-  getAsdQualityFallbackReason,
   getAsdSkipFullFrameOnWideShotsEnabled,
   interpolateTracksForAnalysis,
   type AsdSamplingProfile,
@@ -26,9 +25,7 @@ import {
   getAsdCacheSettings,
   getAsdSourceIdentity,
   readAsdResultCache,
-  readAsdSourceProfile,
   writeAsdResultCache,
-  writeAsdSourceProfile,
 } from './cache';
 
 /**
@@ -643,52 +640,10 @@ export async function detectSpeakerTimeline(
       skipFullFrameOnWideShots,
     );
 
-    const stableLiveTracks = analysis.tracks
-      .filter((track) => isLikelyLiveTrack(track) && track.points.length >= 8 && track.visibleTime >= 1)
-      .sort((a, b) => b.visibleTime * b.avgW - a.visibleTime * a.avgW)
-      .slice(0, 2);
-    const participantWidths = stableLiveTracks.map(
-      (track) => track.avgW * (sampleWidth / Math.max(1, videoWidth)),
-    );
-    const fallbackReason = samplingPlan.qualityFallback
-      ? getAsdQualityFallbackReason({
-          framesTotal: frames.length,
-          framesWithFaces: analysis.framesUsed,
-          tracks: stableLiveTracks.length,
-          // Ignore tiny wall portraits when persistent foreground participants
-          // already provide usable evidence for the first pass.
-          medianSampleFaceWidth: medianOf(participantWidths),
-        })
-      : null;
-    if (fallbackReason && samplingPlan.qualityFallback) {
-      const fallback = samplingPlan.qualityFallback;
-      log.warn(
-        `ASD · ${profile.name} sampling quality fallback (${fallbackReason}); retrying ` +
-        `${fallback.maxFrames} frames @ <=${fallback.maxFps}fps on ${fallback.sampleWidth}px.`,
-      );
-      if (writeAsdSourceProfile(cacheSettings, sourceIdentity, "quality")) {
-        log.detail("ASD · remembered the quality profile for this immutable source identity.");
-      }
-      if (frames[0]) cleanupSampledFrames(path.dirname(frames[0]));
-      frames = [];
-
-      const qualitySampled = await sampleWithProfile(fallback, 'frames-quality');
-      if (options.signal?.aborted) throw new RenderCancelledError();
-      frames = qualitySampled.frames;
-      sampleFps = qualitySampled.fps;
-      sampleWidth = fallback.sampleWidth;
-      profile = fallback;
-      analysis = await analyzeSampledFrames(
-        frames,
-        sampleFps,
-        videoWidth,
-        runtime,
-        options.signal,
-        options.onStageTiming,
-        detectionConcurrency,
-        skipFullFrameOnWideShots,
-      );
-    }
+    // Single-attempt policy: do not re-extract or re-run YuNet at a higher
+    // quality profile. If this pass lacks usable faces, fail with the explicit
+    // detection error below rather than spending time on a hidden second pass.
+    let profile = initial;
 
     analysis.tracks = analysis.tracks.filter(isLikelyLiveTrack);
     analysis.maxFacesSeen = maxConcurrentTracks(analysis.tracks);

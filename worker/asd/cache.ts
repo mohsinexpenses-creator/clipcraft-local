@@ -5,7 +5,7 @@ import type { AsdResult } from "./index";
 import { getTempDirValue } from "../../lib/paths";
 
 /** Bump whenever an ASD algorithm/input interpretation changes. */
-export const ASD_CACHE_VERSION = 4;
+export const ASD_CACHE_VERSION = 5;
 const DEFAULT_ASD_CACHE_MAX_MB = 512;
 const MIN_ASD_CACHE_MAX_MB = 32;
 const MAX_ASD_CACHE_MAX_MB = 4_096;
