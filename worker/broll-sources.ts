@@ -9,6 +9,7 @@
  */
 
 import fs from "node:fs/promises";
+import { createHash } from "node:crypto";
 import type {
   AiProviderSettings,
   BrollEntityType,
@@ -141,17 +142,9 @@ export function createBrollDeps(options: BrollSourceOptions): BrollPlanDeps {
       keywordMin: number;
     }): Promise<BrollAnalysis> {
       const prompt = buildBrollPrompt(input);
-      // The transcript is what the answer depends on, so its first/last words plus
-      // the prompt length identify it; a re-run reuse is instant and free.
-      const cacheKey = jsonCacheKey([
-        "analysis",
-        input.clipDuration.toFixed(2),
-        input.words.length,
-        prompt.length,
-        input.keywordMin,
-        input.words[0]?.word ?? "",
-        input.words[input.words.length - 1]?.word ?? "",
-      ]);
+      // Hash the complete prompt: equal-length transcripts must not collide.
+      const promptHash = createHash("sha256").update(prompt).digest("hex");
+      const cacheKey = jsonCacheKey(["analysis-v2", promptHash, input.keywordMin]);
       const cached = await readJsonCache<BrollAnalysis>(cacheKey, {
         ttlMs: SEARCH_CACHE_TTL_MS,
       });

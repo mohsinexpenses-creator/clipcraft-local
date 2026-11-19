@@ -100,6 +100,8 @@ interface Candidate {
   motion: number;
   /** Voice-gated motion, normalised 0..1 across the candidates of this window. */
   vm: number;
+  /** Absolute voice-gated motion before candidate normalisation. */
+  rawVm: number;
   prominence: number;
   corr: number;
   mouth: number;
@@ -268,7 +270,7 @@ export function buildSpeakerTimeline(input: SpeakerTimelineInput): SpeakerTimeli
       const score = voiced
         ? 0.4 * vmNorm + 0.15 * corr + 0.15 * energy + 0.1 * prominence + 0.15 * continuity + 0.05 * mouth
         : 0.3 * continuity + 0.3 * prominence + 0.2 * energy + 0.15 * vmNorm + 0.05 * corr;
-      return { trackId: track.id, score, motion: energy, vm: vmNorm, prominence, corr, mouth };
+      return { trackId: track.id, score, motion: energy, vm: vmNorm, rawVm: vm, prominence, corr, mouth };
     });
 
     if (candidates.length === 0) {
@@ -278,10 +280,22 @@ export function buildSpeakerTimeline(input: SpeakerTimelineInput): SpeakerTimeli
       continue;
     }
 
-    candidates.sort((a, b) => b.score - a.score);
-    const best = candidates[0];
+    const qualifiedCandidates = candidates.filter((candidate) =>
+      voiced
+        ? candidate.rawVm >= 0.08 || candidate.mouth >= 0.35
+        : candidate.motion >= 0.08 || candidate.mouth >= 0.35,
+    );
+    if (qualifiedCandidates.length === 0) {
+      // Do not promote the least-weak background portrait simply because it
+      // ranked first. Hold the incumbent or mark the speaker as unknown.
+      push(t0, nextT, state.current?.trackId ?? null);
+      continue;
+    }
+
+    qualifiedCandidates.sort((a, b) => b.score - a.score);
+    const best = qualifiedCandidates[0];
     const prev = state.current
-      ? candidates.find((c) => c.trackId === state.current!.trackId)
+      ? qualifiedCandidates.find((c) => c.trackId === state.current!.trackId)
       : undefined;
 
     let chosen = best;

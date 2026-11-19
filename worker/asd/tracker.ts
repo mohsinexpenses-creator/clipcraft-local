@@ -60,14 +60,22 @@ export interface Track {
   missed: number;
 }
 
-/** A tracked face needs measurable temporal change; a frozen photo is not a person. */
+/** Reject one-frame codec flicker: a live face needs repeated, meaningful change. */
 export function isLikelyLiveTrack(track: Track): boolean {
-  return (
-    track.points.length >= 2 &&
-    track.points.some(
-      (point) => point.motion !== null && point.motion >= 0.012,
-    )
-  );
+  const motion = track.points
+    .map((point) => point.motion)
+    .filter((value): value is number => value !== null && Number.isFinite(value));
+  if (track.points.length < 5 || motion.length < 4) return false;
+
+  const sorted = [...motion].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  const medianMotion =
+    sorted.length % 2 === 1
+      ? sorted[middle]
+      : (sorted[middle - 1] + sorted[middle]) / 2;
+  const meaningfulFrames = motion.filter((value) => value >= 0.025).length;
+
+  return medianMotion >= 0.018 && meaningfulFrames >= Math.max(3, Math.ceil(motion.length * 0.3));
 }
 
 export interface TrackerOptions {

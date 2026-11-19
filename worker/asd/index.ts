@@ -180,17 +180,18 @@ function medianOf(values: number[]): number {
 }
 
 function maxConcurrentTracks(tracks: Track[]): number {
-  const buckets = new Map<number, Set<number>>();
+  const samples = new Map<number, Set<number>>();
   for (const track of tracks) {
     for (const point of track.points) {
-      const key = Math.round(point.t * 4);
-      const bucket = buckets.get(key) ?? new Set<number>();
-      bucket.add(track.id);
-      buckets.set(key, bucket);
+      // Group detections from the same decoded frame, not adjacent 0.25s bins.
+      const key = Math.round(point.t * 1000);
+      const sample = samples.get(key) ?? new Set<number>();
+      sample.add(track.id);
+      samples.set(key, sample);
     }
   }
   let maximum = 0;
-  for (const bucket of buckets.values()) maximum = Math.max(maximum, bucket.size);
+  for (const sample of samples.values()) maximum = Math.max(maximum, sample.size);
   return maximum;
 }
 
@@ -642,12 +643,21 @@ export async function detectSpeakerTimeline(
       skipFullFrameOnWideShots,
     );
 
+    const stableLiveTracks = analysis.tracks
+      .filter((track) => isLikelyLiveTrack(track) && track.points.length >= 8 && track.visibleTime >= 1)
+      .sort((a, b) => b.visibleTime * b.avgW - a.visibleTime * a.avgW)
+      .slice(0, 2);
+    const participantWidths = stableLiveTracks.map(
+      (track) => track.avgW * (sampleWidth / Math.max(1, videoWidth)),
+    );
     const fallbackReason = samplingPlan.qualityFallback
       ? getAsdQualityFallbackReason({
           framesTotal: frames.length,
           framesWithFaces: analysis.framesUsed,
-          tracks: analysis.tracks.length,
-          medianSampleFaceWidth: medianOf(analysis.faceWidthsSample),
+          tracks: stableLiveTracks.length,
+          // Ignore tiny wall portraits when persistent foreground participants
+          // already provide usable evidence for the first pass.
+          medianSampleFaceWidth: medianOf(participantWidths),
         })
       : null;
     if (fallbackReason && samplingPlan.qualityFallback) {

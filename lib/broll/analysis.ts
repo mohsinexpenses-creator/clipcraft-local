@@ -353,44 +353,40 @@ export function deriveFallbackKeywords(
   targetMoments: number,
 ): BrollAnalysis {
   const usable = words
-    .filter((word) => word.end > word.start)
-    .map((word) => ({
+    .map((word, index) => ({
       ...word,
-      clean: word.word
-        .replace(/[^A-Za-z0-9'-]/g, "")
-        .trim()
-        .toLowerCase(),
+      index,
+      clean: word.word.replace(/[^A-Za-z0-9'-]/g, "").trim().toLowerCase(),
     }))
-    .filter(
-      (word) => word.clean.length >= 4 && !ABSTRACT_WORDS.has(word.clean),
-    );
-
-  const seen = new Set<string>();
-  const picks: Array<{ keyword: string; start: number; end: number }> = [];
-  for (const word of usable) {
-    if (seen.has(word.clean)) continue;
-    seen.add(word.clean);
-    picks.push({ keyword: word.clean, start: word.start, end: word.end });
-  }
+    .filter((word) => word.end > word.start && word.clean.length >= 4 && !ABSTRACT_WORDS.has(word.clean));
 
   const moments: BrollKeywordMoment[] = [];
+  const seen = new Set<string>();
   const slots = Math.max(1, targetMoments);
-  for (let index = 0; index < slots; index += 1) {
-    const pick = picks.length
-      ? picks[
-      Math.min(
-        picks.length - 1,
-        Math.floor(((index + 0.5) * picks.length) / slots),
-      )
-      ]
-      : undefined;
-    const centre = pick ? pick.start : ((index + 0.5) / slots) * clipDuration;
-    const start = Math.max(0, Math.min(clipDuration - 1.5, centre));
-    const end = Math.min(clipDuration, start + 1.5);
+  for (let slot = 0; slot < slots; slot += 1) {
+    if (usable.length === 0) break;
+    const pick = usable[Math.min(usable.length - 1, Math.floor(((slot + 0.5) * usable.length) / slots))];
+    // Search a short transcript phrase, not an isolated word stripped of context.
+    const nearby = words
+      .slice(Math.max(0, pick.index - 3), Math.min(words.length, pick.index + 4))
+      .map((word) => word.word.replace(/[^A-Za-z0-9'-]/g, "").trim())
+      .filter(Boolean);
+    const keyword = nearby.join(" ").replace(/\\s+/g, " ").trim();
+    const normalized = keyword.toLowerCase();
+    if (!keyword || seen.has(normalized)) continue;
+    seen.add(normalized);
+    const centre = (pick.start + pick.end) / 2;
+    const start = Math.max(0, Math.min(Math.max(0, clipDuration - 1.5), centre - 0.75));
+    moments.push({ visualKeywords: [keyword], start, end: Math.min(clipDuration, start + 1.5) });
+  }
+
+  while (moments.length < slots) {
+    const index = moments.length;
+    const start = Math.max(0, Math.min(Math.max(0, clipDuration - 1.5), ((index + 0.5) / slots) * clipDuration));
     moments.push({
-      visualKeywords: [pick?.keyword ?? "abstract background"],
+      visualKeywords: ["relevant documentary stock footage"],
       start,
-      end,
+      end: Math.min(clipDuration, start + 1.5),
     });
   }
   return { entities: [], broll: moments };
