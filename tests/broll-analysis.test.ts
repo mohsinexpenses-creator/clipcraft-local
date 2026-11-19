@@ -151,3 +151,19 @@ test('the prompt carries the clip-relative transcript and the JSON contract', ()
   assert.match(prompt, /At most 4/);
   assert.match(prompt, /NEVER abstract ideas/);
 });
+
+test('fallback stock queries retain surrounding transcript context', () => {
+  const words: WordTimestamp[] = [
+    { word: 'They', start: 0, end: 0.2 },
+    { word: 'visited', start: 0.2, end: 0.5 },
+    { word: 'the', start: 0.5, end: 0.6 },
+    { word: 'Eiffel', start: 0.6, end: 0.9 },
+    { word: 'Tower', start: 0.9, end: 1.2 },
+    { word: 'during', start: 1.2, end: 1.5 },
+    { word: 'sunset', start: 1.5, end: 1.8 },
+  ];
+  const result = deriveFallbackKeywords(words, 10, 1);
+  assert.equal(result.broll.length, 1);
+  assert.ok(result.broll[0].visualKeywords[0].split(/\\s+/).length >= 3);
+  assert.match(result.broll[0].visualKeywords[0], /Eiffel|Tower/);
+});

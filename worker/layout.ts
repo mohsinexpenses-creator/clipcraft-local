@@ -357,11 +357,6 @@ function median(values: number[]): number {
 
 /** Build a responsive speaker path with short, bounded non-speaker visits. */
 function buildSpeakerPath(asd: AsdResult, srcW: number): PanPoint[] {
-  const confirmedSpeakerIds = new Set(
-    asd.speakerSegments
-      .map((segment) => segment.trackId)
-      .filter((id): id is number => id !== null),
-  );
   const byId = new Map<number, Track>();
   for (const track of asd.tracks) byId.set(track.id, track);
 
@@ -398,10 +393,11 @@ function buildSpeakerPath(asd: AsdResult, srcW: number): PanPoint[] {
     ];
 
     const listeners = asd.tracks
-      .filter((candidate) => candidate.id !== track.id && confirmedSpeakerIds.has(candidate.id))
+      .filter((candidate) => candidate.id !== track.id)
       .map((candidate) => {
         if (
           !isLikelyLiveTrack(candidate) ||
+          candidate.visibleTime < 3 ||
           candidate.avgW < Math.max(24, srcW * 0.02)
         ) return null;
         const visible = candidate.points.filter((p) => p.t >= seg.t0 && p.t <= seg.t1);
@@ -464,8 +460,8 @@ function buildSpeakerPath(asd: AsdResult, srcW: number): PanPoint[] {
       .filter(
         (candidate) =>
           candidate.id !== track.id &&
-          confirmedSpeakerIds.has(candidate.id) &&
           isLikelyLiveTrack(candidate) &&
+          candidate.visibleTime >= 3 &&
           candidate.avgW >= Math.max(24, srcW * 0.02),
       )
       .map((candidate) => ({ track: candidate, firstSeen: candidate.points[0]?.t ?? Infinity }))
