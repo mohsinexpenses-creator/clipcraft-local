@@ -683,3 +683,26 @@ test('two people who never share the screen (camera cuts): single window, and th
     assert.ok(plan.points.length > 0, 'still follows the active speaker across the cuts');
   }
 });
+
+
+test('large wall portraits with only codec-level flicker cannot become a second participant', () => {
+  const speaker = panTrack(1, Array.from({ length: 60 }, () => 620), 0.25, 120);
+  const portrait = panTrack(2, Array.from({ length: 60 }, () => 1500), 0.25, 94);
+  portrait.points = portrait.points.map((point) => ({ ...point, motion: 0.01 }));
+
+  const single = buildLayoutPlan(
+    asd([speaker, portrait], [{ trackId: 1, t0: 0, t1: 15 }]),
+    'split-screen',
+    1920,
+    1080,
+  );
+  assert.equal(single.mode, 'single', 'a larger static portrait must not claim a second pane');
+
+  const focused = buildSinglePlan(
+    asd([speaker, portrait], [{ trackId: 1, t0: 0, t1: 15 }]),
+    1920,
+    1080,
+    0.32,
+  );
+  assert.ok(focused.points.every((point) => point.x < 1000), 'camera stays on the live speaker');
+});

@@ -260,3 +260,20 @@ test('no faces: the timeline is a single null segment (framing falls back)', () 
   assert.equal(segments[0].t0, 0);
   assert.equal(segments[0].t1, DURATION);
 });
+
+
+test('weak motion noise cannot win by being the strongest weak candidate', () => {
+  const voice = patternVoice();
+  const noisyPortrait = makeTrack(1, { cx: 500, w: 240, motion: () => 0.01 });
+  const otherPortrait = makeTrack(2, { cx: 1400, w: 240, motion: () => 0.008 });
+  const { segments, speakerCount } = buildSpeakerTimeline({
+    duration: DURATION,
+    fps: FPS,
+    voice,
+    tracks: [noisyPortrait, otherPortrait],
+    frameWidth: FRAME_WIDTH,
+  });
+
+  assert.equal(speakerCount, 0);
+  assert.ok(segments.every((segment) => segment.trackId === null));
+});
