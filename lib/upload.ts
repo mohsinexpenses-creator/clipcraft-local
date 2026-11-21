@@ -9,6 +9,7 @@ import { enqueueTranscriptionJob, findActiveJob, TRANSCRIPTION_QUEUE_NAME } from
 import { sanitizePipelineOptions } from './pipeline-defaults';
 import { PipelineOptions, VideoRecord } from './types';
 import { getPlannedTranscriptionEngine } from './whisper';
+import { log } from "./logger";
 
 /**
  * Helpers shared by every upload endpoint:
@@ -215,7 +216,7 @@ export async function buildVideoRecord(
     height = meta.height;
     duration = meta.duration;
   } catch (error) {
-    console.warn(
+    log.taggedWarn(
       `[Upload] FFmpeg could not read ${fileName} - saving it with zeroed media facts: ${toErrorMessage(error)}`
     );
   }
@@ -237,7 +238,7 @@ export async function buildVideoRecord(
     transcriptionProvider = engine.provider;
     transcriptionModel = engine.model;
   } catch (error) {
-    console.warn(`[Upload] Transcription engine not ready yet: ${toErrorMessage(error)}`);
+    log.taggedWarn(`[Upload] Transcription engine not ready yet: ${toErrorMessage(error)}`);
   }
 
   return {
@@ -285,7 +286,7 @@ export async function queueTranscription(video: VideoRecord): Promise<boolean> {
     current.status = 'failed';
     current.error = toErrorMessage(error, 'Could not queue the transcription job.');
     await updateVideo(current).catch((saveError) =>
-      console.error('[Upload] Could not persist the queue failure:', saveError)
+      log.taggedWarn('[Upload] Could not persist the queue failure:', saveError)
     );
     return false;
   }

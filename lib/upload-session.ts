@@ -14,6 +14,7 @@ import {
   validateUploadFileName,
 } from './upload';
 import { PipelineOptions, VideoRecord } from './types';
+import { log } from "./logger";
 
 /**
  * Resumable, chunked upload sessions for long recordings.
@@ -182,7 +183,7 @@ export async function createUploadSession(input: {
   };
   writeMeta(meta);
 
-  console.log(
+  log.tagged(
     `[Upload] Session ${id} created for "${originalName}"${
       declaredSize ? ` (${formatBytes(declaredSize)})` : ''
     } - chunk size ${formatBytes(meta.chunkSize)}.`
@@ -320,7 +321,7 @@ function syncReceivedBytes(id: string, session: UploadSessionMeta): UploadSessio
   try {
     writeMeta(updated);
   } catch (error) {
-    console.warn(
+    log.taggedWarn(
       `[Upload] Could not update session ${id} metadata: ${toErrorMessage(error)}`
     );
   }
@@ -414,7 +415,7 @@ export async function finalizeUploadSession(
   try {
     const { video, queued } = await registerUploadedVideo(originalName, storedName, finalPath, pipeline);
     await removeSessionDir(id);
-    console.log(
+    log.tagged(
       `[Upload] Session ${id} finalized: ${formatBytes(session.receivedBytes)} -> ${finalPath}`
     );
     return { video, transcriptionQueued: queued, receivedBytes: session.receivedBytes };
@@ -422,7 +423,7 @@ export async function finalizeUploadSession(
     try {
       await moveFile(finalPath, dataPath);
     } catch (revertError) {
-      console.error(
+      log.taggedWarn(
         `[Upload] Session ${id} could not be restored after a failed finalize (the file stays at ${finalPath}): ${toErrorMessage(revertError)}`
       );
     }
@@ -434,7 +435,7 @@ export async function finalizeUploadSession(
 export async function abortUploadSession(id: string): Promise<void> {
   assertSessionId(id);
   await removeSessionDir(id);
-  console.log(`[Upload] Session ${id} cancelled - partial file deleted.`);
+  log.tagged(`[Upload] Session ${id} cancelled - partial file deleted.`);
 }
 
 async function removeSessionDir(id: string): Promise<void> {
@@ -502,11 +503,11 @@ export async function cleanupStaleUploadSessions(force = false): Promise<number>
     const deleted = await removePathOrDefer(dir, 'stale-upload-session');
     if (deleted) {
       removed += 1;
-      console.log(
+      log.tagged(
         `[Upload] Removed stale upload session ${entry.name} (no activity for ${(ttlMs / 3_600_000).toFixed(0)} h).`
       );
     } else {
-      console.warn(`[Upload] Deferred cleanup for stale upload session ${entry.name}.`);
+      log.taggedWarn(`[Upload] Deferred cleanup for stale upload session ${entry.name}.`);
     }
   }
 

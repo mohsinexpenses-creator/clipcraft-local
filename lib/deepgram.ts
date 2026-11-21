@@ -4,6 +4,7 @@ import type { TranscriptionAudioFormat } from './ffmpeg';
 import { TranscriptData, TranscriptSegment, WordTimestamp } from './types';
 import { AppError, RenderCancelledError, toErrorMessage } from './errors';
 import { resolveDeepgram } from './app-settings';
+import { log } from "./logger";
 
 export interface DeepgramTranscriptionOptions {
   signal?: AbortSignal;
@@ -114,7 +115,7 @@ export async function transcribeWithDeepgram(
     const audioBuffer = await fs.promises.readFile(audioPath);
     if (options.signal?.aborted) throw new RenderCancelledError();
 
-    console.log(
+    log.tagged(
       `[Deepgram] Sending ${formatBytes(audioStat.size)} ${audioFormat.toUpperCase()} audio ` +
         `to Deepgram REST API (${model} model)...`,
     );
@@ -215,7 +216,7 @@ export async function transcribeWithDeepgram(
       });
     }
 
-    console.log(`[Deepgram] Successfully transcribed audio. Total words: ${words.length}`);
+    log.tagged(`[Deepgram] Successfully transcribed audio. Total words: ${words.length}`);
 
     return {
       text: fullText,

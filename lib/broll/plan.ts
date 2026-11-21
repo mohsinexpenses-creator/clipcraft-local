@@ -41,6 +41,7 @@ import {
   getBrollImagePreparationConcurrency,
   mapWithConcurrency,
 } from "./preparation";
+import { log } from "../logger";
 
 /** An image that is downloaded, prepared and ready to be painted. */
 export interface PreparedBrollImage {
@@ -138,7 +139,7 @@ export async function buildBrollPlan(
       keywordBudget,
       keywordMin: keywordBudget > 0 ? budget.targetMin : 0,
     });
-    console.log(
+    log.tagged(
       `[broll] Analysis: ${analysis.entities.length} entit(ies), ${analysis.broll.length} keyword moment(s).`,
     );
   } catch (error) {
@@ -371,7 +372,7 @@ export async function buildBrollPlan(
     // and share duplicate cache-key work so concurrent writes never collide.
     const imagePrepConcurrency = getBrollImagePreparationConcurrency();
     const preparedByCacheKey = new Map<string, Promise<PreparedBrollImage>>();
-    console.log(
+    log.tagged(
       `[broll] Preparing ${loaded.length} card image(s) with concurrency ${imagePrepConcurrency}.`,
     );
     const preparationResults = await mapWithConcurrency(
@@ -507,17 +508,17 @@ export async function buildBrollPlan(
     landscape: items.filter((item) => item.kind === "landscape").length,
   };
 
-  console.log(
+  log.tagged(
     `[broll] Plan: ${counts.fullscreen} full-screen + ${counts.landscape} card(s) ` +
     `(target ${counts.targetMin}-${counts.targetMax}), ${skipped.length} skipped.`,
   );
 
   for (const skip of skipped) {
-    console.log(
+    log.tagged(
       `[broll] skipped (${skip.stage})${skip.entity ? ` "${skip.entity}"` : ""}: ${skip.reason}`,
     );
   }
-  for (const note of notes) console.log(`[broll] note: ${note}`);
+  for (const note of notes) log.tagged(`[broll] note: ${note}`);
 
   return {
     version: 1,

@@ -29,6 +29,7 @@ import type { FaceZoneRect } from "../lib/broll/card";
 import { mapFaceToCanvas } from "../lib/broll/card";
 import { createBrollDeps } from "./broll-sources";
 import { wordWithinClip } from "../lib/clip-time";
+import { log } from "../lib/logger";
 
 /** Words are matched to the clip window with the same slack the renderer uses. */
 const WORD_SLACK_SECONDS = 0.35;
@@ -98,7 +99,7 @@ async function sampleFaceZones(
     }
   } catch (error) {
     if (error instanceof RenderCancelledError || signal?.aborted) throw new RenderCancelledError();
-    console.warn(
+    log.taggedWarn(
       `[broll] Face zone sampling skipped: ${error instanceof Error ? error.message : String(error)}`
     );
     return [];
@@ -153,7 +154,7 @@ export async function runBrollJob(
   );
 
   if (!options.autoBroll && trigger === "auto") {
-    console.log("[broll] autoBroll is off for this video - nothing to do.");
+    log.tagged("[broll] autoBroll is off for this video - nothing to do.");
     return { status: "skipped" };
   }
 

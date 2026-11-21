@@ -12,6 +12,7 @@
 import os from 'node:os';
 import { loadEffectiveSettings } from '../lib/app-settings';
 import { setProfanityAudioModeOverride, setProfanityContextPassOverride } from '../lib/profanity';
+import { log } from "../lib/logger";
 
 /**
  * `worker/remotion-renderer.ts` reads `REMOTION_CONCURRENCY` as a logical Chrome
@@ -55,7 +56,7 @@ export async function applyStoredRuntimeSettings(): Promise<void> {
     setProfanityAudioModeOverride(profanity.audioMode);
     setProfanityContextPassOverride(profanity.contextPassEnabled);
   } catch (error) {
-    console.warn(
+    log.taggedWarn(
       `[worker] Could not load stored settings; continuing with .env.local values: ` +
         `${error instanceof Error ? error.message : String(error)}`
     );

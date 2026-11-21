@@ -14,6 +14,7 @@ import {
   type SafetyWordEntry,
 } from './profanity-lexicon';
 import { RenderCancelledError } from './errors';
+import { log } from "./logger";
 
 export type ProfanityAudioMode = 'mute' | 'beep' | 'off';
 
@@ -464,7 +465,7 @@ export async function findContextCensorWordIndexes(
       .sort((a, b) => a - b);
   } catch (error) {
     if (options.signal?.aborted || error instanceof RenderCancelledError) throw new RenderCancelledError();
-    console.warn(`[profanity] Context moderation unavailable; static safety filter remains active: ${error instanceof Error ? error.message : String(error)}`);
+    log.taggedWarn(`[profanity] Context moderation unavailable; static safety filter remains active: ${error instanceof Error ? error.message : String(error)}`);
     return [];
   }
 }

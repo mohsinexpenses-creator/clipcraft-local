@@ -249,7 +249,7 @@ export async function detectViralSegments(
         json: true,
         signal,
       });
-      console.log(`[AI] Raw response (${result.entry.provider}/${result.entry.model})${label}:`, result.text);
+      log.tagged(`[AI] Raw response (${result.entry.provider}/${result.entry.model})${label}:`, result.text);
       return parseViralResponse(result.text, videoDuration);
     } catch (error) {
       if (error instanceof RenderCancelledError || signal?.aborted) throw new RenderCancelledError();
@@ -386,7 +386,7 @@ async function generateShortOverlayText(options: {
       signal: options.signal,
     });
     contentText = result.text;
-    console.log(`[AI] Raw ${options.logLabel} response (${result.entry.provider}/${result.entry.model}):`, contentText);
+    log.tagged(`[AI] Raw ${options.logLabel} response (${result.entry.provider}/${result.entry.model}):`, contentText);
   } catch (error) {
     if (error instanceof RenderCancelledError || options.signal?.aborted) throw new RenderCancelledError();
     if (error instanceof AppError) throw error;

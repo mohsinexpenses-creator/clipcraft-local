@@ -22,6 +22,7 @@ import {
 } from "./crop";
 import { writeBrollImage } from "./cache";
 import type { BrollCropPlan, BrollEntityType } from "../types";
+import { log } from "../logger";
 
 export const FULLSCREEN_JPEG_QUALITY = 88;
 export const CARD_JPEG_QUALITY = 88;
@@ -74,7 +75,7 @@ async function detectFace(image: JimpImage): Promise<FaceRect | null> {
     return best ? { x: best.box.x, y: best.box.y, width: best.box.width, height: best.box.height } : null;
   } catch (error) {
     // Face detection is best-effort: the crop still works without it.
-    console.warn(
+    log.taggedWarn(
       `[broll] Face detection skipped: ${error instanceof Error ? error.message : String(error)}`
     );
     return null;

@@ -39,13 +39,35 @@ export const color = {
   gray: wrap('90'),
 };
 
+/** `LOG_TIMESTAMP_MS=1` adds a `.mmm` field, e.g. `[14:07:31.482]`. */
+function stampsMilliseconds(): boolean {
+  const raw = process.env.LOG_TIMESTAMP_MS?.trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
 function timestamp(): string {
   const d = new Date();
   const p = (n: number): string => String(n).padStart(2, '0');
-  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  const base = `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  return stampsMilliseconds() ? `${base}.${String(d.getMilliseconds()).padStart(3, "0")}` : base;
 }
 
 const stamp = (): string => color.gray(`[${timestamp()}]`);
+
+/**
+ * A plain `[Tag] ...` line with the same `[HH:MM:SS]` stamp as `log.*`.
+ *
+ * This exists because the LLM/AI/Deepgram/B-roll modules used bare
+ * `console.log("[LLM] ...")`, so their lines were the only ones in a job log
+ * without a timestamp - impossible to line up with the render steps around
+ * them. A multi-line payload (a raw JSON response, a prompt dump) is stamped
+ * on its FIRST line only: repeating the stamp on continuation lines would
+ * interleave badly with anything else writing to the console at the same time.
+ */
+function stamped(stream: "out" | "error", message: string, extra: unknown[]): void {
+  const write = stream === "out" ? console.log : console.warn;
+  write(stamp(), message, ...extra);
+}
 
 const INDENT = '  ';
 
@@ -88,4 +110,25 @@ export const log = {
     console.log();
     console.log(stamp(), `${color.magenta(color.bold(title))} ${rule}`);
   },
+
+  /**
+   * A stamped line for module-tagged output: `log.info("[LLM] Trying ...")` and
+   * `console.log("[LLM] Trying ...")` now produce the same `[HH:MM:SS] [LLM] ...`.
+   * Extra arguments are passed through (e.g. a raw response body).
+   */
+  tagged(message: string, ...extra: unknown[]): void {
+    stamped("out", message, extra);
+  },
+
+  /** Like `tagged`, on stderr - for `[Tag] ...` warnings that used console.warn. */
+  taggedWarn(message: string, ...extra: unknown[]): void {
+    stamped("error", message, extra);
+  },
 };
+
+/** Returns the `[HH:MM:SS]` / `[HH:MM:SS.mmm]` prefix the logger prints, for tests. */
+export function logTimestampPrefix(date = new Date()): string {
+  const p = (n: number): string => String(n).padStart(2, '0');
+  const base = `${p(date.getHours())}:${p(date.getMinutes())}:${p(date.getSeconds())}`;
+  return `[${stampsMilliseconds() ? `${base}.${String(date.getMilliseconds()).padStart(3, "0")}` : base}]`;
+}

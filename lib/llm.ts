@@ -33,6 +33,7 @@
 
 import { AppError, RenderCancelledError, toErrorMessage } from "./errors";
 import { loadEffectiveSettings } from "./app-settings";
+import { log } from "./logger";
 
 export type LlmProviderKind = "openai-compatible" | "gemini-native";
 
@@ -666,14 +667,14 @@ export async function completeWithFallback(
 
     if (route.modelIds && !route.modelIds.includes(entry.id)) {
       const why = `task route ${route.name} prefers a fast model family`;
-      console.log(`[LLM] Skipping ${label} for "${request.task}" — ${why}`);
+      log.tagged(`[LLM] Skipping ${label} for "${request.task}" — ${why}`);
       attempts.push(`${label}: ${why}`);
       continue;
     }
 
     const circuitReason = openCircuitReason(entry, config);
     if (circuitReason) {
-      console.log(`[LLM] Skipping ${label} for "${request.task}" — ${circuitReason}`);
+      log.tagged(`[LLM] Skipping ${label} for "${request.task}" — ${circuitReason}`);
       attempts.push(`${label}: ${circuitReason}`);
       continue;
     }
@@ -681,7 +682,7 @@ export async function completeWithFallback(
     const keys = (keyPool.get(entry.apiKeyEnv) ?? []).slice(0, 1);
     if (keys.length === 0) {
       const why = "no key is configured (Settings -> AI providers)";
-      console.log(`[LLM] Skipping ${label} — ${why}`);
+      log.tagged(`[LLM] Skipping ${label} — ${why}`);
       attempts.push(`${label}: ${why}`);
       continue;
     }
@@ -695,12 +696,12 @@ export async function completeWithFallback(
             ? ""
             : ` thinking_budget=${route.thinkingBudget}`);
     const startedAt = Date.now();
-    console.log(`[LLM] Trying ${label} for "${request.task}"...${routeDetails}`);
+    log.tagged(`[LLM] Trying ${label} for "${request.task}"...${routeDetails}`);
     try {
       const text = await callEntryWithKey(entry, keys[0], request, route);
       const tookMs = Date.now() - startedAt;
       recordCircuitSuccess(entry, config);
-      console.log(`[LLM] ${label} handled "${request.task}" in ${tookMs}ms`);
+      log.tagged(`[LLM] ${label} handled "${request.task}" in ${tookMs}ms`);
       return { text, entry, tookMs };
     } catch (error) {
       if (error instanceof RenderCancelledError || request.signal?.aborted) {
@@ -711,7 +712,7 @@ export async function completeWithFallback(
           ? error
           : new LlmCallFailure(entry, toErrorMessage(error), { kind: "network" });
       const circuitUpdate = recordCircuitFailure(entry, failure, config);
-      console.warn(
+      log.taggedWarn(
         `[LLM] ${label} failed (${failure.message}) - trying next model` +
           (circuitUpdate ? `; ${circuitUpdate}` : ""),
       );
