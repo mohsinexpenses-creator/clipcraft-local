@@ -16,6 +16,7 @@ import {
 import { computeVoiceEnvelope, extractPcmMono } from "./audio";
 import { isLikelyLiveTrack, Tracker, Track, FrameDetection } from "./tracker";
 import { SpeakerSegment, buildSpeakerTimeline } from "./speaker";
+import { detectShotCuts } from "./shot-cuts";
 import {
   ASD_QUALITY_SAMPLE_WIDTH,
   buildAsdSamplingPlan,
@@ -86,13 +87,21 @@ export interface AsdResult {
   medianFaceWidth?: number;
   /** Width (px) of the frames the detector saw. */
   sampleWidth?: number;
+  /**
+   * Source SHOT CUTS inside the window (clip-relative seconds, the first frame
+   * after each cut), from the scene probe that runs beside frame extraction.
+   * The speaker camera switches on these exact frames and never interpolates
+   * across one. Empty when none were found (or the probe was disabled).
+   */
+  shotCuts?: number[];
 }
 
 export type AsdTimingStage =
   | "ffmpeg-frame-extraction"
   | "audio-envelope"
   | "yunet-detection"
-  | "tracking-speaker-fusion";
+  | "tracking-speaker-fusion"
+  | "shot-cut-detection";
 export type AsdStageTimingReporter = (
   stage: AsdTimingStage,
   elapsedMs: number,
@@ -144,6 +153,24 @@ async function measureAsdStage<T>(
 
 /** Kept as the public name for callers that describe the quality scan width. */
 export const ASD_SAMPLE_WIDTH = ASD_QUALITY_SAMPLE_WIDTH;
+
+/**
+ * Source shot-cut detection is always safe (a failure means "no cuts", the camera
+ * then simply never has to switch on one), so it runs by default on the SAME
+ * window as the frame extraction. `SHOT_CUT_DETECTION=0` skips the probe.
+ */
+export function getShotCutDetectionSettings(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): { enabled: boolean; threshold: number; minGapSeconds: number } {
+  const disabled = /^(0|false|no|off)$/i.test(env.SHOT_CUT_DETECTION?.trim() ?? "");
+  const threshold = Number(env.SHOT_CUT_THRESHOLD?.trim());
+  const minGap = Number(env.SHOT_CUT_MIN_GAP_SECONDS?.trim());
+  return {
+    enabled: !disabled,
+    threshold: Number.isFinite(threshold) ? Math.max(0.05, Math.min(0.95, threshold)) : 0.3,
+    minGapSeconds: Number.isFinite(minGap) ? Math.max(0.1, Math.min(10, minGap)) : 0.5,
+  };
+}
 const THUMB = 16;
 
 /** 16x16 grayscale thumbnail of a face region (scale-invariant motion cue). */
@@ -664,7 +691,11 @@ export async function detectSpeakerTimeline(
 
     // Frame extraction, PCM extraction and loading the one process-wide YuNet
     // session are independent. Starting them together removes idle wall time.
-    const [initialSampled, pcm, runtime] = await Promise.all([
+    // The shot-cut probe is a fourth independent pass: one small grayscale decode
+    // that tells the camera where the source cuts, so it can switch on that exact
+    // frame instead of interpolating two different shots together.
+    const shotCutSettings = getShotCutDetectionSettings();
+    const [initialSampled, pcm, runtime, shotCuts] = await Promise.all([
       sampleWithProfile(
         initial,
         initial.name === "fast"
@@ -679,6 +710,15 @@ export async function detectSpeakerTimeline(
           : Promise.resolve(new Int16Array(0)),
       ),
       loadYuNet(),
+      shotCutSettings.enabled
+        ? measureAsdStage(options, "shot-cut-detection", () =>
+            detectShotCuts(videoPath, start, duration, {
+              threshold: shotCutSettings.threshold,
+              minGapSeconds: shotCutSettings.minGapSeconds,
+              signal: options.signal,
+            }),
+          )
+        : Promise.resolve([] as number[]),
     ]);
     if (options.signal?.aborted) throw new RenderCancelledError();
     frames = initialSampled.frames;
@@ -773,6 +813,11 @@ export async function detectSpeakerTimeline(
         ? Math.round((analysis.framesUsed / frames.length) * 100)
         : 0;
 
+    if (shotCuts.length > 0) {
+      log.detail(
+        `  shot cuts at ${shotCuts.map((t) => t.toFixed(2)).join(", ")}s - the speaker camera switches on those frames`,
+      );
+    }
     log.ok(
       `ASD: ${tracks.length} person(s) tracked${analysis.maxFacesSeen > 1 ? `, ${analysis.maxFacesSeen} on screen at once` : ""}, ` +
         `${speakerCount} active speaker(s), ${Math.round(voicedRatio * 100)}% voiced, ` +
@@ -830,6 +875,7 @@ export async function detectSpeakerTimeline(
       framesWithMultipleFaces: analysis.framesWithMultipleFaces,
       medianFaceWidth,
       sampleWidth,
+      shotCuts,
     };
     if (cacheKey && writeAsdResultCache(cacheSettings, cacheKey, result)) {
       log.info(
