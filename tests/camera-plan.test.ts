@@ -681,3 +681,49 @@ test('[CAMERA-PLAN] per_minute is keyframes per real minute, not ten times that'
   const reported = Number(/per_minute=([\d.]+)/.exec(line)![1]);
   assert.equal(reported, Math.round((camera.keyframes / 2) * 10) / 10, `2 minutes of clip: ${line}`);
 });
+
+test('[CAMERA-PLAN] the keyframe cap truncates a pathological track and says so', () => {
+  // 4 minutes of an unpredictably walking head: without the cap this is hundreds
+  // of re-centres. With a tiny cap the plan must stop, keep the path valid and
+  // mark itself truncated instead of silently dropping moves.
+  const points = [];
+  for (let i = 0; i * 0.25 < 240; i += 1) {
+    const t = i * 0.25;
+    const seed = Math.sin(i * 12.9898) * 43758.5453;
+    points.push({ t, cx: 300 + 1200 * (seed - Math.floor(seed)), cy: 430, w: 220, mouthOpen: null, motion: 0.5 });
+  }
+  const walker = {
+    id: 1, points, visibleTime: 240, avgW: 220, maxW: 240,
+    cx: 0, cy: 0, vx: 0, vy: 0, lastT: 240, missed: 0,
+  };
+  const segments: Array<{ trackId: number; t0: number; t1: number }> = [];
+  for (let t = 0; t < 240; t += 2) segments.push({ trackId: 1, t0: t, t1: Math.min(240, t + 2) });
+  const settings = getSpeakerCameraSettings({ CAMERA_KEYFRAME_CAP: '12' }, 1920, 1080);
+  assert.equal(settings.maxMoves, 12);
+  const single = buildSinglePlan(asd([walker as never], segments), 1920, 1080, settings.anchorY, settings);
+  assert.equal(single.cameraPlan!.keyframes <= 12, true, `capped: ${single.cameraPlan!.keyframes}`);
+  assert.equal(single.camera!.truncated, true, 'the plan reports that it hit the cap');
+  // A truncated plan is still a valid path: every move is inside the source.
+  for (const move of single.camera!.moves) {
+    assert.ok(move.x >= 0 && move.x <= SRC.w - single.cropW, `move at ${move.t} inside the frame`);
+  }
+});
+
+test('[CAMERA-PLAN] logs truncated=true when the move budget stops the plan', () => {
+  const points = [];
+  for (let i = 0; i * 0.25 < 240; i += 1) {
+    const seed = Math.sin(i * 12.9898) * 43758.5453;
+    points.push({ t: i * 0.25, cx: 300 + 1200 * (seed - Math.floor(seed)), cy: 430, w: 220, motion: 0.5 });
+  }
+  const walker = {
+    id: 1, points, visibleTime: 240, avgW: 220, maxW: 240,
+    cx: 0, cy: 0, vx: 0, vy: 0, lastT: 240, missed: 0,
+  };
+  const settings = getSpeakerCameraSettings({ CAMERA_KEYFRAME_CAP: '12' }, 1920, 1080);
+  const single = buildSinglePlan(
+    asd([walker as never], [{ trackId: 1, t0: 0, t1: 240 }]),
+    1920, 1080, settings.anchorY, settings,
+  );
+  assert.equal(single.camera!.truncated, true);
+  assert.match(formatCameraPlanLog(single.cameraPlan!, 240), /truncated=true/);
+});

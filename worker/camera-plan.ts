@@ -779,6 +779,9 @@ function planTimeline(
 
     // The run's own re-centres, minus the ones that fall inside a cutaway.
     if (runCamera) {
+      // The inner planner stops silently once it runs out of its own budget; if it
+      // wanted more moves than the PLAN can still hold, the path is truncated.
+      if (runCamera.truncated) moveBudgetHit = true;
       for (const move of runCamera.moves) {
         if (move.t < cursor - run.t1 + 1e-6) continue;
         const insideCutaway = runCutaways.some(

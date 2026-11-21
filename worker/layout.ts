@@ -495,7 +495,8 @@ export function formatCameraPlanLog(plan: CameraPlan, durationSeconds: number): 
     ` keyframes=${plan.keyframes} cuts=${plan.cuts} glides=${plan.glides} ` +
     `per_minute=${(plan.keyframes / minutes).toFixed(1)} ` +
     `longest_glide=${plan.path.moves.reduce((max, move) => Math.max(max, move.duration), 0).toFixed(2)}s ` +
-    `runs=${plan.runs.length}`
+    `runs=${plan.runs.length}` +
+    (plan.path.truncated ? ' truncated=true' : '')
   );
 }
 
