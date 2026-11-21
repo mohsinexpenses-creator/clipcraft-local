@@ -493,7 +493,7 @@ export function formatCameraPlanLog(plan: CameraPlan, durationSeconds: number): 
     `cutaways=${plan.cutaways.length}` +
     (plan.skippedCutaways.length > 0 ? ` cutaways_skipped=${plan.skippedCutaways.length}` : "") +
     ` keyframes=${plan.keyframes} cuts=${plan.cuts} glides=${plan.glides} ` +
-    `per_minute=${((plan.keyframes / minutes) * 10).toFixed(1)} ` +
+    `per_minute=${(plan.keyframes / minutes).toFixed(1)} ` +
     `longest_glide=${plan.path.moves.reduce((max, move) => Math.max(max, move.duration), 0).toFixed(2)}s ` +
     `runs=${plan.runs.length}`
   );

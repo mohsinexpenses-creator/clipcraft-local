@@ -668,3 +668,16 @@ test('[CAMERA-PLAN] cutaways are counted separately from speaker switches', () =
     else process.env.SPEAKER_CUTAWAYS = previous;
   }
 });
+
+test('[CAMERA-PLAN] per_minute is keyframes per real minute, not ten times that', () => {
+  // 120 s of one turn per 8 s with a steady head: 14 locks, 14 keyframes.
+  const a = track(1, 120, () => ({ cx: 600, cy: 430 }));
+  const b = track(2, 120, () => ({ cx: 1400, cy: 430 }));
+  const timeline: Array<{ trackId: number; t0: number; t1: number }> = [];
+  for (let t = 0; t < 120; t += 8) timeline.push({ trackId: (t / 8) % 2 === 0 ? 1 : 2, t0: t, t1: t + 8 });
+  const single = plan(asd([a, b], timeline));
+  const camera = single.cameraPlan!;
+  const line = formatCameraPlanLog(camera, 120);
+  const reported = Number(/per_minute=([\d.]+)/.exec(line)![1]);
+  assert.equal(reported, Math.round((camera.keyframes / 2) * 10) / 10, `2 minutes of clip: ${line}`);
+});
