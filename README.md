@@ -42,7 +42,11 @@ pauses the chain: it recovers at the step where it stopped.
    0.5 s dip-to-black, so the clip opens with the detected hook and then builds back to it.
 5. **Frame the speaker** — active-speaker detection (YuNet faces + audio/motion
    fusion, `worker/asd/`) drives the 9:16 crop:
-   - **Speaker focus** — one window that glides to follow whoever is talking.
+   - **Speaker focus** — one window on whoever is talking, driven by a **locked**
+     camera: one anchor per turn and per source shot, a 10 %×8 % face dead zone, one
+     0.35 s re-centre when the face really leaves it, 0.1 s speaker switches and hard
+     switches on source shot cuts. It holds still while a talking head sways
+     (`CAMERA_MODE=legacy` restores the previous continuous follow).
    - **Split screen** — an adaptive 2/3/4-cell grid with one pane per person. Each pane
      is a **locked** camera: placed on the person once, perfectly still while their
      head stays in frame, and it only glides to re-centre them if they actually leave

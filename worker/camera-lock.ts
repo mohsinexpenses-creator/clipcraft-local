@@ -51,7 +51,28 @@ export interface CameraPath {
   moves: CameraMove[];
   /** True when more re-centres were needed than `maxMoves` allows (the rest were held). */
   truncated: boolean;
+  /**
+   * Source shot cuts inside the clip where the window must JUMP instead of
+   * gliding (a cut between two camera angles). At `t` the window is already at
+   * `x`, so the cut frame itself shows the new framing - no interpolation can
+   * ever cross one. Emitted as `if(lt(t,T),…,…)` in the FFmpeg expression.
+   */
+  cuts?: CameraCut[];
 }
+
+/** A hard switch of the window at a source shot cut (t = the first frame after it). */
+export interface CameraCut {
+  t: number;
+  x: number;
+  y: number;
+}
+
+/**
+ * Cut markers are honoured exactly like FFmpeg's `crop` filter evaluates with
+ * `exact=1` (nearest `t`), so `t + CUT_EPSILON` sits unambiguously on the new
+ * shot. One microsecond is far below a frame at any real frame rate.
+ */
+export const CUT_EPSILON = 1e-6;
 
 export interface CameraParams {
   srcW: number;
@@ -70,6 +91,33 @@ export interface CameraParams {
   settleSeconds?: number;
   /** Re-centres allowed per clip (keeps the FFmpeg expression short). Default 10. */
   maxMoves?: number;
+  /**
+   * `head` (default, the split-pane behaviour): the safe zone is the window minus
+   * `marginFraction` and the whole HEAD (hair included) must leave it.
+   * `face` (the speaker-focus lock): the safe zone is the FACE CENTRE only,
+   * `deadZoneXPct`/`deadZoneYPct` of the window, and the window glides a fixed
+   * `recentreSeconds` to the median of the last `recentreLookbackSeconds` of
+   * detections. No look-ahead, no distance-dependent duration.
+   */
+  deadZoneMode?: "head" | "face";
+  /** Face-centre dead zone, fraction of the window WIDTH. Default 0.10. */
+  deadZoneXPct?: number;
+  /** Face-centre dead zone, fraction of the window HEIGHT. Default 0.08. */
+  deadZoneYPct?: number;
+  /** Length of one re-centre glide (s). Default 0.35. */
+  recentreSeconds?: number;
+  /** Detections the re-centre target is taken from (s). Default 0.5. */
+  recentreLookbackSeconds?: number;
+  /** Start each glide this long before the dead zone was left. Default 0. */
+  anticipationSeconds?: number;
+  /** A re-centre shorter than this is skipped (already as close as the frame allows). Default 12. */
+  minMovePx?: number;
+  /**
+   * Source shot cuts (clip-relative seconds, the first frame after the cut). The
+   * window is already on the new shot's anchor at each one - no glide may cross
+   * a cut.
+   */
+  cuts?: Array<{ t: number }>;
 }
 
 /**
@@ -182,11 +230,31 @@ export function headInsideSafeZone(
  *
  * `samples` are that person's detections (any order). Returns where the window
  * starts and the (usually empty) list of glides that re-centre them.
+ *
+ * Two dead-zone behaviours, both "tripod, not stalker-cam":
+ *
+ *  - `head` (default, split panes): the window holds while the whole head is
+ *    inside the window minus `marginFraction`; it glides - distance-dependent
+ *    duration, aimed slightly ahead - only when the head has stayed outside for
+ *    `confirmSeconds`.
+ *  - `face` (speaker-focus single window): the window holds while the FACE
+ *    CENTRE stays inside a `deadZoneXPct` x `deadZoneYPct` box in the middle of
+ *    the window; when the centre has been outside that box for `confirmSeconds`
+ *    it does ONE eased `recentreSeconds` glide to the median of the last
+ *    `recentreLookbackSeconds` of detections, with no look-ahead.
+ *
+ * `params.cuts` are source shot cuts: the window is already on the new anchor at
+ * the exact cut time (a hard switch, never a glide across two shots).
  */
 export function buildLockedCamera(samples: CameraSample[], params: CameraParams): CameraPath {
   const maxMoves = params.maxMoves ?? DEFAULT_MAX_MOVES;
   const confirm = params.confirmSeconds ?? DEFAULT_CONFIRM_SECONDS;
   const settle = params.settleSeconds ?? DEFAULT_SETTLE_SECONDS;
+  const faceMode = params.deadZoneMode === "face";
+  const recentreDuration = Math.max(0.05, params.recentreSeconds ?? 0.35);
+  const lookback = Math.max(0, params.recentreLookbackSeconds ?? 0.5);
+  const anticipation = Math.max(0, params.anticipationSeconds ?? (faceMode ? 0 : ANTICIPATION_SECONDS));
+  const minMove = Math.max(0, params.minMovePx ?? MIN_MOVE_PX);
   const maxX = Math.max(0, params.srcW - params.cropW);
   const maxY = Math.max(0, params.srcH - params.cropH);
 
@@ -196,86 +264,276 @@ export function buildLockedCamera(samples: CameraSample[], params: CameraParams)
     return { x0: maxX / 2, y0: maxY / 2, moves: [], truncated: false };
   }
 
-  // 1) LOCK: the median position over the first `settle` seconds of sightings.
-  const firstT = pts[0].t;
-  let settleEnd = pts.findIndex((s) => s.t > firstT + settle);
-  if (settleEnd === -1) settleEnd = pts.length;
-  settleEnd = Math.max(settleEnd, Math.min(pts.length, 3));
-  const settled = pts.slice(0, settleEnd);
-  const start = windowFor(median(settled.map((s) => s.cx)), median(settled.map((s) => s.cy)), params);
+  const medianWindow = (group: CameraSample[]): { x: number; y: number } =>
+    windowFor(median(group.map((s) => s.cx)), median(group.map((s) => s.cy)), params);
 
-  const moves: CameraMove[] = [];
-  let current = start;
-  let busyUntil = -Infinity; // end of the last glide
-  let quietUntil = -Infinity; // after a pointless trigger, don't re-test for a moment
-  let outsideFrom = -1; // index where the current outside-the-safe-zone run began
-  let truncated = false;
+  const cuts = (params.cuts ?? [])
+    .filter((cut) => Number.isFinite(cut.t))
+    .sort((a, b) => a.t - b.t);
 
-  // 2) HOLD / 3) RE-CENTRE.
-  for (let i = settleEnd; i < pts.length; i += 1) {
-    const s = pts[i];
-    if (s.t < busyUntil || s.t < quietUntil) {
-      outsideFrom = -1;
-      continue;
+  // One group of detections per source SHOT: a cut can never sit inside a group,
+  // so the analysis below can never interpolate across one.
+  const shots: CameraSample[][] = [];
+  {
+    let shot = 0;
+    let current: CameraSample[] = [];
+    for (const point of pts) {
+      while (shot < cuts.length && point.t >= cuts[shot].t - 1e-6) {
+        if (current.length > 0) shots.push(current);
+        current = [];
+        shot += 1;
+      }
+      current.push(point);
     }
-    if (headInsideSafeZone(s, current, params)) {
-      outsideFrom = -1;
-      continue;
-    }
-    if (outsideFrom === -1) outsideFrom = i;
-    // Outside for long enough to be real? (the median filter already removed 1-2 sample blips)
-    if (s.t - pts[outsideFrom].t < confirm - 1e-6) continue;
-
-    const tFirst = pts[outsideFrom].t;
-    const centreOver = (t0: number, t1: number): { x: number; y: number } | null => {
-      const inRange = pts.filter((q) => q.t >= t0 && q.t <= t1);
-      if (inRange.length < 2) return null;
-      return windowFor(median(inRange.map((q) => q.cx)), median(inRange.map((q) => q.cy)), params);
-    };
-
-    // Where will the head be? First guess from the next ~0.8 s ...
-    let target =
-      centreOver(tFirst, tFirst + 0.8) ??
-      windowFor(
-        median(pts.slice(outsideFrom, i + 1).map((q) => q.cx)),
-        median(pts.slice(outsideFrom, i + 1).map((q) => q.cy)),
-        params
-      );
-    let distance = Math.max(Math.abs(target.x - current.x), Math.abs(target.y - current.y));
-    let duration = glideSeconds(distance);
-    // ... then refine: aim at where it is when the glide has finished.
-    const refined = centreOver(tFirst + duration * 0.6, tFirst + duration + 0.5);
-    if (refined) {
-      target = refined;
-      distance = Math.max(Math.abs(target.x - current.x), Math.abs(target.y - current.y));
-      duration = glideSeconds(distance);
-    }
-
-    if (distance < MIN_MOVE_PX) {
-      // The window is already as close as the frame edge allows: nothing to gain.
-      outsideFrom = -1;
-      quietUntil = tFirst + 1;
-      continue;
-    }
-    if (moves.length >= maxMoves) {
-      truncated = true;
-      break;
-    }
-
-    const tStart = Math.max(0, tFirst - ANTICIPATION_SECONDS, busyUntil);
-    moves.push({ t: tStart, duration, x: target.x, y: target.y });
-    current = target;
-    busyUntil = tStart + duration;
-    outsideFrom = -1;
+    if (current.length > 0) shots.push(current);
   }
 
-  return { x0: start.x, y0: start.y, moves, truncated };
+  const firstSettled = buildSettledWindow(shots[0], settle, params);
+  const start = firstSettled;
+  const moves: CameraMove[] = [];
+  const switches: CameraCut[] = [];
+  let truncated = false;
+  let lastPos = start;
+  let busyUntil = -Infinity;
+  let quietUntil = -Infinity;
+
+  shots.forEach((group, shotIndex) => {
+    let firstIndex = 0;
+    if (shotIndex === 0) {
+      // 1) LOCK: the median position over the first `settle` seconds of sightings.
+      firstIndex = settledSampleCount(group, settle);
+    } else {
+      const cut = cuts[Math.min(shotIndex - 1, cuts.length - 1)];
+      // The new shot is anchored on the face visible AFTER the cut - which is the
+      // only face this shot has - and switches on that exact frame.
+      lastPos = medianWindow(group);
+      switches.push({ t: round3(cut.t), x: lastPos.x, y: lastPos.y });
+      busyUntil = cut.t;
+      quietUntil = -Infinity;
+    }
+
+    // 2) HOLD / 3) RE-CENTRE.
+    let outsideFrom = -1;
+    let needsInside = false;
+    for (let i = firstIndex; i < group.length; i += 1) {
+      const s = group[i];
+      if (s.t < busyUntil || s.t < quietUntil) {
+        outsideFrom = -1;
+        continue;
+      }
+      const inside = faceMode
+        ? faceCentreInsideDeadZone(s, lastPos, params)
+        : headInsideSafeZone(s, lastPos, params);
+      if (inside) {
+        outsideFrom = -1;
+        needsInside = false;
+        continue;
+      }
+      // A sway or a nod: the face is outside the dead zone, but its recent MEDIAN
+      // is not. Only a sustained displacement counts as leaving the lock - this
+      // is what keeps a +/-40px talking head perfectly still.
+      if (faceMode && !faceRecentreWanted(group, i, lastPos, params, lookback)) {
+        outsideFrom = -1;
+        continue;
+      }
+      if (outsideFrom === -1) outsideFrom = i;
+      // Outside for long enough to be real? (the median filter already removed blips)
+      const outsideFor = s.t - group[outsideFrom].t;
+      if (outsideFor < confirm - 1e-6) continue;
+      if (
+        faceMode &&
+        needsInside &&
+        // The head still fits comfortably inside the crop: a slow drift may
+        // leave the dead zone, but it is ONE departure until the face comes back
+        // inside (or the head would actually be cut by the crop edge).
+        headInsideSafeZone(s, lastPos, { ...params, marginFraction: 0 })
+      ) {
+        continue;
+      }
+
+      const tFirst = group[outsideFrom].t;
+      const target = faceMode
+        ? medianWindow(recentSamples(group, s.t, lookback))
+        : headTarget(group, outsideFrom, i, lastPos, params);
+      const distance = Math.max(Math.abs(target.x - lastPos.x), Math.abs(target.y - lastPos.y));
+      if (distance < minMove) {
+        // The window is already as close as the frame edge allows: nothing to gain.
+        outsideFrom = -1;
+        quietUntil = tFirst + 1;
+        continue;
+      }
+      if (moves.length >= maxMoves) {
+        truncated = true;
+        break;
+      }
+
+      // Speaker-focus re-centres are one fixed short glide; the split-pane
+      // "head left the safe zone" move stays distance-dependent (0.6-1.3 s).
+      const duration = faceMode ? recentreDuration : glideSeconds(distance);
+      const tStart = Math.max(0, tFirst - anticipation, busyUntil);
+      moves.push({ t: round3(tStart), duration: round3(duration), x: target.x, y: target.y });
+      lastPos = target;
+      busyUntil = tStart + duration;
+      outsideFrom = -1;
+      needsInside = true;
+    }
+  });
+
+  const orderedSwitches = switches.sort((a, b) => a.t - b.t);
+  return {
+    x0: start.x,
+    y0: start.y,
+    moves: moves.sort((a, b) => a.t - b.t),
+    truncated,
+    ...(orderedSwitches.length > 0 ? { cuts: orderedSwitches } : {}),
+  };
 }
 
-/** Window top-left at time `t` (the same maths the FFmpeg expression encodes). */
+/**
+ * How far past the dead zone the face's recent median must sit before a
+ * re-centre is considered (anti-flicker hysteresis, never a smaller zone).
+ */
+export const FACE_DEADZONE_HYSTERESIS = 1.15;
+
+/**
+ * Face-mode re-centre arming: after a glide the face is usually still slightly
+ * outside the (small, 10%x8%) dead zone, because the glide targets the median of
+ * the last half second - i.e. where the face WAS. Re-testing immediately would
+ * produce a chain of back-to-back 0.35 s hops - exactly the "camera creeps
+ * constantly" behaviour this mode exists to remove. A second glide therefore
+ * needs the face to come back INSIDE the dead zone first; a continuous drift is
+ * ONE re-centre, not one per 1.5 s. The single exception is a head that the crop
+ * would actually cut: then the camera may move again to keep them framed.
+ */
+function round3(value: number): number {
+  return Math.round(value * 1000) / 1000;
+}
+
+/** How many samples fall inside the initial `settle` seconds (at least 3, all of them at most). */
+function settledSampleCount(group: CameraSample[], settle: number): number {
+  const firstT = group[0].t;
+  let end = group.findIndex((s) => s.t > firstT + settle);
+  if (end === -1) end = group.length;
+  return Math.max(end, Math.min(group.length, 3));
+}
+
+/** Window position from the median of the first `settle` seconds of a shot. */
+function buildSettledWindow(
+  group: CameraSample[],
+  settle: number,
+  params: CameraParams
+): { x: number; y: number } {
+  const settled = group.slice(0, settledSampleCount(group, settle));
+  return windowFor(median(settled.map((s) => s.cx)), median(settled.map((s) => s.cy)), params);
+}
+
+/**
+ * Face mode: does the recent (median-filtered) position want a re-centre?
+ *
+ * The FACE may sway through the edge of the dead zone for as long as it likes; a
+ * re-centre needs the recent median to sit outside it. `confirm` is honoured by
+ * the caller, so a genuine departure (which the median follows within a couple of
+ * samples) still triggers exactly one glide.
+ */
+function faceRecentreWanted(
+  group: CameraSample[],
+  index: number,
+  win: { x: number; y: number },
+  params: CameraParams,
+  lookback: number
+): boolean {
+  const sample = group[index];
+  const recent = recentSamples(group, sample.t, lookback);
+  if (recent.length === 0) return false;
+  const medianX = median(recent.map((q) => q.cx));
+  const medianY = median(recent.map((q) => q.cy));
+  // Hysteresis: a face that GRAZES the edge of the dead zone is still holding -
+  // a re-centre needs it clearly outside (`FACE_DEADZONE_HYSTERESIS`).
+  const hysteretic = {
+    ...params,
+    deadZoneXPct: (params.deadZoneXPct ?? 0.1) * FACE_DEADZONE_HYSTERESIS,
+    deadZoneYPct: (params.deadZoneYPct ?? 0.08) * FACE_DEADZONE_HYSTERESIS,
+  };
+  return !faceCentreInsideDeadZone(
+    { t: sample.t, cx: medianX, cy: medianY, w: sample.w },
+    win,
+    hysteretic
+  );
+}
+
+/** The detections inside the last `lookback` seconds up to and including `t` (at least one). */
+function recentSamples(group: CameraSample[], t: number, lookback: number): CameraSample[] {
+  const inside = group.filter((q) => q.t >= t - lookback - 1e-6 && q.t <= t + 1e-6);
+  return inside.length > 0 ? inside : group.filter((q) => q.t <= t + 1e-6).slice(-1);
+}
+
+/** The `head`-mode re-centre target: ~0.8 s ahead, refined to where the head will be. */
+function headTarget(
+  group: CameraSample[],
+  outsideFrom: number,
+  index: number,
+  current: { x: number; y: number },
+  params: CameraParams
+): { x: number; y: number } {
+  const tFirst = group[outsideFrom].t;
+  const centreOver = (t0: number, t1: number): { x: number; y: number } | null => {
+    const inRange = group.filter((q) => q.t >= t0 && q.t <= t1);
+    if (inRange.length < 2) return null;
+    return windowFor(median(inRange.map((q) => q.cx)), median(inRange.map((q) => q.cy)), params);
+  };
+  const target =
+    centreOver(tFirst, tFirst + 0.8) ??
+    windowFor(
+      median(group.slice(outsideFrom, index + 1).map((q) => q.cx)),
+      median(group.slice(outsideFrom, index + 1).map((q) => q.cy)),
+      params
+    );
+  const distance = Math.max(Math.abs(target.x - current.x), Math.abs(target.y - current.y));
+  const duration = glideSeconds(distance);
+  return centreOver(tFirst + duration * 0.6, tFirst + duration + 0.5) ?? target;
+}
+
+/**
+ * Is the FACE CENTRE inside the speaker-focus dead zone?
+ *
+ * The zone is measured from where the lock PUT the face (`anchorY` of the
+ * window), and each side is `deadZoneXPct` of the crop WIDTH by `deadZoneYPct`
+ * of the crop HEIGHT: with the defaults (10% x 8% of a 606x1080 crop) a talking
+ * head may sway +/-60 px horizontally and +/-86 px vertically before the camera
+ * even considers moving.
+ */
+export function faceCentreInsideDeadZone(
+  s: CameraSample,
+  win: { x: number; y: number },
+  p: Pick<CameraParams, "cropW" | "cropH" | "deadZoneXPct" | "deadZoneYPct"> & {
+    anchorY?: number;
+  }
+): boolean {
+  const halfX = p.cropW * (p.deadZoneXPct ?? 0.1);
+  const halfY = p.cropH * (p.deadZoneYPct ?? 0.08);
+  const centreX = win.x + p.cropW / 2;
+  const centreY = win.y + p.cropH * (p.anchorY ?? 0.5);
+  return Math.abs(s.cx - centreX) <= halfX && Math.abs(s.cy - centreY) <= halfY;
+}
+
+/**
+ * Window top-left at time `t` (the same maths the FFmpeg expression encodes).
+ *
+ * Cut switches are applied first: on the cut frame itself (`t === cut.t`) the
+ * window is ALREADY at the new shot's position, exactly like the generated
+ * expression's `if(lt(t,T),…)`.
+ */
 export function cameraPositionAt(path: CameraPath, t: number): { x: number; y: number } {
-  let prev = { x: path.x0, y: path.y0 };
+  const cuts = path.cuts ?? [];
+  let base = { x: path.x0, y: path.y0 };
+  let cutIndex = 0;
+  while (cutIndex < cuts.length && cuts[cutIndex].t <= t + 1e-9) {
+    base = { x: cuts[cutIndex].x, y: cuts[cutIndex].y };
+    cutIndex += 1;
+  }
+  let prev = base;
   for (const move of path.moves) {
+    if (cutIndex < cuts.length && move.t >= cuts[cutIndex].t - 1e-9) break;
     if (t <= move.t) return prev;
     if (t < move.t + move.duration) {
       const s = smoothstep((t - move.t) / move.duration);

@@ -202,13 +202,17 @@ function evalFfmpegExpr(expr: string, t: number): number {
     .replace(/\bclip\(/g, '__clip(')
     .replace(/\bpow\(/g, '__pow(')
     .replace(/\bmin\(/g, '__min(')
-    .replace(/\bmax\(/g, '__max(');
+    .replace(/\bmax\(/g, '__max(')
+    .replace(/\blt\(/g, '__lt(')
+    .replace(/\bgte\(/g, '__gte(');
   const fn = new Function(
     't',
     '__clip',
     '__pow',
     '__min',
     '__max',
+    '__lt',
+    '__gte',
     `return ${js};`
   ) as (t: number, ...f: unknown[]) => number;
   return fn(
@@ -216,7 +220,9 @@ function evalFfmpegExpr(expr: string, t: number): number {
     (x: number, a: number, b: number) => Math.min(b, Math.max(a, x)),
     Math.pow,
     Math.min,
-    Math.max
+    Math.max,
+    (a: number, b: number) => (a < b ? 1 : 0),
+    (a: number, b: number) => (a >= b ? 1 : 0)
   );
 }
 
@@ -288,4 +294,49 @@ test('even ten glides keep the crop expression tiny (Windows command-line safe)'
   assert.ok(expr.x.length < 1800, `x expression is ${expr.x.length} chars`);
   assert.ok(expr.y.length < 100, `y expression stays a constant (${expr.y.length} chars)`);
   assert.ok(!expr.x.includes('if('), 'no nested if() chain');
+});
+
+// ---------------------------------------------------------------------------
+// Source shot cuts: the window switches ON the cut frame, never across it
+// ---------------------------------------------------------------------------
+
+test('cuts: the window is on the new shot from the cut frame on (no glide across a cut)', () => {
+  // Continuous face track, but the source cuts at t=10 from a wide to a close
+  // shot: the person's face centre jumps from 900 to 1500.
+  const samples = trace((t) => ({ cx: t < 10 ? 900 : 1500, cy: 400 }), 20);
+  const path = buildLockedCamera(samples, { ...PARAMS, cuts: [{ t: 10 }], maxMoves: 0 });
+  assert.ok(path.cuts && path.cuts.length === 1, 'exactly one hard switch');
+  const sw = path.cuts![0];
+  assert.equal(sw.t, 10);
+  assert.ok(Math.abs(sw.x - windowFor(1500, 400, PARAMS).x) < 6, 'anchored on the face AFTER the cut');
+  assert.equal(path.moves.length, 0, 'no glide was needed (and none is allowed across a cut)');
+  // The frame just before the cut still shows the old shot's framing.
+  assert.ok(Math.abs(cameraPositionAt(path, 9.99).x - path.x0) < 1e-6);
+  // The cut frame itself already shows the new one.
+  assert.equal(cameraPositionAt(path, 10).x, sw.x);
+});
+
+test('cuts: the FFmpeg expression switches on the exact cut frame and matches the JS camera', () => {
+  const samples = trace((t) => ({ cx: t < 10 ? 900 : 1500, cy: 400 }), 20);
+  const path = buildLockedCamera(samples, { ...PARAMS, cuts: [{ t: 10 }], maxMoves: 0 });
+  const expr = cameraExpressions(path, 1920, 1080, 540, 480, 0);
+  assert.ok(expr.x.includes('gte(t,10.000)*'), `switches at the cut: ${expr.x}`);
+  assert.ok(!expr.x.includes(':'), `colon-free (crop splits on ":"): ${expr.x}`);
+  for (const t of [0, 5, 9.9, 10, 12, 19]) {
+    assert.ok(
+      Math.abs(evalFfmpegExpr(expr.x, t) - cameraPositionAt(path, t).x) < 0.2,
+      `x at ${t}: expression vs camera`
+    );
+  }
+});
+
+test('cuts: a re-centre inside a shot is timed relative to that shot and never crosses the cut', () => {
+  // Shot A: still at 900. Cut at 10. Shot B: the person drifts far right.
+  const raw = trace((t) => ({ cx: t < 10 ? 900 : 900 + Math.min(1, (t - 10) / 1.5) * 420, cy: 400 }), 20);
+  const path = buildLockedCamera(raw, { ...PARAMS, cuts: [{ t: 10 }] });
+  assert.ok(path.cuts && path.cuts.length === 1);
+  for (const move of path.moves) {
+    assert.ok(move.t >= 10, `a glide only exists after the cut (t=${move.t})`);
+  }
+  assert.ok(path.moves.length <= 1, `at most one re-centre in shot B (${path.moves.length})`);
 });

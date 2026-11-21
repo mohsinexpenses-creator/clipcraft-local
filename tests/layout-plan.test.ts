@@ -131,12 +131,35 @@ test('speaker-focus plan follows the talking person and glides at the change', (
   );
 
   assert.equal(plan.mode, 'single');
-  assert.ok(plan.points.length > 0, 'has a pan path');
-  const firstX = plan.points[0].x;
-  const lastX = plan.points[plan.points.length - 1].x;
-  assert.ok(firstX < 800, `starts on the left speaker (x=${firstX})`);
-  assert.ok(lastX > 1100, `ends on the right speaker (x=${lastX})`);
+  assert.equal(plan.cameraMode, 'locked', 'CAMERA_MODE=locked is the default planner');
+  assert.ok(plan.camera, 'has a camera path');
+  const path = plan.camera!;
+  assert.ok(path.x0 + plan.cropW / 2 < 800, `starts on the left speaker (x0=${path.x0})`);
+  // One 0.1 s glide to speaker B - not a continuous follow of the raw track.
+  assert.equal(path.moves.length, 1, `exactly one speaker switch (${path.moves.length})`);
+  assert.equal(path.moves[0].duration, 0.1);
+  assert.ok(path.moves[0].x + plan.cropW / 2 > 1100, `ends on the right speaker (x=${path.moves[0].x})`);
   assert.equal(SPEAKER_GLIDE_SECONDS, 0.1, 'camera transition completes in about three frames at 30fps');
+});
+
+test('legacy mode (CAMERA_MODE=legacy) still emits the continuous pan keyframes', () => {
+  const a = panTrack(1, Array.from({ length: 40 }, () => 400));
+  const b = panTrack(2, Array.from({ length: 40 }, () => 1500));
+  const plan = buildSinglePlan(
+    asd([a, b], [
+      { trackId: 1, t0: 0, t1: 5 },
+      { trackId: 2, t0: 5, t1: 10 },
+    ]),
+    1920,
+    1080,
+    0.32,
+    { mode: 'legacy' }
+  );
+  assert.equal(plan.cameraMode, 'legacy');
+  assert.equal(plan.camera, undefined, 'no locked path in legacy mode');
+  assert.ok(plan.points.length > 0, 'has a pan path');
+  assert.ok(plan.points[0].x < 800);
+  assert.ok(plan.points[plan.points.length - 1].x > 1100);
 });
 
 test('speaker-focus does not cut away from the active speaker to a silent listener', () => {
@@ -165,8 +188,11 @@ test('speaker-focus rapidly moves to the next active speaker', () => {
     1080,
     0.32
   );
-  assert.ok(plan.points.some((point) => Math.abs(point.t - 5.1) < 0.001 && point.x > 1100),
-    'camera reaches speaker B within 0.1 seconds of the turn change');
+  const path = plan.camera!;
+  assert.equal(path.moves.length, 1, 'one switch glide');
+  assert.equal(path.moves[0].t, 5, 'the glide starts on the turn change');
+  assert.equal(path.moves[0].duration, 0.1, 'and reaches speaker B within 0.1 seconds');
+  assert.ok(path.moves[0].x + plan.cropW / 2 > 1100, 'camera is on speaker B');
 });
 test('motionless image faces do not become speaker-focus or split-screen people', () => {
   const first = panTrack(1, Array.from({ length: 80 }, () => 400), 0.25, 240);
@@ -196,21 +222,40 @@ test('motionless image faces do not become speaker-focus or split-screen people'
   if (splitPlan.mode === 'split') assert.equal(splitPlan.cells.length, 2);
 });
 
-test('speaker-focus camera path follows face movement within a speaker segment', () => {
-  const moving = panTrack(1, Array.from({ length: 40 }, (_, index) => 400 + index * 15));
+test('speaker-focus: a slow drift past the dead zone gives exactly ONE short re-centre', () => {
+  // A talker who slowly slides 120px over 3s and stays there. The locked camera
+  // holds until the face's recent median is clearly outside the dead zone (>60px
+  // from the anchor, +15% hysteresis), then does a single 0.35s eased hop - it
+  // never chases the per-sample track.
+  const drift = 120;
+  const moving = panTrack(
+    1,
+    Array.from({ length: 120 }, (_, index) => 400 + Math.min(drift, ((index * 0.25) / 3) * drift))
+  );
   const plan = buildSinglePlan(
-    asd([moving], [{ trackId: 1, t0: 0, t1: 10 }]),
+    asd([moving], [{ trackId: 1, t0: 0, t1: 30 }]),
     1920,
     1080,
     0.32
   );
-
-  assert.equal(plan.points[0].x, 400, 'starts at the first face position');
-  assert.ok(plan.points.length >= 2, 'emits a moving camera path');
-  assert.ok(plan.points[plan.points.length - 1].x >= 900, 'ends near the latest face position');
+  const path = plan.camera!;
+  assert.equal(plan.cameraMode, 'locked');
+  assert.equal(path.moves.length, 1, `exactly one re-centre (got ${path.moves.length})`);
+  assert.equal(path.moves[0].duration, 0.35, 'one short eased glide');
+  // The anchor is the median of the first second (the drift has already begun).
+  assert.ok(
+    Math.abs(path.x0 + plan.cropW / 2 - 418) < 15,
+    `starts locked on the face's first-second median (x=${path.x0 + plan.cropW / 2})`
+  );
+  assert.ok(
+    path.moves[0].x + plan.cropW / 2 > 470,
+    `re-centres onto the drifted face (x=${path.moves[0].x + plan.cropW / 2})`
+  );
+  // After the re-centre it is locked again: one keyframe, nothing else to move.
+  assert.equal(plan.cameraPlan!.recentres.length, 1, 'the plan records exactly one re-centre');
 });
 
-test('new live face is centered within 0.5 seconds, then focus returns to the speaker', () => {
+test('a silent entrant never pulls the locked camera (no timer cutaways by default)', () => {
   const speaker = panTrack(1, Array.from({ length: 48 }, () => 400), 0.25, 240);
   const entrant = panTrack(2, Array.from({ length: 32 }, () => 1500), 0.25, 240, 4);
   const plan = buildSinglePlan(
@@ -219,11 +264,51 @@ test('new live face is centered within 0.5 seconds, then focus returns to the sp
     1080,
     0.32
   );
+  const path = plan.camera!;
+  assert.equal(path.moves.length, 0, 'nobody left the dead zone, so the frame never moves');
+  assert.ok(path.x0 + plan.cropW / 2 < 800, 'still framed on the speaker');
+  assert.equal(plan.cameraPlan!.cutaways.length, 0, 'SPEAKER_CUTAWAYS defaults to off');
+});
 
-  const hasPointNear = (time: number, x: number) =>
-    plan.points.some((point) => Math.abs(point.t - time) < 0.001 && point.x === x);
-  assert.ok(hasPointNear(4.12, 1500), 'new face is centered within 0.2 seconds after appearing');
-  assert.ok(hasPointNear(6.24, 400), 'camera returns to the active speaker after the brief visit');
+test('cutaways on: one 2 s listener visit after the 6 s hold, then back to the speaker', () => {
+  const speaker = panTrack(1, Array.from({ length: 80 }, () => 400), 0.25, 240);
+  const listener = panTrack(2, Array.from({ length: 80 }, () => 1500), 0.25, 240);
+  const plan = buildSinglePlan(
+    asd([speaker, listener], [{ trackId: 1, t0: 0, t1: 20 }]),
+    1920,
+    1080,
+    0.32,
+    { cutaways: true }
+  );
+  const cameraPlan = plan.cameraPlan!;
+  // cadence = 6 s hold + 2 s cutaway = one visit every 8 s (t=6, t=14 in 20 s).
+  assert.equal(cameraPlan.cutaways.length, 2, `two cutaways in 20 s (${cameraPlan.cutaways.length})`);
+  assert.equal(cameraPlan.cutaways[0].t, 6, 'after the 6 s speaker hold');
+  assert.equal(cameraPlan.cutaways[1].t, 14, 'and again after the next hold');
+  assert.equal(cameraPlan.cutaways[0].duration, 2, 'for 2 s');
+  assert.equal(cameraPlan.cutaways[0].trackId, 2, 'showing the listener');
+  const path = plan.camera!;
+  // Visit + return per cutaway, plus at most a re-centre or two: a handful of
+  // keyframes, never a continuous follow.
+  assert.ok(path.moves.length <= 6, `a handful of keyframes (${path.moves.length})`);
+  for (const move of path.moves) assert.ok(move.duration <= 0.5, `short glide (${move.duration}s)`);
+});
+
+test('cutaways on: a listener that cannot be centred is skipped, with the reason logged', () => {
+  const speaker = panTrack(1, Array.from({ length: 80 }, () => 400), 0.25, 240);
+  // Sits at the extreme right edge - the crop cannot be centred on it.
+  const edgeListener = panTrack(2, Array.from({ length: 80 }, () => 1910), 0.25, 240);
+  const plan = buildSinglePlan(
+    asd([speaker, edgeListener], [{ trackId: 1, t0: 0, t1: 20 }]),
+    1920,
+    1080,
+    0.32,
+    { cutaways: true }
+  );
+  const cameraPlan = plan.cameraPlan!;
+  assert.equal(cameraPlan.cutaways.length, 0, 'nothing usable was found');
+  assert.ok(cameraPlan.skippedCutaways.length > 0, 'the skip is recorded, not silent');
+  assert.match(cameraPlan.skippedCutaways[0].reason, /edge|frame|crop/i);
 });
 
 test('split-screen plan builds adaptive cells (one per person, no emphasis layer)', () => {
@@ -685,7 +770,10 @@ test('two people who never share the screen (camera cuts): single window, and th
   assert.equal(plan.mode, 'single');
   if (plan.mode === 'single') {
     assert.match(plan.splitFallbackReason ?? '', /never visible together/i);
-    assert.ok(plan.points.length > 0, 'still follows the active speaker across the cuts');
+    // No shot cuts were supplied here, so the camera glides to the second person
+    // once - and never drifts towards them before the turn.
+    assert.equal(plan.camera?.moves.length, 1, 'one move to the second person');
+    assert.ok((plan.camera?.moves[0].x ?? 0) + plan.cropW / 2 > 1000, 'ends on the second host');
   }
 });
 

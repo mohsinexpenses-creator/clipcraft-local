@@ -20,9 +20,17 @@
  */
 
 import { AsdResult } from './asd';
+import {
+  CameraMode,
+  CameraPlan,
+  CameraPlanOptions,
+  CameraQaReport,
+  buildLockedSpeakerCamera,
+} from './camera-plan';
 import { FaceTrackPoint, decimateTrack, evenSize, smoothTrack } from './frame-sampler';
 import { isLikelyLiveTrack, Track } from './asd/tracker';
 import {
+  CameraCut,
   CameraMove,
   CameraPath,
   CameraSample,
@@ -51,10 +59,23 @@ export interface SinglePlan {
   /** 9:16 window size in source pixels. */
   cropW: number;
   cropH: number;
-  /** Smoothed camera path (empty = static centred crop). */
+  /**
+   * LEGACY (`CAMERA_MODE=legacy`) interpolated keyframes. Empty in `locked`
+   * mode, which uses `camera` instead: an event-based lock/glide/cut path.
+   */
   points: PanPoint[];
   /** Where the tracked face sits inside the window (0.5 = centred, <0.5 = higher). */
   faceAnchorY: number;
+  /**
+   * The locked speaker camera (`CAMERA_MODE=locked`, default): a start position,
+   * a handful of short eased glides and hard switches at source shot cuts. See
+   * worker/camera-plan.ts. Absent in legacy mode.
+   */
+  camera?: CameraPath;
+  /** The full lock/switch/cutaway plan, for logs, QA and the hook branch. */
+  cameraPlan?: CameraPlan;
+  /** Which planner produced this window (reported in `[CAMERA-PLAN]`). */
+  cameraMode?: CameraMode;
   /**
    * Set ONLY when the user asked for a split screen but this single window was
    * rendered instead (fewer than two people could be found). Says why, so the
@@ -301,41 +322,201 @@ export function flattenAndDecimate(points: PanPoint[], maxPoints = 24, deadZoneP
   ).map((p) => ({ t: p.t, x: p.x, y: p.y }));
 }
 
-function trackToPanPoints(track: Track, srcW: number, deadZonePx = 6): PanPoint[] {
+function trackToPanPoints(
+  track: Track,
+  srcW: number,
+  deadZonePx = 6,
+  detrend = true
+): PanPoint[] {
   if (track.points.length === 0) return [];
   const asFace: FaceTrackPoint[] = track.points.map((p) => ({ t: p.t, x: p.cx, y: p.cy }));
   const smoothed = smoothTrack(asFace, srcW);
   const points = smoothed.map((p) => ({ t: p.t, x: p.x, y: p.y }));
-  return flattenAndDecimate(points, 24, deadZonePx);
+  return flattenAndDecimate(detrend ? detrendTrack(points, 1) : points, 24, deadZonePx);
 }
 
-function trackToResponsivePanPoints(track: Track): PanPoint[] {
-  return flattenAndDecimate(
-    track.points.map((point) => ({ t: point.t, x: point.cx, y: point.cy })),
-    24,
-    8,
-  );
+function trackToResponsivePanPoints(track: Track, detrend = true): PanPoint[] {
+  const raw = track.points.map((point) => ({ t: point.t, x: point.cx, y: point.cy }));
+  // `detrend` folds the run's own drift into the anchor (see `detrendTrack`), so
+  // a talking head that slowly sways no longer drags the frame with it.
+  return flattenAndDecimate(detrend ? detrendTrack(raw, 1) : raw, 24, 8);
 }
 
-function positionAt(points: PanPoint[], time: number, fallback: PanPoint): PanPoint {
-  if (points.length === 0 || time < points[0].t) return { ...fallback, t: time };
-  for (let index = 1; index < points.length; index += 1) {
-    const before = points[index - 1];
-    const after = points[index];
-    if (time > after.t) continue;
-    const progress = (time - before.t) / Math.max(1e-6, after.t - before.t);
-    return {
-      t: time,
-      x: before.x + (after.x - before.x) * progress,
-      y: before.y + (after.y - before.y) * progress,
-    };
+/**
+ * Remove the slow DRIFT of a per-sample track around the run's median, keeping
+ * the fast articulation. A talking head leans, sways and bobs by tens of pixels
+ * over a few seconds; following that is what made the old speaker camera creep.
+ *
+ * The smoothed track (0.5 s triangle filter) is pulled back to the median, so
+ * only the slow component is removed - the face is framed where it spends its
+ * time, and a deliberate move big enough to survive the dead zone still
+ * produces a keyframe. `strength` 0 = unchanged (the pre-lock output).
+ */
+export function detrendTrack(points: PanPoint[], strength = 1): PanPoint[] {
+  if (strength <= 0 || points.length <= 2) return points;
+  const smooth = (values: number[]): number[] => {
+    const windowSize = 5;
+    return values.map((_, index) => {
+      const from = Math.max(0, index - Math.floor(windowSize / 2));
+      const to = Math.min(values.length, index + Math.ceil(windowSize / 2));
+      const slice = values.slice(from, to);
+      return slice.reduce((sum, value) => sum + value, 0) / slice.length;
+    });
+  };
+  const avg = (values: number[]): number =>
+    values.reduce((sum, value) => sum + value, 0) / Math.max(1, values.length);
+  const meanX = avg(points.map((point) => point.x));
+  const meanY = avg(points.map((point) => point.y));
+  const slowX = smooth(points.map((point) => point.x));
+  const slowY = smooth(points.map((point) => point.y));
+  const out = points.map((point, index) => ({
+    t: point.t,
+    x: point.x - (slowX[index] - meanX) * strength,
+    y: point.y - (slowY[index] - meanY) * strength,
+  }));
+  // Give the very end back its true position: a drift the path has actually
+  // travelled to must not be frozen a few pixels short.
+  const last = points.length - 1;
+  if (strength >= 0.5) {
+    out[last] = { ...out[last], x: points[last].x, y: points[last].y };
   }
-  return { ...points[points.length - 1], t: time };
+  return out;
 }
 
 /** How long (s) the crop window glides from one speaker to the next. */
 /** Complete a speaker-to-speaker camera move in about three frames at 30fps. */
 export const SPEAKER_GLIDE_SECONDS = 0.1;
+
+// ---------------------------------------------------------------------------
+// Camera settings (env flags). Every new behaviour is ON by default and every
+// flag has a value that restores the previous output exactly.
+// ---------------------------------------------------------------------------
+
+export interface SpeakerCameraSettings extends CameraPlanOptions {
+  mode: CameraMode;
+  /**
+   * Detrend the face track used by the LEGACY path (the locked path is already
+   * trend-free by construction). OFF by default, so `CAMERA_MODE=legacy` is
+   * byte-identical to the pre-lock output; `CAMERA_LEGACY_DETREND=1` opts the
+   * old path into the drift removal as well.
+   */
+  legacyDetrend: boolean;
+}
+
+/** Explicit opt-in: only `1|true|yes|on` enables an experimental behaviour. */
+function enabledFlag(value: string | undefined): boolean {
+  return /^(1|true|yes|on)$/i.test(value?.trim() ?? "");
+}
+
+function numberFlag(value: string | undefined, fallback: number): number {
+  const parsed = Number(value?.trim());
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function clampNumber(value: number, lo: number, hi: number): number {
+  return Math.min(hi, Math.max(lo, value));
+}
+
+/**
+ * Resolve the speaker-camera flags. Read once per plan so a render never mixes
+ * two settings, and exported so the values are unit-testable.
+ *
+ *   CAMERA_MODE=locked            (legacy = the previous continuous follow)
+ *   CAMERA_HOLD_DEADZONE_PCT=10   % of the crop WIDTH the face may sway
+ *   CAMERA_HOLD_DEADZONE_Y_PCT=8  % of the crop HEIGHT
+ *   CAMERA_HOLD_CONFIRM_SECONDS=0.4   how long the face must stay out
+ *   CAMERA_RECENTRE_SECONDS=0.35      one eased re-centre glide
+ *   CAMERA_SWITCH_MODE=glide      cut = instant speaker switches
+ *   SPEAKER_GLIDE_SECONDS=0.1     speaker-change glide
+ *   SPEAKER_CUTAWAYS=off          on = 6 s hold + 2 s listener cutaway
+ *   SPEAKER_FOCUS_HOLD_SECONDS=6  SPEAKER_SWITCH_HOLD_SECONDS=2
+ *   SPEAKER_CUTAWAY_PICK=random|prominent
+ *   CAMERA_KEYFRAME_CAP=400       safety cap on planned moves
+ *   CAMERA_KEYFRAME_MAX_CHARS=24000  filter-graph size that switches to a script
+ *   CAMERA_LEGACY_DETREND=0       1 = also detrend the legacy path
+ */
+export function getSpeakerCameraSettings(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+  srcW = 1920,
+  srcH = 1080
+): SpeakerCameraSettings {
+  const { w: cropW, h: cropH } = largest916Window(srcW, srcH);
+  const switchRaw = env.CAMERA_SWITCH_MODE?.trim().toLowerCase();
+  const pickRaw = env.SPEAKER_CUTAWAY_PICK?.trim().toLowerCase();
+  return {
+    srcW,
+    srcH,
+    cropW,
+    cropH,
+    anchorY: SPEAKER_FACE_ANCHOR_Y,
+    cuts: [],
+    mode: /^legacy$/i.test(env.CAMERA_MODE?.trim() ?? "") ? "legacy" : "locked",
+    settleSeconds: clampNumber(numberFlag(env.CAMERA_SETTLE_SECONDS, 1), 0.2, 3),
+    deadZoneXPct: clampNumber(numberFlag(env.CAMERA_HOLD_DEADZONE_PCT, 10), 0, 60) / 100,
+    deadZoneYPct: clampNumber(numberFlag(env.CAMERA_HOLD_DEADZONE_Y_PCT, 8), 0, 60) / 100,
+    confirmSeconds: clampNumber(numberFlag(env.CAMERA_HOLD_CONFIRM_SECONDS, 0.4), 0, 3),
+    recentreSeconds: clampNumber(numberFlag(env.CAMERA_RECENTRE_SECONDS, 0.35), 0.1, 1.5),
+    recentreLookbackSeconds: clampNumber(
+      numberFlag(env.CAMERA_RECENTRE_LOOKBACK_SECONDS, 0.5),
+      0.1,
+      3
+    ),
+    speakerGlideSeconds: clampNumber(
+      numberFlag(env.SPEAKER_GLIDE_SECONDS, SPEAKER_GLIDE_SECONDS),
+      0.05,
+      2
+    ),
+    switchMode: switchRaw === "cut" || switchRaw === "instant" ? "cut" : "glide",
+    cutaways: enabledFlag(env.SPEAKER_CUTAWAYS),
+    speakerHoldSeconds: clampNumber(
+      numberFlag(env.SPEAKER_FOCUS_HOLD_SECONDS, 6),
+      1,
+      60
+    ),
+    cutawaySeconds: clampNumber(numberFlag(env.SPEAKER_SWITCH_HOLD_SECONDS, 2), 0.5, 10),
+    cutawayPick: pickRaw === "prominent" ? "prominent" : "random",
+    cutawaySeed: Math.max(1, Math.floor(numberFlag(env.SPEAKER_CUTAWAY_SEED, 1))),
+    cutawayMinSizeRatio: 0.45,
+    cutawayMinCoverage: 0.8,
+    maxMoves: Math.max(8, Math.floor(numberFlag(env.CAMERA_KEYFRAME_CAP, 400))),
+    legacyDetrend: enabledFlag(env.CAMERA_LEGACY_DETREND),
+  };
+}
+
+/** The `[CAMERA-PLAN]` log line for a speaker-focus plan. */
+export function formatCameraPlanLog(plan: CameraPlan, durationSeconds: number): string {
+  const minutes = Math.max(1 / 60, durationSeconds / 60);
+  return (
+    `[CAMERA-PLAN] mode=${plan.mode} segments=${plan.segments.length} ` +
+    `locks=${plan.segments.filter((segment) => segment.kind === 'lock').length} ` +
+    `recenters=${plan.recentres.length} switches=${plan.switches.length} ` +
+    `cutaways=${plan.cutaways.length}` +
+    (plan.skippedCutaways.length > 0 ? ` cutaways_skipped=${plan.skippedCutaways.length}` : "") +
+    ` keyframes=${plan.keyframes} cuts=${plan.cuts} glides=${plan.glides} ` +
+    `per_minute=${(plan.keyframes / minutes).toFixed(1)} ` +
+    `longest_glide=${plan.path.moves.reduce((max, move) => Math.max(max, move.duration), 0).toFixed(2)}s ` +
+    `runs=${plan.runs.length}` +
+    (plan.path.truncated ? ' truncated=true' : '')
+  );
+}
+
+/** The `[CAMERA-QA]` log line. */
+export function formatCameraQaLog(report: CameraQaReport): string {
+  return (
+    `[CAMERA-QA] pctFramesInDeadzone=${report.pctFramesInDeadzone}% ` +
+    `pctFramesInStableBand=${report.pctFramesInStableBand}% ` +
+    `pctFramesInDeadzoneAll=${report.pctFramesInDeadzoneAll}% ` +
+    `maxOffsetPx=${report.maxOffsetPx} ` +
+    `maxSettledOffsetPx=${report.maxSettledOffsetPx} ` +
+    `motionEventsPerMinute=${report.motionEventsPerMinute} ` +
+    `transitionFrames=${report.transitionFrames} ` +
+    `longestGlide=${report.longestGlideSeconds}s ` +
+    `glidesOverHalfSecond=${report.glidesOverHalfSecond} ` +
+    `edgeLimitedFrames=${report.edgeLimitedFrames} ` +
+    `headOutsideCropFrames=${report.framesWithHeadOutsideCrop} ` +
+    `framesChecked=${report.framesChecked} edgeLimited=${report.edgeLimited}`
+  );
+}
 
 /** Median of a number array (unlike the mean, it rejects outlier sightings). */
 function median(values: number[]): number {
@@ -345,8 +526,11 @@ function median(values: number[]): number {
   return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
-/** Build a responsive speaker path with short, bounded non-speaker visits. */
-function buildSpeakerPath(asd: AsdResult): PanPoint[] {
+/**
+ * Build a responsive speaker path with short, bounded non-speaker visits.
+ * `detrend` = false is the exact pre-lock (rollback) output.
+ */
+function buildSpeakerPath(asd: AsdResult, detrend = true): PanPoint[] {
   const byId = new Map<number, Track>();
   for (const track of asd.tracks) byId.set(track.id, track);
 
@@ -382,7 +566,7 @@ function buildSpeakerPath(asd: AsdResult): PanPoint[] {
     }
 
     // Preserve gentle within-speaker reframing without delaying speaker changes.
-    const trackPath = trackToResponsivePanPoints(track);
+    const trackPath = trackToResponsivePanPoints(track, detrend);
     points.push(
       ...trackPath.filter(
         (point) => point.t > segment.t0 + SPEAKER_GLIDE_SECONDS && point.t < segment.t1,
@@ -423,22 +607,51 @@ export function buildLayoutPlan(
   layout: LayoutMode,
   srcW: number,
   srcH: number,
-  splitFraming: SplitFramingSettings = DEFAULT_SPLIT_FRAMING_SETTINGS
+  splitFraming: SplitFramingSettings = DEFAULT_SPLIT_FRAMING_SETTINGS,
+  camera: Partial<SpeakerCameraSettings> = {}
 ): LayoutPlan {
   if (layout === 'split-screen') {
     return buildSplitPlan(asd, srcW, srcH, splitFraming);
   }
-  return buildSinglePlan(asd, srcW, srcH, SPEAKER_FACE_ANCHOR_Y);
+  return buildSinglePlan(asd, srcW, srcH, SPEAKER_FACE_ANCHOR_Y, camera);
 }
 
-/** Speaker-focus plan. anchorY 0.5 + static-y points = the legacy behaviour. */
+/**
+ * Speaker-focus plan.
+ *
+ * `CAMERA_MODE=locked` (default): an EVENT-BASED camera (worker/camera-plan.ts) -
+ * one anchor per speaker run and source shot, a 10%x8% face dead zone, one 0.35 s
+ * re-centre per real departure, 0.1 s speaker switches and hard switches at
+ * source cuts. `CAMERA_MODE=legacy` keeps the previous continuous follow.
+ *
+ * `anchorY 0.5 + static-y points` is the legacy behaviour.
+ */
 export function buildSinglePlan(
   asd: AsdResult,
   srcW: number,
   srcH: number,
-  faceAnchorY: number
+  faceAnchorY: number,
+  cameraSettings: Partial<SpeakerCameraSettings> = {}
 ): SinglePlan {
   const { w: cropW, h: cropH } = largest916Window(srcW, srcH);
+  const mode: CameraMode =
+    cameraSettings.mode ??
+    ((asd as AsdResult & { cameraMode?: CameraMode }).cameraMode ??
+      getSpeakerCameraSettings(process.env, srcW, srcH).mode);
+  const settings: SpeakerCameraSettings = {
+    ...getSpeakerCameraSettings(process.env, srcW, srcH),
+    ...cameraSettings,
+    srcW,
+    srcH,
+    cropW,
+    cropH,
+    anchorY: faceAnchorY,
+    // Explicit cut times win; otherwise use the ones the ASD shot probe found.
+    cuts: cameraSettings.cuts && cameraSettings.cuts.length > 0
+      ? cameraSettings.cuts
+      : shotCutsOf(asd),
+  };
+
   const cameraTracks = asd.tracks.filter(isLikelyLiveTrack);
   const cameraTrackIds = new Set(cameraTracks.map((track) => track.id));
   const cameraAsd = {
@@ -452,7 +665,79 @@ export function buildSinglePlan(
           : null,
     })),
   };
-  let points = buildSpeakerPath(cameraAsd);
+
+  if (mode === 'locked') {
+    return buildLockedSinglePlan(cameraAsd, cameraTracks, settings);
+  }
+  return buildLegacySinglePlan(cameraAsd, cameraTracks, srcW, faceAnchorY, settings);
+}
+
+/** Source shot cuts carried by the ASD result (empty when none were detected). */
+function shotCutsOf(asd: AsdResult): number[] {
+  return (asd as AsdResult & { shotCuts?: number[] }).shotCuts ?? [];
+}
+
+/** The locked (event-based) speaker window. */
+function buildLockedSinglePlan(
+  cameraAsd: AsdResult,
+  cameraTracks: Track[],
+  settings: SpeakerCameraSettings
+): SinglePlan {
+  let plan = buildLockedSpeakerCamera(cameraTracks, cameraAsd.speakerSegments, settings);
+
+  // Fallback: the audio+visual speaker fusion can come back empty (short clip,
+  // low voice energy, ...). The window must still follow SOMEONE. The most
+  // visible person becomes one lock run covering their sightings - the locked
+  // camera, not a continuous follow.
+  if (plan.runs.length === 0) {
+    const best = cameraTracks
+      .filter((track) => track.points.length >= 2)
+      .sort((a, b) => b.visibleTime * b.avgW - a.visibleTime * a.avgW)[0];
+    if (best) {
+      const t0 = best.points[0].t;
+      const t1 = best.points[best.points.length - 1].t;
+      plan = buildLockedSpeakerCamera(
+        cameraTracks,
+        [{ trackId: best.id, t0, t1 }],
+        settings
+      );
+    }
+  }
+
+  if (plan.runs.length === 0) {
+    // No usable track data -> static centred crop (the long-standing fallback).
+    return {
+      mode: 'single',
+      cropW: settings.cropW,
+      cropH: settings.cropH,
+      points: [],
+      faceAnchorY: settings.anchorY,
+      cameraMode: 'locked',
+    };
+  }
+
+  return {
+    mode: 'single',
+    cropW: settings.cropW,
+    cropH: settings.cropH,
+    points: [],
+    faceAnchorY: settings.anchorY,
+    camera: plan.path,
+    cameraPlan: plan,
+    cameraMode: 'locked',
+  };
+}
+
+/** The previous continuous-follow speaker window (`CAMERA_MODE=legacy`). */
+function buildLegacySinglePlan(
+  cameraAsd: AsdResult,
+  cameraTracks: Track[],
+  srcW: number,
+  faceAnchorY: number,
+  settings: SpeakerCameraSettings
+): SinglePlan {
+  const { w: cropW, h: cropH } = largest916Window(settings.srcW, settings.srcH);
+  let points = buildSpeakerPath(cameraAsd, settings.legacyDetrend);
 
   // Fallback: the audio+visual speaker fusion can come back empty (short clip,
   // low voice energy, ...). The window must still follow SOMEONE - use the
@@ -461,21 +746,21 @@ export function buildSinglePlan(
     const best = cameraTracks
       .filter((track) => track.points.length >= 2)
       .sort((a, b) => b.visibleTime * b.avgW - a.visibleTime * a.avgW)[0];
-    if (best) points = trackToPanPoints(best, srcW);
+    if (best) points = trackToPanPoints(best, srcW, 6, settings.legacyDetrend);
   }
 
   if (points.length <= 1) {
     // No usable track data -> static centred crop (the long-standing fallback).
-    return { mode: 'single', cropW, cropH, points: [], faceAnchorY };
+    return { mode: 'single', cropW, cropH, points: [], faceAnchorY, cameraMode: 'legacy' };
   }
 
   // No decimation/smoothing here: the speaker path already emits exactly the
   // keyframes it needs (one lock anchor per segment + switch glides), and
   // re-smoothing them would reintroduce the drift toward the next speaker.
   // The fallback path (trackToPanPoints) still decimates internally.
-
-  return { mode: 'single', cropW, cropH, points, faceAnchorY };
+  return { mode: 'single', cropW, cropH, points, faceAnchorY, cameraMode: 'legacy' };
 }
+
 
 /**
  * How many DIFFERENT people are on screen at the same time at the busiest
@@ -631,6 +916,58 @@ export function buildGlideExpression(
 }
 
 /**
+ * One axis of a camera that also HARD-SWITCHES at source shot cuts.
+ *
+ *   seg0 + ge(t,T1)*(seg1-seg0) + ge(t,T2)*(seg2-seg1) + …
+ *
+ * `gte()` is 0/1 and the boundaries are ascending, so the sum telescopes exactly
+ * onto the segment that owns the frame, and a cut frame (`t === T`) already
+ * belongs to the NEW shot. Deliberately colon-free: `crop`'s option parser splits
+ * on `:`, so a ternary (`lt(t,T)?a:b`) cannot be used inside the argument.
+ *
+ * Each `segN` is the ordinary glide expression for shot N: `seg0` starts at the
+ * camera's x0, every later shot at the position the window must already have on
+ * its cut frame, plus whatever re-centres happen INSIDE that shot.
+ */
+export function buildCutAwareGlideExpression(
+  start: number,
+  moves: Array<{ t: number; duration: number; pos: number }>,
+  maxPos: number,
+  cuts: Array<{ t: number; pos: number }>
+): string {
+  if (cuts.length === 0) return buildGlideExpression(start, moves, maxPos);
+  const boundaries = [...cuts].sort((a, b) => a.t - b.t);
+
+  const shotStart = (index: number): number => (index === 0 ? start : boundaries[index - 1].pos);
+  const shotFrom = (index: number): number =>
+    index === 0 ? Number.NEGATIVE_INFINITY : boundaries[index - 1].t;
+  const shotUntil = (index: number): number =>
+    index < boundaries.length ? boundaries[index].t : Number.POSITIVE_INFINITY;
+  const segments: string[] = [];
+  for (let index = 0; index <= boundaries.length; index += 1) {
+    const from = shotFrom(index);
+    const until = shotUntil(index);
+    const own = moves.filter((move) => move.t >= from - 1e-9 && move.t < until - 1e-9);
+    // Times are relative to the shot, so its interior glides stay intact.
+    const shifted = own.map((move) => ({
+      t: move.t - (index === 0 ? 0 : from),
+      duration: move.duration,
+      pos: move.pos,
+    }));
+    segments.push(buildGlideExpression(shotStart(index), shifted, maxPos));
+  }
+
+  const terms: string[] = [segments[0]];
+  for (let index = 1; index < segments.length; index += 1) {
+    terms.push(
+      `gte(t,${boundaries[index - 1].t.toFixed(3)})*(${segments[index]}-(${segments[index - 1]}))`
+    );
+  }
+  if (terms.length === 1) return terms[0];
+  return `(${terms.join('+')})`;
+}
+
+/**
  * The X / Y expressions of a pane's camera, ready for `crop=w:h:'X':'Y'`.
  *
  * `timeOffset` is for a branch that replays a LATER part of the clip (the hook
@@ -652,6 +989,7 @@ export function cameraExpressions(
 ): { x: string; y: string } {
   let start = { x: camera.x0, y: camera.y0 };
   let moves: CameraMove[] = camera.moves;
+  let cuts: CameraCut[] = camera.cuts ?? [];
   if (windowSeconds !== undefined) {
     const windowEnd = timeOffset + windowSeconds;
     const kept: CameraMove[] = [];
@@ -663,17 +1001,27 @@ export function cameraExpressions(
       } // else: starts after the window closes - not needed
     }
     moves = kept;
+    // A cut before the window opens folds into the start position; only cuts
+    // inside the window are switch points.
+    const keptCuts: CameraCut[] = [];
+    for (const cut of cuts) {
+      if (cut.t <= timeOffset) start = { x: cut.x, y: cut.y };
+      else if (cut.t < windowEnd) keptCuts.push(cut);
+    }
+    cuts = keptCuts;
   }
   return {
-    x: buildGlideExpression(
+    x: buildCutAwareGlideExpression(
       start.x,
       moves.map((m) => ({ t: m.t - timeOffset, duration: m.duration, pos: m.x })),
-      Math.max(0, srcW - cropW)
+      Math.max(0, srcW - cropW),
+      cuts.map((c) => ({ t: c.t - timeOffset, pos: c.x }))
     ),
-    y: buildGlideExpression(
+    y: buildCutAwareGlideExpression(
       start.y,
       moves.map((m) => ({ t: m.t - timeOffset, duration: m.duration, pos: m.y })),
-      Math.max(0, srcH - cropH)
+      Math.max(0, srcH - cropH),
+      cuts.map((c) => ({ t: c.t - timeOffset, pos: c.y }))
     ),
   };
 }
@@ -863,6 +1211,56 @@ function buildSplitPlan(
 }
 
 /**
+ * The part of a camera path a replayed window needs: position at `timeOffset`
+ * plus the moves and cut switches that actually fall inside it. Returned as a
+ * path whose timeline still starts at 0 (its `x0/y0` is the position at
+ * `timeOffset`), so `cameraExpressions(..., timeOffset)` and this slice agree.
+ * Used by the hook branch, which replays a later part of the SAME plan.
+ */
+export function sliceCameraPath(camera: CameraPath, timeOffset: number, windowSeconds: number): CameraPath {
+  if (windowSeconds === undefined || timeOffset <= 0) return camera;
+  const windowEnd = timeOffset + windowSeconds;
+  const start = cameraPositionAt(camera, timeOffset);
+  const moves = camera.moves
+    .filter((move) => move.t >= timeOffset && move.t < windowEnd)
+    .map((move) => ({ ...move, t: move.t - timeOffset }));
+  // A cut exactly AT the window start is already folded into `start`; only cuts
+  // strictly inside the replayed range are switch points.
+  const cuts = (camera.cuts ?? [])
+    .filter((cut) => cut.t > timeOffset + 1e-9 && cut.t < windowEnd)
+    .map((cut) => ({ ...cut, t: cut.t - timeOffset }));
+  return {
+    x0: start.x,
+    y0: start.y,
+    moves,
+    truncated: camera.truncated,
+    ...(cuts.length > 0 ? { cuts } : {}),
+  };
+}
+
+/**
+ * A filter graph longer than this is written to a file and passed with
+ * `-filter_complex_script` instead of on the command line (Windows caps a
+ * command line at ~32k characters; 24k leaves room for the rest of the args).
+ */
+export const FILTER_GRAPH_SCRIPT_THRESHOLD = 24_000;
+
+/** True when the graph must go through `-filter_complex_script` (see above). */
+export function needsFilterScript(graph: string, threshold = FILTER_GRAPH_SCRIPT_THRESHOLD): boolean {
+  return graph.length > threshold;
+}
+
+/** The configured script threshold (`CAMERA_KEYFRAME_MAX_CHARS`, default 24 000). */
+export function getFilterGraphScriptThreshold(
+  env: Readonly<Record<string, string | undefined>> = process.env
+): number {
+  const configured = Number(env.CAMERA_KEYFRAME_MAX_CHARS?.trim());
+  return Number.isFinite(configured) && configured >= 4_000
+    ? Math.min(60_000, Math.floor(configured))
+    : FILTER_GRAPH_SCRIPT_THRESHOLD;
+}
+
+/**
  * Filter chain for the single-window mode (speaker focus):
  *   setpts reset -> hflip -> time-varying crop (X and Y expressions) -> colour -> scale -> yuv420p
  *
@@ -883,6 +1281,27 @@ export function buildSingleFilterParts(
   timeOffset = 0,
   windowSeconds?: number
 ): string[] {
+  // CAMERA_MODE=locked: the event-based camera path (a constant, a few 0.35 s
+  // re-centres, 0.1 s speaker switches and hard switches at source cuts). The
+  // hook branch replays a LATER part of the clip, so it gets the same path with
+  // its cut times shifted - never a second, differently-decimated plan.
+  if (plan.camera) {
+    // A sliced path already starts at the hook's first frame, so it must not be
+    // shifted twice.
+    const sliced = windowSeconds !== undefined && timeOffset > 0;
+    const camera = sliced ? sliceCameraPath(plan.camera, timeOffset, windowSeconds!) : plan.camera;
+    const expr = cameraExpressions(camera, srcW, srcH, plan.cropW, plan.cropH, sliced ? 0 : timeOffset);
+    const lockedParts: string[] = [
+      'setpts=PTS-STARTPTS',
+      'hflip',
+      `crop=${plan.cropW}:${plan.cropH}:'${expr.x}':'${expr.y}':exact=1`,
+    ];
+    if (colorFilter) lockedParts.push(colorFilter);
+    lockedParts.push(`scale=${outW}:${outH}:flags=lanczos`);
+    lockedParts.push('format=yuv420p');
+    return lockedParts;
+  }
+
   let source = plan.points;
   if (windowSeconds !== undefined && source.length > 2) {
     // Only the keyframes around the replayed window matter (plus one on each side, so the
