@@ -625,3 +625,46 @@ test('a source cut overrides any move that was scheduled before it', () => {
   assert.equal(isTransition(path, 66.7), true, 'the cut frame is a transition');
   assert.equal(isTransition(path, 71.8), false, 'a settled frame is not');
 });
+
+test('[CAMERA-PLAN] counters do not double count: re-centres are not switches', () => {
+  // Long turns with a drifting head: the only speaker change is at 45 s, so
+  // "switches" must be 1 and every re-centre must stay inside one person's run.
+  const a = track(1, 90, (t) => ({ cx: 500 + 220 * (t / 45), cy: 430 }));
+  const b = track(2, 90, () => ({ cx: 1450, cy: 430 }));
+  const single = plan(asd([a, b], [
+    { trackId: 1, t0: 0, t1: 45 },
+    { trackId: 2, t0: 45, t1: 90 },
+  ]));
+  const camera = single.cameraPlan!;
+  assert.equal(camera.switches.length, 1, 'one real speaker change');
+  assert.ok(camera.recentres.length >= 1, 'the walk is followed by re-centres');
+  for (const recentre of camera.recentres) {
+    assert.ok(
+      !camera.switches.some((swap) => Math.abs(swap.t - recentre.t) < 1e-6),
+      `re-centre at ${recentre.t} must not also be a switch`,
+    );
+  }
+  const line = formatCameraPlanLog(camera, 90);
+  assert.match(line, /switches=1 /);
+});
+
+test('[CAMERA-PLAN] cutaways are counted separately from speaker switches', () => {
+  const a = track(1, 40, (t) => ({ cx: 600 + 25 * Math.sin(t), cy: 430 }));
+  const b = track(2, 40, () => ({ cx: 1400, cy: 430 }));
+  const previous = process.env.SPEAKER_CUTAWAYS;
+  process.env.SPEAKER_CUTAWAYS = 'on';
+  try {
+    const single = plan(asd([a, b], [{ trackId: 1, t0: 0, t1: 40 }]));
+    const camera = single.cameraPlan!;
+    assert.ok(camera.cutaways.length >= 3, `cutaway cadence restored: ${camera.cutaways.length}`);
+    assert.equal(camera.switches.length, 0, 'nobody else speaks, so nothing is a switch');
+    const line = formatCameraPlanLog(camera, 40);
+    assert.match(line, new RegExp(`cutaways=${camera.cutaways.length} `));
+    assert.match(line, /switches=0 /);
+    // Every keyframe is kept: the cutaway cadence must not drop planned moves.
+    assert.equal(camera.keyframes, camera.path.moves.length + (camera.path.cuts?.length ?? 0));
+  } finally {
+    if (previous === undefined) delete process.env.SPEAKER_CUTAWAYS;
+    else process.env.SPEAKER_CUTAWAYS = previous;
+  }
+});

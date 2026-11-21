@@ -438,20 +438,35 @@ export function buildLockedSpeakerCamera(
 
   const { path, segments: timeline } = planTimeline(runs, cutaways, byId, opts, shape);
 
-  const recentres = path.moves
-    .filter((move) => !timeline.some((segment) => segment.kind === 'cutaway' && Math.abs(segment.start - move.t) < 1e-6))
-    .map((move) => ({ t: move.t, duration: move.duration, to: { x: move.x, y: move.y } }));
-
+  // Real speaker switches only: the cutaway visits have their own counter, so a
+  // switch here means "the conversation moved to another person".
+  const lockSegments = timeline.filter((segment) => segment.kind === 'lock');
   const switches: CameraPlan['switches'] = [];
-  for (let i = 1; i < timeline.length; i += 1) {
-    const previous = timeline[i - 1];
-    if (previous.trackId === timeline[i].trackId) continue;
+  for (let i = 1; i < lockSegments.length; i += 1) {
+    const previous = lockSegments[i - 1];
+    if (previous.trackId === lockSegments[i].trackId) continue;
     switches.push({
-      t: timeline[i].start,
-      trackId: timeline[i].trackId,
-      mode: timeline[i].entry === 'cut' ? 'cut' : 'glide',
+      t: lockSegments[i].start,
+      trackId: lockSegments[i].trackId,
+      mode: lockSegments[i].entry === 'cut' ? 'cut' : 'glide',
     });
   }
+
+  // A RE-CENTRE is a move that keeps the same subject: speaker switches, cut
+  // agreements and cutaway entries/exits are counted on their own lines, never
+  // as re-centres (otherwise the log claims the camera re-centred on every turn).
+  const isSwitchOrEdge = (move: { t: number }): boolean => {
+    if (switches.some((swap) => Math.abs(swap.t - move.t) < 1e-6)) return true;
+    if ((path.cuts ?? []).some((cut) => Math.abs(cut.t - move.t) < 1e-6)) return true;
+    return timeline.some(
+      (segment) =>
+        segment.kind === 'cutaway' &&
+        (Math.abs(segment.start - move.t) < 1e-6 || Math.abs(segment.until - move.t) < 1e-6)
+    );
+  };
+  const recentres = path.moves
+    .filter((move) => !isSwitchOrEdge(move))
+    .map((move) => ({ t: move.t, duration: move.duration, to: { x: move.x, y: move.y } }));
 
   return {
     mode: 'locked',
