@@ -1,9 +1,11 @@
 import { RenderCancelledError } from "../errors";
+import { coreAwareImagePrepConcurrency } from "../core-defaults";
 
 /**
- * Jimp processing is CPU- and memory-heavy. Two workers overlap image decode and
- * JPEG encoding without turning a 10–15-image B-roll plan into an unbounded RAM
- * spike. Set BROLL_IMAGE_PREP_CONCURRENCY=1 to restore serial preparation.
+ * Jimp processing is CPU- and memory-heavy. The default is 4 (Phase 7): it
+ * overlaps decode and JPEG encoding without turning a 10-15-image B-roll plan
+ * into an unbounded RAM spike, and each worker is bounded by the crop size, not
+ * by the plan. Set BROLL_IMAGE_PREP_CONCURRENCY=1 to restore serial preparation.
  */
 export function getBrollImagePreparationConcurrency(
   env: Readonly<Record<string, string | undefined>> = process.env,
@@ -12,7 +14,7 @@ export function getBrollImagePreparationConcurrency(
   if (Number.isFinite(configured) && configured >= 1 && configured <= 4) {
     return Math.floor(configured);
   }
-  return 2;
+  return coreAwareImagePrepConcurrency(env);
 }
 
 /**

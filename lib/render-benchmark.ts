@@ -1,4 +1,5 @@
 import type { RenderDefaults } from "./types";
+import { renderBudget, type RenderBudget } from "./core-defaults";
 
 /**
  * Stable visual inputs for the same-sample render benchmark. This is deliberately
@@ -28,13 +29,29 @@ const STATIC_SPEAKER_FOCUS_RENDER_DEFAULTS: Readonly<RenderDefaults> = Object.fr
 });
 
 /**
+ * The concurrency profile a comparison run used. Recorded beside the timings so
+ * two benchmark runs on different hosts (or after a defaults change) are not
+ * compared as if only the picture had changed.
+ */
+export function benchmarkEnvironment(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): RenderBudget & { benchmarkId: string } {
+  return {
+    ...renderBudget(env),
+    benchmarkId: STATIC_SPEAKER_FOCUS_BENCHMARK_ID,
+  };
+}
+
+/**
  * The one static configuration used when collecting before/after timings and
  * visual gates. Source media and the exact clip window remain external inputs,
  * so a benchmark run must record those separately.
  */
+const STATIC_SPEAKER_FOCUS_BENCHMARK_ID = "static-speaker-focus-v1" as const;
+
 export const STATIC_SPEAKER_FOCUS_BENCHMARK: StaticSpeakerFocusBenchmarkConfig =
   Object.freeze({
-    id: "static-speaker-focus-v1",
+    id: STATIC_SPEAKER_FOCUS_BENCHMARK_ID,
     label: "Static speaker-focus",
     renderDefaults: STATIC_SPEAKER_FOCUS_RENDER_DEFAULTS,
   });

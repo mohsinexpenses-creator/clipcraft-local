@@ -55,3 +55,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Phase 7 benchmark output (throwaway SQLite, generated source, results)
+/bench-render/

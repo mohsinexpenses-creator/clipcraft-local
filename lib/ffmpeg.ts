@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "child_process";
+import { coreAwareFfmpegThreads } from "./core-defaults";
 import fs from "fs";
 import path from "path";
 import { AppError, RenderCancelledError, toErrorMessage } from "./errors";
@@ -203,6 +204,12 @@ export interface RunFfmpegOptions {
   timeoutMs?: number;
   /** Label used in logs/errors, e.g. "trim+crop". */
   label?: string;
+  /**
+   * Set to false to spawn FFmpeg with no injected `-threads` (probes, metadata
+   * reads and short helper calls where the budget is irrelevant or the flag is
+   * not accepted).
+   */
+  threadBudget?: boolean;
   /** Working directory for the process (used to feed libass a plain file name). */
   cwd?: string;
   /**
@@ -229,10 +236,25 @@ export interface RunFfmpegOptions {
 
 const DEFAULT_FFMPEG_TIMEOUT_MS = 30 * 60 * 1000;
 
+/**
+ * FFmpeg threads, injected only when the caller did not choose one.
+ *
+ * A final encode with `-threads 0` (automatic) claims every core while the worker
+ * still has Remotion tabs or ASD workers waiting for the CPU, which is why the
+ * encode is deliberately bounded to half the host (Phase 7). An explicit
+ * `FFMPEG_THREADS` wins, and an explicit `-threads` in `args` is never touched.
+ */
+function withThreadBudget(args: string[]): string[] {
+  if (args.some((arg) => arg === "-threads")) return args;
+  const threads = coreAwareFfmpegThreads();
+  return ["-threads", String(threads), ...args];
+}
+
 export function runFfmpeg(
   args: string[],
   options?: RunFfmpegOptions,
 ): Promise<{ stdout: string; stderr: string }> {
+  const budgetedArgs = options?.threadBudget === false ? args : withThreadBudget(args);
   return new Promise((resolve, reject) => {
     if (options?.signal?.aborted) {
       reject(new RenderCancelledError());
@@ -240,20 +262,20 @@ export function runFfmpeg(
     }
     const ffmpegBin = getFfmpegPath();
     const label = options?.label ? ` ${options.label}` : "";
-    log.detail(`⚙ ffmpeg${label}: ${ffmpegBin} ${args.join(" ")}`);
+    log.detail(`⚙ ffmpeg${label}: ${ffmpegBin} ${budgetedArgs.join(" ")}`);
 
     // Windows CreateProcess caps the full command line at ~32,767 chars
     // (Linux is much higher). Warn well below that so an over-long filter
     // graph (e.g. hundreds of keyframes in a pan expression) is visible in
     // the log instead of surfacing as an opaque spawn ENAMETOOLONG.
-    const commandLength = args.join(" ").length;
+    const commandLength = budgetedArgs.join(" ").length;
     if (commandLength > 20000) {
       log.warn(
         `FFmpeg command line is ${commandLength.toLocaleString()} chars - close to the OS limit; layout output should be reduced.`,
       );
     }
 
-    const child = spawn(ffmpegBin, args, {
+    const child = spawn(ffmpegBin, budgetedArgs, {
       windowsHide: true,
       // A process group lets cancellation reap FFmpeg descendants on Unix instead
       // of leaving a writer holding the partially rendered MP4 open.
@@ -886,7 +908,8 @@ export async function extractAudio16kMono(
     outputAudioPath,
   ];
 
-  await runFfmpeg(args, { label: `extract-audio-16k-mono-${format}`, ...runOptions });
+  // Audio-only: thread budgeting is meaningless here, so keep the command as-is.
+  await runFfmpeg(args, { label: `extract-audio-16k-mono-${format}`, threadBudget: false, ...runOptions });
 
   if (!fs.existsSync(outputAudioPath) || fs.statSync(outputAudioPath).size < 1024) {
     throw new AppError("Audio extraction produced an empty transcription file.", {

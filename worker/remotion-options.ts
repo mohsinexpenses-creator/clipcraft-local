@@ -1,7 +1,11 @@
+import { coreAwareRemotionTabs } from "../lib/core-defaults";
+
 /**
- * Resolve an explicit Remotion tab count without overriding the Settings page's
- * auto mode. A cap is used only for work intentionally sharing the host with a
- * second CPU-heavy stage (for example B-roll beside active-speaker detection).
+ * Resolve the Remotion tab count.
+ *
+ * Precedence: an explicit `REMOTION_CONCURRENCY` (what the Settings percentage
+ * becomes) > the core-aware default (half the logical threads, 2..12) > a
+ * caller-supplied cap for work sharing the host with another CPU-heavy stage.
  */
 export function getRemotionConcurrency(
   env: Readonly<Record<string, string | undefined>> = process.env,
@@ -10,7 +14,7 @@ export function getRemotionConcurrency(
   const configured = Number(env.REMOTION_CONCURRENCY?.trim());
   const requested = Number.isFinite(configured) && configured > 0
     ? configured
-    : undefined;
+    : coreAwareRemotionTabs(env);
   const cap = options.maxConcurrency;
   if (!Number.isFinite(cap) || !cap || cap <= 0) return requested;
   return Math.min(requested ?? cap, cap);

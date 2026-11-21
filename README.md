@@ -235,18 +235,19 @@ B-roll item is fullscreen; only a landscape card needs the final ASD face bands 
 face-safe seam placement and stays sequential. If either concurrent branch fails or the
 job is cancelled, the sibling is aborted and awaited before cleanup; set
 `RENDER_PARALLEL_BROLL_ASD=0` on CPU- or RAM-constrained workers to restore the sequential
-path. That shared branch caps Chrome tabs at two by default so ASD keeps CPU/RAM;
+path. That shared branch caps Chrome tabs so ASD keeps CPU/RAM;
 `RENDER_PARALLEL_BROLL_CONCURRENCY=1..32` changes that cap while still honoring a smaller
-Chrome-tab setting. The default remains **2** in Phase 4 because no representative render
-host/fixture is available to prove that a higher Chrome tab count is faster rather than
-contentious.
+Chrome-tab setting. The cap is now core-aware (see **Core-aware parallelism** below):
+`floor(threads/6)` clamped to 2..4, so 4 on a 24-thread host and 2 on a laptop.
 
-B-roll card decoding/cropping/JPEG preparation now uses two bounded Jimp workers by
-default (`BROLL_IMAGE_PREP_CONCURRENCY=2`); set it to `1` for the prior serial path.
+B-roll card decoding/cropping/JPEG preparation now uses four bounded Jimp workers by
+default (`BROLL_IMAGE_PREP_CONCURRENCY=4`; each worker holds one card's crop, not the
+plan); set it to `1` for the prior serial path.
 Active-speaker detection likewise begins with an adaptive <=4 fps, 240-frame, 960px JPEG
 balanced pass and interpolates only adjacent measured face positions onto the established
-8 fps analysis cadence. Bounded two-frame YuNet decode/inference runs concurrently, while
-tracking and speaker fusion stay ordered and sequential. On sustained small-face wide shots,
+8 fps analysis cadence. Bounded YuNet decode/inference runs concurrently (two workers on a
+laptop, three on a 24-thread host), while tracking and speaker fusion stay ordered and
+sequential. On sustained small-face wide shots,
 the redundant full-frame YuNet pass is skipped while overlapping tiles remain; set
 `ASD_DETECTION_CONCURRENCY=1` or `ASD_SKIP_FULL_FRAME_ON_WIDE_SHOTS=0` for their prior
 paths. If face evidence is missing, fleeting, or too small, it retries the <=8 fps,
@@ -256,6 +257,40 @@ paths. If face evidence is missing, fleeting, or too small, it retries the <=8 f
 path/size/mtime, clip range and profile/version under the Settings temporary-work
 folder (default `.tmp/asd-cache`, bounded by `ASD_CACHE_MAX_MB`, default 512); set
 `ASD_CACHE_ENABLED=0` or `ASD_CACHE_DIR` to disable or relocate it.
+
+### Core-aware parallelism
+
+Phase 7 removes the last hand-tuned concurrency constants. Every default is derived from
+`os.availableParallelism()` (cgroup-aware, so a container sees its own share) and every
+explicit value - an env var or the Settings tab count - still wins:
+
+| Knob | Env | Derived default | On a 24-thread host |
+| --- | --- | --- | --- |
+| Remotion tabs | `REMOTION_CONCURRENCY` (Settings) | `floor(threads × 0.5)`, 2..12 | 12 |
+| B-roll beside ASD | `RENDER_PARALLEL_BROLL_CONCURRENCY` | `floor(threads / 6)`, 2..4 | 4 |
+| ASD decode/inference | `ASD_DETECTION_CONCURRENCY` | `floor(threads / 6)`, 2..3 | 3 |
+| Image preparation | `BROLL_IMAGE_PREP_CONCURRENCY` | fixed 4 | 4 |
+| FFmpeg encode | `FFMPEG_THREADS` | `threads − tabs − ASD`, 1..32 | 9 |
+
+The FFmpeg default takes the *remaining* threads rather than half the host, so a derived
+profile sums to the thread count instead of oversubscribing it: 12 + 3 + 9 = 24. Each
+render logs the resolved profile once, before any timing is read:
+
+```
+[RENDER-DIAG] stage=runtime event=parallelism threads=24 remotion_tabs=12 broll_parallel=4 asd_workers=3 image_prep=4 ffmpeg_threads=9 sum(tabs+asd+ffmpeg)=24/24
+```
+
+If an explicit override (or a host below 5 threads, where the floors cannot fit) makes the
+sum exceed the thread count, the same line ends with `OVER BUDGET` and names the knobs to
+lower. `CLIPCRAFT_LOGICAL_THREADS` forces the thread count the derivation uses, which is
+how the benchmark reproduces another host's profile.
+
+`npm run bench:render` measures instead of guessing: it renders the same clip at 50 %, 75 %
+and 100 % of the derived tab count, prints the worker's own `[JOB-TIMING]` stages side by
+side, and appends each run to `bench-render/results.jsonl` with the profile, benchmark id,
+thread count and source window. It uses a throwaway database inside that folder, and
+generates a deterministic source clip when no `--video` is given, so an ordinary database
+and media folder are never touched.
 
 For an image-input queue experiment, `FFMPEG_OVERLAY_THREAD_QUEUE_SIZE` defaults to the
 baseline-safe `2`; benchmark `16` or `32` on the actual render host before retaining either

@@ -9,9 +9,12 @@ export function getParallelBrollAsdEnabled(
   return !/^(0|false|no|off)$/i.test(env.RENDER_PARALLEL_BROLL_ASD?.trim() ?? "");
 }
 
+import { coreAwareParallelBrollConcurrency } from "../lib/core-defaults";
+
 /**
  * A parallel B-roll/ASD run must leave CPU/RAM for frame sampling and YuNet.
- * A manual override is allowed, but stays bounded to Remotion's supported range.
+ * A manual override is allowed; the default scales with the host (threads / 6,
+ * bounded 2..4 - 4 on the 24-thread reference host).
  */
 export function getParallelBrollAsdConcurrencyCap(
   env: Readonly<Record<string, string | undefined>> = process.env,
@@ -20,9 +23,7 @@ export function getParallelBrollAsdConcurrencyCap(
   if (Number.isFinite(configured) && configured >= 1 && configured <= 32) {
     return Math.floor(configured);
   }
-  // Deliberately unchanged in Phase 4: a representative render host is needed
-  // before raising this tab cap can be called a win rather than a CPU/RAM loss.
-  return 2;
+  return coreAwareParallelBrollConcurrency(env);
 }
 
 export type BrollAsdParallelLayout = "speaker-focus" | "split-screen";

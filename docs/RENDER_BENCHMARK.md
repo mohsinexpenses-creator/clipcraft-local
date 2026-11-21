@@ -202,3 +202,68 @@ still has no representative cold/warm re-render measurement, no recorded
 clear-during-render run. The static tests lock the benchmark, timing aggregation,
 cache invariants, and cropped-card fallback behavior; they are not a substitute
 for the deferred render gates.
+
+## Phase 7 concurrency benchmark
+
+The defaults are now derived from the host instead of hard-coded, so a timing is only
+meaningful when it is recorded beside the profile that produced it.
+
+| Knob | Derived default | Explicit override |
+| --- | --- | --- |
+| Remotion tabs | `floor(threads × 0.5)`, clamped 2..12 | `REMOTION_CONCURRENCY` (Settings) |
+| B-roll beside ASD | `floor(threads / 6)`, clamped 2..4 | `RENDER_PARALLEL_BROLL_CONCURRENCY` |
+| ASD decode/inference | `floor(threads / 6)`, clamped 2..3 | `ASD_DETECTION_CONCURRENCY` |
+| Image preparation | 4 | `BROLL_IMAGE_PREP_CONCURRENCY` |
+| FFmpeg encode | `threads − tabs − ASD`, clamped 1..32 | `FFMPEG_THREADS` |
+
+`lib/core-defaults.ts` owns the derivation; `logicalThreads()` prefers
+`os.availableParallelism()` so a cgroup-limited container sees its own share, and
+`CLIPCRAFT_LOGICAL_THREADS` overrides it for a reproduced profile. The FFmpeg default is
+the *remainder*, not half the host, so a derived profile sums to the thread count
+(24 threads -> 12 tabs + 3 ASD + 9 FFmpeg). Every render prints the resolved profile once:
+
+```
+[RENDER-DIAG] stage=runtime event=parallelism threads=24 remotion_tabs=12 broll_parallel=4 asd_workers=3 image_prep=4 ffmpeg_threads=9 sum(tabs+asd+ffmpeg)=24/24
+```
+
+The line ends with `OVER BUDGET` when an explicit override (or a host under 5 threads,
+where the floors cannot fit) pushes the sum past the thread count.
+
+### Running it
+
+```
+npm run bench:render                                  # 50 / 75 / 100 % of the derived tab count
+npm run bench:render -- --profile 50,100              # a narrower sweep
+npm run bench:render -- --video clip.mp4 --start 1665.8 --end 1753.3
+npm run bench:render -- --resume 50,75                # only the missing profiles
+```
+
+Each profile renders the **same** source window with `REMOTION_CONCURRENCY` set to
+`round(threads × profile / 100)`, and the worker's own `[JOB-TIMING]` line is parsed into
+per-stage milliseconds. The comparison table prints wall time and every stage per profile,
+then names the fastest. Results are appended to `bench-render/results.jsonl` after each
+profile - with the thread count, budget string, benchmark id (`static-speaker-focus-v1`
+from `lib/render-benchmark.ts`), layout and source window - so an interrupted sweep keeps
+what finished and two runs on different hosts are never compared as if only the picture
+had changed.
+
+The benchmark is self-contained: it writes a throwaway SQLite database in
+`bench-render/`, seeds deterministic transcript words over the rendered window (captions
+need word timings), and generates a 20 s test source when no `--video` is given. It never
+touches the real database, uploads or generated clips.
+
+**Host requirement:** the sweep needs a working Chromium for Remotion. On a host where the
+headless browser cannot be downloaded the profile fails with
+`Remotion overlay rendering failed` / `ECONNRESET`, the failure is recorded rather than
+compared, and the script prints `NEEDS MANUAL VERIFICATION` - it is never reported as a
+win. ASD-only stages (which do run without Chromium, e.g. `asd`, `asd.yunet-detection`,
+`asd.shot-cut-detection`) still appear in the table for the profiles that reached them.
+
+### What Phase 7 does not claim
+
+No representative render host was available here: this sandbox reports 2 logical threads,
+so its own budget line reads `sum(tabs+asd+ffmpeg)=5/2 OVER BUDGET` and its tabs cannot be
+raised above the floor. The default derivation, the log line and the benchmark are
+verified by unit tests (`tests/core-defaults.test.ts`) and by a real (Chromium-free) ASD
+run; **the concurrency sweep itself needs to be run on the render machine** before any
+"more tabs is faster" claim is made.

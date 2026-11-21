@@ -6,10 +6,19 @@ import {
 } from "../lib/broll/preparation";
 
 test("B-roll image preparation uses a bounded default with a serial rollback", () => {
-  assert.equal(getBrollImagePreparationConcurrency({}), 2);
+  // DELIBERATE (Phase 7): the default is now 4 - each worker is bounded by one
+  // card's crop, not by the plan, so four overlap decode/encode without turning a
+  // 15-image plan into a RAM spike. An explicit value still wins, and a serial
+  // run is still one setting away.
+  assert.equal(getBrollImagePreparationConcurrency({}), 4);
   assert.equal(getBrollImagePreparationConcurrency({ BROLL_IMAGE_PREP_CONCURRENCY: "1" }), 1);
   assert.equal(getBrollImagePreparationConcurrency({ BROLL_IMAGE_PREP_CONCURRENCY: "4" }), 4);
-  assert.equal(getBrollImagePreparationConcurrency({ BROLL_IMAGE_PREP_CONCURRENCY: "99" }), 2);
+  assert.equal(getBrollImagePreparationConcurrency({ BROLL_IMAGE_PREP_CONCURRENCY: "99" }), 4);
+  assert.equal(
+    getBrollImagePreparationConcurrency({ CLIPCRAFT_LOGICAL_THREADS: "4" }),
+    4,
+    'a small host still gets the same bounded default (it is not thread-derived)',
+  );
 });
 
 test("bounded preparation waits for in-flight work after cancellation", async () => {

@@ -18,6 +18,7 @@
     "verify:broll-cropped-canvas": "tsx scripts/verify-broll-cropped-canvas.ts",
     "verify:broll-sync": "tsx scripts/verify-broll-sync.ts",
     "verify:broll-native": "tsx scripts/verify-broll-native.ts",
+    "bench:render": "tsx scripts/bench-render.ts",
     "bench:broll-native": "tsx scripts/bench-broll-native.ts",
     "generate:sfx": "node scripts/generate-broll-sfx.mjs"
   },

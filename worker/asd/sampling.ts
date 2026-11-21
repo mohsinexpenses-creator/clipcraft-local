@@ -1,3 +1,4 @@
+import { coreAwareAsdDetectionConcurrency } from "../../lib/core-defaults";
 import type { Track, TrackPoint } from "./tracker";
 
 /**
@@ -88,7 +89,8 @@ export function getAsdDetectionConcurrency(
   if (Number.isFinite(configured) && configured >= 1 && configured <= 3) {
     return Math.floor(configured);
   }
-  return 2;
+  // Core-aware default (threads / 6, bounded 2..3); explicit wins.
+  return coreAwareAsdDetectionConcurrency(env);
 }
 
 /**

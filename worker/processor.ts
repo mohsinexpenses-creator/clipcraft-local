@@ -36,6 +36,7 @@ import { measureCameraPlanQa } from "./camera-plan";
 import { adaptOverlaysToLayout, describePlacements } from "./overlay-layout";
 import { color, log } from "../lib/logger";
 import { JobTimer, type JobTimingOutcome } from "../lib/job-timing";
+import { renderBudget } from "../lib/core-defaults";
 import {
   HOOK_TRANSITION_SECONDS,
   normalizeFps,
@@ -355,6 +356,16 @@ export async function processClipJob(
   // ASD in the opt-in parallel renderer). The final job-end summary makes a
   // real baseline/re-run directly comparable without adding database writes.
   const jobTimer = new JobTimer({ job: `clip-render:${clipId}` });
+  // One line per job that answers "what was this machine allowed to use?" before
+  // any timing is read: the derived tabs/workers/threads, every explicit override
+  // and whether the sum fits the host.
+  const renderProfile = renderBudget();
+  log.detail(
+    `[RENDER-DIAG] stage=runtime event=parallelism ${renderProfile.note}` +
+      (renderProfile.fitsHost
+        ? ""
+        : " - over budget: lower REMOTION_CONCURRENCY or FFMPEG_THREADS on this host"),
+  );
   // Keep component timings namespaced beneath their existing top-level stage.
   // They intentionally overlap their parent measure; wall time remains the only
   // end-to-end number, while this exposes the expensive work inside it.
