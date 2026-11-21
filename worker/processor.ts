@@ -248,6 +248,9 @@ async function prepareBrollForRender(
         end: item.end,
         imageUrl: `${servedMedia.baseUrl}/broll-${index}${path.extname(usable[index].filePath) || ".jpg"}`,
         cacheIdentity: preparedBrollImageCacheIdentity(usable[index].filePath, item.cacheKey),
+        // Only the native renderer (BROLL_RENDERER=native) reads this; Remotion
+        // keeps using the loopback URL, so the frame cache key is unchanged.
+        imagePath: usable[index].filePath,
         // This matches the legacy renderer exactly. For speaker-focus the anchor
         // has no ASD inputs; for split screen the caller supplies the face bands.
         ...(item.card

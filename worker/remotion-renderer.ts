@@ -11,6 +11,11 @@ import {
 } from "../lib/overlay-canvas";
 import { maskProfanity, maskTranscriptWords, maskTranscriptWordsFromIndexes } from "../lib/profanity";
 import { log } from "../lib/logger";
+import {
+  getBrollRendererChoice,
+  renderNativeCardPhase,
+  type NativeBrollItem,
+} from "../lib/broll/native";
 import { CaptionOverlayCompositionProps } from "../remotion/OverlayCompositions";
 import type { VideoConfig } from "remotion/no-react";
 import { buildFinalCaptionChunks } from "../remotion/CaptionComposition";
@@ -981,6 +986,12 @@ export interface BrollOverlayItem {
    */
   cacheIdentity?: string;
   card?: { x: number; y: number; width: number; height: number };
+  /**
+   * Absolute path of the prepared image on disk. Only the native renderer reads
+   * it (Remotion uses `imageUrl` through the loopback server), so plans and
+   * cache keys are unaffected by its presence.
+   */
+  imagePath?: string;
 }
 
 /**
@@ -1368,7 +1379,29 @@ export async function prepareRemotionBrollOverlays(
     let completedFrames = 0;
     const sequences: OverlayFrameSequence[] = [];
 
-    for (const scheduledPhase of phases) {
+    // BROLL_RENDERER=native paints the same frames without Chromium. It is wired
+    // in HERE, at the phase boundary, so the active-range maths, the frame-cache
+    // keys, the PNG naming contract and FFmpeg's overlay inputs are identical.
+    // Any item without a local image path falls back to Remotion for that phase.
+    const nativeRenderer = getBrollRendererChoice();
+    const nativePhases = new Set<number>();
+    if (nativeRenderer === "native") {
+      phases.forEach((phase, index) => {
+        const first = phase.items[0];
+        if (phase.items.length !== 1 || !first?.imagePath) return;
+        // Only landscape cards: full-screen items carry a caption scrim whose
+        // gradient is Chromium's, and the pixel gate has not been run on them.
+        if (first.kind !== "landscape") return;
+        nativePhases.add(index);
+      });
+      log.info(
+        `[RENDER-DIAG] stage=broll.native event=selected renderer=native ` +
+          `phases=${nativePhases.size}/${phases.length} ` +
+          `(full-screen items and multi-item phases stay on Remotion)`,
+      );
+    }
+
+    for (const [phaseIndex, scheduledPhase] of phases.entries()) {
       // A fully transparent cropped cache entry/render is unsafe to composite:
       // retry that one card on the established full canvas without re-selecting
       // the composition or reopening Chromium.
@@ -1376,6 +1409,131 @@ export async function prepareRemotionBrollOverlays(
       while (true) {
         checkCancelled(options.isCancelled, options.signal);
         const renderCanvas = phase.renderRegion ?? FULL_OVERLAY_CANVAS;
+        if (nativePhases.has(phaseIndex)) {
+          const descriptor = cacheDescriptor(
+            "broll",
+            buildBrollOverlayFrameCacheKey({
+              items: phase.items,
+              phase: {
+                startFrame: phase.startFrame,
+                endFrame: phase.endFrame,
+                frameCount: phase.frameCount,
+                startAtSeconds: phase.startAtSeconds,
+              },
+              fps,
+              totalFrames,
+              canvas: renderCanvas,
+              captionTextColor: options.captionTextColor,
+              captionBand: options.captionBand,
+            }),
+            {
+              startFrame: phase.startFrame,
+              endFrame: phase.endFrame,
+              frameCount: phase.frameCount,
+              startAtSeconds: phase.startAtSeconds,
+            },
+            renderCanvas,
+          );
+          const cached = readOverlayFrameCache(cacheSettings, descriptor);
+          if (cached) {
+            const cachedPattern = materializeOverlayFrameCache(cached, phase.outputDir);
+            if (cachedPattern) {
+              log.info(
+                `[RENDER-DIAG] stage=broll.frame-cache event=hit renderer=native ` +
+                  `key=${descriptor.key.slice(0, 12)} frames=${phase.frameCount}`,
+              );
+              sequences.push({
+                name: phase.name,
+                inputPattern: cachedPattern,
+                startAtSeconds: phase.startAtSeconds,
+                layer: "broll",
+                frameCount: phase.frameCount,
+                ...(phase.renderRegion ? { canvas: phase.renderRegion } : {}),
+              });
+              completedFrames += phase.frameCount;
+              options.onProgress?.(
+                Math.round((completedFrames / totalFramesForProgress) * 100),
+              );
+              break;
+            }
+          }
+          const item = phase.items[0];
+          const nativeItem: NativeBrollItem = {
+            id: item.id,
+            kind: item.kind,
+            start: item.start,
+            end: item.end,
+            imagePath: item.imagePath as string,
+            ...(item.card ? { card: item.card } : {}),
+            ...(item.cacheIdentity ? { cacheIdentity: item.cacheIdentity } : {}),
+          };
+          const startedNativeAt = Date.now();
+          log.info(
+            `[RENDER-DIAG] stage=broll.item-render event=before renderer=native ` +
+              `items=${item.id}:${item.kind} canvas=${renderCanvas.width}x${renderCanvas.height}` +
+              `@${renderCanvas.x},${renderCanvas.y} frame_range=${phase.startFrame}-${phase.endFrame} ` +
+              `planned_frames=${phase.frameCount} output_directory=${phase.outputDir}`,
+          );
+          const nativeResult = await renderNativeCardPhase({
+            item: nativeItem,
+            canvas: renderCanvas,
+            startFrame: phase.startFrame,
+            endFrame: phase.endFrame,
+            fps,
+            outputDir: phase.outputDir,
+            onProgress: (framesPainted) =>
+              options.onProgress?.(
+                Math.round(
+                  ((completedFrames + framesPainted) / totalFramesForProgress) * 100,
+                ),
+              ),
+            ...(options.signal ? { signal: options.signal } : {}),
+            ...(options.isCancelled ? { isCancelled: options.isCancelled } : {}),
+          });
+          const nativeStats = frameOutputStats(phase.outputDir);
+          if (nativeStats.count !== phase.frameCount) {
+            throw new AppError(
+              `Native B-roll renderer produced ${nativeStats.count} frames for ${phase.name}; expected ${phase.frameCount}.`,
+              {
+                details: `frame_range=${phase.startFrame}-${phase.endFrame}, output=${phase.outputDir}`,
+                resolution: "Set BROLL_RENDERER=remotion to use the Chromium renderer.",
+              },
+            );
+          }
+          const nativePattern = normalizeFrameSequence(phase.outputDir, "png", options.onStageTiming);
+          const stagingNative = createOverlayFrameCacheStagingDirectory(
+            cacheSettings,
+            "broll",
+            descriptor.key,
+          );
+          if (stagingNative) {
+            cacheStagingDirectories.add(stagingNative);
+            if (stageNormalizedOverlayFrames(phase.outputDir, stagingNative, phase.frameCount)) {
+              const published = publishOverlayFrameCache(cacheSettings, descriptor, stagingNative);
+              cacheStagingDirectories.delete(stagingNative);
+              if (published) enforceOverlayFrameCacheLimit(cacheSettings);
+              else removeOverlayFrameCacheStaging(stagingNative);
+            } else {
+              cacheStagingDirectories.delete(stagingNative);
+            }
+          }
+          sequences.push({
+            name: phase.name,
+            inputPattern: nativePattern,
+            startAtSeconds: phase.startAtSeconds,
+            layer: "broll",
+            frameCount: phase.frameCount,
+            ...(phase.renderRegion ? { canvas: phase.renderRegion } : {}),
+          });
+          log.info(
+            `[RENDER-DIAG] stage=broll.item-render event=after renderer=native items=${item.id} ` +
+              `generated_frames=${nativeStats.count} total_generated_file_size_bytes=${nativeStats.bytes} ` +
+              `time_taken_ms=${Date.now() - startedNativeAt} bake_ms=${nativeResult.bakeMs} ` +
+              `paint_ms=${nativeResult.paintMs} ${renderMemoryUsage()}`,
+          );
+          completedFrames += phase.frameCount;
+          break;
+        }
         const phaseInfo: OverlayFrameCachePhase = {
           startFrame: phase.startFrame,
           endFrame: phase.endFrame,
