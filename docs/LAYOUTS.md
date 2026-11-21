@@ -143,14 +143,35 @@ The default camera is event-based instead — a handful of keyframes per minute:
 Every render logs one line each of
 
 ```
-[CAMERA-PLAN] mode=locked segments=.. locks=.. recenters=.. switches=.. cutaways=.. keyframes=..
-[CAMERA-QA]   pctFramesInDeadzone=..% maxOffsetPx=.. motionEventsPerMinute=.. longestGlide=..s
-              glidesOverHalfSecond=.. edgeLimitedFrames=.. headOutsideCropFrames=.. framesChecked=..
+[CAMERA-PLAN] mode=locked segments=.. locks=.. recenters=.. switches=.. cutaways=..
+              keyframes=.. cuts=.. glides=.. per_minute=.. longest_glide=..s runs=..
+[CAMERA-QA]   pctFramesInDeadzone=..% pctFramesInStableBand=..% pctFramesInDeadzoneAll=..%
+              maxOffsetPx=.. maxSettledOffsetPx=.. motionEventsPerMinute=.. transitionFrames=..
+              longestGlide=..s glidesOverHalfSecond=.. edgeLimitedFrames=..
+              headOutsideCropFrames=.. framesChecked=.. edgeLimited=..
 ```
 
-`[CAMERA-QA]` is measured on the very detections the plan was built from; frames where
-the crop edge (not the plan) limits the framing are counted separately in
-`edgeLimitedFrames` rather than being hidden.
+`[CAMERA-QA]` is measured on the very detections the plan was built from, against
+**the person the camera is following at that moment** (the speaker, or the listener
+during a cutaway) — measuring every face in a two-shot would always look half-wrong.
+Read it as:
+
+- `pctFramesInDeadzone` — settled frames (no glide in progress) whose face centre is
+  inside the dead zone. This is the "is the framing right" number.
+- `pctFramesInStableBand` — the same for the planner's stabilised band (dead zone ×
+  1.15, `FACE_DEADZONE_HYSTERESIS`). Frames in that narrow margin are *held still on
+  purpose*: a swaying head must not trigger a re-centre, so 100 % here with a slightly
+  lower `pctFramesInDeadzone` is the intended outcome; a big gap between the two means
+  the head is genuinely wandering and a re-centre is imminent.
+- `pctFramesInDeadzoneAll` / `transitionFrames` — the same coverage over *all* frames;
+  a glide is allowed to be off-centre, so this is lower by design.
+- `maxOffsetPx` vs `maxSettledOffsetPx` — the worst offset overall (includes the
+  moment of a switch, where the face is legitimately across the frame) versus the worst
+  offset while the camera sits still. The settled number is the one that should be
+  small.
+- `edgeLimitedFrames` — the crop is clamped against the source edge and still cannot
+  reach the face (nothing the plan can do), reported separately from a real framing
+  defect; `headOutsideCropFrames` — the head does not fit inside the window at all.
 
 **Rollback.** `CAMERA_MODE=legacy` restores the previous continuous follow exactly (the
 unit tests compare it against a recorded fixture), and every knob above has a default
