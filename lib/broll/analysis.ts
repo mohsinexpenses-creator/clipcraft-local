@@ -21,12 +21,24 @@
 import { AppError } from "../errors";
 import type { BrollEntityType, WordTimestamp } from "../types";
 import { parseTimestamp } from "../viral-response";
+import { anchorMoment, concreteFallbackKeywords, floorToFrame } from "./sync";
 
 export const MAX_ENTITIES = 6;
 export const MAX_KEYWORD_MOMENTS = 20;
 const MAX_NAME_LENGTH = 80;
 const MAX_QUERY_LENGTH = 120;
 const MAX_KEYWORD_LENGTH = 48;
+
+/**
+ * Exact-sync anchoring is ON by default; `BROLL_EXACT_SYNC=0` restores the old
+ * behaviour of trusting the model's seconds. Read once per call so a test (and
+ * a single render) can flip it.
+ */
+export function exactSyncEnabled(): boolean {
+  const raw = process.env.BROLL_EXACT_SYNC;
+  if (raw === undefined || raw.trim() === "") return true;
+  return !["0", "false", "off", "no"].includes(raw.trim().toLowerCase());
+}
 
 export interface BrollEntity {
   type: BrollEntityType;
@@ -39,6 +51,11 @@ export interface BrollEntity {
   end: number;
   /** 3-8 words: WHO/WHAT it is, e.g. "American podcaster, host of Call Her Daddy". */
   descriptor?: string;
+  /** The transcript words the card is anchored to (exact sync). */
+  anchorText?: string;
+  wordIndex?: number;
+  /** 1-5: how much the picture matters. 5 = entity/brand/place/object. */
+  relevance?: number;
 }
 
 export interface BrollKeywordMoment {
@@ -46,6 +63,17 @@ export interface BrollKeywordMoment {
   /** Clip-relative seconds. */
   start: number;
   end: number;
+  /** The words the moment is anchored to, when it could be anchored at all. */
+  anchorText?: string;
+  wordIndex?: number;
+  /** 1-5 relevance: named thing/object = 5, generic filler = 1. */
+  relevance?: number;
+  /**
+   * True for moments this code derived from the transcript because the analysis
+   * was unavailable. They carry relevance 1 (so they lose every conflict) but are
+   * still allowed to become cards - they are the fallback, not filler.
+   */
+  synthetic?: boolean;
 }
 
 export interface BrollAnalysis {
@@ -170,6 +198,55 @@ function readWindow(
   return { start, end };
 }
 
+/** Clip length + frame grid for one parse call. */
+interface SyncContext {
+  clipDuration: number;
+  words: readonly WordTimestamp[];
+  fps: number;
+  exact: boolean;
+}
+
+/** 1-5, defaulting to 3 so an absent score is never "best". */
+function readRelevance(entry: Record<string, unknown>): number {
+  const raw = entry.relevance ?? entry.priority ?? entry.score;
+  const value = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : NaN;
+  if (!Number.isFinite(value)) return 3;
+  return Math.max(1, Math.min(5, Math.round(value)));
+}
+
+/**
+ * The exact-sync window for one moment: the anchor word's start, floored onto
+ * the frame grid so the card may appear at most one frame early and never late.
+ * Returns null when the moment cannot be anchored (and must therefore be
+ * dropped rather than placed on the model's guessed seconds).
+ */
+function anchoredWindow(
+  entry: Record<string, unknown>,
+  ctx: SyncContext,
+  fallbackSpan: number,
+): { start: number; end: number; anchorText?: string; wordIndex?: number } | null {
+  if (!ctx.exact) return null;
+  const anchorTextRaw = entry.anchorText ?? entry.anchor_text;
+  const anchorText = typeof anchorTextRaw === "string" ? anchorTextRaw.trim() : "";
+  const rawIndex = entry.wordIndex ?? entry.word_index;
+  const anchor = anchorMoment({
+    ...(anchorText ? { anchorText } : {}),
+    ...(typeof rawIndex === "number" ? { wordIndex: rawIndex } : {}),
+    words: ctx.words,
+    start: 0,
+    end: 0,
+  });
+  if (!anchor) return null;
+  const frame = floorToFrame(anchor.wordStart, ctx.fps);
+  const start = Math.max(0, Math.min(ctx.clipDuration, frame / Math.max(1, ctx.fps)));
+  return {
+    start,
+    end: Math.min(ctx.clipDuration, start + fallbackSpan),
+    anchorText: anchor.anchorText,
+    wordIndex: anchor.wordIndex,
+  };
+}
+
 /** Start time from the transcript word the model pointed at (never from model-guessed seconds). */
 function windowFromWord(
   entry: Record<string, unknown>,
@@ -205,7 +282,16 @@ export function parseBrollAnalysis(
   text: string,
   clipDuration: number,
   words: readonly WordTimestamp[] = [],
+  options: { fps?: number; exactSync?: boolean } = {},
 ): BrollAnalysis {
+  const ctx: SyncContext = {
+    clipDuration,
+    words,
+    fps: options.fps && options.fps > 0 ? options.fps : 30,
+    // Without a transcript there is nothing to anchor to; the legacy windows are
+    // the only option and are still validated below.
+    exact: (options.exactSync ?? exactSyncEnabled()) && words.length > 0,
+  };
   let data: unknown;
   try {
     data = JSON.parse(text);
@@ -263,7 +349,12 @@ export function parseBrollAnalysis(
       typeof entry.searchQuery === "string" && entry.searchQuery.trim()
         ? entry.searchQuery.trim().slice(0, MAX_QUERY_LENGTH)
         : name;
+    // Exact sync: an entity is anchored to the word it was named at. Without an
+    // anchor the moment is dropped (never placed on the model's arithmetic).
+    const anchored = anchoredWindow(entry, ctx, 3);
+    if (ctx.exact && !anchored) continue;
     const window =
+      anchored ??
       windowFromWord(entry, words, clipDuration, 3) ??
       readWindow(entry, where, clipDuration);
 
@@ -283,6 +374,13 @@ export function parseBrollAnalysis(
       ...(contextQuery ? { contextQuery } : {}),
       ...(descriptor ? { descriptor } : {}),
       ...window,
+      relevance: readRelevance(entry),
+      ...("anchorText" in window && typeof window.anchorText === "string"
+        ? { anchorText: window.anchorText }
+        : {}),
+      ...("wordIndex" in window && typeof window.wordIndex === "number"
+        ? { wordIndex: window.wordIndex }
+        : {}),
     });
   }
 
@@ -309,13 +407,24 @@ export function parseBrollAnalysis(
       ),
     ].slice(0, 4);
     if (keywords.length === 0) continue; // Nothing photographable in this moment.
+    const anchored = anchoredWindow(
+      { ...entry, anchorText: entry.anchorText ?? entry.anchor_text ?? keywords[0] },
+      ctx,
+      1.3,
+    );
+    if (ctx.exact && !anchored) continue; // Cannot be placed exactly: drop it.
     const window =
+      anchored ??
       windowFromWord(entry, words, clipDuration, 1.3) ??
       (entry.start !== undefined
         ? readWindow(entry, where, clipDuration)
         : null);
     if (!window) continue; // No usable timing for this moment.
-    broll.push({ visualKeywords: keywords, ...window });
+    broll.push({
+      visualKeywords: keywords,
+      ...window,
+      relevance: readRelevance(entry),
+    });
   }
 
   return { entities, broll };
@@ -343,53 +452,45 @@ export function transcriptSentenceAt(
 }
 
 /**
- * Keyword moments from the transcript itself. Used when the LLM call fails (the
- * pipeline continues with stock cards) and to top up the count when the model
- * returned fewer moments than the clip needs.
+ * Keyword moments from the transcript itself - the LAST resort.
+ *
+ * A real run shipped cards searched for "telling you that is" and "so i was
+ * like" because this function used to join a window of raw transcript words.
+ * That never happens now: a moment is either a proper noun or a 1-3 word
+ * content phrase, at most one every `minSpacingSeconds`, and its relevance is
+ * the lowest in the system so the scheduler drops it first when slots run out.
  */
 export function deriveFallbackKeywords(
   words: readonly WordTimestamp[],
   clipDuration: number,
   targetMoments: number,
+  options: { minSpacingSeconds?: number } = {},
 ): BrollAnalysis {
-  const usable = words
-    .map((word, index) => ({
-      ...word,
-      index,
-      clean: word.word.replace(/[^A-Za-z0-9'-]/g, "").trim().toLowerCase(),
-    }))
-    .filter((word) => word.end > word.start && word.clean.length >= 4 && !ABSTRACT_WORDS.has(word.clean));
-
-  const moments: BrollKeywordMoment[] = [];
-  const seen = new Set<string>();
-  const slots = Math.max(1, targetMoments);
-  for (let slot = 0; slot < slots; slot += 1) {
-    if (usable.length === 0) break;
-    const pick = usable[Math.min(usable.length - 1, Math.floor(((slot + 0.5) * usable.length) / slots))];
-    // Search a short transcript phrase, not an isolated word stripped of context.
-    const nearby = words
-      .slice(Math.max(0, pick.index - 3), Math.min(words.length, pick.index + 4))
-      .map((word) => word.word.replace(/[^A-Za-z0-9'-]/g, "").trim())
-      .filter(Boolean);
-    const keyword = nearby.join(" ").replace(/\\s+/g, " ").trim();
-    const normalized = keyword.toLowerCase();
-    if (!keyword || seen.has(normalized)) continue;
-    seen.add(normalized);
-    const centre = (pick.start + pick.end) / 2;
-    const start = Math.max(0, Math.min(Math.max(0, clipDuration - 1.5), centre - 0.75));
-    moments.push({ visualKeywords: [keyword], start, end: Math.min(clipDuration, start + 1.5) });
-  }
-
-  while (moments.length < slots) {
-    const index = moments.length;
-    const start = Math.max(0, Math.min(Math.max(0, clipDuration - 1.5), ((index + 0.5) / slots) * clipDuration));
-    moments.push({
-      visualKeywords: ["relevant documentary stock footage"],
-      start,
-      end: Math.min(clipDuration, start + 1.5),
-    });
-  }
+  const moments = concretePhraseMoments(words, clipDuration, {
+    maxMoments: Math.max(0, targetMoments),
+    minSpacingSeconds: options.minSpacingSeconds ?? 10,
+  }).map((moment) => ({
+    visualKeywords: moment.visualKeywords,
+    start: moment.start,
+    end: moment.end,
+    anchorText: moment.anchorText,
+    wordIndex: moment.wordIndex,
+    relevance: 1,
+    synthetic: true,
+  }));
   return { entities: [], broll: moments };
+}
+
+/**
+ * The moments `deriveFallbackKeywords` returns, plus their anchor. Kept
+ * separate so the plan builder can log the anchor it could not place.
+ */
+export function concretePhraseMoments(
+  words: readonly WordTimestamp[],
+  clipDuration: number,
+  options: { maxMoments?: number; minSpacingSeconds?: number } = {},
+): ReturnType<typeof concreteFallbackKeywords> {
+  return concreteFallbackKeywords(words, clipDuration, options);
 }
 
 /** The prompt sent through `completeWithFallback` with `json: true`. */
@@ -407,10 +508,12 @@ export function buildBrollPrompt(input: {
     `The clip is ${input.clipDuration.toFixed(1)} seconds long. The transcript lines look like "#index start-end word".`,
     "",
     "Return ONE JSON object, no markdown, no commentary:",
-    '{ "entities": [ { "type": "person" | "place" | "event", "name": "…", "wikipediaTitle": "…", "searchQuery": "…", "contextQuery": "…", "wordIndex": 0 } ],',
-    '  "broll": [ { "visualKeywords": ["…"], "wordIndex": 0 } ] }',
+    '{ "entities": [ { "type": "person" | "place" | "event", "name": "…", "wikipediaTitle": "…", "searchQuery": "…", "contextQuery": "…", "anchorText": "…", "relevance": 1-5 } ],',
+    '  "broll": [ { "visualKeywords": ["…"], "anchorText": "…", "relevance": 1-5 } ] }',
     "",
-    "wordIndex is the #index of the exact transcript word where the thing is spoken. NEVER invent timestamps.",
+    "anchorText is the EXACT transcript word (or two or three consecutive words, copied verbatim) where the picture belongs.",
+    "NEVER output timestamps or word indexes: the app finds the anchor text in the transcript and places the image on that word's frame. A moment without a real anchorText is dropped.",
+    "relevance is 1-5: 5 = a named person/brand/place or the literal object being discussed, 4 = a specific object, 3 = a concrete scene, 2 = a generic scene, 1 = filler. Only 3-5 are worth showing.",
     "",
     "entities:",
     "- ONLY real, specific, named things a Wikipedia article image could show: a public figure, a brand, a landmark, a city, a stadium, a named event.",
@@ -425,6 +528,7 @@ export function buildBrollPrompt(input: {
     "broll:",
     `- Between ${min} and ${input.keywordBudget} moments, in chronological order, spread across the WHOLE clip (never leave more than 6 seconds without one).`,
     '- ONE concrete, PHOTOGRAPHABLE English noun phrase (1-3 words) per moment, taken from what is being talked about: "city skyline", "coffee cup", "courtroom", "cash".',
+    "- Never quote a sentence fragment, a filler run or a pronoun: no \"so i was like\", no \"telling you that is\". If the sentence names nothing photographable, skip the moment.",
     '- NEVER abstract ideas: no "success", "growth", "mindset", "motivation", "value", "journey".',
     "- Never repeat the same keyword.",
     "",

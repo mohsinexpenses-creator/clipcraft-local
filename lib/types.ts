@@ -151,6 +151,16 @@ export interface BrollItem {
   /** Downloaded original in the cache dir (thumbnail / re-crop). */
   sourceFile?: string;
   crop?: BrollCropPlan;
+  /** The transcript words this picture illustrates (Phase 4a, exact sync). */
+  anchorText?: string;
+  /** Index of that word in the clip's transcript. */
+  wordIndex?: number;
+  /** Clip-relative start of the anchor word (before the hook replay). */
+  wordStart?: number;
+  /** 1-5 how much the picture matters; 5 = named thing or literal object. */
+  relevance?: number;
+  /** How the start was reached: exact anchor, or kept while the PREVIOUS card shrank. */
+  syncAction?: "exact" | "truncated-prev";
   /** Landscape only: where the card sits on the canvas. */
   card?: BrollCardRect;
   /** Other fetched candidates the review UI can swap to. */

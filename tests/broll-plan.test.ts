@@ -64,10 +64,15 @@ function makeDeps(options: Options = {}) {
       if (options.entityMissing) return null;
       return options.entityResults?.[0] ?? candidate('wikipedia', 'file-1');
     },
-    async searchStock() {
+    async searchStock(query: string) {
       calls.stock += 1;
       if (options.stockThrows) throw new Error('provider down');
-      const list = options.stockResults?.[calls.stock - 1] ?? [candidate('pexels', `pexels-${calls.stock}`)];
+      // A real provider's title/tags describe what was searched for; Phase 4c
+      // rejects any photo that shares no word with the keyword, so the fixture
+      // has to behave like a real search result.
+      const list =
+        options.stockResults?.[calls.stock - 1] ??
+        [{ ...candidate('pexels', `pexels-${calls.stock}`), title: query, description: query }];
       return { candidates: list, provider: list[0]?.provider, notes: [] };
     },
     async download(item) {
@@ -227,7 +232,11 @@ test('when the LLM fails, keyword moments are derived from the transcript', asyn
 
   assert.ok(plan.items.length > 0, 'the clip still gets B-roll');
   assert.ok(plan.skipped.some((entry) => entry.stage === 'analysis'));
-  assert.ok((plan.notes ?? []).some((note) => /fell back to keywords/i.test(note)));
+  assert.ok((plan.notes ?? []).some((note) => /analysis failed twice/i.test(note)));
+  // Never a sentence fragment: every fallback card is a 1-3 word concrete phrase.
+  for (const item of plan.items) {
+    assert.ok(item.query.split(/\s+/).length <= 3, `fallback query "${item.query}" is a fragment`);
+  }
 });
 
 test('entities work without a Gemini key and cards still work', async () => {
@@ -286,22 +295,22 @@ test('a 3 s hook is excluded even when the first mention is inside it', async ()
   }
 });
 
-test('a busy 60 s clip with plenty of material lands inside the 10-15 image target', async () => {
-  // The realistic worst case: the detector reports more entities and keyword moments
-  // than can be used. The plan must still be 10-15 items, full-screen first, with no
-  // overlaps and nothing in the hook window.
+test('a busy 60 s clip lands inside the 10-15 image target when the anchors allow it', async () => {
+  // The realistic worst case: the detector reports more entities and keyword
+  // moments than can be used. Exact sync means a start is an anchor word and is
+  // never moved, so the budget is filled from material that does not collide.
   const deps = makeDeps({
     entities: Array.from({ length: 12 }, (_, index) => ({
       type: 'person' as const,
       name: `Speaker ${index}`,
       searchQuery: `speaker ${index}`,
       start: 4 + index * 4.5,
-      end: 6 + index * 4.5,
+      end: 5 + index * 4.5,
     })),
     keywords: Array.from({ length: 12 }, (_, index) => ({
       visualKeywords: [`conference hall ${index}`],
-      start: 5 + index * 4.5,
-      end: 7 + index * 4.5,
+      start: 6.5 + index * 4.5,
+      end: 8.5 + index * 4.5,
     })),
   });
 
@@ -316,10 +325,46 @@ test('a busy 60 s clip with plenty of material lands inside the 10-15 image targ
   for (let index = 0; index < sorted.length; index += 1) {
     const item = sorted[index];
     assert.ok(item.start >= baseInput.hookDuration, `${item.id} starts inside the hook window`);
-    assert.ok(item.start >= item.end - 4.001 && item.end - item.start >= 2.499, `${item.id} lasts ${item.end - item.start}s`);
+    assert.ok(
+      item.end - item.start >= 1.2 - 1e-6,
+      `${item.id} lasts ${item.end - item.start}s, below the 1.2 s floor`,
+    );
+    assert.ok(item.end - item.start <= 4.001, `${item.id} lasts ${item.end - item.start}s`);
     const previous = sorted[index - 1];
     if (previous) {
-      assert.ok(item.start - previous.end >= 1.5 - 1e-6, `${previous.id} and ${item.id} overlap or touch`);
+      assert.ok(
+        item.start - previous.end >= 0.2 - 1e-6,
+        `${previous.id} and ${item.id} violate the 0.2 s exit gap`,
+      );
     }
   }
+});
+
+test('dense anchors never move a start: the lower-relevance card loses its slot', async () => {
+  // Every card wants the same second as an entity. Phase 4b: the full-screen
+  // named thing wins, the card is dropped (or truncated to >= 1.2 s) - and both
+  // keep their own anchor starts.
+  const deps = makeDeps({
+    entities: [{ type: 'person', name: 'Elon Musk', searchQuery: 'Elon Musk', start: 10, end: 14 }],
+    keywords: Array.from({ length: 6 }, (_, index) => ({
+      visualKeywords: [`electric car ${index}`],
+      start: 10 + index * 0.1,
+      end: 12 + index * 0.1,
+    })),
+  });
+  const plan = await buildBrollPlan(baseInput, deps);
+  const entity = plan.items.find((item) => item.kind === 'fullscreen');
+  assert.ok(entity);
+  assert.equal(entity!.start, 13, 'anchor 10 s + the 3 s hook replay, never moved');
+  for (const card of plan.items.filter((item) => item.kind === 'landscape')) {
+    assert.ok(card.end - card.start >= 1.2 - 1e-6, 'a surviving card is never a flicker');
+    const before = card.end <= entity!.start - 0.2 + 1e-6;
+    const after = card.start >= entity!.end + 0.2 - 1e-6;
+    assert.ok(before || after, `card ${card.id} overlaps the entity`);
+  }
+  assert.ok(
+    plan.skipped.some((entry) => /slot/i.test(entry.reason)) ||
+      (plan.notes ?? []).some((note) => /slot|relevance|Dropped/i.test(note)),
+    'the log explains what was dropped',
+  );
 });

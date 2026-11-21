@@ -5,42 +5,59 @@
  * non-overlapping timeline that the renderer paints. Every rule the product needs
  * lives here so it can be unit-tested without a single provider call:
  *
- *  - the rendered clip is `[hook replay][clip]`, so nothing may land inside
- *    `[0, hookDuration)` (the hook is a duplicate of a later moment);
- *  - a full-screen item always beats a landscape card (rule: while a full-screen
- *    image is visible NO landscape card may be visible);
- *  - every item lasts 2.5-4 s, with at least a 1.5 s gap between items;
- *  - the plan respects the per-video min/max image budget;
- *  - at most `maxCount` items come out, ranked by priority then mention time.
+ *  - every candidate already carries an EXACT start (its anchor word, floored to
+ *    the frame grid). The scheduler never moves a start: an image that appears a
+ *    second after the word it illustrates is the bug this whole pipeline exists
+ *    to avoid;
+ *  - so a conflict is resolved by TRUNCATING the earlier item (never below
+ *    `minDuration`, always leaving `exitGap` before the next start) or by
+ *    dropping the lower-relevance item (ties keep the earlier one);
+ *  - a full-screen item always wins a conflict with a landscape card, because
+ *    the named thing is what the sentence is about;
+ *  - nothing is ever placed inside the hook replay window;
+ *  - the per-minute image budget is a SOFT cap: when the exact starts cannot fit
+ *    the maximum the extra items are dropped, and when they cannot reach the
+ *    minimum that is reported rather than fixed by moving pictures around;
+ *  - only `maxCount` items come out, ranked by relevance then mention time.
  *
- * The scheduler never invents images: when fewer candidates exist than the
- * minimum, it returns what it has and reports the shortfall.
+ * The scheduler never invents images: it returns what fits and reports the rest.
  */
 
 import type { BrollItemKind } from "../types";
 
 export const SCHEDULE_RULES = {
-  /** Seconds a single image stays on screen. */
+  /** Seconds a single image stays on screen (full-screen items). */
   minDuration: 2.5,
   maxDuration: 4,
-  /** Empty screen between two items (any kinds). */
+  /** Minimum breathing room after an item, before anything else may start. */
   minGap: 1.5,
+  /**
+   * Exact-sync rules: the shortest an item may be truncated to, and the gap
+   * left between one item's truncation point and the next item's exact start.
+   */
+  minTrimmedDuration: 1.2,
+  exitGap: 0.2,
   /** Keep this far away from the very end of the clip. */
   tailMargin: 0.15,
   /** Cards should live on the same 2.5-4s timeframe as any other B-roll item. */
   cardDuration: 2.5,
-  /** Keep the same separation rule for cards as for fullscreen items. */
   cardGap: 1.5,
 } as const;
 
 export interface BrollCandidateInput {
   id: string;
   kind: BrollItemKind;
-  /** Desired mention window, CLIP-relative (before the hook replay). */
+  /** The EXACT render-timeline start (anchor word, floored to the frame grid). */
   desiredStart: number;
+  /** Desired mention window, CLIP-relative (before the hook replay). */
   desiredEnd: number;
   /** Higher wins when two candidates want the same slot. */
   priority: number;
+  /**
+   * 1-5 relevance. Absent means "derived from priority" (full-screen entities
+   * are 5, cards 3), so old callers keep working.
+   */
+  relevance?: number;
 }
 
 export interface ScheduleInput {
@@ -50,6 +67,8 @@ export interface ScheduleInput {
   hookDuration: number;
   minCount: number;
   maxCount: number;
+  /** Frame grid the starts are already snapped to (used for frame-exact trims). */
+  fps?: number;
   candidates: readonly BrollCandidateInput[];
 }
 
@@ -62,14 +81,19 @@ export interface ScheduledBrollItem {
   /** The mention window this item was placed for, clip-relative. */
   desiredStart: number;
   desiredEnd: number;
+  relevance: number;
+  /** "exact" = the item starts on its anchor word, as asked. */
+  action: "exact" | "truncated-prev";
 }
 
 export interface ScheduleResult {
   items: ScheduledBrollItem[];
-  /** Human-readable account of everything that had to move or be dropped. */
+  /** Human-readable account of everything that had to be trimmed or dropped. */
   notes: string[];
   /** True when fewer than `minCount` items could be placed. */
   belowMinimum: boolean;
+  /** Every candidate the scheduler refused, so the caller does not re-report it. */
+  droppedIds: Set<string>;
 }
 
 /** Total budget for a clip, scaled from "images per 60 s". */
@@ -106,50 +130,24 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-/**
- * Place one candidate as close to its desired window as the free space allows.
- * `blocked` holds intervals already taken (including their gaps).
- */
-function findSlot(
-  candidate: BrollCandidateInput,
-  duration: number,
-  windowStart: number,
-  windowEnd: number,
-  blocked: Array<{ start: number; end: number }>,
-): { start: number; end: number } | null {
-  if (windowEnd - windowStart < duration) return null;
-
-  const desiredStart = clamp(
-    candidate.desiredStart,
-    windowStart,
-    windowEnd - duration,
-  );
-  // Probe outward from the desired start in 0.1 s steps so the image still lands
-  // on the mention when it can, and as close to it as possible when it cannot.
-  const maxOffset = Math.ceil((windowEnd - windowStart) / 0.1) + 1;
-  const starts: number[] = [desiredStart];
-  for (let step = 1; step <= maxOffset; step += 1) {
-    starts.push(desiredStart + step * 0.1, desiredStart - step * 0.1);
+/** Relevance of a candidate: explicit, else derived from the kind. */
+export function candidateRelevance(candidate: BrollCandidateInput): number {
+  if (typeof candidate.relevance === "number" && Number.isFinite(candidate.relevance)) {
+    return clamp(Math.round(candidate.relevance), 1, 5);
   }
+  return candidate.kind === "fullscreen" ? 5 : 3;
+}
 
-  for (const rawStart of starts) {
-    const start = Number(
-      clamp(rawStart, windowStart, windowEnd - duration).toFixed(3),
-    );
-    const end = Number((start + duration).toFixed(3));
-    if (end > windowEnd + 1e-6) continue;
-    const collides = blocked.some(
-      (interval) => start < interval.end - 1e-6 && end > interval.start + 1e-6,
-    );
-    if (!collides) return { start, end };
-  }
-  return null;
+function itemDuration(candidate: BrollCandidateInput): number {
+  if (candidate.kind === "landscape") return SCHEDULE_RULES.cardDuration;
+  const desired = candidate.desiredEnd - candidate.desiredStart;
+  const length = Number.isFinite(desired) && desired > 0 ? desired : SCHEDULE_RULES.maxDuration;
+  return Number(clamp(length, SCHEDULE_RULES.minDuration, SCHEDULE_RULES.maxDuration).toFixed(3));
 }
 
 /**
- * The final timeline. Full-screen candidates are placed first (they win any
- * conflict); landscape cards then fill only the free space, so a card can never
- * overlap - or even touch - a full-screen image.
+ * The final timeline. Starts are taken as given (they are exact); only the END
+ * of an item may be early, and only to make room for the next exact start.
  */
 export function scheduleBroll(input: ScheduleInput): ScheduleResult {
   const notes: string[] = [];
@@ -163,6 +161,8 @@ export function scheduleBroll(input: ScheduleInput): ScheduleResult {
   const windowEnd = hookDuration + clipDuration - SCHEDULE_RULES.tailMargin;
   const maxCount = Math.max(0, Math.floor(input.maxCount));
   const minCount = Math.max(0, Math.min(Math.floor(input.minCount), maxCount));
+  const fps = input.fps && input.fps > 0 ? input.fps : 30;
+  const frame = (seconds: number) => Math.floor(seconds * fps + 1e-6) / fps;
 
   if (maxCount === 0 || windowEnd - windowStart < SCHEDULE_RULES.minDuration) {
     return {
@@ -173,126 +173,216 @@ export function scheduleBroll(input: ScheduleInput): ScheduleResult {
           : `The clip (${clipDuration.toFixed(1)}s) is too short for a ${SCHEDULE_RULES.minDuration}s image.`,
       ],
       belowMinimum: minCount > 0,
+      droppedIds: new Set(input.candidates.map((candidate) => candidate.id)),
     };
   }
 
-  const ranked = [...input.candidates]
-    // Full-screen wins; inside a kind, the higher priority (then the earlier
-    // mention) goes first so the most important images get the best slots.
-    .sort((a, b) => {
-      if (a.kind !== b.kind) return a.kind === "fullscreen" ? -1 : 1;
-      if (b.priority !== a.priority) return b.priority - a.priority;
-      return a.desiredStart - b.desiredStart;
-    });
+  // Order of preference for a contested slot:
+  //   1. full-screen before landscape (the named thing IS the sentence);
+  //   2. higher relevance;
+  //   3. the earlier mention (ties keep the earlier item), then the stable id.
+  const ranked = [...input.candidates].sort((a, b) => {
+    if (a.kind !== b.kind) return a.kind === "fullscreen" ? -1 : 1;
+    const relevance = candidateRelevance(b) - candidateRelevance(a);
+    if (relevance !== 0) return relevance;
+    if (Math.abs(a.desiredStart - b.desiredStart) > 1e-6) return a.desiredStart - b.desiredStart;
+    return a.id.localeCompare(b.id);
+  });
 
-  const items: ScheduledBrollItem[] = [];
-  const blocked: Array<{ start: number; end: number }> = [];
+  const placed: ScheduledBrollItem[] = [];
 
-  const gap = SCHEDULE_RULES.minGap;
-  const canReserve = (start: number, end: number): boolean =>
-    start >= windowStart - 1e-6 &&
-    end <= windowEnd + 1e-6 &&
-    !blocked.some(
-      (interval) => start < interval.end - 1e-6 && end > interval.start + 1e-6,
-    );
+  /** Ids already dropped, so one candidate is never reported twice. */
+  const droppedIds = new Set<string>();
 
-  const reserve = (start: number, end: number, kind: BrollItemKind): void => {
-    const pad = kind === "landscape" ? SCHEDULE_RULES.cardGap : gap;
-    blocked.push({
-      start: Math.max(windowStart, start - pad),
-      end: Math.min(windowEnd, end + pad),
-    });
+  /** The exact start, clipped to the render window; null inside the hook. */
+  const exactStart = (candidate: BrollCandidateInput): number | null => {
+    const start = Number(frame(candidate.desiredStart + hookDuration).toFixed(3));
+    if (start < windowStart - 1e-6) return null;
+    if (start > windowEnd - SCHEDULE_RULES.minTrimmedDuration) return null;
+    return Math.max(windowStart, start);
   };
 
   for (const candidate of ranked) {
-    if (items.length >= maxCount) break;
-
-    const desiredLength = candidate.desiredEnd - candidate.desiredStart;
-    const duration =
-      candidate.kind === "landscape"
-        ? SCHEDULE_RULES.cardDuration
-        : Number(
-            clamp(
-              Number.isFinite(desiredLength) && desiredLength > 0
-                ? desiredLength
-                : SCHEDULE_RULES.maxDuration,
-              SCHEDULE_RULES.minDuration,
-              SCHEDULE_RULES.maxDuration,
-            ).toFixed(3),
-          );
-
-    // desiredStart is clip-relative; the render timeline starts with the hook replay.
-    const slot = findSlot(
-      { ...candidate, desiredStart: candidate.desiredStart + hookDuration },
-      duration,
-      windowStart,
-      windowEnd,
-      blocked,
-    );
-    if (!slot) {
-      // The candidate could not fit even after the outward search: usually a
-      // mention whose window is shorter than a single image.
+    if (placed.length >= maxCount) break;
+    const start = exactStart(candidate);
+    if (start === null) {
       notes.push(
-        `No free ${duration.toFixed(1)}s slot for ${candidate.kind} "${candidate.id}" ` +
-          `(mention ${candidate.desiredStart.toFixed(1)}-${candidate.desiredEnd.toFixed(1)}s).`,
+        `Dropped ${candidate.kind} "${candidate.id}": its anchor word (${candidate.desiredStart.toFixed(2)}s) is inside the hook replay or past the clip end.`,
       );
+      droppedIds.add(candidate.id);
       continue;
     }
 
-    if (!canReserve(slot.start, slot.end)) continue;
-    reserve(slot.start, slot.end, candidate.kind);
-    items.push({
+    const duration = Math.min(itemDuration(candidate), windowEnd - start);
+    let action: ScheduledBrollItem["action"] = "exact";
+    let pending: ScheduledBrollItem = {
       id: candidate.id,
       kind: candidate.kind,
-      start: slot.start,
-      end: slot.end,
+      start,
+      end: Number((start + duration).toFixed(3)),
       desiredStart: candidate.desiredStart,
       desiredEnd: candidate.desiredEnd,
-    });
+      relevance: candidateRelevance(candidate),
+      action,
+    };
+
+    // Resolve against everything that is already there. A start is never moved:
+    // the earlier picture's END gives way, and when it cannot (below 1.2 s) the
+    // loser is dropped instead.
+    let dropped = false;
+    const conflicting = placed
+      .filter(
+        (item) =>
+          item.start < pending.end + SCHEDULE_RULES.exitGap - 1e-6 &&
+          item.end > pending.start - SCHEDULE_RULES.exitGap + 1e-6,
+      )
+      .sort((a, b) => a.start - b.start);
+
+    for (const other of conflicting) {
+      const sameStart = Math.abs(other.start - pending.start) <= 1e-6;
+      if (sameStart) {
+        if (pickWinner(pending, other) === pending) {
+          placed.splice(placed.indexOf(other), 1);
+          droppedIds.add(other.id);
+          notes.push(
+            `Dropped ${other.kind} "${other.id}": same frame as "${pending.id}" (${pending.start.toFixed(3)}s).`,
+          );
+          continue;
+        }
+        dropped = true;
+        droppedIds.add(candidate.id);
+        notes.push(
+          `Dropped ${candidate.kind} "${candidate.id}": "${other.id}" already owns the ${pending.start.toFixed(3)}s frame.`,
+        );
+        break;
+      }
+
+      if (other.start < pending.start) {
+        // The earlier picture may end early, never start later.
+        const trimmed = Number(
+          (pending.start - SCHEDULE_RULES.exitGap).toFixed(3),
+        );
+        if (trimmed - other.start >= SCHEDULE_RULES.minTrimmedDuration - 1e-6) {
+          if (other.end > trimmed) {
+            other.end = trimmed;
+            notes.push(
+              `Truncated ${other.kind} "${other.id}" to ${trimmed.toFixed(2)}s for "${pending.id}".`,
+            );
+          }
+          continue;
+        }
+        if (pickWinner(pending, other) === pending) {
+          placed.splice(placed.indexOf(other), 1);
+          droppedIds.add(other.id);
+          notes.push(
+            `Dropped ${other.kind} "${other.id}" (${other.start.toFixed(2)}s): no ${SCHEDULE_RULES.minTrimmedDuration}s left before "${pending.id}".`,
+          );
+          continue;
+        }
+        dropped = true;
+        droppedIds.add(candidate.id);
+        notes.push(
+          `Dropped ${candidate.kind} "${candidate.id}": "${other.id}" starts ${other.start.toFixed(2)}s and wins the conflict.`,
+        );
+        break;
+      }
+
+      // The other picture starts LATER, so this one must end before it.
+      const trimmed = Number(
+        (other.start - SCHEDULE_RULES.exitGap).toFixed(3),
+      );
+      if (trimmed - pending.start >= SCHEDULE_RULES.minTrimmedDuration - 1e-6) {
+        if (pending.end > trimmed) {
+          pending = { ...pending, end: trimmed, action: "truncated-prev" };
+          action = "truncated-prev";
+        }
+        continue;
+      }
+      if (pickWinner(pending, other) === pending) {
+        placed.splice(placed.indexOf(other), 1);
+        droppedIds.add(other.id);
+        notes.push(
+          `Dropped ${other.kind} "${other.id}" (${other.start.toFixed(2)}s): "${pending.id}" wins the conflict.`,
+        );
+        continue;
+      }
+      dropped = true;
+      droppedIds.add(candidate.id);
+      notes.push(
+        `Dropped ${candidate.kind} "${candidate.id}": "${other.id}" owns ${other.start.toFixed(2)}s and there is no room for ${SCHEDULE_RULES.minTrimmedDuration}s.`,
+      );
+      break;
+    }
+    if (dropped) continue;
+
+    pending = { ...pending, action };
+    if (pending.end - pending.start < SCHEDULE_RULES.minTrimmedDuration - 1e-6) {
+      notes.push(
+        `Dropped ${candidate.kind} "${candidate.id}": only ${(pending.end - pending.start).toFixed(2)}s of room at ${start.toFixed(2)}s.`,
+      );
+      droppedIds.add(candidate.id);
+      continue;
+    }
+    placed.push(pending);
   }
 
-  items.sort((a, b) => a.start - b.start);
+  placed.sort((a, b) => a.start - b.start);
 
-  // Defence in depth: the product rule is absolute, so assert it on the OUTPUT
-  // rather than trusting the placement loop.
-  for (let i = 0; i < items.length; i += 1) {
-    for (let j = i + 1; j < items.length; j += 1) {
+  // Defence in depth: the product rule is absolute, so assert it on the OUTPUT.
+  // Overlaps can only survive on the frame grid when two anchors share a frame.
+  for (let i = 0; i < placed.length; i += 1) {
+    for (let j = i + 1; j < placed.length; j += 1) {
       const overlaps =
-        items[i].start < items[j].end - 1e-6 &&
-        items[i].end > items[j].start + 1e-6;
+        placed[i].start < placed[j].end - 1e-6 &&
+        placed[i].end > placed[j].start + 1e-6;
       if (overlaps) {
-        notes.push(
-          `Dropped overlapping item "${items[j].id}" (rule violation guard).`,
-        );
-        items.splice(j, 1);
-        j -= 1;
+        const keep = pickWinner(placed[i], placed[j]);
+        const drop = keep === placed[i] ? placed[j] : placed[i];
+        notes.push(`Dropped overlapping item "${drop.id}" (rule violation guard).`);
+        placed.splice(placed.indexOf(drop), 1);
+        j = i;
       }
     }
   }
 
-  const fullscreen = items.filter((item) => item.kind === "fullscreen");
-  const cards = items.filter((item) => item.kind === "landscape");
-  for (const card of cards) {
+  // A full-screen image is never covered by a card: exit gaps are already
+  // enforced above, this guards hand-built candidates.
+  const fullscreen = placed.filter((item) => item.kind === "fullscreen");
+  for (const card of placed.filter((item) => item.kind === "landscape")) {
     const hidden = fullscreen.some(
       (shot) =>
-        card.start < shot.end + SCHEDULE_RULES.minGap &&
-        card.end > shot.start - SCHEDULE_RULES.minGap,
+        card.start < shot.end + SCHEDULE_RULES.exitGap - 1e-6 &&
+        card.end > shot.start - SCHEDULE_RULES.exitGap + 1e-6,
     );
     if (hidden) {
-      notes.push(
-        `Dropped landscape card "${card.id}": too close to a full-screen image.`,
-      );
-      items.splice(items.indexOf(card), 1);
+      notes.push(`Dropped landscape card "${card.id}": too close to a full-screen image.`);
+      placed.splice(placed.indexOf(card), 1);
     }
   }
 
-  const belowMinimum = items.length < minCount;
+  const belowMinimum = placed.length < minCount;
   if (belowMinimum) {
     notes.push(
-      `Only ${items.length} image(s) could be placed; the target minimum is ${minCount}. ` +
-        "Full-screen slots are never filled with a stock image for a named entity.",
+      `Only ${placed.length} image(s) could be placed; the target minimum is ${minCount}. ` +
+        "Starts are exact anchor words, so pictures are never moved to fill the count.",
     );
   }
 
-  return { items, notes, belowMinimum };
+  return { items: placed, notes, belowMinimum, droppedIds };
+}
+
+/**
+ * A start never moves, so a conflict's winner is decided by what the picture is:
+ * full-screen over landscape, then relevance, then the EARLIER start (a tie keeps
+ * whichever item was already on the timeline).
+ */
+function pickWinner(
+  pending: ScheduledBrollItem,
+  other: ScheduledBrollItem,
+): ScheduledBrollItem {
+  if (pending.kind !== other.kind) return pending.kind === "fullscreen" ? pending : other;
+  if (pending.relevance !== other.relevance) {
+    return pending.relevance > other.relevance ? pending : other;
+  }
+  return other.start <= pending.start ? other : pending;
 }

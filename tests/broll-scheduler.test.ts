@@ -46,7 +46,11 @@ test('nothing is ever scheduled inside the hook replay window', () => {
   }
 });
 
-test('a full-screen image beats a landscape card and they never overlap', () => {
+test('a full-screen image beats a landscape card and starts never move', () => {
+  // DELIBERATE (Phase 4b): the old scheduler slid the card out of the way. That
+  // is exactly what desynced the picture from the sentence, so now the later
+  // full-screen item keeps its exact start and the earlier card is either
+  // truncated to >= 1.2 s or dropped.
   const result = scheduleBroll({
     clipDuration: 60,
     hookDuration: 0,
@@ -56,14 +60,48 @@ test('a full-screen image beats a landscape card and they never overlap', () => 
   });
 
   const full = result.items.find((item) => item.id === 'entity');
-  const landscape = result.items.find((item) => item.id === 'card');
   assert.ok(full, 'the full-screen mention must be placed');
-  assert.ok(landscape, 'the card can still be placed elsewhere');
-  const distance = Math.max(
-    landscape.start - full.end,
-    full.start - landscape.end,
-  );
-  assert.ok(distance >= SCHEDULE_RULES.minGap - 1e-6, `gap was ${distance}s, expected >= ${SCHEDULE_RULES.minGap}s`);
+  assert.equal(full.start, 10.5, 'its start is its anchor word, never moved');
+
+  const landscape = result.items.find((item) => item.id === 'card');
+  if (landscape) {
+    assert.equal(landscape.start, 10, 'an earlier start is never moved either');
+    assert.ok(
+      landscape.end <= full.start - 0.2 + 1e-6,
+      `the card must exit 0.2 s before the entity (${landscape.end} vs ${full.start})`,
+    );
+    assert.ok(landscape.end - landscape.start >= 1.2 - 1e-6, 'never shorter than 1.2 s');
+  } else {
+    assert.match(result.notes.join(' '), /no room|takes the slot|Dropped/);
+  }
+});
+
+test('a conflict truncates the previous card to the exit gap instead of moving anything', () => {
+  const result = scheduleBroll({
+    clipDuration: 60,
+    hookDuration: 0,
+    minCount: 0,
+    maxCount: 5,
+    candidates: [card('early', 5, 9, 1), fullscreen('later', 7, 10, 9)],
+  });
+  const early = result.items.find((item) => item.id === 'early');
+  const later = result.items.find((item) => item.id === 'later');
+  assert.ok(early && later);
+  assert.equal(early.start, 5);
+  assert.equal(later.start, 7);
+  assert.equal(early.end, Number((7 - 0.2).toFixed(3)), 'truncated to leave the 0.2 s exit gap');
+});
+
+test('a card that cannot survive the 1.2 s minimum is dropped, the winner keeps its start', () => {
+  const result = scheduleBroll({
+    clipDuration: 60,
+    hookDuration: 0,
+    minCount: 0,
+    maxCount: 5,
+    candidates: [card('stub', 5, 6), fullscreen('winner', 5.6, 9)],
+  });
+  assert.deepEqual(result.items.map((item) => item.id), ['winner']);
+  assert.equal(result.items[0].start, 5.6);
 });
 
 test('items last between 2.5 and 4 seconds and keep the 1.5 second gap', () => {
@@ -162,7 +200,7 @@ test('an empty or too-short clip returns no items and says why', () => {
   assert.match(tiny.notes.join(' '), /too short/i);
 });
 
-test('the scheduler never places two items on the same second', () => {
+test('dense conflicting candidates: the highest relevance keeps the slot, the rest never move', () => {
   const result = scheduleBroll({
     clipDuration: 30,
     hookDuration: 3,
@@ -179,15 +217,20 @@ test('the scheduler never places two items on the same second', () => {
   const sorted = [...result.items].sort((x, y) => x.start - y.start);
   for (let i = 1; i < sorted.length; i += 1) {
     assert.ok(
-      sorted[i].start >= sorted[i - 1].end + SCHEDULE_RULES.minGap - 1e-6,
-      `overlap/gap violation between ${sorted[i - 1].id} and ${sorted[i].id}`
+      sorted[i].start >= sorted[i - 1].end + 0.2 - 1e-6,
+      `overlap/gap violation between ${sorted[i - 1].id} and ${sorted[i].id}`,
     );
   }
-  // The highest priority keeps the contested slot; the rest are moved to free
-  // space (or dropped), never stacked on top of it.
   const winner = result.items.find((item) => item.id === 'a');
   assert.ok(winner, 'the highest-priority candidate must be placed');
-  assert.equal(winner.start, 7, 'final timeline includes the three-second hook replay');
+  assert.equal(winner.start, 7, 'final timeline includes the three-second hook replay, unmoved');
+  for (const item of result.items) {
+    assert.equal(
+      item.start,
+      Number((item.desiredStart + 3).toFixed(3)),
+      `${item.id} starts on its own anchor`,
+    );
+  }
 });
 
 test('the output is ordered by time and carries the mention window for review', () => {

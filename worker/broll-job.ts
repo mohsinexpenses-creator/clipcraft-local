@@ -30,6 +30,7 @@ import { mapFaceToCanvas } from "../lib/broll/card";
 import { createBrollDeps } from "./broll-sources";
 import { wordWithinClip } from "../lib/clip-time";
 import { log } from "../lib/logger";
+import { normalizeFps } from "./ffmpeg-pipeline";
 
 /** Words are matched to the clip window with the same slack the renderer uses. */
 const WORD_SLACK_SECONDS = 0.35;
@@ -227,6 +228,9 @@ export async function runBrollJob(
         trigger,
         captionBand,
         faceZones,
+        // Anchor starts are floored onto the RENDER frame grid so a card can
+        // appear at most one frame early and never late (Phase 4a).
+        fps: normalizeFps(clip.outputFps ?? 30),
         signal: execution.signal,
       },
       deps

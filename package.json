@@ -16,6 +16,7 @@
     "verify:clip": "tsx scripts/verify-clip.ts",
     "verify:broll": "tsx scripts/verify-broll.ts",
     "verify:broll-cropped-canvas": "tsx scripts/verify-broll-cropped-canvas.ts",
+    "verify:broll-sync": "tsx scripts/verify-broll-sync.ts",
     "generate:sfx": "node scripts/generate-broll-sfx.mjs"
   },
   "dependencies": {

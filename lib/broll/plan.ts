@@ -35,7 +35,13 @@ import {
   type BrollCandidateInput,
 } from "./scheduler";
 import type { BrollCandidate } from "./providers/types";
-import { attributionFor } from "./providers/types";
+import {
+  attributionFor,
+  candidateChoiceScore,
+  isUsableCardImage,
+  looksTextHeavy,
+} from "./providers/types";
+import { frameDeltaMs } from "./sync";
 import type { StockSearchResult } from "./providers/stock";
 import {
   getBrollImagePreparationConcurrency,
@@ -88,6 +94,8 @@ export interface BrollPlanInput {
   captionBand: { top: number; bottom: number };
   /** Face boxes on the canvas, so a card never covers one. */
   faceZones?: FaceZoneRect[];
+  /** Output frame rate, so an anchor start lands on the frame grid (Phase 4a). */
+  fps?: number;
   /** Worker-owned cancellation signal for CPU/network planning stages. */
   signal?: AbortSignal;
 }
@@ -95,6 +103,8 @@ export interface BrollPlanInput {
 /** Full-screen images are worth more than a stock card (used for slot priority). */
 export const ENTITY_PRIORITY = 100;
 export const CARD_PRIORITY = 50;
+/** Cards whose relevance is below this are not illustrated at all (Phase 4c). */
+export const MIN_CARD_RELEVANCE = 3;
 /** Limit named-entity images per clip. */
 export const MAX_ENTITIES_PER_CLIP = 4;
 /** Stock candidates kept per keyword (the first is used, the rest are replacements). */
@@ -131,28 +141,61 @@ export async function buildBrollPlan(
   /* ----------------------------- 1. analysis ---------------------------- */
 
   let analysis: BrollAnalysis;
-  try {
-    analysis = await deps.analyze({
+  let analysisFailed = false;
+  const analyzeOnce = () =>
+    deps.analyze({
       clipDuration: input.clipDuration,
       words: input.words,
       entityBudget,
       keywordBudget,
       keywordMin: keywordBudget > 0 ? budget.targetMin : 0,
     });
+  try {
+    analysis = await analyzeOnce();
     log.tagged(
       `[broll] Analysis: ${analysis.entities.length} entit(ies), ${analysis.broll.length} keyword moment(s).`,
     );
   } catch (error) {
     if (error instanceof RenderCancelledError || input.signal?.aborted) throw new RenderCancelledError();
     const message = error instanceof Error ? error.message : String(error);
-    notes.push(
-      `AI analysis failed (${message}); fell back to keywords from the transcript.`,
-    );
-    skipped.push({ stage: "analysis", reason: message });
-    analysis = deriveFallbackKeywords(
-      input.words,
-      input.clipDuration,
-      keywordBudget,
+    // Phase 4d: ONE retry on the next model in the chain. `completeWithFallback`
+    // walks the chain per request, but a parse failure or a truncated JSON answer
+    // can still be model-specific, and a second try is far cheaper than a clip
+    // with no B-roll.
+    let retried: BrollAnalysis | null = null;
+    try {
+      log.tagged(`[broll] Analysis failed (${message}); retrying once on the next model.`);
+      retried = await analyzeOnce();
+    } catch (retryError) {
+      if (retryError instanceof RenderCancelledError || input.signal?.aborted) {
+        throw new RenderCancelledError();
+      }
+    }
+    if (retried) {
+      analysis = retried;
+      notes.push(`AI analysis needed a retry (${message}).`);
+      log.tagged(
+        `[broll] Analysis (retry): ${retried.entities.length} entit(ies), ${retried.broll.length} keyword moment(s).`,
+      );
+    } else {
+      analysisFailed = true;
+      notes.push(
+        `AI analysis failed twice (${message}); using concrete transcript nouns only.`,
+      );
+      skipped.push({ stage: "analysis", reason: message });
+      analysis = deriveFallbackKeywords(
+        input.words,
+        input.clipDuration,
+        keywordBudget,
+      );
+    }
+  }
+
+  if (analysisFailed && analysis.broll.length === 0) {
+    log.tagged(
+      `[broll] no relevant cards (analysis unavailable): ${
+        input.words.length === 0 ? "no transcript words" : "no concrete noun in the clip"
+      }.`,
     );
   }
 
@@ -163,6 +206,7 @@ export async function buildBrollPlan(
       input.words,
       input.clipDuration,
       budget.targetMax - analysis.broll.length,
+      { minSpacingSeconds: 10 },
     );
     const existing = new Set(
       analysis.broll.map((moment) => moment.visualKeywords[0]?.toLowerCase()),
@@ -192,6 +236,13 @@ export async function buildBrollPlan(
     entityName?: string;
     entityType?: BrollEntityType;
     query: string;
+    /** The transcript words this picture illustrates (Phase 4a). */
+    anchorText: string;
+    wordIndex?: number;
+    wordStart: number;
+    relevance: number;
+    /** The model's own start, kept only for the delta_ms log line. */
+    modelStart: number;
   }> = [];
 
   const seenEntities = new Set<string>();
@@ -254,6 +305,11 @@ export async function buildBrollPlan(
           entityName: entity.name,
           entityType: entity.type,
           query,
+          anchorText: entity.anchorText ?? entity.name,
+          ...(typeof entity.wordIndex === "number" ? { wordIndex: entity.wordIndex } : {}),
+          wordStart: entity.start,
+          relevance: entity.relevance ?? 5,
+          modelStart: entity.start,
         },
       };
     } catch (error) {
@@ -278,7 +334,14 @@ export async function buildBrollPlan(
   /* --------------------------- 3. landscapes ---------------------------- */
 
   if (keywordBudget > 0) {
-    const moments = analysis.broll.slice(0, budget.targetMax + 2);
+    // Relevance is a HARD bar: 1-2 is filler ("a phone", "some people") and a
+    // picture for it is worse than no picture. Phase 4c.
+    const moments = analysis.broll
+      .filter(
+        (moment) =>
+          moment.synthetic === true || (moment.relevance ?? 3) >= MIN_CARD_RELEVANCE,
+      )
+      .slice(0, budget.targetMax + 2);
     const usedQueries = new Set<string>();
 
     interface CardEntry {
@@ -286,13 +349,17 @@ export async function buildBrollPlan(
       query: string;
       start: number;
       end: number;
+      anchorText: string;
+      wordIndex?: number;
+      relevance: number;
       candidates: BrollCandidate[];
       cursor: number;
       file?: { cacheKey: string; sourceFile: string; bytes: Buffer };
     }
     const entries: CardEntry[] = [];
 
-    // 3a. Search every keyword (cached). No result -> retry with the last word only.
+    // 3a. Search every keyword (cached), and choose WHICH returned photo to
+    // show by token overlap with the keyword rather than by provider ranking.
     for (const moment of moments) {
       throwIfCancelled();
       const query = moment.visualKeywords.join(" ").trim();
@@ -323,6 +390,28 @@ export async function buildBrollPlan(
         });
         continue;
       }
+
+      const scored = result.candidates
+        .filter((candidate) => isUsableCardImage(candidate) && !looksTextHeavy(candidate))
+        .map((candidate) => ({
+          candidate,
+          ...candidateChoiceScore(candidate, query),
+        }))
+        .sort((a, b) => b.score - a.score);
+
+      // No photo shares a single meaningful word with the keyword: the card
+      // would be a lie, so this moment is skipped rather than illustrated.
+      if (scored.length === 0 || scored[0].overlap === 0) {
+        skipped.push({
+          stage: "search",
+          reason: `No image relevant enough for "${query}" (best overlap ${
+            scored.length > 0 ? Math.round(scored[0].overlap * 100) : 0
+          }%).`,
+        });
+        continue;
+      }
+
+      const chosen = scored.slice(0, CARD_CANDIDATES_PER_KEYWORD).map((entry) => entry.candidate);
       entries.push({
         id: `card-${query
           .toLowerCase()
@@ -331,18 +420,30 @@ export async function buildBrollPlan(
         query,
         start: moment.start,
         end: moment.end,
-        candidates: result.candidates.slice(0, CARD_CANDIDATES_PER_KEYWORD),
+        anchorText: moment.anchorText ?? moment.visualKeywords[0] ?? query,
+        ...(typeof moment.wordIndex === "number" ? { wordIndex: moment.wordIndex } : {}),
+        relevance: moment.relevance ?? 3,
+        candidates: chosen,
         cursor: 0,
       });
     }
 
-    // 3b. Download the current candidate of each entry (next one on failure), in parallel.
+    // 3b. Download the current candidate of each entry (next one on failure), in
+    // parallel. An image may only be used ONCE per clip, so a duplicate source
+    // falls through to that entry's next candidate.
+    const usedUrls = new Set<string>();
     const load = async (entry: CardEntry): Promise<boolean> => {
       while (entry.cursor < entry.candidates.length) {
         throwIfCancelled();
+        const candidate = entry.candidates[entry.cursor];
+        if (usedUrls.has(candidate.imageUrl)) {
+          entry.cursor += 1;
+          continue;
+        }
         try {
-          const file = await deps.download(entry.candidates[entry.cursor]);
+          const file = await deps.download(candidate);
           entry.file = file;
+          usedUrls.add(candidate.imageUrl);
           return true;
         } catch (error) {
           const reason = error instanceof Error ? error.message : String(error);
@@ -398,7 +499,7 @@ export async function buildBrollPlan(
             item: {
               id: entry.id,
               kind: "landscape" as const,
-              priority: CARD_PRIORITY,
+              priority: CARD_PRIORITY + (entry.relevance - 3) * 5,
               desiredStart: entry.start,
               desiredEnd: entry.end,
               candidate: entry.candidates[entry.cursor],
@@ -408,6 +509,11 @@ export async function buildBrollPlan(
                 .map((candidate) => attributionFor(candidate)),
               prepared: preparedImage,
               query: entry.query,
+              anchorText: entry.anchorText,
+              ...(typeof entry.wordIndex === "number" ? { wordIndex: entry.wordIndex } : {}),
+              wordStart: entry.start,
+              relevance: entry.relevance,
+              modelStart: entry.start,
             },
           };
         } catch (error) {
@@ -441,6 +547,7 @@ export async function buildBrollPlan(
     desiredStart: item.desiredStart,
     desiredEnd: item.desiredEnd,
     priority: item.priority,
+    relevance: item.relevance,
   }));
 
   const scheduled = scheduleBroll({
@@ -451,6 +558,7 @@ export async function buildBrollPlan(
         ? budget.targetMin
         : 0,
     maxCount: budget.targetMax,
+    fps: input.fps,
     candidates: candidatesForSchedule,
   });
 
@@ -478,6 +586,11 @@ export async function buildBrollPlan(
         : {}),
       ...(source.entityName ? { entityName: source.entityName } : {}),
       ...(source.entityType ? { entityType: source.entityType } : {}),
+      anchorText: source.anchorText,
+      ...(typeof source.wordIndex === "number" ? { wordIndex: source.wordIndex } : {}),
+      wordStart: source.wordStart,
+      relevance: source.relevance,
+      syncAction: slot.action,
     };
     if (slot.kind === "landscape") {
       item.card = planCardRect({
@@ -488,18 +601,63 @@ export async function buildBrollPlan(
     items.push(item);
   }
 
-  // Anything prepared but not placed is reported, so the UI can explain a low count.
+  // Anything prepared but not placed is reported, so the UI can explain a low
+  // count. The scheduler already logged the ones IT refused; this only covers a
+  // plan that dropped an item for another reason.
   for (const item of prepared) {
+    if (scheduled.droppedIds.has(item.id)) continue;
     if (!items.some((placed) => placed.id === item.id)) {
       skipped.push({
         stage: "schedule",
         ...(item.entityName ? { entity: item.entityName } : {}),
-        reason: `No free ${slotLength()}s slot for "${item.query}".`,
+        reason: `No exact-start slot for "${item.query}" (another picture owns its anchor frame).`,
       });
     }
   }
 
   for (const note of scheduled.notes) notes.push(note);
+
+  /* ------------------------- 5. exact-sync log -------------------------- */
+
+  // One line per placed card, machine-readable: the render's picture #id starts
+  // on `anchorText` (#wordIndex, wordStart) and is drawn at finalStart. A large
+  // |delta_ms| means the model's own timing was wrong and the anchor saved it.
+  if (syncLogEnabled()) {
+    for (const item of items) {
+      const source = byId.get(item.id);
+      log.tagged(
+        `[BROLL-SYNC] id=${item.id} keyword="${item.query}" anchorText="${
+          item.anchorText ?? ""
+        }" wordIndex=${item.wordIndex ?? "-"} wordStart=${
+          item.wordStart !== undefined ? item.wordStart.toFixed(3) : "-"
+        } finalStart=${item.start.toFixed(3)} delta_ms=${frameDeltaMs(
+          source?.modelStart ?? item.start,
+          item.start,
+        )} action=${item.syncAction ?? "exact"} relevance=${item.relevance ?? "-"}`,
+      );
+    }
+    const startedExactly = items.filter((item) => (item.syncAction ?? "exact") === "exact").length;
+    const maxDelta = items.reduce(
+      (worst, item) =>
+        Math.max(
+          worst,
+          Math.abs(
+            frameDeltaMs(
+              (byId.get(item.id)?.modelStart ?? item.start) + input.hookDuration,
+              item.start,
+            ),
+          ),
+        ),
+      0,
+    );
+    log.tagged(
+      `[BROLL-SYNC] summary cards=${items.length} exact=${startedExactly} truncated=${
+        items.length - startedExactly
+      } dropped=${prepared.length - items.length} max_delta_ms=${maxDelta} target=${
+        budget.targetMin
+      }-${budget.targetMax} below_min=${scheduled.belowMinimum}`,
+    );
+  }
 
   const counts = {
     targetMin: budget.targetMin,
@@ -535,7 +693,9 @@ export async function buildBrollPlan(
   };
 }
 
-/** Short helper used in the "not placed" note; the scheduler uses the same bounds. */
-function slotLength(): string {
-  return "2.5-4";
+/** `BROLL_SYNC_LOG=0` silences the per-card lines (the summary stays useful). */
+function syncLogEnabled(): boolean {
+  const raw = process.env.BROLL_SYNC_LOG;
+  if (raw === undefined || raw.trim() === "") return true;
+  return !["0", "false", "off", "no"].includes(raw.trim().toLowerCase());
 }

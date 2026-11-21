@@ -111,31 +111,35 @@ test('the surrounding sentence is taken from the word timings', () => {
   assert.equal(transcriptSentenceAt([], 1), '');
 });
 
-test('fallback keywords come from the transcript, spread over the clip', () => {
+test('fallback keywords are concrete phrases, at most one per 10 s, never a sentence fragment', () => {
   const words: WordTimestamp[] = [];
   const script = ['Mount', 'Everest', 'is', 'tall', 'success', 'growth', 'climbers', 'train'];
   script.forEach((word, index) => words.push({ word, start: index * 1.5, end: index * 1.5 + 1.2 }));
 
   const analysis = deriveFallbackKeywords(words, 20, 4);
   assert.equal(analysis.entities.length, 0);
-  assert.equal(analysis.broll.length, 4);
+  // The 10 s spacing cap is part of the contract: a 12 s span cannot hold 4 cards.
+  assert.ok(analysis.broll.length >= 1);
   for (const moment of analysis.broll) {
     assert.equal(moment.visualKeywords.length, 1);
     assert.equal(isConcreteKeyword(moment.visualKeywords[0]), true);
+    assert.ok(moment.visualKeywords[0].split(/\s+/).length <= 3, 'never a sentence fragment');
+    assert.equal(moment.relevance, 1, 'the lowest relevance, so it loses any conflict');
     assert.ok(moment.start >= 0 && moment.end <= 20 && moment.end > moment.start);
   }
-  const words_ = analysis.broll.map((moment) => moment.visualKeywords[0]);
-  assert.ok(!words_.includes('success'), 'abstract words never become keywords');
-  assert.ok(!words_.includes('growth'), 'abstract words never become keywords');
+  const starts = analysis.broll.map((moment) => moment.start);
+  for (let i = 1; i < starts.length; i += 1) {
+    assert.ok(starts[i] - starts[i - 1] >= 10 - 1e-6, 'at most one card every 10 s');
+  }
+  const keywords = analysis.broll.map((moment) => moment.visualKeywords[0]);
+  assert.ok(!keywords.includes('success'), 'abstract words never become keywords');
+  assert.ok(!keywords.includes('growth'), 'abstract words never become keywords');
+  assert.ok(!keywords.some((keyword) => /\bis\b|\bthe\b/.test(keyword)), 'no filler words');
 });
 
-test('fallback keywords work with an empty transcript', () => {
+test('an empty transcript produces no fallback cards at all', () => {
   const analysis = deriveFallbackKeywords([], 12, 2);
-  assert.equal(analysis.broll.length, 2);
-  for (const moment of analysis.broll) {
-    assert.ok(moment.end > moment.start);
-    assert.ok(moment.end <= 12);
-  }
+  assert.deepEqual(analysis.broll, [], 'no "documentary stock footage" filler cards');
 });
 
 test('the prompt carries the clip-relative transcript and the JSON contract', () => {
@@ -152,7 +156,7 @@ test('the prompt carries the clip-relative transcript and the JSON contract', ()
   assert.match(prompt, /NEVER abstract ideas/);
 });
 
-test('fallback stock queries retain surrounding transcript context', () => {
+test('fallback stock queries are the concrete phrase, not the surrounding sentence', () => {
   const words: WordTimestamp[] = [
     { word: 'They', start: 0, end: 0.2 },
     { word: 'visited', start: 0.2, end: 0.5 },
@@ -162,8 +166,10 @@ test('fallback stock queries retain surrounding transcript context', () => {
     { word: 'during', start: 1.2, end: 1.5 },
     { word: 'sunset', start: 1.5, end: 1.8 },
   ];
-  const result = deriveFallbackKeywords(words, 10, 1);
-  assert.equal(result.broll.length, 1);
-  assert.ok(result.broll[0].visualKeywords[0].split(/\\s+/).length >= 3);
-  assert.match(result.broll[0].visualKeywords[0], /Eiffel|Tower/);
+  const result = deriveFallbackKeywords(words, 10, 3);
+  assert.ok(result.broll.length >= 1);
+  const keyword = result.broll[0].visualKeywords[0];
+  assert.match(keyword, /Eiffel|Tower/, 'the search keeps the landmark');
+  assert.ok(keyword.split(/\s+/).length <= 3, `a 1-3 word phrase (got "${keyword}")`);
+  assert.doesNotMatch(keyword, /visited|during/, 'no verbs or filler');
 });
