@@ -173,6 +173,13 @@ Read it as:
   reach the face (nothing the plan can do), reported separately from a real framing
   defect; `headOutsideCropFrames` — the head does not fit inside the window at all.
 
+The `[CAMERA-PLAN]` counters never double count: `recenters` is moves that keep the
+*same* subject, `switches` is real speaker changes (cutaway visits are `cutaways`), and
+`keyframes = glides + cuts`. Typical numbers for a 97.5 s two-person window are
+`segments=25 locks=25 recenters=0..11 switches=21 cutaways=0 keyframes=24..35 cuts=4` —
+i.e. one event per turn plus a handful of re-centres, where the old path needed 30
+keyframes with gaps up to 5.3 s.
+
 **Rollback.** `CAMERA_MODE=legacy` restores the previous continuous follow exactly (the
 unit tests compare it against a recorded fixture), and every knob above has a default
 that is also its "old" value. `CAMERA_LEGACY_DETREND=1` additionally applies the drift
