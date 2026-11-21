@@ -9,7 +9,7 @@ import {
   buildProfanityWindowsFromIndexes,
   getProfanityAudioMode,
 } from "../lib/profanity";
-import { getVideoMetadata, runFfmpeg } from "../lib/ffmpeg";
+import { ffmpegSupportsFilterScript, getVideoMetadata, runFfmpeg } from "../lib/ffmpeg";
 import { log } from "../lib/logger";
 import { buildSfxMixPlan, BROLL_SFX_VOLUME } from "../lib/broll/sfx";
 import { buildBrollSfxWav } from "./sfx-mixer";
@@ -28,6 +28,8 @@ import {
   OUTPUT_WIDTH,
   buildSingleFilterParts,
   buildSplitFilterStatements,
+  getFilterGraphScriptThreshold,
+  needsFilterScript,
 } from "./layout";
 
 export interface OverlayFrameSequence {
@@ -822,6 +824,8 @@ export async function processVideoSegment(
   let overlaySources: OverlayInputSource[] = [];
   let sfxInputIndex: number | null = null;
   let sfxMixDir: string | null = null;
+  /** Set when the filter graph was written to a script file (cleaned up below). */
+  let filterGraphScriptPath: string | null = null;
   try {
     overlaySources = await prepareOverlayInputSources(
       overlays,
@@ -1095,6 +1099,30 @@ export async function processVideoSegment(
     const finalAudioLabel = finalFade.audioLabel;
 
     const filterGraph = statements.join(";");
+    // A long graph (thousands of keyframes, or simply many overlays) would push the
+    // whole command line past the OS limit and fail the spawn with ENAMETOOLONG.
+    // From `FILTER_GRAPH_SCRIPT_THRESHOLD` chars on, the graph goes to a file and
+    // FFmpeg is pointed at it with `-filter_complex_script` - the same graph,
+    // just not on the command line.
+    const scriptThreshold = getFilterGraphScriptThreshold();
+    const graphAsScript = needsFilterScript(filterGraph, scriptThreshold) && ffmpegSupportsFilterScript();
+    if (needsFilterScript(filterGraph, scriptThreshold) && !graphAsScript) {
+      log.warn(
+        `[RENDER-DIAG] stage=ffmpeg.filter-graph event=script-unavailable characters=${filterGraph.length} ` +
+          "reason=this FFmpeg build has no -filter_complex_script; passing the graph on the command line " +
+          "(close to the OS limit - check the render for an ENAMETOOLONG spawn error).",
+      );
+    }
+    if (graphAsScript) {
+      filterGraphScriptPath = path.join(
+        fs.mkdtempSync(path.join(resolveTempDir(), "clipcraft-filter-graph-")),
+        "graph.ffscript",
+      );
+      fs.writeFileSync(filterGraphScriptPath, filterGraph);
+      log.info(
+        `[RENDER-DIAG] stage=ffmpeg.filter-graph event=script characters=${filterGraph.length} path=${filterGraphScriptPath}`,
+      );
+    }
     const args = [
       "-y",
       "-hide_banner",
@@ -1103,8 +1131,9 @@ export async function processVideoSegment(
       "-stats",
       ...inputArgs,
       ...(audioPlan?.extraArgs ?? []),
-      "-filter_complex",
-      filterGraph,
+      ...(filterGraphScriptPath
+        ? ["-filter_complex_script", filterGraphScriptPath]
+        : ["-filter_complex", filterGraph]),
     ];
 
     const concatOverlayInputs = overlaySources.filter((source) => source.kind === "concat").length;
@@ -1230,7 +1259,11 @@ export async function processVideoSegment(
   } finally {
     // Do not let a best-effort SFX cleanup failure strand concat manifests during
     // success, error, or cancellation cleanup.
-    for (const temporaryDirectory of [sfxMixDir, overlayConcatDir]) {
+    for (const temporaryDirectory of [
+      sfxMixDir,
+      overlayConcatDir,
+      filterGraphScriptPath ? path.dirname(filterGraphScriptPath) : null,
+    ]) {
       if (!temporaryDirectory) continue;
       try {
         fs.rmSync(temporaryDirectory, { recursive: true, force: true });

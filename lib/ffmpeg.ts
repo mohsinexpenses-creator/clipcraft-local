@@ -1,4 +1,4 @@
-import { spawn } from "child_process";
+import { spawn, spawnSync } from "child_process";
 import fs from "fs";
 import path from "path";
 import { AppError, RenderCancelledError, toErrorMessage } from "./errors";
@@ -106,6 +106,35 @@ export function getFfmpegPath(): string {
       "or re-run `npm install` with network access. Trying bare `ffmpeg` on PATH.",
   );
   return isWin ? "ffmpeg.exe" : "ffmpeg";
+}
+
+/** Cached answer for "can this binary read a filter graph from a file?". */
+let filterScriptSupport: boolean | null = null;
+
+/**
+ * Does this FFmpeg build accept `-filter_complex_script`?
+ *
+ * Long filter graphs (a pan expression with thousands of keyframes, or simply many
+ * overlays) can exceed the OS command-line limit, and the supported workaround is
+ * to write the graph to a file. That option lives in the `ffmpeg` program wrapper
+ * (cmdutils), so a slimmed-down build can lack it - probing is one cheap
+ * `-h full` call, cached for the process, and the pipeline only switches to the
+ * script form when the answer is yes.
+ */
+export function ffmpegSupportsFilterScript(): boolean {
+  if (filterScriptSupport !== null) return filterScriptSupport;
+  try {
+    const probe = spawnSync(getFfmpegPath(), ["-hide_banner", "-h", "full"], {
+      encoding: "utf8",
+      timeout: 20_000,
+      windowsHide: true,
+    });
+    const help = `${probe.stdout ?? ""}${probe.stderr ?? ""}`;
+    filterScriptSupport = /-filter_complex_script\b/.test(help);
+  } catch {
+    filterScriptSupport = false;
+  }
+  return filterScriptSupport;
 }
 
 let ffprobeWarnedOnce = false;

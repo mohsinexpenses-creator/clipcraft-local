@@ -25,7 +25,14 @@ import {
   JobData,
   OverlayStylePreset,
 } from "../lib/types";
-import { buildLayoutPlan, getSplitFramingSettings } from "./layout";
+import {
+  buildLayoutPlan,
+  formatCameraPlanLog,
+  formatCameraQaLog,
+  getSpeakerCameraSettings,
+  getSplitFramingSettings,
+} from "./layout";
+import { measureCameraPlanQa } from "./camera-plan";
 import { adaptOverlaysToLayout, describePlacements } from "./overlay-layout";
 import { color, log } from "../lib/logger";
 import { JobTimer, type JobTimingOutcome } from "../lib/job-timing";
@@ -729,18 +736,51 @@ export async function processClipJob(
       );
     }
     const splitFraming = getSplitFramingSettings();
+    const cameraSettings = getSpeakerCameraSettings(process.env, sourceMeta.width, sourceMeta.height);
     const plan = buildLayoutPlan(
       asd,
       layout,
       sourceMeta.width,
       sourceMeta.height,
       splitFraming,
+      cameraSettings,
     );
     if (layout === "split-screen") {
       log.detail(
         `Split framing: face target ${(splitFraming.faceTargetFrac * 100).toFixed(0)}% of pane height, ` +
           `maximum crop zoom ${splitFraming.zoom.toFixed(1)}x.`,
       );
+    } else if (plan.mode === "single" && plan.cameraPlan) {
+      // One line per render: how many camera events the plan has, and - measured
+      // on the very detections it was planned from - how still the framing is.
+      log.info(formatCameraPlanLog(plan.cameraPlan, segmentDuration));
+      // QA is measured against whoever the camera is FOLLOWING at each moment
+      // (the speaker, or the listener during a cutaway) - not every face in frame.
+      const followed = new Set(plan.cameraPlan.segments.map((segment) => segment.trackId));
+      const followedTracks = asd.tracks.filter((track) => followed.has(track.id));
+      if (followedTracks.length > 0) {
+        log.info(
+          formatCameraQaLog(
+            measureCameraPlanQa(plan.cameraPlan, followedTracks, {
+              srcW: sourceMeta.width,
+              srcH: sourceMeta.height,
+              cropW: plan.cropW,
+              cropH: plan.cropH,
+              anchorY: plan.faceAnchorY,
+              deadZoneXPct: cameraSettings.deadZoneXPct,
+              deadZoneYPct: cameraSettings.deadZoneYPct,
+              durationSeconds: segmentDuration,
+            }),
+          ),
+        );
+      }
+      for (const skipped of plan.cameraPlan.skippedCutaways.slice(0, 10)) {
+        log.detail(
+          `[CAMERA-PLAN] cutaway skipped at ${skipped.t.toFixed(2)}s: ${skipped.reason}`,
+        );
+      }
+    } else if (layout === "speaker-focus") {
+      log.info(`[CAMERA-PLAN] mode=legacy keyframes=${'points' in plan ? plan.points.length : 0}`);
     }
     checkCancelled();
 
