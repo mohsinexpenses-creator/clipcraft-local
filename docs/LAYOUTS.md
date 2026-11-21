@@ -7,7 +7,7 @@ is a per-clip choice with two options — plus automatic tracking of **who is ta
 
 | Layout | What it looks like | Best for |
 | --- | --- | --- |
-| **Speaker focus** | A single full-height 9:16 window follows the active speaker's sampled face position. New live faces are framed within 0.15s; during long turns, a random live listener gets a two-second cutaway after each six-second speaker hold. | Podcasts, interviews, one dominant talker. |
+| **Speaker focus** | A single full-height 9:16 window showing the ACTIVE SPEAKER, driven by a **locked camera** (default `CAMERA_MODE=locked`): one anchor per speaker turn and per source shot, a 10 % × 8 % face dead zone, a single 0.35 s re-centre when the face really leaves it, 0.1 s speaker switches and hard switches on source shot cuts. It holds perfectly still while a talking head sways. Opt-in `SPEAKER_CUTAWAYS=on` adds the old 6 s hold + 2 s listener cadence. | Podcasts, interviews, one dominant talker. |
 | **Split screen (multi-person split)** | An adaptive grid of stacked crops (up to 4 people — a 2-person clip gets two stacked 1080×960 panes: the person sitting **left** is always the **top** pane, the **right** person the **bottom** one, so the layout never swaps mid-clip). Each pane is a **locked camera**: it is placed on its person at the start and then holds perfectly still — it only glides to re-centre them if their head actually leaves the frame. Nothing is drawn over the panes (no speaker highlight frame), and the captions / hook / CTA are placed so they never cover a face ([details](./OVERLAYS.md#overlays-follow-the-layout)). | Two-person conversations, panels. |
 
 Pick the layout per clip in **Generate → clip card → "Layout (9:16 output)"**, or send
@@ -73,12 +73,11 @@ The worker pipeline (`worker/asd/` + `worker/layout.ts`):
    challenger's rises high (they clearly started) — this is what kills the "frame
    lingers on the non-speaker after a turn change" behaviour. A single visible face is
    always the speaker.
-6. Turns decisions into a **layout plan** (`worker/layout.ts`). Speaker focus follows
-   sampled face positions rather than holding a segment-wide median. Speaker changes
-   glide in 0.15 s; a newly appearing live face is centered within 0.15 s and gets a
-   brief two-second visit before focus returns to the speaker. During a long speaker
-   segment, a pseudo-random eligible listener is shown for two seconds after each
-   six-second speaker hold. Split screen: the grid is sized by how many people
+6. Turns decisions into a **layout plan** (`worker/layout.ts` + `worker/camera-plan.ts`).
+   Speaker focus is an **event-based locked camera** (next section): one anchor per
+   speaker turn and per source shot, a face dead zone, one short re-centre per real
+   departure, 0.1 s speaker switches and hard switches on *source shot cuts*
+   (`worker/asd/shot-cuts.ts`). Split screen: the grid is sized by how many people
    **share the screen at the busiest moment** (never more panes than that, so
    fragmented track ids can't inflate 2 people into 3–4), but **two co-existing people
    always get two panes even if only one was judged the speaker** — the split is a
@@ -101,6 +100,70 @@ The worker pipeline (`worker/asd/` + `worker/layout.ts`):
    ≥ 3 s *and* is at least 45 % as wide as the biggest speaker's (a much smaller
    "face" is a poster / screen / passer-by). A track must be ≥ 2 % of the frame width
    to count as a person at all.
+
+### Locked speaker camera — no drifting (`worker/camera-plan.ts`, `CAMERA_MODE=locked`)
+
+The earlier speaker window *chased* the face: an 8 px per-sample dead zone, the WHOLE
+face track decimated to 24 keyframes **before** it was sliced into speaker segments (so
+keyframes were seconds apart and FFmpeg's smoothstep turned them into 5–14 s pans), a
+keyframe at every segment's **median** time (the window crept toward the average face
+position while the speaker stood still) and interpolation **across source shot cuts**.
+One real render logged 31 keyframes, glides of 13.6 s / 8.75 s / 1.9 s, and a hook window
+that moved every ~1 s.
+
+The default camera is event-based instead — a handful of keyframes per minute:
+
+1. **Lock** — an anchor per speaker run *and per source shot*: the median face position
+   over the first ≤ 1 s of detections after the run (or shot) start.
+2. **Hold** — the window does not move at all while the face **centre** stays inside a
+   dead zone of `CAMERA_HOLD_DEADZONE_PCT` (10 %) of the crop width by
+   `CAMERA_HOLD_DEADZONE_Y_PCT` (8 %) of its height. No per-sample following: a talking
+   head may sway ±60 px horizontally on a 606 px crop before anything happens.
+3. **Re-centre** — only when the face's *recent median* has stayed clearly outside that
+   zone for `CAMERA_HOLD_CONFIRM_SECONDS` (0.4 s): ONE eased `CAMERA_RECENTRE_SECONDS`
+   (0.35 s) glide to the median of the last 0.5 s of detections. After it, the camera
+   needs the face to come back inside the dead zone (or the crop to actually cut the
+   head) before it moves again — a slow drift is one re-centre, never a creep. There is
+   no keyframe at the run's end: the last locked position is kept.
+4. **Switch** — a speaker change glides in `SPEAKER_GLIDE_SECONDS` (0.1 s), or is
+   instant with `CAMERA_SWITCH_MODE=cut`.
+5. **Cuts** — source shot cuts (FFmpeg scene detection on a 160 px grayscale decode,
+   `SHOT_CUT_DETECTION` / `SHOT_CUT_THRESHOLD`, run beside the ASD frame extraction)
+   are **hard switches on the cut's exact frame**, anchored on the face visible *after* the cut. The FFmpeg expression is a
+   telescoping `x0 + gte(t,T1)*(x1-x0) + …` sum (colon-free, because `crop` splits its
+   arguments on `:`), so nothing can interpolate across a cut and the JS camera
+   (`cameraPositionAt`) matches it frame for frame.
+6. **Cutaways** — `SPEAKER_CUTAWAYS=off` by default. `on` restores the old cadence:
+   hold the speaker `SPEAKER_FOCUS_HOLD_SECONDS` (6 s), then show a listener for
+   `SPEAKER_SWITCH_HOLD_SECONDS` (2 s). A listener is used only when it is a live,
+   comparably sized face (`≥ 45 %` of the speaker's width), detected on screen in ≥ 80 %
+   of the cutaway, co-visible with the speaker **in the same shot**, and centerable —
+   otherwise the cutaway is skipped and the reason is logged.
+
+Every render logs one line each of
+
+```
+[CAMERA-PLAN] mode=locked segments=.. locks=.. recenters=.. switches=.. cutaways=.. keyframes=..
+[CAMERA-QA]   pctFramesInDeadzone=..% maxOffsetPx=.. motionEventsPerMinute=.. longestGlide=..s
+              glidesOverHalfSecond=.. edgeLimitedFrames=.. headOutsideCropFrames=.. framesChecked=..
+```
+
+`[CAMERA-QA]` is measured on the very detections the plan was built from; frames where
+the crop edge (not the plan) limits the framing are counted separately in
+`edgeLimitedFrames` rather than being hidden.
+
+**Rollback.** `CAMERA_MODE=legacy` restores the previous continuous follow exactly (the
+unit tests compare it against a recorded fixture), and every knob above has a default
+that is also its "old" value. `CAMERA_LEGACY_DETREND=1` additionally applies the drift
+removal to the legacy path.
+
+**Keyframes and command length.** Keyframes are only the events above, so a 90 s
+two-person clip is ~17 short glides. Collinear points are still removed (exact, ≤ 1 px)
+and a 400-move safety cap (`CAMERA_KEYFRAME_CAP`) applies. If the finished filter graph
+exceeds `FILTER_GRAPH_SCRIPT_THRESHOLD` (24 000 characters, well inside Windows' ~32 k
+command line) and the FFmpeg build supports `-filter_complex_script`, the graph is
+written to a file and passed with that option instead; the hook branch replays the SAME
+plan with its cut times shifted.
 
 ### Locked panes — no shake (`worker/camera-lock.ts`)
 
@@ -163,7 +226,9 @@ the final graph applies the crop, colour treatment, hook intro, caption/card ove
 and output scaling together. The output canvas is always 1080×1920.
 
 - **Speaker focus** — `setpts=PTS-STARTPTS,hflip,crop=W:H:x='EXPR':y='EXPR2'` with
-  source-clamped, piecewise smoothstep coordinates. `crop` uses `exact=1` so chroma
+  source-clamped coordinates: `CAMERA_MODE=locked` (default) emits the sum of eased
+  glides plus hard switches at source cuts, `CAMERA_MODE=legacy` the piecewise smoothstep
+  keyframe chain. `crop` uses `exact=1` so chroma
   subsampling does not force even-coordinate rounding; the final scale uses Lanczos.
 - **Split screen** — each locked camera uses a static crop except for an eased glide
   when the head leaves its safe zone. Per-pane crops use `exact=1` and Lanczos scaling,
