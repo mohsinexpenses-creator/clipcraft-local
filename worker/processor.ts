@@ -64,6 +64,7 @@ import { loadEffectiveSettings } from "../lib/app-settings";
 import {
   findContextCensorWordIndexes,
   findViralSafetyWordIndexes,
+  hasViralSafetyData,
   getForceLlmSafetyReview,
   getProfanityContextPassEnabled,
   resolveCensoredWordIndexes,
@@ -520,15 +521,19 @@ export async function processClipJob(
     const viralSafety = findViralSafetyWordIndexes(clipWords, clip.aiAnalysis);
     const forceLlmSafetyReview = getForceLlmSafetyReview();
     const contextualSafetyEnabled = getProfanityContextPassEnabled();
+    // A PRESENT safety_analysis is valid data even when risky_words is []: it
+    // means "nothing risky", not "no data". Only a missing/malformed section
+    // justifies paying for the contextual LLM pass (the real run spent 7.3 s on
+    // a review that had already been answered by an empty list).
+    const hasViralSafety = hasViralSafetyData(clip.aiAnalysis);
     const shouldRunLlmSafetyReview =
-      forceLlmSafetyReview ||
-      (contextualSafetyEnabled && viralSafety.phrases.length === 0);
+      forceLlmSafetyReview || (contextualSafetyEnabled && !hasViralSafety);
     let contextualCensorIndexes: number[] = [];
 
-    if (viralSafety.phrases.length > 0) {
+    if (hasViralSafety) {
       log.info(
         `[LLM] safety reuse clip=${clipId} phrases=${viralSafety.phrases.length} ` +
-          `matched_word_indexes=${viralSafety.indexes.length}` +
+          `matched_word_indexes=${viralSafety.indexes.length} viral_data=present` +
           (forceLlmSafetyReview ? " force_review=1" : ""),
       );
     }
@@ -543,7 +548,7 @@ export async function processClipJob(
           signal: execution.signal,
         }),
       );
-    } else if (viralSafety.phrases.length === 0 && !contextualSafetyEnabled) {
+    } else if (!contextualSafetyEnabled) {
       log.detail("LLM safety review is disabled and viral analysis supplied no risky phrases.");
     }
 

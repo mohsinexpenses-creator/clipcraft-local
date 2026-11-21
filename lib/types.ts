@@ -587,8 +587,12 @@ export interface ViralClip {
   hook_line_analysis: {
     hook_line: string;
     hook_timestamp: { start: string; end: string };
-    /** `viral` is a validated interval returned by viral detection; `picker` is the fallback call. */
-    hook_moment_source?: "viral" | "picker" | "manual";
+    /**
+     * Where the hook interval came from: `transcript` is the hook line located in
+     * the transcript's own word timings (the preferred source), `viral` the
+     * interval viral detection returned, `picker` the fallback LLM call.
+     */
+    hook_moment_source?: "transcript" | "viral" | "picker" | "manual";
     why_it_works: string;
     /** Stored only - the renderer always prepends the hook intro when hook text is on. */
     place_before_clip: boolean;

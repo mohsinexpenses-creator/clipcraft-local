@@ -32,7 +32,7 @@ import {
   type PipelineEnqueueContext,
 } from './queue';
 import { resolveBrollOptions, sanitizePipelineOptions } from './pipeline-defaults';
-import { parseTimestamp } from './viral-response';
+import { resolveHookInterval, type HookInterval } from './hook-interval';
 import { loadEffectiveSettings } from './app-settings';
 import {
   BrollOptions,
@@ -277,39 +277,6 @@ export interface DetectionRunResult {
 }
 
 /** The hook intro must not replay the first spoken seconds of the clip. */
-const MIN_REUSABLE_HOOK_OFFSET_SECONDS = 3;
-
-interface ReusableHookInterval {
-  start: number;
-  end: number;
-}
-
-/**
- * A viral response already contains a hook interval. Trust it when it is a
- * complete, later-in-the-clip range; otherwise the dedicated picker remains the
- * conservative fallback. This keeps the old "never replay the opening" rule.
- */
-function reusableViralHookInterval(
-  timestamp: { start: string; end: string },
-  clipStart: number,
-  clipEnd: number,
-): ReusableHookInterval | null {
-  const start = parseTimestamp(timestamp.start);
-  const end = parseTimestamp(timestamp.end);
-  const clipDuration = clipEnd - clipStart;
-  if (
-    start === null ||
-    end === null ||
-    end <= start ||
-    start < clipStart + MIN_REUSABLE_HOOK_OFFSET_SECONDS ||
-    end > clipEnd ||
-    end - start > clipDuration / 2
-  ) {
-    return null;
-  }
-  return { start, end };
-}
-
 /**
  * One viral-detection run for one video: AI pass over the transcript, clip
  * records written with the analysis + default render config, then (by default)
@@ -494,21 +461,26 @@ export async function runViralDetection(
 
     if (hookIntroEnabled) {
       const segmentDuration = segment.end - segment.start;
-      const reusableHook = reusableViralHookInterval(
-        segment.clip.hook_line_analysis.hook_timestamp,
-        segment.start,
-        segment.end,
-      );
+      const hookLine = segment.clip.hook_line_analysis.hook_line ?? '';
+      // 1) The transcript's own word timings for the hook sentence, then
+      // 2) the viral interval, then 3) the LLM picker (validated against the
+      // transcript). Doing it in this order is what stops the intro replaying a
+      // different moment than the hook text on screen.
+      let resolved: HookInterval | null = resolveHookInterval({
+        hookLine,
+        words: video.transcript.words,
+        clipStart: segment.start,
+        clipEnd: segment.end,
+        maxSeconds: Math.min(render.hookDuration, segmentDuration / 2),
+        viralTimestamp: segment.clip.hook_line_analysis.hook_timestamp,
+        // No picker yet: it is only asked when the other two sources failed.
+        picker: null,
+      });
 
-      if (reusableHook) {
-        segment.clip.hook_line_analysis.hook_moment_source = 'viral';
+      if (!resolved) {
         log.info(
-          `[LLM] hook reuse clip_rank=${segment.clip.rank} source=viral-response ` +
-            `interval=${reusableHook.start.toFixed(3)}s-${reusableHook.end.toFixed(3)}s`,
-        );
-      } else {
-        log.info(
-          `[LLM] hook fallback clip_rank=${segment.clip.rank} reason=missing-or-invalid-viral-interval`,
+          `[LLM] hook picker clip_rank=${segment.clip.rank} ` +
+            'reason=no-transcript-match-and-no-valid-viral-interval',
         );
         const hookWords = video.transcript.words
           .filter((word) => word.end >= segment.start && word.start <= segment.end)
@@ -523,20 +495,59 @@ export async function runViralDetection(
           hookDuration: Math.min(render.hookDuration, segmentDuration / 2),
           signal: input.signal,
         });
-
         if (hookMoment) {
-          segment.clip.hook_line_analysis.hook_timestamp = {
-            start: `${(segment.start + hookMoment.start).toFixed(3)}s`,
-            end: `${(segment.start + hookMoment.end).toFixed(3)}s`,
-          };
-          segment.clip.hook_line_analysis.hook_moment_source = 'picker';
-        } else {
-          segment.clip.hook_line_analysis.hook_timestamp = { start: '', end: '' };
-          hookIntroEnabled = false;
-          log.warn(
-            `No later hook moment was found for clip ${segment.clip.rank}; disabling its hook intro instead of replaying the clip opening.`,
-          );
+          resolved = resolveHookInterval({
+            hookLine,
+            words: video.transcript.words,
+            clipStart: segment.start,
+            clipEnd: segment.end,
+            maxSeconds: Math.min(render.hookDuration, segmentDuration / 2),
+            picker: {
+              start: segment.start + hookMoment.start,
+              end: segment.start + hookMoment.end,
+            },
+          });
+          if (!resolved) {
+            log.warn(
+              `[LLM] hook picker discard clip_rank=${segment.clip.rank} ` +
+                'reason=picker-interval-does-not-overlap-hook-line',
+            );
+          }
         }
+      }
+
+      if (resolved) {
+        // When the viral interval wins, the stored strings stay EXACTLY as the
+        // analysis returned them (only the word-derived and picker intervals are
+        // written, because those are the ones we computed).
+        if (resolved.source !== 'viral-response') {
+          segment.clip.hook_line_analysis.hook_timestamp = {
+            start: `${resolved.start.toFixed(3)}s`,
+            end: `${resolved.end.toFixed(3)}s`,
+          };
+        }
+        segment.clip.hook_line_analysis.hook_moment_source =
+          resolved.source === 'transcript-words'
+            ? 'transcript'
+            : resolved.source === 'viral-response'
+              ? 'viral'
+              : 'picker';
+        log.info(
+          `[LLM] hook interval clip_rank=${segment.clip.rank} source=${resolved.source} ` +
+            `interval=${resolved.start.toFixed(3)}s-${resolved.end.toFixed(3)}s ` +
+            `length=${(resolved.end - resolved.start).toFixed(3)}s ` +
+            `score=${resolved.score.toFixed(2)}` +
+            (resolved.words?.length
+              ? ` words=${JSON.stringify(resolved.words.slice(0, 12).join(' '))}`
+              : ''),
+        );
+      } else {
+        segment.clip.hook_line_analysis.hook_timestamp = { start: '', end: '' };
+        hookIntroEnabled = false;
+        log.warn(
+          `No hook moment matching "${hookLine.slice(0, 60)}" was found for clip ` +
+            `${segment.clip.rank}; disabling its hook intro instead of replaying the clip opening.`,
+        );
       }
     }
 

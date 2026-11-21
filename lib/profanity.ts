@@ -95,6 +95,30 @@ export interface ViralSafetySource {
 }
 
 /**
+ * Is there usable viral safety data at all?
+ *
+ * The real run logged `reason=no-viral-safety-data` although the viral response
+ * carried a perfectly good `safety_analysis` with `risky_words: []` - an EMPTY
+ * list was treated as "no data", so a 7.3 s LLM moderation call ran for nothing.
+ * "Empty list of risky words" means "nothing risky", which is exactly the data
+ * we need; only a missing or malformed section is an absence of data.
+ */
+export function hasViralSafetyData(analysis: ViralSafetySource | null | undefined): boolean {
+  if (!analysis) return false;
+  const safety: unknown = analysis.safety_analysis;
+  if (typeof safety !== 'object' || safety === null || Array.isArray(safety)) return false;
+  const risky: unknown = (safety as { risky_words?: unknown }).risky_words;
+  if (!Array.isArray(risky)) return false;
+  // Every entry must look like a risky word record; a list of junk is malformed.
+  return risky.every(
+    (entry) =>
+      typeof entry === 'object' &&
+      entry !== null &&
+      typeof (entry as { word_or_phrase?: unknown }).word_or_phrase === 'string',
+  );
+}
+
+/**
  * Reuse `risky_words` and `words_to_change` from a validated viral response.
  * Matching is intentionally exact and contiguous after normalization: it never
  * censors a phrase merely because its words appear separately in the clip.
