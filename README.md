@@ -202,8 +202,15 @@ benchmark, set the following documented environment flags in `.env.local` and re
 the worker:
 
 - `LLM_TASK_ROUTING_ENABLED=1` routes short hook/overlay/safety work to the Lite model
-  family with 15–20 second limits and `thinkingBudget: 0`; viral detection keeps a
-  90-second quality route and B-roll planning remains a separate 45-second LLM call.
+  family with 15–20 second limits and `thinkingBudget: 0`; viral detection gets a
+  quality route (`LLM_QUALITY_TIMEOUT_SECONDS`, default 45 s, scaled by transcript
+  size and hard-capped at 90 s) and B-roll planning a 20-second fast call.
+- `LLM_HEDGE_AFTER_SECONDS=quality,fast` (e.g. `25,8`) starts the next model
+  concurrently when the current one is slow and uses the first usable answer; the
+  loser is aborted. Empty by default, which keeps the strict model-by-model order.
+- A model that answers HTTP 404/410 ("no longer available") is retired for the rest
+  of the process — logged once with the replacement the provider names — and a model
+  that 400s on a thinking config is retried once without it and remembered.
 - `LLM_CIRCUIT_BREAKER_ENABLED=1` opens a process-local model circuit after repeated
   timeout, network, 429, or 5xx failures. `LLM_CIRCUIT_FAILURE_THRESHOLD` (default 2)
   and `LLM_CIRCUIT_COOLDOWN_SECONDS` (default 90) tune it. The worker logs every
