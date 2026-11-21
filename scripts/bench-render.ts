@@ -157,7 +157,6 @@ async function runProfile(options: {
   layout: "speaker-focus" | "split-screen";
   tabs: number;
   dbPath: string;
-  outDir: string;
   timeoutSeconds: number;
 }): Promise<Timings> {
   process.env.CLIPCRAFT_DB_PATH = options.dbPath;
@@ -217,6 +216,8 @@ async function runProfile(options: {
 
   const lines: string[] = [];
   const originalLog = console.log;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), options.timeoutSeconds * 1000);
   console.log = (...values: unknown[]) => {
     const text = values.map(String).join(" ");
     if (text.includes("[JOB-TIMING]")) lines.push(text);
@@ -236,8 +237,9 @@ async function runProfile(options: {
       filterPreset: "none",
       captionPresetId: "caption-theme-kinetic-01",
       layout: options.layout,
-    });
+    }, undefined, { signal: controller.signal });
   } finally {
+    clearTimeout(timer);
     console.log = originalLog;
   }
   const wallMs = Date.now() - startedAt;
@@ -312,6 +314,10 @@ async function main(): Promise<void> {
     console.log(
       `  no --video given: generating a deterministic 20 s test source${faceImage ? ` from ${path.basename(faceImage)}` : " (no face image!)"}`,
     );
+    if (!faceImage) {
+      console.log("  WARNING: without --video or --face-image the generated source has no face,");
+      console.log("           ASD will reject it (a drawn shape is not a person) and no timing is recorded.");
+    }
     if (!makeSyntheticSource(candidate, faceImage)) {
       console.log("  NEEDS MANUAL VERIFICATION: pass --video to benchmark a real clip.");
       process.exitCode = 2;
@@ -340,7 +346,6 @@ async function main(): Promise<void> {
         layout: args.layout,
         tabs,
         dbPath,
-        outDir: args.out,
         timeoutSeconds: args.timeoutSeconds,
       });
       const record = {

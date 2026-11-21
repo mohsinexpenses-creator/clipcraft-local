@@ -9,8 +9,8 @@
  * `worker/index.ts` calls this once before the loops start and again before every
  * claimed job, which is why there is deliberately no "only once" latch here.
  */
-import os from 'node:os';
 import { loadEffectiveSettings } from '../lib/app-settings';
+import { logicalThreads } from '../lib/core-defaults';
 import { setProfanityAudioModeOverride, setProfanityContextPassOverride } from '../lib/profanity';
 import { log } from "../lib/logger";
 
@@ -22,21 +22,20 @@ import { log } from "../lib/logger";
  */
 export function remotionThreadsFromPercent(
   percent: number,
-  logicalThreads = availableLogicalThreads(),
+  logicalThreads = hostThreads(),
 ): number {
   const safeThreads = Math.max(1, Math.floor(logicalThreads) || 1);
   const safePercent = Math.max(10, Math.min(100, Math.round(percent / 5) * 5));
   return Math.max(1, Math.min(32, Math.ceil((safeThreads * safePercent) / 100)));
 }
 
-function availableLogicalThreads(): number {
-  // `availableParallelism` respects cgroup/container limits when Node exposes it;
-  // falling back preserves compatibility with older Node releases.
-  try {
-    return typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length;
-  } catch {
-    return 1;
-  }
+/**
+ * The thread count the percentage is converted against. Delegates to the one
+ * core-aware implementation (`lib/core-defaults.ts`) so the Settings percentage
+ * and the derived defaults can never disagree about the host.
+ */
+function hostThreads(): number {
+  return logicalThreads();
 }
 
 function syncRemotionSlot(percent: number): void {

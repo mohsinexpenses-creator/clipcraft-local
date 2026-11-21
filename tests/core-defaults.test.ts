@@ -16,6 +16,7 @@ import { getRemotionConcurrency } from "../worker/remotion-options";
 import { getParallelBrollAsdConcurrencyCap } from "../worker/render-options";
 import { getAsdDetectionConcurrency } from "../worker/asd/sampling";
 import { getBrollImagePreparationConcurrency } from "../lib/broll/preparation";
+import { remotionThreadsFromPercent } from "../worker/runtime-settings";
 
 const host = (threads: number) => ({ CLIPCRAFT_LOGICAL_THREADS: String(threads) });
 
@@ -122,6 +123,16 @@ test("a caller-supplied cap still wins over the derived tab count", () => {
   assert.equal(getRemotionConcurrency(host(24) as unknown as Record<string, string>, { maxConcurrency: 2 }), 2);
   assert.equal(getRemotionConcurrency({ REMOTION_CONCURRENCY: "8" }, { maxConcurrency: 3 }), 3);
   assert.equal(getRemotionConcurrency({ REMOTION_CONCURRENCY: "2" }, { maxConcurrency: 8 }), 2);
+});
+
+test("the Settings percentage and the derived defaults share one notion of the host", () => {
+  // The Settings page stores a percentage; the worker converts it against
+  // `logicalThreads()` from lib/core-defaults, so the two can never disagree.
+  assert.equal(remotionThreadsFromPercent(50, undefined), 0 + remotionThreadsFromPercent(50), "callable with the default host");
+  assert.equal(remotionThreadsFromPercent(50, 24), 12);
+  assert.equal(remotionThreadsFromPercent(100, 24), 24);
+  assert.equal(remotionThreadsFromPercent(100, 64), 32, "still capped at 32 tabs");
+  assert.equal(remotionThreadsFromPercent(10, 2), 1);
 });
 
 test("logicalThreads never returns zero and honours the override", () => {
