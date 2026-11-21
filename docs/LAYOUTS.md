@@ -185,13 +185,19 @@ unit tests compare it against a recorded fixture), and every knob above has a de
 that is also its "old" value. `CAMERA_LEGACY_DETREND=1` additionally applies the drift
 removal to the legacy path.
 
-**Keyframes and command length.** Keyframes are only the events above, so a 90 s
-two-person clip is ~17 short glides. Collinear points are still removed (exact, ≤ 1 px)
-and a 400-move safety cap (`CAMERA_KEYFRAME_CAP`) applies. If the finished filter graph
-exceeds `FILTER_GRAPH_SCRIPT_THRESHOLD` (24 000 characters, well inside Windows' ~32 k
-command line) and the FFmpeg build supports `-filter_complex_script`, the graph is
-written to a file and passed with that option instead; the hook branch replays the SAME
-plan with its cut times shifted.
+**Keyframes and command length.** Keyframes are only the events above, so a 97.5 s
+two-person window needs ~24–35 of them (one per turn plus a handful of re-centres) where
+the old path needed 30 spread over gaps of up to 5.3 s. Collinear moves are still removed
+(exact, ≤ 1 px) and a 400-move safety cap (`CAMERA_KEYFRAME_CAP`) applies. If the
+finished filter graph exceeds `CAMERA_KEYFRAME_MAX_CHARS` (`FILTER_GRAPH_SCRIPT_THRESHOLD`,
+24 000 characters — well inside Windows' ~32 k command line) **and** the FFmpeg build has
+`-filter_complex_script`, the graph is written to a file and passed with that option
+instead. The option is not universal: this repository's own build does not have it, so
+the pipeline probes it once (`lib/ffmpeg.ts`) and, when it is missing, logs
+`[RENDER-DIAG] stage=ffmpeg.filter-graph event=script-unavailable characters=…` and uses
+the command line (verified: a 7.6 k-character graph renders fine that way). The hook
+branch replays the SAME plan with its cut times shifted, so the intro can never drift
+from the clip.
 
 ### Locked panes — no shake (`worker/camera-lock.ts`)
 
