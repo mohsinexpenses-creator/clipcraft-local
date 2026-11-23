@@ -104,10 +104,10 @@ test('a match inside the clip beats an identical match before it', () => {
   assert.ok(match.start >= CLIP_START, `picked the in-window match (${match.start})`);
 });
 
-test('the whole resolution order: words, then viral interval, then a validated picker', () => {
+test('the whole resolution order: viral interval, then words, then a validated picker', () => {
   const words = absoluteSpeech(TRANSCRIPT_TEXT, CLIP_START);
 
-  // 1. Words win over a perfectly valid viral interval.
+  // 1. The exact in-clip viral interval wins over a transcript match.
   const withWords = resolveHookInterval({
     hookLine: HOOK_LINE,
     words,
@@ -116,7 +116,18 @@ test('the whole resolution order: words, then viral interval, then a validated p
     maxSeconds: 6,
     viralTimestamp: { start: '1700.000s', end: '1706.000s' },
   });
-  assert.equal(withWords?.source, 'transcript-words');
+  assert.equal(withWords?.source, 'viral-response');
+  assert.equal(withWords?.start, 1700);
+  assert.equal(withWords?.end, 1706);
+
+  const transcriptFallback = resolveHookInterval({
+    hookLine: HOOK_LINE,
+    words,
+    clipStart: CLIP_START,
+    clipEnd: CLIP_END,
+    maxSeconds: 6,
+  });
+  assert.equal(transcriptFallback?.source, 'transcript-words');
 
   // 2. With no transcript match, the viral interval is used.
   const withViral = resolveHookInterval({
@@ -170,9 +181,20 @@ test('the whole resolution order: words, then viral interval, then a validated p
   );
 });
 
-test('an invalid viral interval is rejected like before (inside clip, <= half)', () => {
-  assert.equal(viralHookInterval({ start: '1665.800s', end: '1688.700s' }, CLIP_START, CLIP_END), null, 'starts at the clip edge');
+test('viral interval is exact when inside the clip and rejected when outside', () => {
+  const atClipStart = viralHookInterval(
+    { start: '1665.800s', end: '1710.000s' },
+    CLIP_START,
+    CLIP_END,
+  );
+  assert.deepEqual(atClipStart, {
+    start: CLIP_START,
+    end: 1710,
+    source: 'viral-response',
+    score: 1,
+  }, 'clip-edge and longer-than-half intervals are not rewritten');
   assert.equal(viralHookInterval({ start: '1740.000s', end: '1760.000s' }, CLIP_START, CLIP_END), null, 'ends past the clip');
+  assert.equal(viralHookInterval({ start: '1660.000s', end: '1670.000s' }, CLIP_START, CLIP_END), null, 'starts before the clip');
   assert.equal(viralHookInterval({ start: '1700.000s', end: '1705.000s' }, CLIP_START, CLIP_END)?.start, 1700);
 });
 

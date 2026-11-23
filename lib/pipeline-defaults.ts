@@ -28,7 +28,7 @@ export const OPTION_LIMITS = {
   clipCount: { min: 1, max: 25 },
   minClipDuration: { min: 5, max: 600 },
   /** Images per 60 s of clip (the UI label; the worker scales them per clip). */
-  brollImages: { min: 1, max: 30 },
+  brollImages: { min: 10, max: 30 },
 } as const;
 
 /** Stock providers a landscape card may come from, in the default order. */

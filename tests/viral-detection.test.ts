@@ -18,7 +18,7 @@ import type { ClipRecord, JobData } from '../lib/types';
 import { parseTimestamp } from '../lib/viral-response';
 import { setSettingsStoreForTests } from '../lib/app-settings';
 import { createTemporaryDatabase } from './sqlite-test-helpers';
-import { aiClip, aiResponse, makeVideo, type RawClip } from './viral-fixtures';
+import { aiClip, aiResponse, makeVideo, validClip, type RawClip } from './viral-fixtures';
 
 const VIDEO_SECONDS = 600;
 
@@ -165,7 +165,14 @@ test('clips are ordered by the AI rank (not score) and ranks stay gap-free after
   });
   const highScoreButRank2 = clipAt(0, { rank: 2, scores: scores(9.9) });
   const lowScoreButRank1 = clipAt(1, { rank: 1, scores: scores(5) });
-  const overlapsRank1 = clipAt(1, { rank: 3, timestamp: { start: mmss(200), end: mmss(265) } });
+  const overlapsRank1 = clipAt(1, {
+    rank: 3,
+    timestamp: { start: mmss(200), end: mmss(265) },
+    hook_line_analysis: {
+      ...validClip().hook_line_analysis,
+      hook_timestamp: { start: mmss(215), end: mmss(219) },
+    },
+  });
   const { calls, warnings } = fakeLlm(t, (_call, index) =>
     index === 0 ? aiResponse([highScoreButRank2, lowScoreButRank1, overlapsRank1]) : '{"clips": []}'
   );
@@ -588,11 +595,11 @@ test('hook moment picker selects a later timestamped moment and rejects the clip
   assert.ok(earlyCalls.length > 0);
 });
 
-test('a hook picker that returns the clip opening disables the hook intro instead of replaying the opening', async (t) => {
+test('a valid viral hook interval at the clip opening is used exactly without calling the picker', async (t) => {
   createTemporaryDatabase(t);
-  const { warnings } = fakeLlm(t, (call) =>
+  const { calls } = fakeLlm(t, (call) =>
     call.system.includes('Pick the single strongest hook moment')
-      ? '{"start":0,"end":3,"reason":"opening"}'
+      ? assert.fail('a valid viral hook interval must not be replaced by a picker')
       : aiResponse([
           clipAt(0, {
             hook_line_analysis: {
@@ -610,7 +617,7 @@ test('a hook picker that returns the clip opening disables the hook intro instea
 
   assert.equal(status, 200);
   const [clip] = await listClips('vid');
-  assert.equal(clip.hookDuration, 0);
-  assert.deepEqual(clip.aiAnalysis?.hook_line_analysis.hook_timestamp, { start: '', end: '' });
-  assert.ok(warnings.some((message) => /disabling its hook intro instead of replaying the clip opening/.test(message)));
+  assert.equal(clip.hookDuration, 3);
+  assert.deepEqual(clip.aiAnalysis?.hook_line_analysis.hook_timestamp, { start: '01:00', end: '01:03' });
+  assert.equal(calls.filter((call) => call.system.includes('Pick the single strongest hook moment')).length, 0);
 });

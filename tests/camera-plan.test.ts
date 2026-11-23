@@ -252,6 +252,28 @@ test('alternating speakers: one 0.1s glide per turn, instant in cut mode', () =>
   }
 });
 
+test('an unassigned speaker span follows the live face when the previous face leaves', () => {
+  const first = track(1, 10, () => ({ cx: 400, cy: 420 }));
+  first.points = first.points.filter((point) => point.t < 5);
+  const visibleFallback = track(2, 10, () => ({ cx: 1500, cy: 420 }));
+  visibleFallback.points = visibleFallback.points.filter((point) => point.t >= 5);
+
+  const single = plan(asd(
+    [first, visibleFallback],
+    [
+      { trackId: 1, t0: 0, t1: 5 },
+      { trackId: null, t0: 5, t1: 10 },
+    ],
+  ));
+  const fallbackLock = single.cameraPlan!.segments.find(
+    (segment) => segment.kind === 'lock' && segment.trackId === visibleFallback.id,
+  );
+
+  assert.ok(fallbackLock, 'the visible face gets a camera lock');
+  assert.equal(fallbackLock.start, 5);
+  assert.equal(fallbackLock.until, 10);
+});
+
 // ---------------------------------------------------------------------------
 // Task 3: source shot cuts
 // ---------------------------------------------------------------------------

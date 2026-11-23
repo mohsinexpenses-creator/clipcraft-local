@@ -69,7 +69,15 @@ test('parseTimestamp has no other formats: everything else is null', () => {
 /* ------------------------------------------------------------------ */
 
 test('a valid response gives numeric windows and the clips exactly as the AI sent them', () => {
-  const second = { ...validClip(), rank: 2, timestamp: { start: '180.5s', end: '245' } };
+  const second = {
+    ...validClip(),
+    rank: 2,
+    timestamp: { start: '180.5s', end: '245' },
+    hook_line_analysis: {
+      ...validClip().hook_line_analysis,
+      hook_timestamp: { start: '00:03:01', end: '00:03:05' },
+    },
+  };
   const segments = parseViralResponse(aiResponse([validClip(), second]), VIDEO_SECONDS);
 
   assert.deepEqual(
@@ -85,7 +93,13 @@ test('a valid response gives numeric windows and the clips exactly as the AI sen
 
 test('an end a little past the video is clamped to it', () => {
   const [segment] = parseViralResponse(
-    aiResponse([aiClip({ timestamp: { start: '00:08:00', end: '00:12:00' } })]),
+    aiResponse([aiClip({
+      timestamp: { start: '00:08:00', end: '00:12:00' },
+      hook_line_analysis: {
+        ...validClip().hook_line_analysis,
+        hook_timestamp: { start: '00:08:20', end: '00:08:24' },
+      },
+    })]),
     VIDEO_SECONDS
   );
   assert.deepEqual([segment.start, segment.end], [480, VIDEO_SECONDS]);
@@ -166,6 +180,24 @@ test('the window must be readable, start before it ends and lie inside the video
   assert.match(window('01:05', '01:05'), /must start before it ends/);
   assert.match(window('00:11:00', '00:12:00'), /lie inside the 600s video/);
   assert.match(window('09:59.5', '10:30'), /lie inside the 600s video/, 'under a second left inside the video');
+});
+
+test('a supplied hook interval must be valid and inside its detected clip', () => {
+  const validHook = validClip().hook_line_analysis;
+  const withHook = (start: string, end: string) =>
+    rejection(aiResponse([aiClip({
+      hook_line_analysis: { ...validHook, hook_timestamp: { start, end } },
+    })]));
+
+  assert.match(withHook('00:01:04', '00:01:24'), /hook_timestamp must be a readable start\/end interval inside/);
+  assert.match(withHook('00:01:20', '00:02:11'), /hook_timestamp must be a readable start\/end interval inside/);
+  assert.match(withHook('bad', '00:01:24'), /hook_timestamp must be a readable start\/end interval inside/);
+  assert.doesNotThrow(() => parseViralResponse(
+    aiResponse([aiClip({
+      hook_line_analysis: { ...validHook, hook_timestamp: { start: '', end: '' } },
+    })]),
+    VIDEO_SECONDS,
+  ), 'both timestamps may be absent, leaving the configured fallback available');
 });
 
 /* ------------------------------------------------------------------ */

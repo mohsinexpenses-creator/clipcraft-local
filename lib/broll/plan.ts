@@ -132,6 +132,8 @@ export async function buildBrollPlan(
     options.minImages,
     options.maxImages,
   );
+  const fallbackMinSpacingSeconds =
+    input.clipDuration / Math.max(1, budget.targetMin);
 
   const entityBudget = options.enableFullscreen
     ? Math.min(budget.targetMax, MAX_ENTITIES_PER_CLIP)
@@ -187,6 +189,7 @@ export async function buildBrollPlan(
         input.words,
         input.clipDuration,
         keywordBudget,
+        { minSpacingSeconds: fallbackMinSpacingSeconds },
       );
     }
   }
@@ -206,7 +209,7 @@ export async function buildBrollPlan(
       input.words,
       input.clipDuration,
       budget.targetMax - analysis.broll.length,
-      { minSpacingSeconds: 10 },
+      { minSpacingSeconds: fallbackMinSpacingSeconds },
     );
     const existing = new Set(
       analysis.broll.map((moment) => moment.visualKeywords[0]?.toLowerCase()),

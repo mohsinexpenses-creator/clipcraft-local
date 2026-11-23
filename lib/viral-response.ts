@@ -182,6 +182,25 @@ export function parseViralResponse(text: string, videoDuration: number): ViralSe
         `${where}.timestamp ${show(timestamp)} must start before it ends and lie inside the ${Math.round(videoDuration)}s video.`
       );
     }
+
+    const hookTimestamp = (clip as ViralClip).hook_line_analysis.hook_timestamp;
+    const hookStart = parseTimestamp(hookTimestamp.start);
+    const hookEnd = parseTimestamp(hookTimestamp.end);
+    const hookMissing = !hookTimestamp.start.trim() && !hookTimestamp.end.trim();
+    if (
+      !hookMissing && (
+        hookStart === null ||
+        hookEnd === null ||
+        hookEnd <= hookStart ||
+        hookStart < start ||
+        hookEnd > clampedEnd
+      )
+    ) {
+      throw invalid(
+        `${where}.hook_line_analysis.hook_timestamp must be a readable start/end interval inside ` +
+          `${start}s-${clampedEnd}s, got ${show(hookTimestamp)}.`
+      );
+    }
     return { start, end: clampedEnd, clip: clip as ViralClip };
   });
 }

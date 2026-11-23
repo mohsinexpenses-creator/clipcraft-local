@@ -392,6 +392,57 @@ export function buildSpeakerRuns(
   return merged;
 }
 
+/** Use a tracked live face when speaker fusion has no visible speaker for a span. */
+function fillVisibleFaceFallbacks(
+  tracks: Track[],
+  segments: SpeakerRunInput[],
+  maxDetectionGap = 0.4,
+): SpeakerRunInput[] {
+  const observations = tracks.flatMap((track) =>
+    track.points.map((point) => ({ t: point.t, trackId: track.id, width: point.w })),
+  );
+  const output: SpeakerRunInput[] = [];
+
+  for (const segment of segments) {
+    if (!(segment.t1 > segment.t0)) continue;
+    const nearby = observations
+      .filter((point) => point.t >= segment.t0 - maxDetectionGap && point.t <= segment.t1 + maxDetectionGap)
+      .sort((a, b) => a.t - b.t);
+    const times = [...new Set(nearby.map((point) => point.t))];
+    const boundaries = [
+      segment.t0,
+      ...times.slice(1).map((time, index) => (times[index] + time) / 2)
+        .filter((time) => time > segment.t0 && time < segment.t1),
+      segment.t1,
+    ].sort((a, b) => a - b);
+
+    for (let index = 0; index < boundaries.length - 1; index += 1) {
+      const t0 = boundaries[index];
+      const t1 = boundaries[index + 1];
+      if (t1 - t0 < 1e-6) continue;
+      const at = (t0 + t1) / 2;
+      const nearestFor = (trackId: number) => nearby
+        .filter((point) => point.trackId === trackId)
+        .sort((a, b) => Math.abs(a.t - at) - Math.abs(b.t - at))[0];
+      const preferred = segment.trackId === null ? undefined : nearestFor(segment.trackId);
+      const selected = preferred && Math.abs(preferred.t - at) <= maxDetectionGap
+        ? preferred
+        : [...nearby]
+          .sort((a, b) => Math.abs(a.t - at) - Math.abs(b.t - at) || b.width - a.width)
+          .find((point) => Math.abs(point.t - at) <= maxDetectionGap);
+      const trackId = selected?.trackId ?? null;
+      const previous = output[output.length - 1];
+      if (previous && previous.trackId === trackId && Math.abs(previous.t1 - t0) < 1e-6) {
+        previous.t1 = t1;
+      } else {
+        output.push({ trackId, t0, t1 });
+      }
+    }
+  }
+
+  return output;
+}
+
 // ---------------------------------------------------------------------------
 // The planner
 // ---------------------------------------------------------------------------
@@ -414,7 +465,8 @@ export function buildLockedSpeakerCamera(
   for (const track of tracks) byId.set(track.id, track);
 
   const runs: SpeakerLockRun[] = [];
-  for (const run of buildSpeakerRuns(segments, opts.cuts)) {
+  const framedSegments = fillVisibleFaceFallbacks(tracks, segments);
+  for (const run of buildSpeakerRuns(framedSegments, opts.cuts)) {
     const track = byId.get(run.trackId);
     if (!track) continue;
     let settled = samplesBetween(track, run.t0, Math.min(run.t1, run.t0 + opts.settleSeconds));

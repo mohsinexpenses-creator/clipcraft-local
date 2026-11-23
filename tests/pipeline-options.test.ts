@@ -46,6 +46,9 @@ test('b-roll options are clamped, de-duplicated and provider-filtered', () => {
   assert.equal(resolved.maxImages, 30, 'max is never below min');
   assert.equal(resolved.sfx, true, 'unparsable flag keeps the default');
   assert.deepEqual(resolved.providerOrder, ['unsplash']);
+  const minimumBroll = resolveBrollOptions({ minImages: 1, maxImages: 1 });
+  assert.equal(minimumBroll.minImages, 10, 'the per-60s target cannot be lowered below ten');
+  assert.equal(minimumBroll.maxImages, 10, 'the maximum stays at or above the required minimum');
   assert.deepEqual(
     resolveBrollOptions({ providerOrder: ['wikimedia', 'openverse'] }).providerOrder,
     ['pexels', 'pixabay', 'unsplash'],

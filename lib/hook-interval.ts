@@ -335,16 +335,15 @@ export function viralHookInterval(
   timestamp: { start: string; end: string } | null | undefined,
   clipStart: number,
   clipEnd: number,
-  minOffsetSeconds = 1,
 ): HookInterval | null {
   if (!timestamp) return null;
   const start = parseTimestamp(timestamp.start);
   const end = parseTimestamp(timestamp.end);
   const clipDuration = clipEnd - clipStart;
   if (start === null || end === null || end <= start) return null;
-  if (start < clipStart + minOffsetSeconds) return null;
+  if (start < clipStart) return null;
   if (end > clipEnd) return null;
-  if (end - start > clipDuration / 2) return null;
+  if (clipDuration <= 0) return null;
   return { start, end, source: 'viral-response', score: 1 };
 }
 
@@ -363,19 +362,19 @@ export interface ResolveHookIntervalInput {
 }
 
 /**
- * Phase 3a in one function: transcript words first, then the viral interval,
- * then the picker - with the picker's window validated against the transcript.
+ * Prefer the viral response's exact interval when it fits inside the clip.
+ * Transcript matching and the picker are fallbacks for missing/invalid data.
  */
 export function resolveHookInterval(input: ResolveHookIntervalInput): HookInterval | null {
+  const viral = viralHookInterval(input.viralTimestamp, input.clipStart, input.clipEnd);
+  if (viral) return viral;
+
   const fromWords = findHookWords(input.hookLine, input.words, {
     clipStart: input.clipStart,
     clipEnd: input.clipEnd,
     maxSeconds: input.maxSeconds,
   });
   if (fromWords) return fromWords;
-
-  const viral = viralHookInterval(input.viralTimestamp, input.clipStart, input.clipEnd);
-  if (viral) return viral;
 
   if (input.picker && input.picker.end > input.picker.start) {
     const minOverlap = input.pickerMinOverlap ?? 0.5;

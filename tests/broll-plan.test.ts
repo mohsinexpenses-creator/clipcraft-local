@@ -230,7 +230,8 @@ test('when the LLM fails, keyword moments are derived from the transcript', asyn
   const deps = makeDeps({ analyzeThrows: true });
   const plan = await buildBrollPlan(baseInput, deps);
 
-  assert.ok(plan.items.length > 0, 'the clip still gets B-roll');
+  assert.ok(plan.items.filter((item) => item.kind === 'landscape').length >= 10,
+    'a usable 60s transcript still reaches the ten-card target without AI analysis');
   assert.ok(plan.skipped.some((entry) => entry.stage === 'analysis'));
   assert.ok((plan.notes ?? []).some((note) => /analysis failed twice/i.test(note)));
   // Never a sentence fragment: every fallback card is a 1-3 word concrete phrase.
