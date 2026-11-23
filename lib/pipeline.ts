@@ -433,6 +433,7 @@ export async function runViralDetection(
   // before anyone opens the editor, so an unattended run uses exactly these values.
   const render = await resolveRenderDefaults();
   const createdClips: ClipRecord[] = [];
+  let brollQueued = 0;
 
   // One timestamp for the whole run: the clips of a detection run tie on
   // createdAt, so the grid can show newest run first and, inside a run, best
@@ -592,20 +593,21 @@ export async function runViralDetection(
       throw new RenderCancelledError('Viral detection claim was cancelled before its clip could be saved.');
     }
     createdClips.push(clipRecord);
+
+    if (brollOptions.autoBroll) {
+      brollQueued += (
+        await queueBrollForClips([clipRecord], 'auto', { context: downstreamContext })
+      ).length;
+    }
   }
 
   let renderQueued = 0;
-  let brollQueued = 0;
 
   // B-roll is planned before the render (and only once per clip): the render step
   // consumes the stored plan and must never call a provider itself. With
   // autoBroll off, this block does nothing at all and the pipeline behaves exactly
   // as it did before the feature existed.
   if (brollOptions.autoBroll) {
-    const queuedForBroll = await queueBrollForClips(createdClips, 'auto', {
-      context: downstreamContext,
-    });
-    brollQueued = queuedForBroll.length;
     log.ok(
       brollQueued
         ? `B-roll queued for ${brollQueued}/${createdClips.length} clip(s); each render follows its plan.`
