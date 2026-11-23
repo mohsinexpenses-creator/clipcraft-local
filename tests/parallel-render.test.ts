@@ -3,7 +3,6 @@ import test from "node:test";
 import { runParallelRenderBranches } from "../worker/parallel";
 import {
   canParallelizeBrollWithAsd,
-  getOverlayThreadQueueSize,
   getParallelBrollAsdConcurrencyCap,
   getParallelBrollAsdEnabled,
 } from "../worker/render-options";
@@ -76,10 +75,6 @@ test("parallel B-roll cap leaves capacity for ASD and respects a smaller manual 
   assert.equal(getCaptionBandCroppedCanvasEnabled({ CAPTION_BAND_CROPPED_CANVAS: "on" }), true);
   assert.equal(getBrollCardCroppedCanvasEnabled({}), false);
   assert.equal(getBrollCardCroppedCanvasEnabled({ BROLL_CARD_CROPPED_CANVAS: "1" }), true);
-  assert.equal(getOverlayThreadQueueSize({}), 2);
-  assert.equal(getOverlayThreadQueueSize({ FFMPEG_OVERLAY_THREAD_QUEUE_SIZE: "16" }), 16);
-  assert.equal(getOverlayThreadQueueSize({ FFMPEG_OVERLAY_THREAD_QUEUE_SIZE: "32" }), 32);
-  assert.equal(getOverlayThreadQueueSize({ FFMPEG_OVERLAY_THREAD_QUEUE_SIZE: "100" }), 2);
 });
 
 test("parallel render branches wait for sibling cleanup after a failure", async () => {

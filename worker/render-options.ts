@@ -42,17 +42,3 @@ export function canParallelizeBrollWithAsd(
   return layout === "speaker-focus" || items.every((item) => item.kind === "fullscreen");
 }
 
-/**
- * FFmpeg's image2 readers can queue a few PNG frames while the filter graph
- * consumes another. The conservative value remains 2 until a host measures a
- * larger queue as faster; 16 and 32 are supported experiment values.
- */
-export function getOverlayThreadQueueSize(
-  env: Readonly<Record<string, string | undefined>> = process.env,
-): number {
-  const configured = Number(env.FFMPEG_OVERLAY_THREAD_QUEUE_SIZE?.trim());
-  if (Number.isFinite(configured) && configured >= 1 && configured <= 64) {
-    return Math.floor(configured);
-  }
-  return 2;
-}

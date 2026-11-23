@@ -292,9 +292,6 @@ thread count and source window. It uses a throwaway database inside that folder,
 generates a deterministic source clip when no `--video` is given, so an ordinary database
 and media folder are never touched.
 
-For an image-input queue experiment, `FFMPEG_OVERLAY_THREAD_QUEUE_SIZE` defaults to the
-baseline-safe `2`; benchmark `16` or `32` on the actual render host before retaining either
-value. It is read per job and `2` is the rollback.
 `CAPTION_ACTIVE_RANGE_RENDERING=1` is an experimental sparse-caption benchmark: it keeps
 the full composition clock and re-bases only proven caption/hook/CTA windows in FFmpeg.
 It automatically stays on the legacy full transparent sequence for dense speech or a
