@@ -23,11 +23,14 @@ import {
   enqueueBrollJob,
   enqueueClipJob,
   enqueueTranscriptionJob,
+  enqueueViralDetectionJob,
   failJob,
   getJob,
   recoverRunningJobs,
   updateJobProgress,
   watchJobClaim,
+  VIRAL_DETECTION_MAX_ATTEMPTS,
+  VIRAL_DETECTION_RETRY_DELAY_MS,
 } from '../lib/queue';
 import { createTemporaryDatabase } from './sqlite-test-helpers';
 import { validClip } from './viral-fixtures';
@@ -350,6 +353,18 @@ test('job progress, completion, retry count, and exponential backoff are persist
   assert.equal(completed?.status, 'done');
   assert.equal(completed?.progress, 100);
   assert.deepEqual(completed?.result, { result: 'ok' });
+});
+
+test('viral detection jobs use a longer retry window for provider outages', async (t) => {
+  const { db } = createTemporaryDatabase(t);
+  const source = video('video-viral-retry-policy');
+  await saveVideo(source);
+
+  await enqueueViralDetectionJob(source._id);
+
+  const job = getJob(`viral-detection:${source._id}`, db);
+  assert.equal(job?.maxAttempts, VIRAL_DETECTION_MAX_ATTEMPTS);
+  assert.equal(job?.retryDelayMs, VIRAL_DETECTION_RETRY_DELAY_MS);
 });
 
 test('large job payload JSON round-trips without truncation', (t) => {

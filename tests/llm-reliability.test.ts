@@ -27,6 +27,7 @@ import {
 } from '../lib/llm';
 
 const TEST_KEY = 'test-gemini-key-for-llm-reliability';
+const SECOND_TEST_KEY = 'second-gemini-key-for-llm-reliability';
 
 const QUALITY: LlmProviderEntry = {
   id: 'gemini-studio-3-8',
@@ -161,6 +162,31 @@ test('a 400 on the thinking config retries the SAME model without it, once', asy
   );
   assert.equal(bodies.length, 1, 'no second 400 round trip');
   assert.equal((bodies[0].generationConfig as Record<string, unknown>).thinkingConfig, undefined);
+});
+
+test('model fallback rotates through configured Gemini keys', async (t) => {
+  prepare(t);
+  setSettingsStoreForTests({
+    read: () => [{ key: 'ai', value: { geminiApiKeys: [TEST_KEY, SECOND_TEST_KEY] } }],
+    write: () => new Date().toISOString(),
+  });
+  const keys: string[] = [];
+  t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
+    keys.push(new Headers(init?.headers).get('x-goog-api-key') ?? '');
+    if (keys.length === 1) {
+      return new Response(JSON.stringify({ error: { message: 'quota exceeded' } }), { status: 429 });
+    }
+    return geminiOk('{"moments":[]}');
+  });
+
+  const result = await completeWithFallback(
+    { task: 'viral', taskKind: 'viral-detection', prompt: 'x', json: true },
+    [QUALITY, LITE],
+    config,
+  );
+
+  assert.equal(result.entry.id, LITE.id);
+  assert.deepEqual(keys, [TEST_KEY, SECOND_TEST_KEY]);
 });
 
 test('timeouts: quality 45 s scaled by transcript size (cap 90 s), fast routes 20 s', () => {

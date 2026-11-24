@@ -33,6 +33,8 @@ export const VIRAL_DETECTION_QUEUE_NAME = 'viral-detection';
 export const BROLL_QUEUE_NAME = 'broll';
 export const DEFAULT_MAX_ATTEMPTS = 2;
 export const DEFAULT_RETRY_DELAY_MS = 2000;
+export const VIRAL_DETECTION_MAX_ATTEMPTS = 5;
+export const VIRAL_DETECTION_RETRY_DELAY_MS = 30_000;
 export const QUEUE_POLL_INTERVAL_MS = 1000;
 /**
  * A running job owns an attempt token (`started_at`). Worker processes poll it
@@ -657,8 +659,8 @@ export async function enqueueViralDetectionJob(
       { videoId } satisfies ViralDetectionJobData,
       {
         id: `viral-detection:${videoId}`,
-        maxAttempts: DEFAULT_MAX_ATTEMPTS,
-        retryDelayMs: DEFAULT_RETRY_DELAY_MS,
+        maxAttempts: VIRAL_DETECTION_MAX_ATTEMPTS,
+        retryDelayMs: VIRAL_DETECTION_RETRY_DELAY_MS,
         videoId,
       },
       db,

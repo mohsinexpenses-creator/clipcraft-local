@@ -831,8 +831,8 @@ function usableResponse(text: string): boolean {
  * Run one completion against the model fallback chain.
  *
  * Each model is called at most once (with one capability retry when the model
- * rejects a thinking config), using the first configured key. A failure
- * advances to the next model. With `LLM_HEDGE_AFTER_SECONDS` set, the next
+ * rejects a thinking config), rotating through configured keys across models.
+ * A failure advances to the next model. With `LLM_HEDGE_AFTER_SECONDS` set, the next
  * model is started CONCURRENTLY when the current one is slow, and the first
  * usable answer wins.
  */
@@ -875,9 +875,9 @@ export async function completeWithFallback(
   const attemptModel = async (
     entry: LlmProviderEntry,
     label: string,
+    apiKey: string,
     signal?: AbortSignal,
   ): Promise<{ text: string; attemptMs: number }> => {
-    const keys = (keyPool.get(entry.apiKeyEnv) ?? []).slice(0, 1);
     const effectiveRoute: LlmTaskRoute = { ...route, timeoutMs };
     const attempt: LlmAttemptOptions = {
       maxTokens: effectiveMaxTokens(entry, request, effectiveRoute),
@@ -894,8 +894,8 @@ export async function completeWithFallback(
       : request;
     const call = (withAttempt: LlmAttemptOptions): Promise<string> =>
       entry.kind === "gemini-native"
-        ? callGeminiNative(entry, keys[0], scopedRequest, withAttempt)
-        : callOpenAiCompatible(entry, keys[0], scopedRequest, withAttempt);
+        ? callGeminiNative(entry, apiKey, scopedRequest, withAttempt)
+        : callOpenAiCompatible(entry, apiKey, scopedRequest, withAttempt);
     try {
       const text = await call(attempt);
       return { text, attemptMs: Date.now() - startedAttempt };
@@ -936,7 +936,8 @@ export async function completeWithFallback(
   };
 
   // Candidates in chain order, minus everything that cannot be tried.
-  const candidates: Array<{ entry: LlmProviderEntry; label: string }> = [];
+  const candidates: Array<{ entry: LlmProviderEntry; label: string; apiKey: string }> = [];
+  const nextKeyByEnv = new Map<string, number>();
   for (const entry of chain) {
     throwIfCancelled(request.signal);
     const label = `${entry.provider} (${entry.model})`;
@@ -946,7 +947,10 @@ export async function completeWithFallback(
       attempts.push(`${label}: ${why}`);
       continue;
     }
-    candidates.push({ entry, label });
+    const keys = keyPool.get(entry.apiKeyEnv) ?? [];
+    const keyIndex = nextKeyByEnv.get(entry.apiKeyEnv) ?? 0;
+    candidates.push({ entry, label, apiKey: keys[keyIndex % keys.length] });
+    nextKeyByEnv.set(entry.apiKeyEnv, keyIndex + 1);
   }
 
   const describeRoute =
@@ -984,7 +988,7 @@ export async function completeWithFallback(
    * The first usable answer wins, and every other in-flight attempt is aborted.
    */
   const runHedged = async (
-    group: Array<{ entry: LlmProviderEntry; label: string }>,
+    group: Array<{ entry: LlmProviderEntry; label: string; apiKey: string }>,
   ): Promise<LlmCompletionResult | null> => {
     if (group.length === 0) return null;
     const startedAt = Date.now();
@@ -995,12 +999,12 @@ export async function completeWithFallback(
     const finished = new Set<StartedTask>();
     let nextIndex = 0;
 
-    const start = (candidate: { entry: LlmProviderEntry; label: string }): StartedTask => {
+    const start = (candidate: { entry: LlmProviderEntry; label: string; apiKey: string }): StartedTask => {
       log.tagged(`[LLM] Trying ${candidate.label} for "${request.task}"...${describeRoute}`);
       const task: StartedTask = {
         entry: candidate.entry,
         label: candidate.label,
-        settled: attemptModel(candidate.entry, candidate.label, controller.signal).then(
+        settled: attemptModel(candidate.entry, candidate.label, candidate.apiKey, controller.signal).then(
           (outcome) =>
             usableResponse(outcome.text)
               ? ({ ok: true, text: outcome.text } as const)
