@@ -47,6 +47,15 @@ pauses the chain: it recovers at the step where it stopped.
      0.35 s re-centre when the face really leaves it, 0.1 s speaker switches and hard
      switches on source shot cuts. It holds still while a talking head sways
      (`CAMERA_MODE=legacy` restores the previous continuous follow).
+     The window **opens on a validated position**: a face that is really visible in
+     frame one (or, if the clip opens on a lead-in, the clamped default) — never
+     pre-positioned on where the speaker stands later in the shot, which is how the
+     first frames used to show a microphone or an empty chair. If the followed face
+     disappears it holds for `CAMERA_FACE_LOST_HOLD_SECONDS` (1.5 s), then moves once
+     to the largest face actually on screen and re-locks the moment the speaker
+     returns. A source cut closes every face track, so no position — and no speaker
+     label — is ever carried across two camera angles. See
+     [`[CAMERA-FACE]`](./docs/LAYOUTS.md#locked-speaker-camera--no-drifting-workercamera-plants-camera_modelocked).
    - **Split screen** — an adaptive 2/3/4-cell grid with one pane per person. Each pane
      is a **locked** camera: placed on the person once, perfectly still while their
      head stays in frame, and it only glides to re-centre them if they actually leave

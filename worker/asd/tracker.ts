@@ -85,6 +85,17 @@ export interface TrackerOptions {
   gateFactor?: number;
   /** Extra absolute tolerance (pixels) so tiny/zoomed faces still associate. */
   jitterTolerance?: number;
+  /**
+   * Signal every track association was WRONG: a source shot cut happened at time
+   * `t`. Every open track is closed on the spot, so no identity can continue
+   * across two camera angles. The next frame's detections all start fresh tracks.
+   *
+   * This matters because a cut usually re-frames the SAME person elsewhere on
+   * screen: without the reset, the constant-velocity prediction happily matches
+   * them onto their own old track and the camera's "new shot" anchor inherits a
+   * position from the previous shot. Positions must never be carried across a cut.
+   */
+  signalShotCut?: (t: number) => void;
 }
 
 /**
@@ -95,18 +106,26 @@ export interface TrackerOptions {
  *  - jitterTolerance 30: far-away detections cannot glom onto a track or spawn
  *    new ones as easily.
  */
-const DEFAULT_OPTIONS: Required<TrackerOptions> = {
+const DEFAULT_OPTIONS = {
   maxMissed: 3,
   gateFactor: 0.5,
   jitterTolerance: 30,
+} as const;
+
+type ResolvedTrackerOptions = {
+  maxMissed: number;
+  gateFactor: number;
+  jitterTolerance: number;
 };
 
 export class Tracker {
   private tracks: Track[] = [];
   private nextId = 1;
-  private readonly opts: Required<TrackerOptions>;
+  private readonly opts: ResolvedTrackerOptions;
   /** Last sample time, for dt. */
   private lastSampleT: number | null = null;
+  /** Cuts already consumed, so one cut resets the tracker exactly once. */
+  private readonly consumedCuts = new Set<number>();
 
   constructor(options: TrackerOptions = {}) {
     this.opts = {
@@ -203,6 +222,24 @@ export class Tracker {
 
     track.points.push({ t, cx: det.cx, cy: det.cy, w: det.w, mouthOpen: det.mouthOpen, motion: det.motion ?? null });
     track.visibleTime += dt;
+  }
+
+  /**
+   * Close every open track as of `t` because the source cut to a new camera angle.
+   *
+   * The closed tracks keep their history (the camera still needs to know where
+   * people WERE), but nothing in them is eligible to match the post-cut frames, so
+   * a new shot always produces genuinely new positions. Idempotent per cut time.
+   */
+  resetAtShotCut(t: number): void {
+    const key = Math.round(t * 1000) / 1000;
+    if (this.consumedCuts.has(key)) return;
+    this.consumedCuts.add(key);
+    for (const track of this.tracks) {
+      if (track.missed < this.opts.maxMissed) track.missed = this.opts.maxMissed;
+    }
+    // A new shot has no meaningful sample interval from the old one.
+    this.lastSampleT = null;
   }
 
   /** All tracks ever opened (open + closed), sorted by id. */

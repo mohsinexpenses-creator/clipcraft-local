@@ -58,6 +58,28 @@ export interface CameraPath {
    * ever cross one. Emitted as `if(lt(t,T),…,…)` in the FFmpeg expression.
    */
   cuts?: CameraCut[];
+  /**
+   * Spans where the followed face is NOT on screen. The window holds its last
+   * valid position for a short grace period, then falls back deterministically
+   * instead of pretending the last crop is still valid. Only the cuts that carry
+   * a `reanchor` position can satisfy a fallback; a hole with no such cut keeps
+   * the crop held still, which is the safe (never-random) behaviour.
+   */
+  holes?: CameraHole[];
+}
+
+/**
+ * A span in which the followed person was not detected. `holdSeconds` is how long
+ * the previous framing stays valid (a blink, a microphone across the mouth, a
+ * missed sample); after that the window falls back.
+ */
+export interface CameraHole {
+  /** Horizon of the last sighting that ended before this hole (seconds). */
+  start: number;
+  /** Next sighting of the followed person, or the clip end when there is none. */
+  end: number;
+  /** How long the last valid framing may be held before falling back. */
+  holdSeconds: number;
 }
 
 /** A hard switch of the window at a source shot cut (t = the first frame after it). */
@@ -65,6 +87,13 @@ export interface CameraCut {
   t: number;
   x: number;
   y: number;
+  /**
+   * Set when the subject is NOT visible on the new shot: the window jumps to this
+   * deterministic position at the cut (the new shot's only visible face, else the
+   * clamped default window) instead of keeping the previous shot's framing. The
+   * window still re-anchors on the subject as soon as they are seen again.
+   */
+  reanchor?: boolean;
 }
 
 /**
@@ -187,6 +216,79 @@ export function windowFor(
   return {
     x: Math.max(0, Math.min(cx - p.cropW * (p.anchorX ?? 0.5), maxX)),
     y: Math.max(0, Math.min(cy - p.cropH * p.anchorY, maxY)),
+  };
+}
+
+/**
+ * Is the person's FACE BOX fully inside the window (whole head with a margin)?
+ *
+ * This is the visibility contract that matters for a portrait crop: a face centre
+ * can sit comfortably inside a 10 % dead zone while the top of the head is already
+ * cut off, and the old planner never looked. Evaluated on sampled detections, so it
+ * needs no extra frame decode.
+ */
+export function faceBoxInsideWindow(
+  s: CameraSample,
+  win: { x: number; y: number },
+  p: Pick<CameraParams, 'cropW' | 'cropH'> & { marginFraction?: number }
+): boolean {
+  const margin = p.marginFraction ?? 0.02;
+  // Head = hair above the box, jaw below it - what must not be clipped.
+  const halfW = HEAD_HALF_WIDTH * s.w;
+  const up = HEAD_UP * s.w;
+  const down = HEAD_DOWN * s.w;
+  return (
+    s.cx - halfW >= win.x + margin * p.cropW &&
+    s.cx + halfW <= win.x + p.cropW - margin * p.cropW &&
+    s.cy - up >= win.y + margin * p.cropH &&
+    s.cy + down <= win.y + p.cropH - margin * p.cropH
+  );
+}
+
+/** Is the person's FACE BOX (YuNet's own box) fully inside the window? */
+export function faceBoundsInsideWindow(
+  s: CameraSample,
+  win: { x: number; y: number },
+  p: Pick<CameraParams, 'cropW' | 'cropH'>
+): boolean {
+  // YuNet's box height is ~1.25x its width; judge the box itself, not the hair.
+  const halfH = FACE_HALF_HEIGHT * s.w;
+  return (
+    s.cx - s.w / 2 >= win.x &&
+    s.cx + s.w / 2 <= win.x + p.cropW &&
+    s.cy - halfH >= win.y &&
+    s.cy + halfH <= win.y + p.cropH
+  );
+}
+
+/** Window position that keeps the whole head inside, else the closest the frame allows. */
+export function windowForHead(
+  s: CameraSample,
+  p: Pick<CameraParams, 'srcW' | 'srcH' | 'cropW' | 'cropH' | 'anchorX' | 'anchorY'>,
+  marginFraction = 0.02
+): { x: number; y: number } {
+  const maxX = Math.max(0, p.srcW - p.cropW);
+  const maxY = Math.max(0, p.srcH - p.cropH);
+  const anchorX = p.anchorX ?? 0.5;
+  const halfW = HEAD_HALF_WIDTH * s.w;
+  const padUp = marginFraction * p.cropH + HEAD_UP * s.w;
+  const padDown = marginFraction * p.cropH + HEAD_DOWN * s.w;
+  // Vertical: prefer the configured anchor, but never cut the head. When the head
+  // plus both pads is taller than the window, centre the FACE and accept a crop.
+  const idealY = s.cy - p.cropH * p.anchorY;
+  const lowest = s.cy + padDown - p.cropH;
+  const highest = s.cy - padUp;
+  let y = idealY;
+  if (highest <= lowest) y = Math.max(lowest, Math.min(highest, idealY));
+  else y = Math.max(0, Math.min(idealY, maxY));
+  // Horizontal: the window is far wider than a head, so the anchor is fine unless
+  // the head is wider than the window itself.
+  const x = halfW * 2 + 2 * marginFraction * p.cropW <= p.cropW
+    ? Math.max(0, Math.min(s.cx - p.cropW * anchorX, maxX))
+    : Math.max(0, Math.min(s.cx - halfW - marginFraction * p.cropW, maxX));
+  return {
+    x: Math.max(0, Math.min(x, maxX)),
+    y: Math.max(0, Math.min(y, maxY)),
   };
 }
 

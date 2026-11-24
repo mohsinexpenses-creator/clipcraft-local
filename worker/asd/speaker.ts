@@ -45,6 +45,13 @@ export interface SpeakerSegment {
 export interface SpeakerTimelineInput {
   /** Clip duration in seconds. */
   duration: number;
+  /**
+   * Source shot cuts (clip-relative seconds). When supplied, the timeline never
+   * carries a speaker label across one: the audio says "someone is talking" but a
+   * cut changes who is ON SCREEN, so a stale label would make the camera hold a
+   * position from the previous camera angle. Default: none.
+   */
+  shotCuts?: number[];
   /** Sampling fps of `voice` and of the track points. */
   fps: number;
   /** Per-sample-frame voice energy 0..1 (length ≈ duration*fps). */
@@ -203,6 +210,9 @@ function motionCues(
 
 export function buildSpeakerTimeline(input: SpeakerTimelineInput): SpeakerTimelineResult {
   const { duration, fps, voice, tracks, frameWidth } = input;
+  const cuts = [...(input.shotCuts ?? [])]
+    .filter((cut) => Number.isFinite(cut) && cut > 1e-6 && cut < duration - 1e-6)
+    .sort((a, b) => a - b);
   const visibleTracks = tracks.filter((track) => track.points.length > 0);
 
   const frameCount = voice.length;
@@ -274,9 +284,9 @@ export function buildSpeakerTimeline(input: SpeakerTimelineInput): SpeakerTimeli
     });
 
     if (candidates.length === 0) {
-      // Nobody on screen: hold the last speaker (speaker-focus keeps framing
-      // them) or stay null.
-      push(t0, nextT, state.current ? state.current.trackId : null);
+      // Nobody on screen at all: no label can be justified. The camera holds the
+      // last valid framing for its grace period and then falls back on its own.
+      push(t0, nextT, null);
       continue;
     }
 
@@ -287,8 +297,13 @@ export function buildSpeakerTimeline(input: SpeakerTimelineInput): SpeakerTimeli
     );
     if (qualifiedCandidates.length === 0) {
       // Do not promote the least-weak background portrait simply because it
-      // ranked first. Hold the incumbent or mark the speaker as unknown.
-      push(t0, nextT, state.current?.trackId ?? null);
+      // ranked first. Hold the incumbent ONLY while they are still visible - a
+      // label for a face that is no longer in this shot is what makes the camera
+      // keep an outdated position; otherwise the speaker is unknown.
+      const incumbentVisible =
+        state.current !== null &&
+        qualifiedCandidates.some((candidate) => candidate.trackId === state.current!.trackId);
+      push(t0, nextT, incumbentVisible ? state.current!.trackId : null);
       continue;
     }
 
@@ -323,8 +338,33 @@ export function buildSpeakerTimeline(input: SpeakerTimelineInput): SpeakerTimeli
     segments.push({ t0: 0, t1: duration, trackId: null });
   }
 
-  const speakerIds = new Set(segments.map((s) => s.trackId).filter((id): id is number => id !== null));
-  return { segments, speakerCount: speakerIds.size };
+  // Never carry a speaker label across a SOURCE SHOT CUT. The window that spans a
+  // cut belongs to the shot it starts in; the next shot decides its own speaker
+  // from its own, freshly-detected faces. This is what stops the camera (and the
+  // speaker overlay) from holding an old angle's decision into a new angle.
+  const clipped = cuts.length === 0 ? segments : splitSegmentsAtCuts(segments, cuts);
+
+  const speakerIds = new Set(clipped.map((s) => s.trackId).filter((id): id is number => id !== null));
+  return { segments: clipped, speakerCount: speakerIds.size };
+}
+
+/** Split speaker runs on every cut, keeping the same label either side. */
+function splitSegmentsAtCuts(
+  segments: SpeakerSegment[],
+  cuts: number[],
+): SpeakerSegment[] {
+  const output: SpeakerSegment[] = [];
+  for (const segment of segments) {
+    let from = segment.t0;
+    for (const cut of cuts) {
+      if (cut <= from + 1e-6) continue;
+      if (cut >= segment.t1 - 1e-6) break;
+      output.push({ t0: from, t1: cut, trackId: segment.trackId });
+      from = cut;
+    }
+    if (segment.t1 - from > 1e-6) output.push({ t0: from, t1: segment.t1, trackId: segment.trackId });
+  }
+  return output;
 }
 
 /** Convenience: active speaker at an arbitrary clip-relative time. */

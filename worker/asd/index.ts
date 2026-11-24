@@ -94,6 +94,12 @@ export interface AsdResult {
    * across one. Empty when none were found (or the probe was disabled).
    */
   shotCuts?: number[];
+  /**
+   * Source cuts that CLOSED the face tracker. Every identity (and therefore every
+   * camera position) restarts on the first frame of a new shot, so a re-framed
+   * speaker can never inherit the previous angle's coordinates.
+   */
+  cutsApplied?: number;
 }
 
 export type AsdTimingStage =
@@ -267,6 +273,8 @@ interface FrameAnalysis {
   framesWithMultipleFaces: number;
   faceWidthsSource: number[];
   faceWidthsSample: number[];
+  /** Source cuts that closed the tracker (proves identities never span a shot). */
+  cutsApplied: number;
 }
 
 /**
@@ -327,8 +335,15 @@ async function analyzeSampledFrames(
   onStageTiming?: AsdOptions["onStageTiming"],
   detectionConcurrency = 1,
   skipFullFrameOnWideShots = false,
+  shotCuts: number[] = [],
 ): Promise<FrameAnalysis> {
   const tracker = new Tracker();
+  // Sorted copies of the cut times, consumed in order as samples advance. A cut
+  // CLOSES every open track, so no face identity (and therefore no camera
+  // position) is ever carried across two camera angles of the source.
+  const pendingCuts = [...shotCuts].filter((cut) => Number.isFinite(cut)).sort((a, b) => a - b);
+  let nextCut = 0;
+  let cutsApplied = 0;
   let maxFacesSeen = 0;
   let framesUsed = 0;
   let framesWithMultipleFaces = 0;
@@ -393,6 +408,11 @@ async function analyzeSampledFrames(
         const trackingStartedAt = measureTimings ? Date.now() : 0;
         try {
           const t = sample.index / sampleFps;
+          while (nextCut < pendingCuts.length && pendingCuts[nextCut] <= t + 1e-6) {
+            tracker.resetAtShotCut(pendingCuts[nextCut]);
+            nextCut += 1;
+            cutsApplied += 1;
+          }
           const { width, height, data, scaleFactor, faces, sampleFaceWidths } =
             sample;
           faceWidthsSample.push(...sampleFaceWidths);
@@ -495,6 +515,7 @@ async function analyzeSampledFrames(
         framesWithMultipleFaces,
         faceWidthsSource,
         faceWidthsSample,
+        cutsApplied,
       };
     } finally {
       if (measureTimings) trackingAndFusionMs += Date.now() - mergeStartedAt;
@@ -749,6 +770,7 @@ export async function detectSpeakerTimeline(
       options.onStageTiming,
       detectionConcurrency,
       skipFullFrameOnWideShots,
+      shotCutSettings.enabled ? shotCuts : [],
     );
 
     // Single-attempt policy: no higher-quality re-extraction or second YuNet pass.
@@ -798,6 +820,9 @@ export async function detectSpeakerTimeline(
           voice,
           tracks,
           frameWidth: videoWidth,
+          // A speaker label must never cross a source cut: the new shot has its
+          // own framing and its own visible faces.
+          shotCuts,
         });
         return { tracks, segments, speakerCount };
       },
@@ -876,6 +901,7 @@ export async function detectSpeakerTimeline(
       medianFaceWidth,
       sampleWidth,
       shotCuts,
+      cutsApplied: analysis.cutsApplied,
     };
     if (cacheKey && writeAsdResultCache(cacheSettings, cacheKey, result)) {
       log.info(

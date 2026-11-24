@@ -27,8 +27,18 @@
  *                instant when `switchMode === 'cut'`.
  *   5. CUTS    - source shot cuts are hard switches on the cut's exact frame,
  *                anchored on the face visible AFTER the cut. Nothing interpolates
- *                across a cut.
- *   6. CUTAWAYS (opt-in, `SPEAKER_CUTAWAYS=on`) - hold the speaker
+ *                across a cut. If the new shot has no detection yet, the cut still
+ *                moves to a supported position (a visible face, else the clamped
+ *                default) and the run re-anchors on the subject when they appear -
+ *                the window never keeps the previous angle's framing.
+ *   6. OPENING - the first frame is framed on a validated position: the subject
+ *                when visible in frame one, else a visible face, else the default.
+ *                Never on an anchor for a face that is only there later.
+ *   7. LOST    - a disappeared face holds for `faceLostHoldSeconds` (1.5 s), then
+ *                ONE deterministic move to the biggest face on screen (or the
+ *                default), then re-locks on the subject's return. A gap under
+ *                `gapToleranceSeconds` (0.6 s) is one missed sample: no move.
+ *   8. CUTAWAYS (opt-in, `SPEAKER_CUTAWAYS=on`) - hold the speaker
  *                `speakerHoldSeconds` (6 s), then show a listener for
  *                `cutawaySeconds` (2 s). A listener is only used when it is live
  *                and comparably sized, is detected on screen in >= 80% of the
@@ -46,6 +56,7 @@
 import { Track } from './asd/tracker';
 import {
   CameraCut,
+  CameraHole,
   CameraMove,
   CameraPath,
   CameraSample,
@@ -54,10 +65,12 @@ import {
   HEAD_UP,
   FACE_DEADZONE_HYSTERESIS,
   buildLockedCamera,
+  faceBoxInsideWindow,
   filterSamples,
   headInsideSafeZone,
   smoothstep,
   windowFor,
+  windowForHead,
 } from './camera-lock';
 
 /** `locked` = this planner (default). `legacy` = the previous continuous follow. */
@@ -113,6 +126,26 @@ export interface CameraPlanOptions {
   cutawayMinCoverage?: number;
   /** Hard safety cap on planned moves. Default 400. */
   maxMoves?: number;
+  /**
+   * How long the previous framing stays valid when the followed face stops being
+   * detected (a blink, a mic across the mouth, one missed sample). After this the
+   * window falls back deterministically instead of holding a stale crop. Default
+   * 1.5 s. `0` disables the fallback entirely (always hold).
+   */
+  faceLostHoldSeconds?: number;
+  /**
+   * How long a silence between two detections is still "the same continuous
+   * presence". Should be a little above the detector's sampling interval so one
+   * missed sample is absorbed; the default 0.6 s covers a 4 fps sample (0.25 s)
+   * and its double, while a real absence is still detected. Default 0.6 s.
+   */
+  gapToleranceSeconds?: number;
+  /**
+   * Length of the clip (clip-relative seconds). Needed to know that the camera is
+   * still holding a framing AFTER the last run ends, which is where a disappeared
+   * speaker used to leave a stale crop. Defaults to the last run's end.
+   */
+  durationSeconds?: number;
 }
 
 export const CAMERA_PLAN_DEFAULTS = {
@@ -131,7 +164,15 @@ export const CAMERA_PLAN_DEFAULTS = {
   cutawayMinSizeRatio: 0.45,
   cutawayMinCoverage: 0.8,
   maxMoves: 400,
+  faceLostHoldSeconds: 1.5,
+  gapToleranceSeconds: 0.6,
 };
+
+/**
+ * Detection tolerance used only when deciding WHO a timeline span belongs to. It
+ * follows the detector's cadence closely; a real absence still exceeds it.
+ */
+const GAP_TOLERANCE_FOR_FALLBACKS = 0.4;
 
 /** A speaker run after clipping to shots and merging continuations. */
 export interface SpeakerLockRun {
@@ -149,6 +190,12 @@ export interface SpeakerLockRun {
   face: { cx: number; cy: number };
   /** Detections used for the anchor. */
   settleSamples: number;
+  /**
+   * When this run's subject was FIRST detected inside the run. > `t0` means the
+   * speaker timeline opened before the face was visible (a lead-in), so the
+   * opening framing needs a visibility-aware decision instead of a guess.
+   */
+  firstDetectionAt: number;
 }
 
 /** One segment of the planned timeline: a lock on the speaker, or a listener cutaway. */
@@ -186,7 +233,31 @@ export interface CameraPlan {
   keyframes: number;
   glides: number;
   cuts: number;
+  /** How the clip's FIRST frame was validated (the initial-framing diagnostic). */
+  initial: CameraInitialFraming | null;
+  /** Spans where the followed face was not detected (clip-relative seconds). */
+  holes: CameraHole[];
+  /** Source cuts whose new shot needed a fallback jump (no subject detection yet). */
+  reanchorCuts: number;
+  /** Per-cut detail for the `[CAMERA-FACE]` diagnostic. */
+  fallbackCuts: Array<{ t: number; source: 'visible-face' | 'default'; trackId: number }>;
+  /** Missing-face fallbacks the plan activated, with what they moved to. */
+  fallbackHoles: Array<{ t: number; source: 'visible-face' | 'default'; trackId: number }>;
   options: CameraPlanResolvedOptions;
+}
+
+/** Initial-framing validation: where the clip opens and whether a face is there. */
+export interface CameraInitialFraming {
+  /** The person the opening framing locks onto. */
+  trackId: number;
+  /** Window top-left of the opening framing. */
+  anchor: { x: number; y: number };
+  /** When that person was FIRST detected in the clip (0 = visible immediately). */
+  firstFaceAt: number;
+  /** True when the face is inside the opening window at t = 0. */
+  faceVisibleFromStart: boolean;
+  /** Seconds of framing held before the first detection (a lead-in). */
+  leadSeconds: number;
 }
 
 export interface CameraPlanResolvedOptions {
@@ -212,6 +283,9 @@ export interface CameraPlanResolvedOptions {
   cutawayMinSizeRatio: number;
   cutawayMinCoverage: number;
   maxMoves: number;
+  faceLostHoldSeconds: number;
+  gapToleranceSeconds: number;
+  durationSeconds: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -251,6 +325,15 @@ function resolveOptions(options: CameraPlanOptions): CameraPlanResolvedOptions {
       options.cutawayMinSizeRatio ?? CAMERA_PLAN_DEFAULTS.cutawayMinSizeRatio,
     cutawayMinCoverage: options.cutawayMinCoverage ?? CAMERA_PLAN_DEFAULTS.cutawayMinCoverage,
     maxMoves: options.maxMoves ?? CAMERA_PLAN_DEFAULTS.maxMoves,
+    faceLostHoldSeconds: Math.max(
+      0,
+      options.faceLostHoldSeconds ?? CAMERA_PLAN_DEFAULTS.faceLostHoldSeconds,
+    ),
+    gapToleranceSeconds: Math.max(
+      0.05,
+      options.gapToleranceSeconds ?? CAMERA_PLAN_DEFAULTS.gapToleranceSeconds,
+    ),
+    durationSeconds: Math.max(0, options.durationSeconds ?? 0),
   };
 }
 
@@ -392,6 +475,53 @@ export function buildSpeakerRuns(
   return merged;
 }
 
+/**
+ * A speaker run is clipped at every source cut. When the SAME person is detected
+ * again right after the cut (the usual "wide shot cuts to a close-up of the person
+ * still talking"), the piece starting at the cut has no speaker label of its own
+ * until the next timeline decision - and a run that ends exactly on a cut used to
+ * leave the new shot with nothing to plan. The camera then either kept the old
+ * angle's framing or, worse, fell outside the plan entirely.
+ *
+ * So: if the run's subject is detected within a sampling interval or two AFTER the
+ * cut, the run is extended to that sighting. It stays a new shot (different anchor,
+ * hard switch); this only makes sure the new shot HAS a run to plan.
+ */
+function extendRunsAcrossCuts(
+  segments: SpeakerRunInput[],
+  tracks: Track[],
+  opts: CameraPlanResolvedOptions,
+): SpeakerRunInput[] {
+  if (opts.cuts.length === 0) return segments;
+  const byId = new Map<number, Track>();
+  for (const track of tracks) byId.set(track.id, track);
+  // A new shot can open on a wide angle before the person is recognisable again,
+  // so the horizon is generous - the run still starts at the cut and is anchored on
+  // the face that is actually visible on the new angle.
+  const horizon = Math.max(opts.gapToleranceSeconds * 4, 2.5);
+  return segments.map((segment, index) => {
+    // ONLY a real continuation. If the timeline hands the next span to a different
+    // (labelled) speaker, that person owns the new shot - extending this run would
+    // frame the new angle on the PREVIOUS speaker's position, which is exactly the
+    // "crop stays on the old angle" bug.
+    const after = segments[index + 1];
+    if (after && after.trackId !== null && after.trackId !== segment.trackId) return segment;
+    if (segment.trackId === null) return segment;
+    const cut = opts.cuts.find(
+      (time) => Math.abs(time - segment.t1) <= 0.02 || (time > segment.t1 - 1e-6 && time < segment.t1 + 0.02),
+    );
+    if (cut === undefined) return segment;
+    const track = byId.get(segment.trackId);
+    if (!track) return segment;
+    const nextSighting = track.points.reduce<number | null>((best, point) => {
+      if (point.t < cut - 1e-6 || point.t > cut + horizon) return best;
+      return best === null || point.t < best ? point.t : best;
+    }, null);
+    if (nextSighting === null) return segment;
+    return { ...segment, t1: Math.max(segment.t1, nextSighting + 1e-3) };
+  });
+}
+
 /** Use a tracked live face when speaker fusion has no visible speaker for a span. */
 function fillVisibleFaceFallbacks(
   tracks: Track[],
@@ -444,6 +574,103 @@ function fillVisibleFaceFallbacks(
 }
 
 // ---------------------------------------------------------------------------
+// Face visibility: gaps, fallbacks and post-cut re-anchoring
+// ---------------------------------------------------------------------------
+
+/**
+ * The spans in which the followed track had NO detection at all.
+ *
+ * `gapSeconds` is the tolerance for "this is still the same continuous presence":
+ * one missed sample in a 4 fps detector is 0.25 s, so the default 0.4 s absorbs a
+ * single miss without ever treating it as the person leaving. Anything larger is a
+ * hole the camera must reason about.
+ */
+export function detectionGaps(
+  track: Pick<Track, 'points'>,
+  t0: number,
+  t1: number,
+  gapSeconds = 0.4,
+): Array<{ start: number; end: number }> {
+  const times = [...new Set(
+    track.points
+      .map((point) => point.t)
+      .filter((t) => t >= t0 - 1e-6 && t <= t1 + 1e-6)
+      .sort((a, b) => a - b),
+  )];
+  const holes: Array<{ start: number; end: number }> = [];
+  if (times.length === 0) {
+    return t1 > t0 ? [{ start: t0, end: t1 }] : [];
+  }
+  // Leading hole: the run started before this person was ever visible.
+  if (times[0] - t0 > gapSeconds + 1e-6) holes.push({ start: t0, end: times[0] });
+  for (let i = 1; i < times.length; i += 1) {
+    if (times[i] - times[i - 1] > gapSeconds + 1e-6) {
+      holes.push({ start: times[i - 1], end: times[i] });
+    }
+  }
+  // Trailing hole: they left before the run ended.
+  const last = times[times.length - 1];
+  if (t1 - last > gapSeconds + 1e-6) holes.push({ start: last, end: t1 });
+  return holes;
+}
+
+/** The detection that best describes `track` at `t`, or null when it is not there. */
+function faceNear(
+  track: Track,
+  t: number,
+  tolerance: number,
+): { t: number; cx: number; cy: number; w: number } | null {
+  let best: Track['points'][number] | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const point of track.points) {
+    const distance = Math.abs(point.t - t);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = point;
+    }
+  }
+  if (!best || bestDistance > tolerance) return null;
+  return { t: best.t, cx: best.cx, cy: best.cy, w: best.w };
+}
+
+/** The first detection of `track` at or after `t` (within `horizonSeconds`). */
+function firstFaceAfter(
+  track: Track,
+  t: number,
+  horizonSeconds: number,
+): { t: number; cx: number; cy: number; w: number } | null {
+  let best: Track['points'][number] | null = null;
+  for (const point of track.points) {
+    if (point.t < t - 1e-6) continue;
+    if (best === null || point.t < best.t) best = point;
+  }
+  if (!best || best.t - t > horizonSeconds) return null;
+  return { t: best.t, cx: best.cx, cy: best.cy, w: best.w };
+}
+
+/**
+ * The window for a moment where the FOLLOWED person is not visible: the biggest
+ * face actually on screen at that instant (anyone else in the shot), else the
+ * clamped default. Never the middle of a microphone: a position is only returned
+ * when a real detection supports it.
+ */
+function fallbackWindow(
+  others: Track[],
+  t: number,
+  tolerance: number,
+  shape: ReturnType<typeof windowShapeOf>,
+): { x: number; y: number; source: 'visible-face' | 'default' } | null {
+  let best: CameraSample | null = null;
+  for (const track of others) {
+    const face = faceNear(track, t, tolerance);
+    if (!face) continue;
+    if (best === null || face.w > best.w) best = face;
+  }
+  if (best) return { ...windowForHead(best, shape), source: 'visible-face' };
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // The planner
 // ---------------------------------------------------------------------------
 
@@ -465,22 +692,77 @@ export function buildLockedSpeakerCamera(
   for (const track of tracks) byId.set(track.id, track);
 
   const runs: SpeakerLockRun[] = [];
-  const framedSegments = fillVisibleFaceFallbacks(tracks, segments);
+  const framedSegments = fillVisibleFaceFallbacks(
+    tracks,
+    extendRunsAcrossCuts(segments, tracks, opts),
+    GAP_TOLERANCE_FOR_FALLBACKS,
+  );
+  let reanchorAfterCut = 0;
+
   for (const run of buildSpeakerRuns(framedSegments, opts.cuts)) {
     const track = byId.get(run.trackId);
     if (!track) continue;
+
+    // Anchor on the FIRST RELIABLE sighting of the run - not on the run's start.
+    // The speaker timeline and the face track are sampled independently, so a run
+    // routinely opens before (or just after) the first detection in that shot. The
+    // old code then medianed an EMPTY settle window and dropped the run, which is
+    // exactly how the opening frames ended up on a microphone or an empty chair.
+    const firstFace = firstFaceAfter(track, run.t0, Math.max(opts.settleSeconds, 0.5));
+    // A new SHOT can open on a wide angle, a reaction cut or a slow re-frame in
+    // which this person is only recognisable a second or two later. The anchor is
+    // still the median of the first `settleSeconds` of real detections in the shot
+    // - the SEARCH for those detections is what has to reach past the cut.
+    const anchorHorizon = run.startsAtCut || run.shot > 0
+      ? Math.max(run.t1 - run.t0, 0)
+      : Math.max(opts.settleSeconds, 0.5);
+    const firstFaceInShot = firstFaceAfter(track, run.t0, anchorHorizon);
     let settled = samplesBetween(track, run.t0, Math.min(run.t1, run.t0 + opts.settleSeconds));
-    if (settled.length === 0) settled = samplesBetween(track, run.t0, run.t1);
-    if (settled.length === 0) continue;
+    if (settled.length === 0 && firstFaceInShot) {
+      // Detections exist but not inside the settle window: settle on what is
+      // actually there, from the first real sighting.
+      settled = samplesBetween(
+        track,
+        firstFaceInShot.t,
+        Math.min(run.t1, firstFaceInShot.t + opts.settleSeconds),
+      );
+    }
+    void firstFace;
+    if (settled.length === 0) {
+
+      // Nothing to anchor on at all inside this run. Do NOT invent a position: the
+      // hole/fallback machinery in the timeline takes over.
+      continue;
+    }
     const cx = median(settled.map((sample) => sample.cx));
     const cy = median(settled.map((sample) => sample.cy));
+    const widths = settled.map((sample) => sample.w).sort((a, b) => a - b);
+    const anchorSample: CameraSample = {
+      t: settled[0].t,
+      cx,
+      cy,
+      w: widths[Math.floor(widths.length / 2)] ?? 0,
+    };
     runs.push({
       ...run,
-      anchor: windowFor(cx, cy, shape),
+      anchor: windowForHead(anchorSample, shape),
       face: { cx, cy },
       settleSamples: settled.length,
+      firstDetectionAt: settled[0].t,
     });
+
   }
+
+  // A cut whose new shot has no detection of the followed person yet: the window
+  // must not keep the previous shot's framing. Plan a deterministic jump at the
+  // cut (the new shot's only visible face, else the clamped default window) and
+  // re-anchor on the person the moment they are seen again.
+  const firstRunByShot = new Map<number, SpeakerLockRun>();
+  for (const run of runs) if (!firstRunByShot.has(run.shot)) firstRunByShot.set(run.shot, run);
+  reanchorAfterCut = opts.cuts.filter((cut, index) => {
+    const run = firstRunByShot.get(index + 1);
+    return run !== undefined && run.t0 - cut > 0.4;
+  }).length;
 
   const cutaways: CameraPlan['cutaways'] = [];
   const skippedCutaways: CameraPlan['skippedCutaways'] = [];
@@ -488,7 +770,10 @@ export function buildLockedSpeakerCamera(
     collectCutaways(runs, byId, opts, cutaways, skippedCutaways);
   }
 
-  const { path, segments: timeline } = planTimeline(runs, cutaways, byId, opts, shape);
+  const timelineEnd = segments.reduce((max, segment) => Math.max(max, segment.t1), 0);
+  const timelineResult = planTimeline(runs, cutaways, byId, opts, shape, timelineEnd);
+  const { path, segments: timeline } = timelineResult;
+  const initial = describeInitialFraming(runs, path, byId, opts);
 
   // Real speaker switches only: the cutaway visits have their own counter, so a
   // switch here means "the conversation moved to another person".
@@ -532,7 +817,102 @@ export function buildLockedSpeakerCamera(
     keyframes: path.moves.length + (path.cuts?.length ?? 0),
     glides: path.moves.length,
     cuts: path.cuts?.length ?? 0,
+    initial,
+    holes: path.holes ?? [],
+    reanchorCuts: reanchorAfterCut,
+    fallbackCuts: timelineResult.fallbackCuts,
+    fallbackHoles: timelineResult.fallbackHoles,
     options: opts,
+  };
+}
+
+/**
+ * The initial-framing diagnostic for `[CAMERA-FACE]`: where the first frame points,
+ * who it is about, when they were first actually seen, and whether a face is really
+ * inside that opening window at t = 0. Measured against the finished path, so it
+ * describes what will be rendered - not what the planner intended.
+ */
+function describeInitialFraming(
+  runs: SpeakerLockRun[],
+  path: CameraPath,
+  byId: Map<number, Track>,
+  opts: CameraPlanResolvedOptions,
+): CameraInitialFraming | null {
+  if (runs.length === 0) return null;
+  const first = runs[0];
+  const open = positionAtPath(path, 0);
+  const track = byId.get(first.trackId);
+  // The first detection of the OPENING subject anywhere in the clip.
+  const firstFaceAt = track && track.points.length > 0
+    ? Math.min(...track.points.map((point) => point.t))
+    : first.firstDetectionAt;
+  const sample = track ? faceNear(track, Math.max(firstFaceAt, 0), 0.4) : null;
+  return {
+    trackId: first.trackId,
+    anchor: { x: open.x, y: open.y },
+    firstFaceAt: round3(firstFaceAt),
+    faceVisibleFromStart:
+      sample !== null
+        ? faceBoxInsideWindow(sample, open, { cropW: opts.cropW, cropH: opts.cropH })
+        : false,
+    leadSeconds: round3(Math.max(0, firstFaceAt)),
+  };
+}
+
+/**
+ * The framing the FIRST frame of the clip should show.
+ *
+ * Three cases, in order of preference:
+ *
+ *   1. The subject is already visible at t = 0 -> their own anchor (unchanged).
+ *   2. The subject is not visible yet but someone else is -> that visible face.
+ *   3. Nobody is visible -> the clamped default window (face anchor, frame centre).
+ *
+ * Case 2/3 also schedules ONE short glide to the subject's anchor when they first
+ * appear, so the opening never sits on the wrong subject and the hand-over is a
+ * controlled transition instead of a jump. A source cut before that moment keeps
+ * priority: the cut is a hard switch and the glide is dropped.
+ */
+function planOpeningFraming(
+  first: SpeakerLockRun,
+  byId: Map<number, Track>,
+  opts: CameraPlanResolvedOptions,
+  shape: ReturnType<typeof windowShapeOf>,
+): {
+  pos: { x: number; y: number };
+  source: 'subject' | 'visible-face' | 'default';
+  glideTo: number | null;
+  /**
+   * The source cut between the opening framing and the subject's first sighting,
+   * when there is one. It must remain a hard switch: the window cannot glide
+   * across two camera angles, and it cannot sit on the opening angle's framing
+   * into the new one either.
+   */
+  cutBeforeFirstSighting: number | null;
+} {
+  const subjectVisible =
+    first.firstDetectionAt <= first.t0 + 1e-6 || first.firstDetectionAt <= 0.001;
+  if (subjectVisible) {
+    return { pos: first.anchor, source: 'subject', glideTo: null, cutBeforeFirstSighting: null };
+  }
+
+  const others = [...byId.values()].filter((track) => track.id !== first.trackId);
+  const visible = fallbackWindow(others, 0, 0.4, shape);
+  // Is any cut between t=0 and the subject's first sighting? Then the cut owns the
+  // switch: a hard jump on the cut frame, never a glide across two shots.
+  const cutBeforeSubject =
+    opts.cuts.find((cut) => cut > 1e-6 && cut < first.firstDetectionAt - 1e-6) ?? null;
+  return {
+    pos: visible ?? {
+      x: Math.max(0, Math.min(0.5 * opts.cropW, opts.srcW - opts.cropW)),
+      y: Math.max(
+        0,
+        Math.min(opts.anchorY * opts.cropH, opts.srcH - opts.cropH),
+      ),
+    },
+    source: visible ? 'visible-face' : 'default',
+    glideTo: cutBeforeSubject ? null : first.firstDetectionAt,
+    cutBeforeFirstSighting: cutBeforeSubject,
   };
 }
 
@@ -656,8 +1036,15 @@ function planTimeline(
   cutaways: CameraPlan['cutaways'],
   byId: Map<number, Track>,
   opts: CameraPlanResolvedOptions,
-  shape: ReturnType<typeof windowShapeOf>
-): { path: CameraPath; segments: CameraSegment[] } {
+  shape: ReturnType<typeof windowShapeOf>,
+  timelineEnd = 0,
+): {
+  path: CameraPath;
+  segments: CameraSegment[];
+  holes: CameraHole[];
+  fallbackCuts: NonNullable<CameraPlan['fallbackCuts']>;
+  fallbackHoles: NonNullable<CameraPlan['fallbackHoles']>;
+} {
   if (runs.length === 0) {
     return {
       path: {
@@ -667,14 +1054,29 @@ function planTimeline(
         truncated: false,
       },
       segments: [],
+      holes: [],
+      fallbackCuts: [],
+      fallbackHoles: [],
     };
   }
 
   const cuts: CameraCut[] = [];
   const moves: CameraMove[] = [];
   const segments: CameraSegment[] = [];
-  const x0 = runs[0].anchor.x;
-  const y0 = runs[0].anchor.y;
+  const holes: CameraHole[] = [];
+  const fallbackCuts: NonNullable<CameraPlan['fallbackCuts']> = [];
+  const fallbackHoles: NonNullable<CameraPlan['fallbackHoles']> = [];
+  // OPENING FRAMING. The old code always started the window on `runs[0].anchor`,
+  // i.e. where the first speaker's face is somewhere LATER in the shot. When the
+  // clip opens on the same shot before that face is visible (a microphone, an
+  // empty chair, a wide establishing angle) that pretends a face was seen: the
+  // first frames then show whatever happens to sit at that position. Instead the
+  // window opens on a position that is actually SUPPORTED at t = 0 - a visible face
+  // in the opening shot, else the clamped default - and glides to the real anchor
+  // only when the subject appears.
+  const opening = planOpeningFraming(runs[0], byId, opts, shape);
+  const x0 = opening.pos.x;
+  const y0 = opening.pos.y;
   let busyUntil = -Infinity;
   let moveBudgetHit = false;
 
@@ -714,14 +1116,80 @@ function planTimeline(
 
     let entry: CameraSegment['entry'] = 'start';
     let arrive = at;
-    if (previous) {
+    if (!previous && opening.cutBeforeFirstSighting !== null) {
+      // The clip opens on one angle and the source cuts before this subject is
+      // visible. The cut is a HARD switch on its own frame - the window never
+      // glides between two camera angles and never keeps the old angle's framing.
+      const cutTime = opening.cutBeforeFirstSighting;
+      const sourceCut = opts.cuts.indexOf(cutTime);
+      const cutRun = runs.find((candidate) => candidate.shot === sourceCut + 1 && candidate.startsAtCut);
+      const target =
+        cutRun && cutRun.firstDetectionAt <= run.t0 + 1e-6
+          ? cutRun.anchor
+          : fallbackWindow(
+              [...byId.values()].filter((track) => track.id !== run.trackId),
+              cutTime,
+              0.4,
+              shape,
+            ) ?? run.anchor;
+      cuts.push({
+        t: round3(cutTime),
+        x: Math.round(target.x),
+        y: Math.round(target.y),
+        reanchor: !(cutRun && cutRun.firstDetectionAt <= run.t0 + 1e-6),
+      });
+      if (!(cutRun && cutRun.firstDetectionAt <= run.t0 + 1e-6)) {
+        fallbackCuts.push({ t: round3(cutTime), source: 'default', trackId: run.trackId });
+      }
+      busyUntil = Math.max(busyUntil, cutTime);
+      if (run.firstDetectionAt > cutTime + 1e-6) {
+        const entered = enter(run.firstDetectionAt, run.anchor, false);
+        entry = entered.entry;
+        arrive = entered.arrive;
+      } else {
+        entry = 'start';
+        arrive = at;
+      }
+    } else if (!previous && opening.glideTo !== null) {
+      // The clip opened on a visible face / the default before this person appeared:
+      // one short controlled glide to their anchor on the first sighting, never a
+      // cut (nothing about the SOURCE changed) and never a stale crop.
+      const entered = enter(Math.max(0, opening.glideTo), run.anchor, false);
+      entry = entered.entry;
+      arrive = entered.arrive;
+    } else if (previous) {
       const shotChanged = previous.shot !== run.shot;
       const speakerChanged = previous.trackId !== run.trackId;
       if (shotChanged) {
         // 5) CUT: the window is already on the new shot's anchor at the cut frame.
-        const entered = enter(at, run.anchor, true);
-        entry = entered.entry;
-        arrive = entered.arrive;
+        // When the subject is NOT yet visible on the new shot, the cut still has
+        // to move the window - keeping the previous shot's framing would leave the
+        // camera pointing at a microphone or an empty chair until the first
+        // detection. The jump target is the new shot's only visible face, else the
+        // clamped default; the run then re-anchors as soon as the subject appears.
+        const cutTime = opts.cuts.filter((cut) => cut > previous.t1 - 1e-6 && cut <= run.t0 + 1e-6)[0];
+        const needsFallback = cutTime !== undefined && run.t0 - cutTime > 0.4;
+        if (needsFallback) {
+          const fallback =
+            fallbackWindow(
+              [...byId.values()].filter((track) => track.id !== run.trackId),
+              cutTime,
+              0.4,
+              shape,
+            ) ?? {
+              ...windowFor(run.face.cx, run.face.cy, shape),
+              source: 'default' as const,
+            };
+          cuts.push({ t: round3(cutTime), x: fallback.x, y: fallback.y, reanchor: true });
+          busyUntil = Math.max(busyUntil, cutTime);
+          entry = 'cut';
+          arrive = cutTime;
+          fallbackCuts.push({ t: round3(cutTime), source: fallback.source, trackId: run.trackId });
+        } else {
+          const entered = enter(at, run.anchor, true);
+          entry = entered.entry;
+          arrive = entered.arrive;
+        }
       } else if (speakerChanged) {
         // 4) SWITCH
         const hard = opts.switchMode === 'cut';
@@ -851,6 +1319,86 @@ function planTimeline(
     }
   }
 
+  // 7) MISSING FACE. The window holds its last VALID framing for
+  // `faceLostHoldSeconds` (a blink, a mic swinging across the mouth, a missed
+  // sample), then moves ONCE - deterministically - to the biggest face actually on
+  // screen, or to the clamped default when nobody is visible. It never drifts,
+  // never guesses a position from a microphone or a chair, and re-locks on the
+  // subject the moment they are seen again (the next run's own entry).
+  //
+  // The holes come from the RUN timeline, not from raw detections: a span with no
+  // run is exactly a span in which the camera has nobody to follow, which is the
+  // case that used to leave a stale crop forever. Internal detection gaps are
+  // reported too, so a flickering detector is visible in the log.
+  if (opts.faceLostHoldSeconds > 0) {
+    const followEnd = Math.max(
+      0,
+      opts.durationSeconds,
+      segments.length > 0 ? Math.max(...segments.map((segment) => segment.until)) : 0,
+      ...runs.map((run) => run.t1),
+      // The speaker timeline spans the whole clip and ends with a "no visible
+      // speaker" span when the subject left early. `fillVisibleFaceFallbacks` can
+      // shorten that span to the last sighting, so the ORIGINAL timeline's end is
+      // what says how long the camera must keep working. Without it the planner
+      // thinks the clip ends with the last detection - precisely how a stale crop
+      // survived to the end of a rendered clip.
+      timelineEnd,
+    );
+    const covered = segments
+      .filter((segment) => segment.kind === 'lock')
+      .map((segment) => ({ start: segment.start, end: segment.until }))
+      .sort((a, b) => a.start - b.start);
+    const spans: Array<{ start: number; end: number }> = [];
+    let cursor = 0;
+    for (const span of covered) {
+      if (span.start > cursor + 1e-6) spans.push({ start: cursor, end: span.start });
+      cursor = Math.max(cursor, span.end);
+    }
+    if (followEnd > cursor + 1e-6) spans.push({ start: cursor, end: followEnd });
+
+    for (const span of spans) {
+      do {
+        // A source cut inside the span owns the framing on the new shot; that is a
+        // shot change, not a lost face.
+        if (opts.cuts.some((cut) => cut > span.start + 1e-6 && cut < span.end - 1e-6)) break;
+        const length = span.end - span.start;
+        const hold = Math.min(opts.faceLostHoldSeconds, length);
+        holes.push({ start: round3(span.start), end: round3(span.end), holdSeconds: round3(hold) });
+        const fallbackAt = span.start + hold;
+        // A hole shorter than the grace period is a blink: the camera must not move.
+        if (fallbackAt >= span.end - 1e-6) break;
+        // If the span ENDS because another run (or one still to come) takes over very
+        // shortly, the camera is already going to move there. Two moves a few frames
+        // apart is exactly the unnecessary jitter this must avoid.
+        if (span.end - fallbackAt < 1.5) break;
+        if (fallbackAt + opts.recentreSeconds > span.end - 1e-6) break;
+        if (moves.length + cuts.length >= opts.maxMoves) {
+          moveBudgetHit = true;
+          break;
+        }
+        const subjectId = runs.find((run) => Math.abs(run.t1 - span.start) < 0.3)?.trackId ?? null;
+        const others = [...byId.values()].filter((track) => track.id !== subjectId);
+        const fallback = fallbackWindow(others, fallbackAt, 0.4, shape);
+        const pos = fallback ?? {
+          x: Math.max(0, (opts.srcW - opts.cropW) / 2),
+          y: Math.max(0, Math.min(opts.anchorY * opts.cropH, opts.srcH - opts.cropH)),
+        };
+        moves.push({
+          t: round3(fallbackAt),
+          duration: round3(opts.recentreSeconds),
+          x: Math.round(pos.x),
+          y: Math.round(pos.y),
+        });
+        busyUntil = Math.max(busyUntil, fallbackAt + opts.recentreSeconds);
+        fallbackHoles.push({
+          t: round3(fallbackAt),
+          source: fallback ? 'visible-face' : 'default',
+          trackId: subjectId ?? 0,
+        });
+      } while (false);
+    }
+  }
+
   const orderedMoves = moves
     .filter((move) => !cuts.some((cut) => Math.abs(cut.t - move.t) < 1e-6))
     .sort((a, b) => a.t - b.t);
@@ -863,8 +1411,12 @@ function planTimeline(
       moves: orderedMoves,
       truncated: moveBudgetHit,
       ...(orderedCuts.length > 0 ? { cuts: orderedCuts } : {}),
+      ...(holes.length > 0 ? { holes } : {}),
     },
     segments,
+    holes,
+    fallbackCuts,
+    fallbackHoles,
   };
 }
 

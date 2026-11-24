@@ -41,7 +41,11 @@ The worker pipeline (`worker/asd/` + `worker/layout.ts`):
 3. **Tracks** detections across samples with an identity-free constant-velocity
    nearest-neighbour tracker (`worker/asd/tracker.ts`): stable "Person A/B/C" ids with a
    keep-alive grace period so a person survives a mic swing, a hand, or a brief overlap
-   without losing their framing. A track needs at least one sample-to-sample face change
+   without losing their framing. A **source shot cut closes every open track**, so no
+   identity — and therefore no face position — is ever carried across two camera angles;
+   the tracker's constant-velocity prediction would otherwise match a re-framed speaker
+   onto their own previous-shot track and the camera's new-shot anchor would inherit
+   coordinates from the angle before it. A track needs at least one sample-to-sample face change
    of 0.012 or greater to count as a live person; still/frozen images are excluded from
    speaker scoring, camera targets and person counts. This is a motion heuristic, not
    identity recognition, so an image that itself moves may still appear live.
@@ -133,23 +137,61 @@ The default camera is event-based instead — a handful of keyframes per minute:
    telescoping `x0 + gte(t,T1)*(x1-x0) + …` sum (colon-free, because `crop` splits its
    arguments on `:`), so nothing can interpolate across a cut and the JS camera
    (`cameraPositionAt`) matches it frame for frame.
-6. **Cutaways** — `SPEAKER_CUTAWAYS=off` by default. `on` restores the old cadence:
+6. **Opening frame** — the window opens on a position that is actually *supported at
+   t = 0*: the subject's own anchor when they are visible in frame one, otherwise a
+   visible face in the opening shot, otherwise the clamped default. It is never
+   pre-positioned on `runs[0].anchor`, i.e. on where the speaker is *somewhere later*
+   in the shot — which is how the first frames used to show a microphone or an empty
+   chair. When the subject appears later, one `CAMERA_RECENTRE_SECONDS` glide takes the
+   window there (or, if the source cut first, the cut is the hard switch and the window
+   anchors on the new shot's face). An anchor is taken from the FIRST RELIABLE sighting
+   of the run, so a speaker timeline that opens before the detector's first sample still
+   gets a lock instead of being dropped.
+7. **Missing face** — while the followed person is not detected the window holds the
+   last VALID framing for `CAMERA_FACE_LOST_HOLD_SECONDS` (1.5 s: a blink, a mic swung
+   across the mouth, one missed sample), then moves ONCE, deterministically, to the
+   biggest face actually on screen — or to the clamped default when nobody is visible —
+   and re-locks on the subject the moment they are seen again. It never drifts and never
+   treats a microphone, a chair or the background as a face. `0` restores always-hold.
+   A silence shorter than `CAMERA_GAP_TOLERANCE_SECONDS` (0.6 s, just above the
+   detector's own cadence) is still "the same continuous presence" and never moves the
+   camera.
+8. **Cutaways** — `SPEAKER_CUTAWAYS=off` by default. `on` restores the old cadence:
    hold the speaker `SPEAKER_FOCUS_HOLD_SECONDS` (6 s), then show a listener for
    `SPEAKER_SWITCH_HOLD_SECONDS` (2 s). A listener is used only when it is a live,
    comparably sized face (`≥ 45 %` of the speaker's width), detected on screen in ≥ 80 %
    of the cutaway, co-visible with the speaker **in the same shot**, and centerable —
    otherwise the cutaway is skipped and the reason is logged.
 
+**Speaker labels never cross a source cut.** A cut re-frames the shot, so the window that
+straddles it belongs to the shot it starts in and the next shot decides its speaker from
+its own, freshly detected faces (`shotCuts` is passed into `buildSpeakerTimeline`, which
+splits the runs on every cut). A label is also never kept for a person who is no longer on
+screen: when nobody qualifies in a window the timeline goes to `null` instead of holding a
+stale identity, which is what used to hand the camera a speaker it could not see.
+
 Every render logs one line each of
 
 ```
 [CAMERA-PLAN] mode=locked segments=.. locks=.. recenters=.. switches=.. cutaways=..
               keyframes=.. cuts=.. glides=.. per_minute=.. longest_glide=..s runs=..
+[CAMERA-FACE] initial=visible|lead-in|none track=.. first_face_at=..s anchor=x,y
+              gaps=.. long_gaps=.. max_gap=..s fallbacks=.. (t:visible-face|default, …)
+              reanchor_cuts=.. (t:…)
 [CAMERA-QA]   pctFramesInDeadzone=..% pctFramesInStableBand=..% pctFramesInDeadzoneAll=..%
               maxOffsetPx=.. maxSettledOffsetPx=.. motionEventsPerMinute=.. transitionFrames=..
               longestGlide=..s glidesOverHalfSecond=.. edgeLimitedFrames=..
               headOutsideCropFrames=.. framesChecked=.. edgeLimited=..
 ```
+
+`[CAMERA-FACE]` answers the two questions a rendered clip always raises. `initial=`
+reports whether a face was really inside the opening window (`visible`), whether the clip
+opens on a lead-in before the subject appears (`lead-in`, with `first_face_at`), or whether
+there was no face at all (`none`); `anchor=` is the opening window position the first
+frame actually renders. `gaps=` counts spans in which the followed face was not detected
+(`long_gaps=`/`max_gap=` for the ones a viewer would notice), `fallbacks=` lists each
+missing-face move with WHAT it moved to, and `reanchor_cuts=` lists each source cut whose
+new shot needed a fallback because the subject was not visible yet on the new angle.
 
 `[CAMERA-QA]` is measured on the very detections the plan was built from, against
 **the person the camera is following at that moment** (the speaker, or the listener

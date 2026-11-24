@@ -27,6 +27,7 @@ import {
 } from "../lib/types";
 import {
   buildLayoutPlan,
+  formatCameraFaceLog,
   formatCameraPlanLog,
   formatCameraQaLog,
   getSpeakerCameraSettings,
@@ -756,6 +757,10 @@ export async function processClipJob(
     }
     const splitFraming = getSplitFramingSettings();
     const cameraSettings = getSpeakerCameraSettings(process.env, sourceMeta.width, sourceMeta.height);
+    // The planner needs the real clip length to know that the camera is still
+    // holding a framing AFTER the last detection - the case where a disappeared
+    // speaker used to leave a stale crop for the rest of the clip.
+    cameraSettings.durationSeconds = segmentDuration;
     const plan = buildLayoutPlan(
       asd,
       layout,
@@ -773,6 +778,9 @@ export async function processClipJob(
       // One line per render: how many camera events the plan has, and - measured
       // on the very detections it was planned from - how still the framing is.
       log.info(formatCameraPlanLog(plan.cameraPlan, segmentDuration));
+      // Why the framing starts where it does, and every point at which the
+      // followed face was not there - the two questions a rendered clip raises.
+      log.info(formatCameraFaceLog(plan.cameraPlan));
       // QA is measured against whoever the camera is FOLLOWING at each moment
       // (the speaker, or the listener during a cutaway) - not every face in frame.
       const followed = new Set(plan.cameraPlan.segments.map((segment) => segment.trackId));

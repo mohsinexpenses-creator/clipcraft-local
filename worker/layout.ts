@@ -21,6 +21,7 @@
 
 import { AsdResult } from './asd';
 import {
+  CAMERA_PLAN_DEFAULTS,
   CameraMode,
   CameraPlan,
   CameraPlanOptions,
@@ -479,8 +480,56 @@ export function getSpeakerCameraSettings(
     cutawayMinSizeRatio: 0.45,
     cutawayMinCoverage: 0.8,
     maxMoves: Math.max(8, Math.floor(numberFlag(env.CAMERA_KEYFRAME_CAP, 400))),
+    // How long the previous framing stays valid when the followed face stops being
+    // detected. 0 = always hold (the pre-Phase-8 behaviour).
+    faceLostHoldSeconds: clampNumber(
+      numberFlag(env.CAMERA_FACE_LOST_HOLD_SECONDS, CAMERA_PLAN_DEFAULTS.faceLostHoldSeconds),
+      0,
+      10
+    ),
+    gapToleranceSeconds: clampNumber(
+      numberFlag(env.CAMERA_GAP_TOLERANCE_SECONDS, CAMERA_PLAN_DEFAULTS.gapToleranceSeconds),
+      0.05,
+      3
+    ),
     legacyDetrend: enabledFlag(env.CAMERA_LEGACY_DETREND),
   };
+}
+
+
+/**
+ * `[CAMERA-FACE]` - the face-visibility diagnostic.
+ *
+ * One line per render, and it explains every camera decision the viewer could
+ * question: how the FIRST frame was framed and whether a face was really in it,
+ * how long the picture waits before the subject appears, every span in which the
+ * followed face vanished, and every source cut that needed a fallback because the
+ * subject was not visible yet on the new shot.
+ */
+export function formatCameraFaceLog(plan: CameraPlan): string {
+  const initial = plan.initial;
+  const holes = plan.holes;
+  const longGaps = holes.filter((hole) => hole.end - hole.start >= 1);
+  const fallbacks = plan.fallbackHoles;
+  return (
+    `[CAMERA-FACE] initial=` +
+    (initial
+      ? `${initial.faceVisibleFromStart ? 'visible' : 'lead-in'} track=${initial.trackId} ` +
+        `first_face_at=${initial.firstFaceAt}s anchor=${Math.round(initial.anchor.x)},${Math.round(initial.anchor.y)}`
+      : 'none') +
+    ` gaps=${holes.length}` +
+    (longGaps.length > 0
+      ? ` long_gaps=${longGaps.length} max_gap=${Math.max(...longGaps.map((hole) => hole.end - hole.start)).toFixed(2)}s`
+      : '') +
+    ` fallbacks=${fallbacks.length}` +
+    (fallbacks.length > 0
+      ? ` (${fallbacks.map((entry) => `${entry.t.toFixed(2)}s:${entry.source}`).join(', ')})`
+      : '') +
+    ` reanchor_cuts=${plan.reanchorCuts}` +
+    (plan.reanchorCuts > 0
+      ? ` (${plan.fallbackCuts.map((entry) => `${entry.t.toFixed(2)}s:${entry.source}`).join(', ')})`
+      : '')
+  );
 }
 
 /** The `[CAMERA-PLAN]` log line for a speaker-focus plan. */
@@ -496,6 +545,7 @@ export function formatCameraPlanLog(plan: CameraPlan, durationSeconds: number): 
     `per_minute=${(plan.keyframes / minutes).toFixed(1)} ` +
     `longest_glide=${plan.path.moves.reduce((max, move) => Math.max(max, move.duration), 0).toFixed(2)}s ` +
     `runs=${plan.runs.length}` +
+    (plan.reanchorCuts > 0 ? ` reanchor_cuts=${plan.reanchorCuts}` : "") +
     (plan.path.truncated ? ' truncated=true' : '')
   );
 }
