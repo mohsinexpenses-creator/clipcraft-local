@@ -78,9 +78,8 @@ test("ASD cache key includes immutable source metadata, clip window, and detecto
 });
 
 test("ASD cache version invalidates speaker timelines after cadence changes", () => {
-  // 6 = phase 9: liveness + speaker cues are now BACKGROUND-relative, so a cached
-  // timeline computed from raw face motion must never be reused.
-  assert.equal(ASD_CACHE_VERSION, 6);
+  // 8 invalidates results after the liveness and camera/speaker track rules changed.
+  assert.equal(ASD_CACHE_VERSION, 8);
 });
 
 test("ASD result and source-quality caches are reusable and opt-out safely", () => {

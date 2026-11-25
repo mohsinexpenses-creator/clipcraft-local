@@ -38,6 +38,8 @@ import type { AmbiguousWindow, SpeakerTimelineInput } from "./speaker";
 import { computeVoiceEnvelope, extractPcmMono } from "./audio";
 import {
   effectiveFaceMotion,
+  includePersistentCoVisibleCompanions,
+  isCameraUsableTrack,
   isLikelyLiveTrack,
   Tracker,
   Track,
@@ -827,7 +829,7 @@ function maxConcurrentTracks(tracks: Track[]): number {
 }
 
 function keepLiveTracks(result: AsdResult): AsdResult {
-  const tracks = result.tracks.filter(isLikelyLiveTrack);
+  const tracks = result.tracks.filter(isCameraUsableTrack);
   const ids = new Set(tracks.map((track) => track.id));
   const speakerSegments = result.speakerSegments.map((segment) => ({
     ...segment,
@@ -1488,7 +1490,10 @@ export async function detectSpeakerTimeline(
 
     // Single-attempt policy: no higher-quality re-extraction or second YuNet pass.
 
-    analysis.tracks = analysis.tracks.filter(isLikelyLiveTrack);
+    analysis.tracks = includePersistentCoVisibleCompanions(
+      analysis.tracks,
+      sampleFps,
+    );
     analysis.maxFacesSeen = maxConcurrentTracks(analysis.tracks);
 
     if (analysis.tracks.length === 0) {
@@ -1531,13 +1536,13 @@ export async function detectSpeakerTimeline(
     //   2. only if there are any, ask the model about them within its budget,
     //      then build the timeline again with those verdicts available.
     // The timeline stays a pure function of (tracks, voice, verdicts).
-    const { tracks, segments, speakerCount, ambiguousWindows, lrAsdWindows } =
+    const { segments, speakerCount, ambiguousWindows, lrAsdWindows } =
       await measureAsdStage(options, "tracking-speaker-fusion", async () => {
         const tracks = interpolateTracksForAnalysis(
           analysis.tracks,
           sampleFps,
           analysisFps,
-        );
+        ).filter(isLikelyLiveTrack);
         const input: SpeakerTimelineInput = {
           duration,
           fps: analysisFps,
@@ -1574,13 +1579,17 @@ export async function detectSpeakerTimeline(
                 },
               });
         return {
-          tracks,
           segments: timeline.segments,
           speakerCount: timeline.speakerCount,
           ambiguousWindows,
           lrAsdWindows: verdicts.size,
         };
       });
+    const cameraTracks = interpolateTracksForAnalysis(
+      analysis.tracks,
+      sampleFps,
+      analysisFps,
+    );
 
     const voicedRatio =
       voice.length > 0
@@ -1598,7 +1607,7 @@ export async function detectSpeakerTimeline(
       );
     }
     log.ok(
-      `ASD: ${tracks.length} person(s) tracked${analysis.maxFacesSeen > 1 ? `, ${analysis.maxFacesSeen} on screen at once` : ""}, ` +
+      `ASD: ${cameraTracks.length} person(s) tracked${analysis.maxFacesSeen > 1 ? `, ${analysis.maxFacesSeen} on screen at once` : ""}, ` +
         `${speakerCount} active speaker(s), ${Math.round(voicedRatio * 100)}% voiced, ` +
         `frames=${analysis.framesUsed}/${frames.length}, detector_fps=${sampleFps.toFixed(2)}, ` +
         `analysis_fps=${analysisFps.toFixed(2)}, profile=${profile.name}, ` +
@@ -1633,7 +1642,7 @@ export async function detectSpeakerTimeline(
       );
     }
 
-    for (const track of tracks) {
+    for (const track of cameraTracks) {
       const third = videoWidth / 3;
       const avgX = Math.round(
         track.points.reduce((sum, point) => sum + point.cx, 0) /
@@ -1653,7 +1662,7 @@ export async function detectSpeakerTimeline(
       : "yunet-visual";
 
     const result: AsdResult = {
-      tracks,
+      tracks: cameraTracks,
       speakerSegments: segments,
       speakerCount,
       method,

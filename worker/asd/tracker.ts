@@ -90,6 +90,11 @@ export interface Track {
   lastT: number;
   /** Consecutive frames without a match (0 = currently visible). */
   missed: number;
+  /**
+   * Persistent face co-visible with a motion-qualified participant. This is
+   * camera-presence evidence only; it does not add speaker-motion evidence.
+   */
+  coVisibleWithLiveFace?: boolean;
 }
 
 /**
@@ -155,7 +160,9 @@ function hasRigidBackground(point: {
  * promote a printed poster into a "person". A track that spent most of its life
  * on a shot whose whole image moved (a handheld pan across a wall) must also show
  * at least one moment where the face moved on its own - otherwise it is a rigid
- * pattern that happened to follow the camera.
+ * pattern that happened to follow the camera. Motion is intermittent in long
+ * clips (especially seated conversations), so require a few real motion events
+ * rather than demanding movement in a fixed share of every sampled frame.
  */
 export function isLikelyLiveTrack(track: Track): boolean {
   const points = track.points.filter(
@@ -166,26 +173,81 @@ export function isLikelyLiveTrack(track: Track): boolean {
     .filter((value): value is number => value !== null && Number.isFinite(value));
   if (track.points.length < 5 || motion.length < 4) return false;
 
-  const sorted = [...motion].sort((a, b) => a - b);
-  const middle = Math.floor(sorted.length / 2);
-  const medianMotion =
-    sorted.length % 2 === 1
-      ? sorted[middle]
-      : (sorted[middle - 1] + sorted[middle]) / 2;
-  const meaningfulFrames = motion.filter((value) => value >= 0.025).length;
-
-  const live =
-    medianMotion >= 0.018 &&
-    meaningfulFrames >= Math.max(3, Math.ceil(motion.length * 0.3));
+  const meaningfulFrames = motion.filter((value) => value >= 0.012).length;
+  const live = meaningfulFrames >= 3;
   if (!live) return false;
 
   // Rigid-pattern guard: when the surroundings moved for most of this track, the
   // face itself must at some point have out-moved them.
   const rigidFrames = points.filter(hasRigidBackground).length;
   if (rigidFrames >= Math.max(3, Math.ceil(points.length * 0.5))) {
-    return motion.some((value) => value >= 0.025);
+    return motion.filter((value) => value >= 0.025).length >= 3;
   }
   return true;
+}
+
+/** True for motion-qualified people and persistent co-visible framing companions. */
+export function isCameraUsableTrack(track: Track): boolean {
+  return isLikelyLiveTrack(track) || track.coVisibleWithLiveFace === true;
+}
+
+/**
+ * Keep a persistent second face in a conversation when it is repeatedly seen
+ * beside a motion-qualified face. This supports subtle seated speakers without
+ * promoting a fleeting face or a face on its own into a live track.
+ */
+export function includePersistentCoVisibleCompanions(
+  tracks: Track[],
+  sampleFps: number,
+): Track[] {
+  const liveTracks = tracks.filter((track) => isLikelyLiveTrack(track));
+  if (liveTracks.length === 0) return [];
+
+  const minimumSightings = Math.max(8, Math.ceil(sampleFps * 3));
+  const overlapTolerance = 0.6 / Math.max(0.5, sampleFps);
+  const selectedIds = new Set(liveTracks.map((track) => track.id));
+  const selected = new Map(liveTracks.map((track) => [track.id, track]));
+
+  for (const candidate of tracks) {
+    if (selectedIds.has(candidate.id) || candidate.points.length < minimumSightings) continue;
+    const span = candidate.points[candidate.points.length - 1].t - candidate.points[0].t;
+    if (span < 3) continue;
+
+    const repeatedlyCoVisible = liveTracks.some((liveTrack) => {
+      let candidateIndex = 0;
+      let liveIndex = 0;
+      let overlap = 0;
+      while (
+        candidateIndex < candidate.points.length &&
+        liveIndex < liveTrack.points.length
+      ) {
+        const candidateTime = candidate.points[candidateIndex].t;
+        const liveTime = liveTrack.points[liveIndex].t;
+        if (Math.abs(candidateTime - liveTime) <= overlapTolerance) {
+          overlap += 1;
+          candidateIndex += 1;
+          liveIndex += 1;
+        } else if (candidateTime < liveTime) {
+          candidateIndex += 1;
+        } else {
+          liveIndex += 1;
+        }
+      }
+      return (
+        overlap >= minimumSightings &&
+        overlap / Math.min(candidate.points.length, liveTrack.points.length) >= 0.6
+      );
+    });
+
+    if (repeatedlyCoVisible) {
+      selected.set(candidate.id, { ...candidate, coVisibleWithLiveFace: true });
+    }
+  }
+
+  return tracks.flatMap((track) => {
+    const retained = selected.get(track.id);
+    return retained ? [retained] : [];
+  });
 }
 
 /** Copy a detection into a track point, keeping the optional motion measurements. */

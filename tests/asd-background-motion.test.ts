@@ -17,6 +17,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   effectiveFaceMotion,
+  includePersistentCoVisibleCompanions,
+  isCameraUsableTrack,
   isLikelyLiveTrack,
   Tracker,
   type Track,
@@ -166,6 +168,62 @@ test('a real person moving against a still wall IS live', () => {
     missed: 0,
   };
   assert.equal(isLikelyLiveTrack(track), true);
+});
+
+test('a seated speaker with sparse face movement stays live in a long clip', () => {
+  const track: Track = {
+    id: 1,
+    points: Array.from({ length: 240 }, (_, index) =>
+      point(index / 2.847, index % 48 === 12 ? 0.018 : 0.002),
+    ),
+    visibleTime: 84,
+    avgW: 120,
+    maxW: 120,
+    cx: 320,
+    cy: 180,
+    vx: 0,
+    vy: 0,
+    lastT: 84,
+    missed: 0,
+  };
+
+  assert.equal(isLikelyLiveTrack(track), true);
+});
+
+test('a persistent co-visible conversation partner is retained for framing only', () => {
+  const primary = Array.from({ length: 40 }, (_, index) => ({
+    ...point(index / 4, index % 8 === 0 ? 0.03 : 0.002),
+    backgroundMotion: 0.001,
+  }));
+  const companion = Array.from({ length: 40 }, (_, index) => ({
+    ...point(index / 4, 0.002),
+    cx: 500,
+  }));
+  const transient = Array.from({ length: 4 }, (_, index) => ({
+    ...point(2 + index / 4, 0.002),
+    cx: 700,
+  }));
+  const makeTrack = (id: number, points: Track['points']): Track => ({
+    id,
+    points,
+    visibleTime: points[points.length - 1].t - points[0].t,
+    avgW: 120,
+    maxW: 120,
+    cx: points[points.length - 1].cx,
+    cy: 180,
+    vx: 0,
+    vy: 0,
+    lastT: points[points.length - 1].t,
+    missed: 0,
+  });
+  const tracks = [makeTrack(1, primary), makeTrack(2, companion), makeTrack(3, transient)];
+
+  const retained = includePersistentCoVisibleCompanions(tracks, 4);
+
+  assert.deepEqual(retained.map((track) => track.id), [1, 2]);
+  assert.equal(retained[1].coVisibleWithLiveFace, true);
+  assert.equal(isLikelyLiveTrack(retained[1]), false);
+  assert.equal(isCameraUsableTrack(retained[1]), true);
 });
 
 test('a real head turn under a shaking camera still out-moves the background', () => {

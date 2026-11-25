@@ -29,7 +29,7 @@ import {
   buildLockedSpeakerCamera,
 } from './camera-plan';
 import { FaceTrackPoint, decimateTrack, evenSize, smoothTrack } from './frame-sampler';
-import { isLikelyLiveTrack, Track } from './asd/tracker';
+import { isCameraUsableTrack, Track } from './asd/tracker';
 import {
   CameraCut,
   CameraMove,
@@ -598,7 +598,7 @@ function buildSpeakerPath(asd: AsdResult, detrend = true): PanPoint[] {
   for (const segment of asd.speakerSegments) {
     if (segment.trackId === null) continue;
     const track = byId.get(segment.trackId);
-    if (!track || !isLikelyLiveTrack(track)) continue;
+    if (!track || !isCameraUsableTrack(track)) continue;
 
     const visible = track.points.filter(
       (point) => point.t >= segment.t0 - 0.001 && point.t <= segment.t1 + 0.001,
@@ -710,7 +710,7 @@ export function buildSinglePlan(
       : shotCutsOf(asd),
   };
 
-  const cameraTracks = asd.tracks.filter(isLikelyLiveTrack);
+  const cameraTracks = asd.tracks.filter(isCameraUsableTrack);
   const cameraTrackIds = new Set(cameraTracks.map((track) => track.id));
   const cameraAsd = {
     ...asd,
@@ -1114,11 +1114,11 @@ function buildSplitPlan(
   const minPersonW = Math.max(24, srcW * MIN_PERSON_FACE_FRACTION);
   const candidateTracks = asd.tracks.filter(
     (track) =>
-      isLikelyLiveTrack(track) &&
+      isCameraUsableTrack(track) &&
       track.points.length >= 2 &&
       track.avgW >= minPersonW
   );
-  const liveTracks = asd.tracks.filter(isLikelyLiveTrack);
+  const liveTracks = asd.tracks.filter(isCameraUsableTrack);
 
   // The biggest face among the speakers: listeners must be comparable in size.
   const biggestSpeakerW = candidateTracks
