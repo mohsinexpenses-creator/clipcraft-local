@@ -146,6 +146,18 @@ export interface CameraPlanOptions {
    * speaker used to leave a stale crop. Defaults to the last run's end.
    */
   durationSeconds?: number;
+  /**
+   * How long the SAME framing may be held when a face was lost but a PERSON box
+   * kept the identity alive (they turned away / looked down / covered their face).
+   *
+   * This is deliberately much longer than `faceLostHoldSeconds`: the person is
+   * demonstrably still sitting in that spot - the camera simply has no face to
+   * re-centre on, and moving away from them is exactly the reported failure.
+   * The timeline has no body-box points, so the hold can never drag the window to
+   * a new position; it only stops the "lost face" fallback from firing. Default
+   * 0 = off (today's behaviour).
+   */
+  personHoldSeconds?: number;
 }
 
 export const CAMERA_PLAN_DEFAULTS = {
@@ -166,6 +178,7 @@ export const CAMERA_PLAN_DEFAULTS = {
   maxMoves: 400,
   faceLostHoldSeconds: 1.5,
   gapToleranceSeconds: 0.6,
+  personHoldSeconds: 0,
 };
 
 /**
@@ -286,6 +299,7 @@ export interface CameraPlanResolvedOptions {
   faceLostHoldSeconds: number;
   gapToleranceSeconds: number;
   durationSeconds: number;
+  personHoldSeconds: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -334,6 +348,10 @@ function resolveOptions(options: CameraPlanOptions): CameraPlanResolvedOptions {
       options.gapToleranceSeconds ?? CAMERA_PLAN_DEFAULTS.gapToleranceSeconds,
     ),
     durationSeconds: Math.max(0, options.durationSeconds ?? 0),
+    personHoldSeconds: Math.max(
+      0,
+      options.personHoldSeconds ?? CAMERA_PLAN_DEFAULTS.personHoldSeconds,
+    ),
   };
 }
 
@@ -1362,7 +1380,13 @@ function planTimeline(
         // shot change, not a lost face.
         if (opts.cuts.some((cut) => cut > span.start + 1e-6 && cut < span.end - 1e-6)) break;
         const length = span.end - span.start;
-        const hold = Math.min(opts.faceLostHoldSeconds, length);
+        // The subject's face was lost, but a person detected them still sitting
+        // there: hold their framing instead of moving to somebody else.
+        const holdSeconds = Math.max(
+          opts.faceLostHoldSeconds,
+          opts.personHoldSeconds,
+        );
+        const hold = Math.min(holdSeconds, length);
         holes.push({ start: round3(span.start), end: round3(span.end), holdSeconds: round3(hold) });
         const fallbackAt = span.start + hold;
         // A hole shorter than the grace period is a blink: the camera must not move.

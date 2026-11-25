@@ -761,6 +761,10 @@ export async function processClipJob(
     // holding a framing AFTER the last detection - the case where a disappeared
     // speaker used to leave a stale crop for the rest of the clip.
     cameraSettings.durationSeconds = segmentDuration;
+    // A face lost while a PERSON box still sees that person (turned away, looking
+    // down) gets the plan's long hold instead of the 1.5s face-lost fallback. ASD
+    // reports 0 when the body detector never ran, which keeps today's behaviour.
+    cameraSettings.personHoldSeconds = asd.personHoldSeconds ?? 0;
     const plan = buildLayoutPlan(
       asd,
       layout,

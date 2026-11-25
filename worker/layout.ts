@@ -492,6 +492,14 @@ export function getSpeakerCameraSettings(
       0.05,
       3
     ),
+    // A face that is lost while a PERSON box still sees the same person (turned
+    // away, looking down, mic across the mouth): hold that framing this long
+    // instead of jumping away. 0 = today's 1.5s-only behaviour.
+    personHoldSeconds: clampNumber(
+      numberFlag(env.PERSON_TRACK_HOLD_SECONDS, 0),
+      0,
+      15
+    ),
     legacyDetrend: enabledFlag(env.CAMERA_LEGACY_DETREND),
   };
 }

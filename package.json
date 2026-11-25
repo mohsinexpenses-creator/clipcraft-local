@@ -12,6 +12,8 @@
     "test": "tsx --test tests/*.test.ts",
     "typecheck": "tsc --noEmit",
     "setup:yunet": "node scripts/setup-yunet.mjs",
+    "setup:yolox": "node scripts/setup-yolox.mjs",
+    "setup:asd": "node scripts/setup-lr-asd.mjs",
     "test:worker": "tsx --test tests/*.test.ts",
     "verify:clip": "tsx scripts/verify-clip.ts",
     "verify:broll": "tsx scripts/verify-broll.ts",

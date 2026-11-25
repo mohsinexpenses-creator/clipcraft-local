@@ -13,6 +13,18 @@ import {
   yunetModelPresent,
   type YuNetRuntime,
 } from "../yunet-detector";
+import {
+  detectPersonsYolox,
+  getPersonDetectorSettings,
+  loadYolox,
+  matchPersonsToLostTracks,
+  personBoxToFaceEstimate,
+  yoloxModelPath,
+  shouldRunPersonDetectorForGap,
+  yoloxModelPresent,
+  type PersonDetectorSettings,
+  type YoloxRuntime,
+} from "../person-detector";
 import { computeVoiceEnvelope, extractPcmMono } from "./audio";
 import {
   effectiveFaceMotion,
@@ -106,6 +118,18 @@ export interface AsdResult {
    * speaker can never inherit the previous angle's coordinates.
    */
   cutsApplied?: number;
+  /**
+   * Gap frames on which the YOLOX person detector ran (only frames where a face
+   * was lost). 0 means it never ran - the ordinary case.
+   */
+  personFramesUsed?: number;
+  /**
+   * Face sightings kept alive by a body box while the person was turned away.
+   * These frames carry NO face pixels, so they extend identity and framing only.
+   */
+  personHolds?: number;
+  /** Body-box-only extra hold applied to lost faces, in seconds (0 = disabled). */
+  personHoldSeconds?: number;
 }
 
 export type AsdTimingStage =
@@ -113,7 +137,9 @@ export type AsdTimingStage =
   | "audio-envelope"
   | "yunet-detection"
   | "tracking-speaker-fusion"
-  | "shot-cut-detection";
+  | "shot-cut-detection"
+  | "person-detection"
+  | "lr-asd";
 export type AsdStageTimingReporter = (
   stage: AsdTimingStage,
   elapsedMs: number,
@@ -430,6 +456,80 @@ export function measureFaceMotionForTests(
   };
 }
 
+/**
+ * Upper-body estimate of a person box, converted from SAMPLE pixels (what the
+ * body detector saw) to SOURCE pixels (what the tracker stores).
+ */
+function faceEstimateFromBox(
+  box: { x: number; y: number; width: number; height: number },
+  scaleFactor: number,
+): { cx: number; cy: number; w: number; h: number } {
+  const face = personBoxToFaceEstimate({
+    ...box,
+    score: 1,
+  });
+  return {
+    cx: face.cx * scaleFactor,
+    cy: face.cy * scaleFactor,
+    w: face.w * scaleFactor,
+    h: face.h * scaleFactor,
+  };
+}
+
+/**
+ * Load the YOLOX person detector for this window, degrading to `null` (today's
+ * behaviour) when the model, the runtime or the user's setting says no. The
+ * one clear warning is emitted by the caller; this stays quiet on success.
+ */
+async function loadPersonDetector(
+  settings: PersonDetectorSettings,
+): Promise<YoloxRuntime | null> {
+  if (!settings.enabled) return null;
+  if (!yoloxModelPresent()) return null;
+  try {
+    return await loadYolox();
+  } catch (error) {
+    log.warn(
+      `Person detection (YOLOX) could not start: ${toErrorMessage(error)} - continuing without it.`,
+    );
+    return null;
+  }
+}
+
+/**
+ * Per-analysis-frame "how much did the scene change" signal, sampled from the
+ * points the tracker already measured (any person's background/face motion at
+ * that instant).
+ *
+ * This is only ever read for `personHold` points: when a face is lost but a body
+ * box proves the person is still there, the ONLY honest motion evidence left is
+ * the audio and how much the picture itself is moving.
+ */
+function buildSceneMotion(
+  tracks: Track[],
+  analysisFps: number,
+  duration: number,
+): number[] {
+  const frames = Math.max(1, Math.round(duration * analysisFps));
+  const out = new Array<number>(frames).fill(0);
+  for (const track of tracks) {
+    for (const point of track.points) {
+      if (point.personHold) continue;
+      const value =
+        point.backgroundMotion !== null && point.backgroundMotion !== undefined
+          ? point.backgroundMotion
+          : point.motion;
+      if (value === null || value === undefined || !Number.isFinite(value)) continue;
+      const index = Math.max(
+        0,
+        Math.min(frames - 1, Math.round(point.t * analysisFps)),
+      );
+      out[index] = Math.max(out[index], value);
+    }
+  }
+  return out;
+}
+
 /** Test-only: the background-ring thumbnail for one frame + face box. */
 export function backgroundRingThumbForTests(
   frame: { data: ArrayLike<number>; width: number; height: number },
@@ -504,6 +604,10 @@ interface FrameAnalysis {
   faceWidthsSample: number[];
   /** Source cuts that closed the tracker (proves identities never span a shot). */
   cutsApplied: number;
+  /** Gap frames on which the YOLOX person detector actually ran. */
+  personFramesUsed: number;
+  /** Face sightings that a body box kept alive through a turned-away gap. */
+  personHolds: number;
 }
 
 /**
@@ -565,6 +669,8 @@ async function analyzeSampledFrames(
   detectionConcurrency = 1,
   skipFullFrameOnWideShots = false,
   shotCuts: number[] = [],
+  personRuntime: YoloxRuntime | null = null,
+  personSettings: PersonDetectorSettings = getPersonDetectorSettings({}),
 ): Promise<FrameAnalysis> {
   const tracker = new Tracker();
   // Sorted copies of the cut times, consumed in order as samples advance. A cut
@@ -594,6 +700,14 @@ async function analyzeSampledFrames(
     Math.min(3, Math.floor(detectionConcurrency) || 1),
   );
   let recentSmallFaceFrames = 0;
+  // Change 2 - person (body) detection is a GAP FILLER, never a primary pass:
+  // it runs only on frames where a tracked face was lost, at a slower cadence
+  // and under a per-window budget. It can extend an existing track, never add one.
+  const personEnabled = Boolean(personRuntime) && personSettings.enabled;
+  let personFramesUsed = 0;
+  let personLastRunAt: number | null = null;
+  let personHolds = 0;
+  let personDetectMs = 0;
 
   try {
     for (
@@ -670,6 +784,53 @@ async function analyzeSampledFrames(
           }
 
           if (faces.length === 0) {
+            // A face was lost on THIS frame. Before the tracker ages it out, ask
+            // the body detector whether the person is simply turned away: one
+            // slow, budgeted pass that can only EXTEND the existing track.
+            //
+            // A person box only ever holds a track that was ALREADY open: no new
+            // identity, no pane, no inflated person count.
+            const hints = personRuntime ? tracker.openTrackHints() : [];
+            if (
+              personRuntime &&
+              hints.length > 0 &&
+              shouldRunPersonDetectorForGap({
+                t,
+                facesFound: 0,
+                openTracks: hints.length,
+                lastRunAt: personLastRunAt,
+                maxFps: personSettings.maxFps,
+                framesUsed: personFramesUsed,
+                maxFrames: personSettings.maxFrames,
+                enabled: personEnabled,
+              })
+            ) {
+              personLastRunAt = t;
+              personFramesUsed += 1;
+              const personStartedAt = measureTimings ? Date.now() : 0;
+              try {
+                const boxes = await detectPersonsYolox(
+                  personRuntime,
+                  { data, width, height },
+                  { confThreshold: personSettings.confThreshold },
+                );
+                for (const match of matchPersonsToLostTracks(hints, boxes, t)) {
+                  // Matcher geometry is in SAMPLE pixels; the tracker stores
+                  // source pixels (the same space YuNet detections were scaled to).
+                  if (
+                    tracker.holdThroughPersonGap(
+                      match.trackId,
+                      t,
+                      faceEstimateFromBox(match.box, scaleFactor),
+                    )
+                  ) {
+                    personHolds += 1;
+                  }
+                }
+              } finally {
+                if (measureTimings) personDetectMs += Date.now() - personStartedAt;
+              }
+            }
             tracker.update(t, []);
             prevThumbs = [];
             continue;
@@ -774,12 +935,15 @@ async function analyzeSampledFrames(
     try {
       return {
         tracks: mergeTrackFragments(tracker.allVisible()),
+        // Person boxes never enter this count: only real faces do.
         maxFacesSeen,
         framesUsed,
         framesWithMultipleFaces,
         faceWidthsSource,
         faceWidthsSample,
         cutsApplied,
+        personFramesUsed,
+        personHolds,
       };
     } finally {
       if (measureTimings) trackingAndFusionMs += Date.now() - mergeStartedAt;
@@ -791,6 +955,7 @@ async function analyzeSampledFrames(
       "tracking-speaker-fusion",
       trackingAndFusionMs,
     );
+    reportAsdStageTiming(onStageTiming, "person-detection", personDetectMs);
   }
 }
 
@@ -891,6 +1056,13 @@ export async function detectSpeakerTimeline(
   }
 
   if (options.signal?.aborted) throw new RenderCancelledError();
+  const personSettings = getPersonDetectorSettings();
+  if (personSettings.enabled && !yoloxModelPresent()) {
+    log.warn(
+      `Person detection (YOLOX) is unavailable: ${yoloxModelPath()} is missing - ` +
+        `run "npm run setup:yolox" to keep people who turn away. Continuing without it.`,
+    );
+  }
   const adaptiveSampling =
     options.adaptiveSampling ?? getAdaptiveAsdSamplingEnabled();
   const requestedInitialProfile = getAsdInitialProfile();
@@ -951,6 +1123,7 @@ export async function detectSpeakerTimeline(
   let frames: string[] = [];
   let sampleFps = 0;
   let sampleWidth = samplingPlan.initial.sampleWidth;
+  let personRuntime: YoloxRuntime | null = null;
   try {
     const sampleWithProfile = (profile: AsdSamplingProfile, prefix: string) =>
       measureAsdStage(options, "ffmpeg-frame-extraction", () =>
@@ -980,7 +1153,7 @@ export async function detectSpeakerTimeline(
     // that tells the camera where the source cuts, so it can switch on that exact
     // frame instead of interpolating two different shots together.
     const shotCutSettings = getShotCutDetectionSettings();
-    const [initialSampled, pcm, runtime, shotCuts] = await Promise.all([
+    const [initialSampled, pcm, runtime, loadedPersonRuntime, shotCuts] = await Promise.all([
       sampleWithProfile(
         initial,
         initial.name === "fast"
@@ -995,6 +1168,9 @@ export async function detectSpeakerTimeline(
           : Promise.resolve(new Int16Array(0)),
       ),
       loadYuNet(),
+      // Loaded beside YuNet: a missing file is a ONE-LINE warning and today's
+      // behaviour, never an error.
+      loadPersonDetector(personSettings),
       shotCutSettings.enabled
         ? measureAsdStage(options, "shot-cut-detection", () =>
             detectShotCuts(videoPath, start, duration, {
@@ -1006,6 +1182,7 @@ export async function detectSpeakerTimeline(
         : Promise.resolve([] as number[]),
     ]);
     if (options.signal?.aborted) throw new RenderCancelledError();
+    personRuntime = loadedPersonRuntime;
     frames = initialSampled.frames;
     sampleFps = initialSampled.fps;
     sampleWidth = initial.sampleWidth;
@@ -1035,6 +1212,8 @@ export async function detectSpeakerTimeline(
       detectionConcurrency,
       skipFullFrameOnWideShots,
       shotCutSettings.enabled ? shotCuts : [],
+      personRuntime,
+      personSettings,
     );
 
     // Single-attempt policy: no higher-quality re-extraction or second YuNet pass.
@@ -1069,6 +1248,13 @@ export async function detectSpeakerTimeline(
         ? computeVoiceEnvelope(pcm, 16000, analysisFps).voice
         : new Array(Math.max(1, Math.round(duration * analysisFps))).fill(0),
     );
+    // Scene motion on the analysis grid, used ONLY for person-box sightings (the
+    // frames where a face was lost). Counted from the sampled frames themselves,
+    // so the cue is measured evidence, not a guess.
+    const sceneMotion =
+      analysis.personHolds > 0
+        ? buildSceneMotion(analysis.tracks, analysisFps, duration)
+        : undefined;
     const { tracks, segments, speakerCount } = await measureAsdStage(
       options,
       "tracking-speaker-fusion",
@@ -1087,6 +1273,7 @@ export async function detectSpeakerTimeline(
           // A speaker label must never cross a source cut: the new shot has its
           // own framing and its own visible faces.
           shotCuts,
+          sceneMotion,
         });
         return { tracks, segments, speakerCount };
       },
@@ -1123,6 +1310,13 @@ export async function detectSpeakerTimeline(
         `(${((medianFaceWidth / videoWidth) * 100).toFixed(1)}% of the ${videoWidth}px frame), ` +
         `scanned on ${sampleWidth}px frames`,
     );
+    if (analysis.personFramesUsed > 0) {
+      log.detail(
+        `  person detector: ran on ${analysis.personFramesUsed} gap frame(s) at <=${personSettings.maxFps}fps, ` +
+          `kept ${analysis.personHolds} turned-away sighting(s) alive ` +
+          `(hold ${personSettings.holdSeconds.toFixed(1)}s, budget ${personSettings.maxFrames} frames)`,
+      );
+    }
     if (frames.length >= 8 && analysis.framesUsed / frames.length < 0.25) {
       log.warn(
         `Faces were found in only ${analysis.framesUsed} of ${frames.length} sampled frames - the framing will ` +
@@ -1166,6 +1360,12 @@ export async function detectSpeakerTimeline(
       sampleWidth,
       shotCuts,
       cutsApplied: analysis.cutsApplied,
+      personFramesUsed: analysis.personFramesUsed,
+      personHolds: analysis.personHolds,
+      personHoldSeconds:
+        personSettings.enabled && analysis.personFramesUsed > 0
+          ? personSettings.holdSeconds
+          : 0,
     };
     if (cacheKey && writeAsdResultCache(cacheSettings, cacheKey, result)) {
       log.info(

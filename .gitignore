@@ -35,6 +35,14 @@
 # The tiny YuNet face-detection model under /models/yunet/ (~230KB) IS committed;
 # /models/*.bin only matches .bin files directly in /models, so the .onnx survives.
 
+# Optional phase-9 models - downloaded, never committed:
+#   npm run setup:yolox  -> models/yolox/yolox_nano.onnx   (~3.6MB, Apache-2.0)
+#   npm run setup:asd    -> models/lr-asd/lr_asd.onnx      (exported from the MIT
+#                          LR-ASD weights; see scripts/export-asd-onnx.py)
+# Delete the leading "/" of an entry to keep a model in git instead.
+/models/yolox/
+/models/lr-asd/
+
 # misc
 .DS_Store
 *.pem

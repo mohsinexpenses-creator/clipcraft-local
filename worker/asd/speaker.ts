@@ -1,4 +1,4 @@
-import { Track, effectiveFaceMotion } from './tracker';
+import { Track, TrackPoint, effectiveFaceMotion } from './tracker';
 
 /**
  * Active-speaker decision: fuses several INDEPENDENT cues with the audio voice
@@ -60,6 +60,13 @@ export interface SpeakerTimelineInput {
   tracks: Track[];
   /** Source frame width (for normalising face size). */
   frameWidth: number;
+  /**
+   * Per-analysis-frame motion of the WHOLE scene 0..1 (the sampled frames' own
+   * frame-to-frame change). Used only for sightings that came from a person box
+   * while the face was lost: those carry no face pixels, so "did this person move
+   * with the audio" has to fall back to audio + how much the scene itself moved.
+   */
+  sceneMotion?: number[];
 }
 
 export interface SpeakerTimelineResult {
@@ -100,6 +107,12 @@ const REACTIVE_CHALLENGER_FLOOR = 0.45;
 const MOUTH_STD_SPEAKING = 0.05;
 /** Face width (fraction of frame width) that counts as "maximally prominent". */
 const PROMINENT_FACE_FRACTION = 0.28;
+/**
+ * Weight of the scene-motion proxy for a person-box sighting (face lost). Half of
+ * a measured face motion: a body box moving proves the person moved, but says
+ * nothing about their lips, so it must never outweigh a face we can actually see.
+ */
+const PERSON_HOLD_MOTION_WEIGHT = 0.5;
 
 interface Candidate {
   trackId: number;
@@ -131,6 +144,30 @@ function mouthStd(track: Track, i0: number, i1: number, fps: number): number | n
   return Math.sqrt(variance);
 }
 
+/**
+ * Motion evidence for one point: the measured (background-relative) face motion,
+ * or - for a sighting that came from a person box while the face was lost - a
+ * damped share of the scene's own motion. Null when there is neither, so the
+ * point contributes nothing at all (exactly as before).
+ */
+function motionEvidence(
+  point: TrackPoint,
+  fps: number,
+  sceneMotion?: number[],
+): number | null {
+  const measured = effectiveFaceMotion(point);
+  if (measured !== null) return measured;
+  if (!point.personHold) return null;
+  if (!sceneMotion || sceneMotion.length === 0) return null;
+  const index = Math.max(
+    0,
+    Math.min(sceneMotion.length - 1, Math.round(point.t * fps)),
+  );
+  const value = sceneMotion[index];
+  if (!Number.isFinite(value)) return null;
+  return Math.max(0, value) * PERSON_HOLD_MOTION_WEIGHT;
+}
+
 function meanFaceWidth(track: Track, i0: number, i1: number, fps: number): number | null {
   const t0 = i0 / fps;
   const t1 = (i1 + 1) / fps;
@@ -153,14 +190,22 @@ function meanFaceWidth(track: Track, i0: number, i1: number, fps: number): numbe
  * for a silent face no matter how big it is. Sum-of-products on purpose -
  * robust where Pearson correlation on 3-7 samples is not.
  */
-function voicedMotion(track: Track, i0: number, i1: number, fps: number, voice: number[]): number {
+function voicedMotion(
+  track: Track,
+  i0: number,
+  i1: number,
+  fps: number,
+  voice: number[],
+  sceneMotion?: number[],
+): number {
   const t0 = i0 / fps;
   const t1 = (i1 + 1) / fps;
   let sum = 0;
   for (const p of track.points) {
     // Background-relative motion: rigid content (a poster, a photo on the wall)
-    // that only moved because the CAMERA moved contributes nothing here.
-    const motion = effectiveFaceMotion(p);
+    // that only moved because the CAMERA moved contributes nothing here. A
+    // person-box sighting falls back to audio + scene motion.
+    const motion = motionEvidence(p, fps, sceneMotion);
     if (p.t < t0 || p.t > t1 || motion === null) continue;
     const frameIdx = Math.max(0, Math.min(voice.length - 1, Math.round(p.t * fps)));
     const v = voice[frameIdx] ?? 0;
@@ -179,14 +224,15 @@ function motionCues(
   i0: number,
   i1: number,
   fps: number,
-  voice: number[]
+  voice: number[],
+  sceneMotion?: number[],
 ): { mean: number; corr: number } {
   const t0 = i0 / fps;
   const t1 = (i1 + 1) / fps;
   const motions: number[] = [];
   const voiceAt: number[] = [];
   for (const p of track.points) {
-    const motion = effectiveFaceMotion(p);
+    const motion = motionEvidence(p, fps, sceneMotion);
     if (p.t < t0 || p.t > t1 || motion === null) continue;
     motions.push(motion);
     const frameIdx = Math.max(0, Math.min(voice.length - 1, Math.round(p.t * fps)));
@@ -213,7 +259,7 @@ function motionCues(
 }
 
 export function buildSpeakerTimeline(input: SpeakerTimelineInput): SpeakerTimelineResult {
-  const { duration, fps, voice, tracks, frameWidth } = input;
+  const { duration, fps, voice, tracks, frameWidth, sceneMotion } = input;
   const cuts = [...(input.shotCuts ?? [])]
     .filter((cut) => Number.isFinite(cut) && cut > 1e-6 && cut < duration - 1e-6)
     .sort((a, b) => a - b);
@@ -266,8 +312,8 @@ export function buildSpeakerTimeline(input: SpeakerTimelineInput): SpeakerTimeli
       const prominence = Math.max(0, Math.min(1, width / (frameWidth * PROMINENT_FACE_FRACTION)));
       const mouthRaw = mouthStd(track, i0 - fps, i1 + fps, fps);
       const mouth = mouthRaw === null ? 0 : Math.max(0, Math.min(1, mouthRaw / MOUTH_STD_SPEAKING));
-      const { mean, corr } = motionCues(track, i0 - fps, i1 + fps, fps, voice);
-      const vm = voicedMotion(track, i0 - fps, i1 + fps, fps, voice);
+      const { mean, corr } = motionCues(track, i0 - fps, i1 + fps, fps, voice, sceneMotion);
+      const vm = voicedMotion(track, i0 - fps, i1 + fps, fps, voice, sceneMotion);
       maxMotion = Math.max(maxMotion, mean);
       maxVm = Math.max(maxVm, vm);
       raw.push({ track, vm, corr, mean, prominence, mouth });

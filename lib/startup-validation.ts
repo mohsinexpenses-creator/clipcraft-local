@@ -328,6 +328,60 @@ async function validateYunetModel(): Promise<StartupCheck> {
 }
 
 /**
+ * OPTIONAL phase-9 models. Both are "nice to have": a missing file is a WARNING
+ * and the worker keeps exactly its current behaviour.
+ *
+ *  - YOLOX-nano (Apache-2.0, `npm run setup:yolox`): keeps a person's framing when
+ *    they turn away and the face detector loses them.
+ *  - LR-ASD (MIT weights, `npm run setup:asd`): decides the active speaker when two
+ *    people are on screen and the audio/motion cues are too close to call.
+ */
+function optionalModelCheck(options: {
+  id: string;
+  label: string;
+  modelPath: string;
+  minBytes: number;
+  enabled: boolean;
+  okSummary: string;
+  missingSummary: string;
+  resolution: string;
+}): StartupCheck {
+  if (!options.enabled) {
+    return createCheck({
+      id: options.id,
+      label: options.label,
+      status: 'ok',
+      summary: `${options.label} is switched off by an environment variable.`,
+    });
+  }
+  try {
+    const stat = fs.statSync(options.modelPath);
+    if (stat.isFile() && stat.size >= options.minBytes) {
+      return createCheck({
+        id: options.id,
+        label: options.label,
+        status: 'ok',
+        summary: options.okSummary,
+        details: options.modelPath,
+      });
+    }
+    throw new Error(`file at ${options.modelPath} is unexpectedly small (${stat.size} bytes)`);
+  } catch {
+    return createCheck({
+      id: options.id,
+      label: options.label,
+      status: 'warning',
+      summary: options.missingSummary,
+      resolution: options.resolution,
+    });
+  }
+}
+
+function flagDisabled(value: string | undefined): boolean {
+  return /^(0|false|no|off)$/i.test(value?.trim() ?? '');
+}
+
+/**
  * `createRequire` that works in both ways this code can run:
  * - the worker (tsx): `__filename` is a real path, so use it;
  * - Next.js dev (Turbopack): `__filename` is a VIRTUAL path like
@@ -396,17 +450,50 @@ async function validateRemotion(): Promise<StartupCheck> {
   });
 }
 
+/** YOLOX-nano + LR-ASD: warnings only, never blocking. */
+async function validateOptionalVisionModels(): Promise<StartupCheck[]> {
+  const modelsDir = path.join(process.cwd(), 'models');
+  return [
+    optionalModelCheck({
+      id: 'yolox-model',
+      label: 'YOLOX person detection (optional)',
+      modelPath: path.join(modelsDir, 'yolox', 'yolox_nano.onnx'),
+      minBytes: 500_000,
+      enabled: !flagDisabled(process.env.PERSON_DETECTION),
+      okSummary:
+        'YOLOX person detection present - people who turn away keep their framing.',
+      missingSummary:
+        'YOLOX person detection model not found - people who turn away are dropped after ~1s (everything else works).',
+      resolution: 'Run "npm run setup:yolox" to download yolox_nano.onnx (3.6MB).',
+    }),
+    optionalModelCheck({
+      id: 'lr-asd-model',
+      label: 'LR-ASD active speaker model (optional)',
+      modelPath: path.join(modelsDir, 'lr-asd', 'lr_asd.onnx'),
+      minBytes: 100_000,
+      enabled: !flagDisabled(process.env.LR_ASD_ENABLED),
+      okSummary:
+        'LR-ASD present - ambiguous two-person windows get an audio-visual verdict.',
+      missingSummary:
+        'LR-ASD active speaker model not found - speaker choice stays on the existing audio+motion cues.',
+      resolution:
+        'Run "npm run setup:asd" to build lr_asd.onnx from the MIT weights (see SETUP.md).',
+    }),
+  ];
+}
+
 export async function runStartupValidation(): Promise<StartupValidationResult> {
-  const checks = await Promise.all([
+  const ordered = await Promise.all([
     validateSqlite(),
     validateFfmpeg(),
     validateTranscription(),
     validateAiProvider(),
     validatePromptTemplates(),
     validateYunetModel(),
+    validateOptionalVisionModels(),
     validateRemotion(),
   ]);
-
+  const checks = ordered.flat();
   return {
     ready: checks.every((check) => check.status !== 'error'),
     generatedAt: new Date().toISOString(),

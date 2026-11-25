@@ -63,6 +63,13 @@ export interface TrackPoint {
   faceMotion?: number | null;
   /** Motion of the background ring around the face at the same instant. */
   backgroundMotion?: number | null;
+  /**
+   * True when this sighting came from a PERSON (body) box while the face was lost
+   * - the person is there but their face pixels were never measured. Speaker
+   * fusion uses this to fall back to audio + scene motion instead of pretending
+   * the face was still.
+   */
+  personHold?: boolean;
 }
 
 export interface Track {
@@ -340,6 +347,84 @@ export class Tracker {
 
     track.points.push(toTrackPoint(det, t));
     track.visibleTime += dt;
+  }
+
+  /**
+   * Keep a track ALIVE through a frame where the face detector found nothing but
+   * a person (body) detector still sees the same person: they turned away, looked
+   * down, or something covered their face. Without this the track closes after
+   * `maxMissed` samples (~0.75 s at 4 fps) and the camera loses its subject.
+   *
+   * The fallback is only reachable up to `maxMissed` (the tracker's normal grace)
+   * - one notch less than that for the body detector's own sampling rate, which
+   * is slower than the face pass. After that the track closes exactly as before,
+   * so a body cannot keep a person alive indefinitely.
+   *
+   * The recorded point carries `motion: null` (no face pixels were measured), so
+   * it can never manufacture a speaker cue; it only holds the identity and the
+   * position estimate.
+   */
+  holdThroughPersonGap(
+    trackId: number,
+    t: number,
+    face: { cx: number; cy: number; w: number; h: number },
+  ): boolean {
+    const track = this.tracks.find((candidate) => candidate.id === trackId);
+    if (!track) return false;
+    if (track.missed >= this.opts.maxMissed) return false;
+
+    const dt = this.lastSampleT === null ? 0 : Math.max(1e-4, t - this.lastSampleT);
+    if (dt > 0 && track.points.length > 0) {
+      const nvx = (face.cx - track.cx) / dt;
+      const nvy = (face.cy - track.cy) / dt;
+      track.vx = 0.35 * track.vx + 0.65 * nvx;
+      track.vy = 0.35 * track.vy + 0.65 * nvy;
+    }
+    track.cx = face.cx;
+    track.cy = face.cy;
+    track.lastT = t;
+    // A held track is still on screen; the identity must not age out on the same
+    // frame the body detector confirmed it.
+    track.missed = 0;
+    track.points.push({
+      t,
+      cx: face.cx,
+      cy: face.cy,
+      w: face.w,
+      mouthOpen: null,
+      motion: null,
+      faceMotion: null,
+      backgroundMotion: null,
+      personHold: true,
+    });
+    track.visibleTime += dt;
+    return true;
+  }
+
+  /**
+   * The OPEN tracks right now, as lightweight hints for the person detector's
+   * matcher (predicted position + velocity, no point history).
+   */
+  openTrackHints(): Array<{
+    id: number;
+    cx: number;
+    cy: number;
+    w: number;
+    vx: number;
+    vy: number;
+    lastT: number;
+  }> {
+    return this.tracks
+      .filter((track) => track.missed < this.opts.maxMissed && track.points.length > 0)
+      .map((track) => ({
+        id: track.id,
+        cx: track.cx,
+        cy: track.cy,
+        w: track.maxW,
+        vx: track.vx,
+        vy: track.vy,
+        lastT: track.lastT,
+      }));
   }
 
   /**
