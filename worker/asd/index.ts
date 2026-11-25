@@ -25,12 +25,22 @@ import {
   type PersonDetectorSettings,
   type YoloxRuntime,
 } from "../person-detector";
+import {
+  lrAsdLikelihood,
+  lrAsdModelPresent,
+  loadLrAsd,
+  scoreLrAsdWindow,
+  LR_ASD_FPS,
+  type LrAsdRuntime,
+} from "./lr-asd";
+import type { AmbiguousWindow, SpeakerTimelineInputAsync } from "./speaker";
 import { computeVoiceEnvelope, extractPcmMono } from "./audio";
 import {
   effectiveFaceMotion,
   isLikelyLiveTrack,
   Tracker,
   Track,
+  TrackPoint,
   FrameDetection,
 } from "./tracker";
 import { SpeakerSegment, buildSpeakerTimeline } from "./speaker";
@@ -130,6 +140,12 @@ export interface AsdResult {
   personHolds?: number;
   /** Body-box-only extra hold applied to lost faces, in seconds (0 = disabled). */
   personHoldSeconds?: number;
+  /** Windows the cheap fusion could not settle (candidates for the LR-ASD cue). */
+  ambiguousWindows?: number;
+  /** Ambiguous windows the LR-ASD model actually decided. */
+  lrAsdWindows?: number;
+  /** Empty-window runs skipped because the window showed no face at all. */
+  skipEmptyLrAsdWindows?: boolean;
 }
 
 export type AsdTimingStage =
@@ -209,6 +225,243 @@ export function getShotCutDetectionSettings(
     minGapSeconds: Number.isFinite(minGap) ? Math.max(0.1, Math.min(10, minGap)) : 0.5,
   };
 }
+/**
+ * LR-ASD cost/behaviour knobs. Default ON when the exported model exists:
+ *   LR_ASD_ENABLED=0        hard off (today's behaviour, byte for byte)
+ *   LR_ASD_MAX_WINDOWS=24   ambiguous windows the model may decide per clip
+ *   LR_ASD_MAX_FRAMES=75    crops per person per window (also the ONNX batch)
+ *   LR_ASD_WEIGHT=0.25      weight of its verdict vs the cheap cues (0..0.5)
+ */
+export function getLrAsdSettings(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): { enabled: boolean; maxWindows: number; maxFrames: number; weight: number } {
+  const disabled = /^(0|false|no|off)$/i.test(env.LR_ASD_ENABLED?.trim() ?? "");
+  const windows = Number(env.LR_ASD_MAX_WINDOWS?.trim());
+  const frames = Number(env.LR_ASD_MAX_FRAMES?.trim());
+  const weight = Number(env.LR_ASD_WEIGHT?.trim());
+  return {
+    enabled: !disabled,
+    maxWindows: Number.isFinite(windows) ? Math.max(0, Math.min(200, Math.floor(windows))) : 24,
+    maxFrames: Number.isFinite(frames) ? Math.max(8, Math.min(400, Math.floor(frames))) : 75,
+    weight: Number.isFinite(weight) ? Math.max(0, Math.min(0.5, weight)) : 0.25,
+  };
+}
+
+/**
+ * Does this clip even need the LR-ASD model? One cheap, model-free pass answers it:
+ * build the speaker timeline with a referee that only *records* which windows the
+ * cheap cues could not settle, then stop. Nothing is loaded, sampled or decoded
+ * until that list is non-empty, so a clip with a clear speaker never pays for it.
+ */
+function collectAmbiguousWindows(input: SpeakerTimelineInputAsync): AmbiguousWindow[] {
+  const recorded: AmbiguousWindow[] = [];
+  buildSpeakerTimeline({
+    ...input,
+    referee: {
+      judge: (window) => {
+        recorded.push(window);
+        return null; // no verdict: the timeline is exactly the no-model one
+      },
+    },
+  });
+  return recorded;
+}
+
+/**
+ * Ask LR-ASD about the ambiguous windows, within a hard budget, and return the
+ * verdicts keyed by "t0|t1" for the referee lookup below.
+ *
+ * Cost control (mandatory):
+ *   - at most `LR_ASD_MAX_WINDOWS` windows per clip, `LR_ASD_MAX_FRAMES` crops
+ *     per person per window;
+ *   - frames come from the ALREADY sampled JPEGs (no second FFmpeg pass), deduped
+ *     through a per-clip decode cache;
+ *   - a window whose people are not both visible in it is skipped;
+ *   - the whole stage is reported through the existing `lr-asd` timing channel.
+ */
+async function judgeAmbiguousWindows(context: {
+  windows: AmbiguousWindow[];
+  settings: ReturnType<typeof getLrAsdSettings>;
+  runtime: () => Promise<LrAsdRuntime | null>;
+  window: { start: number; duration: number; pcm: Int16Array };
+  framePaths: string[];
+  sampleFps: number;
+  tracks: Track[];
+  signal?: AbortSignal;
+  onStageTiming?: AsdOptions["onStageTiming"];
+}): Promise<Map<string, Map<number, number>>> {
+  const verdicts = new Map<string, Map<number, number>>();
+  const { settings } = context;
+  if (!settings.enabled || settings.maxWindows <= 0) return verdicts;
+  if (context.window.pcm.length === 0) return verdicts;
+  if (context.windows.length === 0) return verdicts;
+  const runtime = await context.runtime();
+  if (!runtime) return verdicts;
+
+  const frameCache = new Map<string, Promise<SampledFrame | null>>();
+  const loadFrameAt = async (t: number): Promise<SampledFrame | null> => {
+    const index = pickFrameIndex(context.framePaths.length, t, context.sampleFps);
+    if (index === null) return null;
+    const file = context.framePaths[index];
+    let pending = frameCache.get(file);
+    if (!pending) {
+      pending = Jimp.read(file).then((image) => ({
+        data: image.bitmap.data,
+        width: image.bitmap.width,
+        height: image.bitmap.height,
+      }));
+      frameCache.set(file, pending);
+    }
+    return pending;
+  };
+
+  let elapsedMs = 0;
+  for (const window of context.windows) {
+    if (verdicts.size >= settings.maxWindows) break;
+    if (context.signal?.aborted) break;
+    const candidates = window.trackIds
+      .map((trackId) => {
+        const track = context.tracks.find((candidate) => candidate.id === trackId);
+        if (!track) return null;
+        const frames = framesInside(track, window.t0, window.t1, 1 / LR_ASD_FPS);
+        return frames.length > 0
+          ? { trackId, frames }
+          : null;
+      })
+      .filter(
+        (
+          entry,
+        ): entry is {
+          trackId: number;
+          frames: Array<{ t: number; cx: number; cy: number; w: number; h: number }>;
+        } => entry !== null,
+      );
+    if (candidates.length < 2) continue;
+
+    const startedAt = Date.now();
+    try {
+      const scores = await scoreLrAsdWindow(
+        runtime,
+        {
+          start: window.t0,
+          duration: Math.max(0.2, window.t1 - window.t0),
+          pcm: context.window.pcm,
+          sampleRate: 16000,
+          candidates,
+        },
+        (t: number) => loadFrameAt(t),
+        { signal: context.signal, maxFrames: settings.maxFrames },
+      );
+      if (!scores) continue;
+      const verdict = new Map<number, number>();
+      for (const [trackId, mean] of scores.byTrack) {
+        verdict.set(trackId, lrAsdLikelihood(mean));
+      }
+      verdicts.set(windowKey(window), verdict);
+      log.detail(
+        `  LR-ASD window ${window.t0.toFixed(2)}-${window.t1.toFixed(2)}s (${window.reason}): ` +
+          [...verdict.entries()]
+            .map(([trackId, value]) => `person#${trackId} ${(value * 100).toFixed(0)}%`)
+            .join(", ") +
+          ` (${scores.frames} crops)`,
+      );
+    } finally {
+      elapsedMs += Date.now() - startedAt;
+      reportAsdStageTiming(context.onStageTiming, "lr-asd", elapsedMs);
+    }
+  }
+  return verdicts;
+}
+
+/**
+ * The model-free first half of the two-pass coordinator, exported so the cost
+ * behaviour is testable: it reports which windows are ambiguous (deduplicated) and
+ * returns the timeline those windows produce WITHOUT any verdict - which is, by
+ * construction, identical to the timeline of a build with no referee at all.
+ */
+export function planLrAsdWindows(
+  input: SpeakerTimelineInputAsync,
+  options: { maxWindows?: number } = {},
+): {
+  ambiguous: AmbiguousWindow[];
+  timeline: ReturnType<typeof buildSpeakerTimeline>;
+  budget: number;
+} {
+  const ambiguous = uniqueWindows(collectAmbiguousWindows(input));
+  const budget = Math.max(0, Math.min(200, Math.floor(options.maxWindows ?? Infinity)));
+  return {
+    ambiguous,
+    timeline: buildSpeakerTimeline(input),
+    budget,
+  };
+}
+
+/** Stable identity for one ambiguous window (the fusion walks windows in order). */
+function windowKey(window: { t0: number; t1: number }): string {
+  return `${window.t0.toFixed(3)}|${window.t1.toFixed(3)}`;
+}
+
+/** Deduplicate identical windows so one ambiguous span is scored at most once. */
+function uniqueWindows(windows: AmbiguousWindow[]): AmbiguousWindow[] {
+  const seen = new Set<string>();
+  const out: AmbiguousWindow[] = [];
+  for (const window of windows) {
+    const key = windowKey(window);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(window);
+  }
+  return out;
+}
+
+
+/** The sampled frame index whose timestamp is closest to `t` (null when empty). */
+function pickFrameIndex(count: number, t: number, sampleFps: number): number | null {
+  if (count <= 0 || !(sampleFps > 0)) return null;
+  const index = Math.round(t * sampleFps);
+  return Math.max(0, Math.min(count - 1, index));
+}
+
+/**
+ * Track points inside a window, re-sampled to `step` seconds. The LR-ASD crops
+ * must come from the model's own 25 fps cadence; the pipeline only samples
+ * 4-8 fps, so positions in between come from the track's own interpolation
+ * (the same rule `interpolateTracksForAnalysis` uses) and the nearest sampled
+ * JPEG supplies the pixels. This changes WHERE a crop is taken from, never what
+ * is in it.
+ */
+function framesInside(
+  track: Track,
+  t0: number,
+  t1: number,
+  step: number,
+): Array<{ t: number; cx: number; cy: number; w: number; h: number }> {
+  const out: Array<{ t: number; cx: number; cy: number; w: number; h: number }> = [];
+  const points = [...track.points].sort((a, b) => a.t - b.t);
+  if (points.length === 0) return out;
+  for (let t = t0; t < t1 - 1e-6; t += step) {
+    let before: TrackPoint | null = null;
+    let after: TrackPoint | null = null;
+    for (const point of points) {
+      if (point.t <= t + 1e-6) before = point;
+      if (point.t >= t - 1e-6) {
+        after = point;
+        break;
+      }
+    }
+    const useBefore = before ?? after;
+    const useAfter = after ?? before;
+    if (!useBefore || !useAfter) continue;
+    const span = useAfter.t - useBefore.t;
+    const fraction = span > 1e-6 ? Math.max(0, Math.min(1, (t - useBefore.t) / span)) : 0;
+    const cx = useBefore.cx + (useAfter.cx - useBefore.cx) * fraction;
+    const cy = useBefore.cy + (useAfter.cy - useBefore.cy) * fraction;
+    const w = useBefore.w + (useAfter.w - useBefore.w) * fraction;
+    out.push({ t, cx, cy, w, h: w });
+  }
+  return out;
+}
+
 const THUMB = 16;
 
 /** 16x16 grayscale thumbnail of a face region (scale-invariant motion cue). */
@@ -616,6 +869,13 @@ interface FrameAnalysis {
  * can reuse already-decoded PCM and only repeat the work that needs sharper
  * frames.
  */
+/** A decoded sampled JPEG (RGBA), as the LR-ASD crop needs it. */
+interface SampledFrame {
+  data: Buffer | Uint8Array;
+  width: number;
+  height: number;
+}
+
 interface DetectedSampleFrame {
   index: number;
   width: number;
@@ -1057,6 +1317,13 @@ export async function detectSpeakerTimeline(
 
   if (options.signal?.aborted) throw new RenderCancelledError();
   const personSettings = getPersonDetectorSettings();
+  const lrAsdSettings = getLrAsdSettings();
+  if (lrAsdSettings.enabled && !lrAsdModelPresent()) {
+    log.warn(
+      `LR-ASD active speaker model not found in models/lr-asd - ambiguous two-person ` +
+        `windows keep using the audio+motion cues. Run "npm run setup:asd" to enable it.`,
+    );
+  }
   if (personSettings.enabled && !yoloxModelPresent()) {
     log.warn(
       `Person detection (YOLOX) is unavailable: ${yoloxModelPath()} is missing - ` +
@@ -1255,16 +1522,20 @@ export async function detectSpeakerTimeline(
       analysis.personHolds > 0
         ? buildSceneMotion(analysis.tracks, analysisFps, duration)
         : undefined;
-    const { tracks, segments, speakerCount } = await measureAsdStage(
-      options,
-      "tracking-speaker-fusion",
-      () => {
+    // Change 3 - LR-ASD referee for AMBIGUOUS windows only, in two passes:
+    //   1. build the timeline with a recording referee to learn which windows the
+    //      cheap cues could not settle (costs nothing - no model, no pixels);
+    //   2. only if there are any, ask the model about them within its budget,
+    //      then build the timeline again with those verdicts available.
+    // The timeline stays a pure function of (tracks, voice, verdicts).
+    const { tracks, segments, speakerCount, ambiguousWindows, lrAsdWindows } =
+      await measureAsdStage(options, "tracking-speaker-fusion", async () => {
         const tracks = interpolateTracksForAnalysis(
           analysis.tracks,
           sampleFps,
           analysisFps,
         );
-        const { segments, speakerCount } = buildSpeakerTimeline({
+        const input: SpeakerTimelineInputAsync = {
           duration,
           fps: analysisFps,
           voice,
@@ -1274,10 +1545,37 @@ export async function detectSpeakerTimeline(
           // own framing and its own visible faces.
           shotCuts,
           sceneMotion,
+        };
+        const ambiguousWindows = uniqueWindows(collectAmbiguousWindows(input));
+        const verdicts = await judgeAmbiguousWindows({
+          windows: ambiguousWindows,
+          settings: lrAsdSettings,
+          runtime: () => loadLrAsd(),
+          window: { start, duration, pcm },
+          framePaths: frames,
+          sampleFps,
+          tracks,
+          signal: options.signal,
+          onStageTiming: options.onStageTiming,
         });
-        return { tracks, segments, speakerCount };
-      },
-    );
+        const timeline =
+          verdicts.size === 0
+            ? buildSpeakerTimeline(input)
+            : buildSpeakerTimeline({
+                ...input,
+                referee: {
+                  weight: lrAsdSettings.weight,
+                  judge: (window) => verdicts.get(windowKey(window)) ?? null,
+                },
+              });
+        return {
+          tracks,
+          segments: timeline.segments,
+          speakerCount: timeline.speakerCount,
+          ambiguousWindows,
+          lrAsdWindows: verdicts.size,
+        };
+      });
 
     const voicedRatio =
       voice.length > 0
@@ -1310,6 +1608,12 @@ export async function detectSpeakerTimeline(
         `(${((medianFaceWidth / videoWidth) * 100).toFixed(1)}% of the ${videoWidth}px frame), ` +
         `scanned on ${sampleWidth}px frames`,
     );
+    if (lrAsdWindows > 0) {
+      log.detail(
+        `  LR-ASD decided ${lrAsdWindows} of ${ambiguousWindows.length} ambiguous window(s) ` +
+          `(weight ${lrAsdSettings.weight.toFixed(2)}, budget ${lrAsdSettings.maxWindows} windows).`,
+      );
+    }
     if (analysis.personFramesUsed > 0) {
       log.detail(
         `  person detector: ran on ${analysis.personFramesUsed} gap frame(s) at <=${personSettings.maxFps}fps, ` +
@@ -1362,6 +1666,8 @@ export async function detectSpeakerTimeline(
       cutsApplied: analysis.cutsApplied,
       personFramesUsed: analysis.personFramesUsed,
       personHolds: analysis.personHolds,
+      ambiguousWindows: ambiguousWindows.length,
+      lrAsdWindows,
       personHoldSeconds:
         personSettings.enabled && analysis.personFramesUsed > 0
           ? personSettings.holdSeconds

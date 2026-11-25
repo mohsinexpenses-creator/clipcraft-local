@@ -45,10 +45,9 @@ The worker pipeline (`worker/asd/` + `worker/layout.ts`):
    identity — and therefore no face position — is ever carried across two camera angles;
    the tracker's constant-velocity prediction would otherwise match a re-framed speaker
    onto their own previous-shot track and the camera's new-shot anchor would inherit
-   coordinates from the angle before it. A track needs at least one sample-to-sample face change
-   of 0.012 or greater to count as a live person; still/frozen images are excluded from
-   speaker scoring, camera targets and person counts. This is a motion heuristic, not
-   identity recognition, so an image that itself moves may still appear live.
+   coordinates from the angle before it. A track counts as a live person only when it
+   keeps moving **on its own** (see *Static posters are not people* below); still or
+   frozen images are excluded from speaker scoring, camera targets and person counts.
    **No face recognition** — we never learn who anyone is.
 4. **Scores** who is talking per 0.6 s window, decided every 0.25 s
    (`worker/asd/speaker.ts`), with multiple cues:
@@ -68,7 +67,10 @@ The worker pipeline (`worker/asd/` + `worker/layout.ts`):
    Because mouth motion is only one cue, a **covered mouth** (handheld mic, mask, hand)
    still works: correlation/mouth terms flatten toward 0 and the worst-case cues
    (continuity, size, voice-gated motion) decide. With no usable audio at all the
-   method degrades to the visual-only mix.
+   method degrades to the visual-only mix. All motion cues read the
+   **background-relative** value (see *Static posters are not people*). When two
+   candidates are too close to separate on these cues, the optional **LR-ASD** model
+   gets one weighted vote (see *Two people, one voice*).
 5. **Hysteresis + a reactive override** stop two people's scores from trading the
    label back and forth on borderline windows: a challenger must beat the incumbent by
    ~10 % (or the reactive rule below) AND the incumbent has held the frame for at least
@@ -104,6 +106,77 @@ The worker pipeline (`worker/asd/` + `worker/layout.ts`):
    ≥ 3 s *and* is at least 45 % as wide as the biggest speaker's (a much smaller
    "face" is a poster / screen / passer-by). A track must be ≥ 2 % of the frame width
    to count as a person at all.
+
+### Static posters are not people (`worker/asd/tracker.ts`, `worker/asd/index.ts`)
+
+A printed poster, a framed photo or a poster-like screen on a wall used to look
+*alive*: a handheld camera shake or a slow zoom changes every pixel, the old liveness
+gate only watched **raw face motion**, so the tracker kept the "face" and the crop
+locked onto a wall.
+
+Motion is now measured **relative to the background**, with the same 16×16 thumbnail
+diff the mouth cue already used:
+
+- every sampled frame also renders a thumbnail of the **ring of background** around
+  each face box (padded by 0.6 × the box size) with the face box itself cut out, and
+  cells whose brightness matches the face patch are dropped so hair/shoulders cannot
+  masquerade as background;
+- `effectiveFaceMotion()` compares the two: an almost still background (≤ 0.006) means
+  the face's own motion is real and is kept; when the surroundings move meaningfully
+  and the face did not out-move them by 1.5×, the relative motion is **0**;
+- the liveness gate additionally rejects a track that spent most of its life on a
+  moving background without **ever** moving on its own — that is a rigid picture
+  following the camera, not a person;
+- every speaker cue (voice-gated motion, energy, correlation) reads the same
+  background-relative value, so a shaken poster cannot become the active speaker
+  either.
+
+A face box so close to the frame edge (or so large) that it has no ring keeps plain
+face motion — the guard never deletes a genuine close-up. `TrackPoint.motion` keeps
+its meaning for producers that never measured a ring (`faceMotion`/`backgroundMotion`
+are optional), and the ASD cache version is bumped so no timeline computed from raw
+motion is reused.
+
+### People who turn away (`worker/person-detector.ts`, YOLOX — optional)
+
+`npm run setup:yolox` installs **YOLOX-nano** (Apache-2.0 — deliberately not
+Ultralytics YOLOv8, which is AGPL). It is a *gap filler*, never a primary detector:
+
+- it runs **only** on a sampled frame where a tracked face was lost, at
+  `PERSON_DETECT_MAX_FPS` (default 3), under a per-window frame budget, and only
+  while at least one track is still open;
+- its person boxes can only **extend an existing track** — matched by overlap with
+  the position predicted from that track's own velocity — so a body box can never
+  create a track, inflate the person count, or add a split-screen pane;
+- body-held sightings carry **no face pixels** (`motion: null`, `personHold: true`),
+  so they can never fake a speaker cue: for them the speaker score falls back to the
+  audio plus the scene's own motion at half weight;
+- the framing **hold** for a body-confirmed person becomes
+  `PERSON_TRACK_HOLD_SECONDS` (default 4 s) instead of the 1.5 s face-lost fallback.
+  The timeline has no body points, so this can only keep the current framing — it can
+  never drag the window to a new position.
+
+Missing model ⇒ one warning, and everything above behaves exactly as before.
+
+### Two people, one voice (`worker/asd/lr-asd.ts` — optional)
+
+The cue fusion above is blind to the case that matters most in a two-person clip:
+both faces move with the audio. When the top two candidates are within ~18 %, or the
+leader wins on size/continuity while the challenger clearly has more voice-gated
+motion, the window is **ambiguous**, and only then is **LR-ASD** asked
+(`npm run setup:asd`, MIT code *and* weights):
+
+- preprocessing reproduces the reference exactly — 13-coefficient MFCC at 16 kHz
+  (0.025 s / 0.010 s windows ⇒ 4 features per 25 fps frame) and 112×112 **grayscale**
+  crops from a `0.7 × max(w, h)` square centred on the face and shifted **down** by
+  `0.2 × max(w, h)`, padded with 110;
+- it is bounded by `LR_ASD_MAX_WINDOWS` (24) windows and `LR_ASD_MAX_FRAMES` (75)
+  crops per person, reads the **already sampled** JPEGs (no second FFmpeg pass), and
+  reports its cost through the existing `lr-asd` stage timing;
+- its verdict is fused as **one extra weighted cue** (`LR_ASD_WEIGHT`, 0.25) inside
+  the same window, so hysteresis, the reactive override, shot-cut handling and the
+  visual-only fallback are untouched. A missing model, a broken runtime or no audio
+  means `judge()` returns nothing and the timeline is byte-identical to before.
 
 ### Locked speaker camera — no drifting (`worker/camera-plan.ts`, `CAMERA_MODE=locked`)
 

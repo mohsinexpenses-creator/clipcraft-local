@@ -69,11 +69,53 @@ export interface SpeakerTimelineInput {
   sceneMotion?: number[];
 }
 
+/** One window the cheap cues could not settle - the LR-ASD model's job. */
+export interface AmbiguousWindow {
+  /** Clip-relative window start/end (the decision window, not the step). */
+  t0: number;
+  t1: number;
+  /** The people in contention (at most two), best cheap score first. */
+  trackIds: number[];
+  /** Why the window is ambiguous (logged once per clip). */
+  reason: 'top-two-close' | 'cues-disagree';
+}
+
+/**
+ * Optional audio-visual referee for ambiguous windows (see ./lr-asd). Supplied by
+ * the caller with its own cost budget; the fusion asks for a verdict only when it
+ * genuinely cannot decide.
+ *
+ * `likelihood(trackId)` returns 0..1 (1 = that person is speaking), or null when
+ * the verdict is unavailable (model missing, budget spent, no audio).
+ */
+export interface SpeakerReferee {
+  /**
+   * Per-window likelihood lookup: trackId -> 0..1 (1 = definitely speaking).
+   *
+   * SYNCHRONOUS on purpose. The timeline must stay a pure, deterministic function
+   * of its inputs: the caller that owns the (slow, async) model runs is
+   * responsible for producing these verdicts before the timeline is built. A
+   * referee that has nothing to say returns null and the window behaves exactly
+   * as it did before.
+   */
+  judge: (window: AmbiguousWindow) => Map<number, number> | null;
+  /** Optional per-window hook so the caller can log/budget what it ran. */
+  onJudged?: (window: AmbiguousWindow, verdict: Map<number, number> | null) => void;
+  /** Weight of the verdict inside a window's score (0..1, default 0.25). */
+  weight?: number;
+}
+
 export interface SpeakerTimelineResult {
   /** Merged runs of (time, active speaker). */
   segments: SpeakerSegment[];
   /** How many distinct people ever became the active speaker. */
   speakerCount: number;
+  /** Windows handed to the audio-visual referee, in order. */
+  ambiguousWindows: AmbiguousWindow[];
+}
+
+export interface SpeakerTimelineInputAsync extends SpeakerTimelineInput {
+  referee?: SpeakerReferee;
 }
 
 /** Windows shorter than this are merged, longer ones split, in the decision. */
@@ -113,6 +155,22 @@ const PROMINENT_FACE_FRACTION = 0.28;
  * nothing about their lips, so it must never outweigh a face we can actually see.
  */
 const PERSON_HOLD_MOTION_WEIGHT = 0.5;
+/**
+ * The top two cheap scores are "close" when they are within this ratio - the
+ * region where prominence/continuity quirks, not evidence, decide the winner.
+ */
+const AMBIGUOUS_SCORE_RATIO = 1.18;
+/**
+ * ...or when the audio+visual cues disagree: the leader is much bigger/more
+ * continuous but the challenger has clearly MORE voice-gated motion.
+ */
+const DISAGREE_MOTION_GAP = 0.2;
+/**
+ * Default weight of the LR-ASD verdict in an ambiguous window's score. It is a
+ * tie-breaker, not a replacement: the cheap cues keep 3/4 of the decision, so a
+ * model that is wrong on an unusual framing cannot flip a clear case.
+ */
+const DEFAULT_REFEREE_WEIGHT = 0.25;
 
 interface Candidate {
   trackId: number;
@@ -258,7 +316,9 @@ function motionCues(
   return { mean, corr: Math.max(0, cov / Math.sqrt(mVar * vVar)) };
 }
 
-export function buildSpeakerTimeline(input: SpeakerTimelineInput): SpeakerTimelineResult {
+export function buildSpeakerTimeline(
+  input: SpeakerTimelineInputAsync,
+): SpeakerTimelineResult {
   const { duration, fps, voice, tracks, frameWidth, sceneMotion } = input;
   const cuts = [...(input.shotCuts ?? [])]
     .filter((cut) => Number.isFinite(cut) && cut > 1e-6 && cut < duration - 1e-6)
@@ -282,8 +342,14 @@ export function buildSpeakerTimeline(input: SpeakerTimelineInput): SpeakerTimeli
     }
   };
 
+  const ambiguousWindows: AmbiguousWindow[] = [];
+
   if (visibleTracks.length === 0) {
-    return { segments: duration > 0 ? [{ t0: 0, t1: duration, trackId: null }] : [], speakerCount: 0 };
+    return {
+      segments: duration > 0 ? [{ t0: 0, t1: duration, trackId: null }] : [],
+      speakerCount: 0,
+      ambiguousWindows,
+    };
   }
 
   for (let i0 = 0; i0 < frameCount; i0 += Math.max(1, Math.round(STEP_SECONDS * fps))) {
@@ -359,19 +425,70 @@ export function buildSpeakerTimeline(input: SpeakerTimelineInput): SpeakerTimeli
 
     qualifiedCandidates.sort((a, b) => b.score - a.score);
     const best = qualifiedCandidates[0];
-    const prev = state.current
+    let prev = state.current
       ? qualifiedCandidates.find((c) => c.trackId === state.current!.trackId)
       : undefined;
 
-    let chosen = best;
-    if (prev && prev.trackId !== best.trackId) {
+    // 3) AMBIGUOUS WINDOWS. Two people qualify and the cheap cues cannot tell
+    //    them apart: the scores are within a few percent, or the leader wins on
+    //    size/continuity while the challenger clearly has more voice-gated
+    //    motion. That is exactly where an audio-visual model helps, so the
+    //    caller-supplied referee gets asked - and only there.
+    const runnerUp = qualifiedCandidates[1];
+    if (input.referee && runnerUp) {
+      const ratio = best.score / Math.max(1e-6, runnerUp.score);
+      const topTwo = qualifiedCandidates.slice(0, 2);
+      const disagreement =
+        best.vm + DISAGREE_MOTION_GAP < runnerUp.vm && best.prominence > runnerUp.prominence;
+      if (ratio <= AMBIGUOUS_SCORE_RATIO || disagreement) {
+        const window: AmbiguousWindow = {
+          t0,
+          t1,
+          trackIds: topTwo.map((candidate) => candidate.trackId),
+          reason: ratio <= AMBIGUOUS_SCORE_RATIO ? 'top-two-close' : 'cues-disagree',
+        };
+        let verdict: Map<number, number> | null = null;
+        try {
+          verdict = input.referee.judge(window) ?? null;
+        } catch {
+          verdict = null; // a broken referee must never break the timeline
+        }
+        input.referee.onJudged?.(window, verdict);
+        if (verdict && verdict.size > 0) {
+          ambiguousWindows.push(window);
+          const weight = Math.max(0, Math.min(0.5, input.referee.weight ?? DEFAULT_REFEREE_WEIGHT));
+          const fused = topTwo.map((candidate) => {
+            const likelihood = verdict!.get(candidate.trackId);
+            return {
+              ...candidate,
+              score:
+                likelihood === undefined || !Number.isFinite(likelihood)
+                  ? candidate.score
+                  : (1 - weight) * candidate.score + weight * likelihood,
+            };
+          });
+          // Re-rank only within the contended pair: everybody else was already
+          // behind both of them on the cheap cues.
+          const order = fused[0].score >= fused[1].score ? fused : [fused[1], fused[0]];
+          qualifiedCandidates.splice(0, 2, ...order);
+        }
+      }
+    }
+
+    const decided = qualifiedCandidates[0];
+    prev = state.current
+      ? qualifiedCandidates.find((c) => c.trackId === state.current!.trackId)
+      : undefined;
+
+    let chosen = decided;
+    if (prev && prev.trackId !== decided.trackId) {
       const heldEnough = t0 - (state.current?.t0 ?? 0) >= MIN_HOLD_SECONDS;
-      const beatsByMargin = best.score >= prev.score * SWITCH_MARGIN;
+      const beatsByMargin = decided.score >= prev.score * SWITCH_MARGIN;
       // Reactive turn-change: the incumbent clearly stopped talking and the
       // challenger clearly started - flip without waiting for the margin
       // (prominence + continuity bias the raw scores toward the incumbent).
       const reactive =
-        voiced && prev.vm < REACTIVE_INCUMBENT_CEILING && best.vm >= REACTIVE_CHALLENGER_FLOOR;
+        voiced && prev.vm < REACTIVE_INCUMBENT_CEILING && decided.vm >= REACTIVE_CHALLENGER_FLOOR;
       if (!heldEnough || (!beatsByMargin && !reactive)) {
         chosen = prev; // hysteresis: the current speaker keeps the label
       }
@@ -395,7 +512,7 @@ export function buildSpeakerTimeline(input: SpeakerTimelineInput): SpeakerTimeli
   const clipped = cuts.length === 0 ? segments : splitSegmentsAtCuts(segments, cuts);
 
   const speakerIds = new Set(clipped.map((s) => s.trackId).filter((id): id is number => id !== null));
-  return { segments: clipped, speakerCount: speakerIds.size };
+  return { segments: clipped, speakerCount: speakerIds.size, ambiguousWindows };
 }
 
 /** Split speaker runs on every cut, keeping the same label either side. */

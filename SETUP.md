@@ -232,6 +232,45 @@ layout renders **stop with a clear error** telling you to run
 `npm run setup:yunet` — see [docs/LAYOUTS.md](./docs/LAYOUTS.md) for the full
 tracking design (audio↔motion fusion, hysteresis, the locked split-screen panes).
 
+### Optional: two extra models that fix two specific failures
+
+Neither is needed to render. Each one is **skipped with a single warning** when its
+file is missing, and the app then behaves exactly as it did before. Both live in
+git-ignored folders, so `git pull` never downloads anything.
+
+| Model | Command | Fixes | Licence | Size |
+| --- | --- | --- | --- | --- |
+| YOLOX-nano (person) | `npm run setup:yolox` | someone who **turns away**, looks down or covers their face is dropped after ~1 s and the camera jumps away | Apache-2.0 | 3.6 MB |
+| LR-ASD (active speaker) | `npm run setup:asd` | **two similar people** both moving with the audio: the camera / speaker label picks the wrong one | MIT (code **and** weights) | ~3.4 MB ONNX |
+
+`npm run setup:yolox` downloads `models/yolox/yolox_nano.onnx` from the official
+Megvii release, checks the exact byte size and prints the SHA-256 (Megvii publishes
+no digest; set `YOLOX_ONNX_SHA256` if you want it pinned).
+
+`npm run setup:asd` is the only setup step that needs Python — and only ONCE, on the
+machine doing the setup; the app itself never runs Python:
+
+1. Install the export toolchain (CPU-only is fine):
+
+   ```bat
+   py -3 -m pip install torch onnx onnxruntime numpy python_speech_features
+   ```
+
+2. Export the two graphs (downloads the MIT weights, exports, then verifies ONNX
+   against PyTorch and prints `parity ok`):
+
+   ```bat
+   npm run setup:asd -- --python "py -3"
+   ```
+
+   On Linux/macOS `npm run setup:asd` is enough (`python3` is used).
+
+3. Restart the worker (`start-clipcraft.bat`) so the new models are loaded.
+
+Both models are reported on the **Startup checks** panel: present = ok, missing =
+a warning that says which command to run. To turn either one off completely, set
+`PERSON_DETECTION=0` / `LR_ASD_ENABLED=0` in `.env.local`.
+
 ---
 
 ## 6b. B-roll (optional, no setup needed)
@@ -335,6 +374,16 @@ provider chain, and the Remotion renderer, and tells you exactly what to fix.
 ---
 
 ## 8. Troubleshooting
+
+**People turn away and the camera drifts off them**
+The YOLOX person model is optional: `npm run setup:yolox`, then restart the worker.
+`PERSON_TRACK_HOLD_SECONDS` (default 4) is how long a body-confirmed person keeps
+their framing while their face is unreadable; `0` restores the 1.5 s fallback.
+
+**The camera picks the wrong one of two people**
+The LR-ASD model is optional: `npm run setup:asd` (see section 6) and restart the
+worker. It is only consulted when the cheap cues are genuinely ambiguous, so
+`LR_ASD_MAX_WINDOWS` (default 24) bounds the extra work per clip.
 
 **`YuNet face detection is unavailable` / `No faces were detected in this clip window`**
 Speaker layouts have no fallback detector by design: run `npm run setup:yunet`
