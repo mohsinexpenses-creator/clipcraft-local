@@ -14,7 +14,13 @@ import {
   type YuNetRuntime,
 } from "../yunet-detector";
 import { computeVoiceEnvelope, extractPcmMono } from "./audio";
-import { isLikelyLiveTrack, Tracker, Track, FrameDetection } from "./tracker";
+import {
+  effectiveFaceMotion,
+  isLikelyLiveTrack,
+  Tracker,
+  Track,
+  FrameDetection,
+} from "./tracker";
 import { SpeakerSegment, buildSpeakerTimeline } from "./speaker";
 import { detectShotCuts } from "./shot-cuts";
 import {
@@ -215,6 +221,111 @@ function thumbDiff(a: number[] | null, b: number[]): number {
   return Math.min(1, Math.max(0, sum / a.length / 255));
 }
 
+/**
+ * Fraction of the face box's size the background ring extends beyond it.
+ * 0.6 means the ring reaches 0.6 box-widths past the box on each side, which is
+ * shoulder / wall / background territory for a face crop, while staying close
+ * enough that a camera move affects box and ring equally.
+ */
+const BACKGROUND_RING_PAD = 0.6;
+
+/** Ring cells whose thumbnail is (near) identical to a face-patch cell are skipped. */
+const BACKGROUND_FACE_CELL_TOLERANCE = 10;
+
+/**
+ * 16x16 grayscale thumbnail of the background RING around a face box: the padded
+ * rectangle around the face box with the face box itself cut out.
+ *
+ * The two are measured on the same grid, so a camera shake / zoom that translates
+ * or scales the picture changes both by the same amount - exactly what makes the
+ * difference between them a measure of INDEPENDENT motion. When a box is so close
+ * to the frame edge that it has no ring at all, nothing is returned and the caller
+ * keeps the plain face motion (no false "this is a poster" verdict).
+ *
+ * Two rejections keep the ring honest:
+ *  - cells whose thumbnail value is within `BACKGROUND_FACE_CELL_TOLERANCE` of the
+ *    face patch's value for that cell are dropped. A red face-detector box that
+ *    hugs a head puts hair/cheeks in the ring, and those WOULD move with the face
+ *    - counting them as "background" would hide a real person's motion;
+ *  - a ring with fewer than a third of its cells left is treated as no ring.
+ */
+function backgroundRingThumb(
+  data: ArrayLike<number>,
+  width: number,
+  height: number,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  faceThumbValues: number[],
+): number[] | null {
+  const pad = Math.max(2, Math.round(Math.max(w, h) * BACKGROUND_RING_PAD));
+  const rx0 = Math.max(0, Math.round(x) - pad);
+  const ry0 = Math.max(0, Math.round(y) - pad);
+  const rx1 = Math.min(width, Math.round(x + w) + pad);
+  const ry1 = Math.min(height, Math.round(y + h) + pad);
+  if (rx1 - rx0 < 4 || ry1 - ry0 < 4) return null;
+
+  // The padded rectangle must be meaningfully bigger than the face box, else
+  // there is no background in it at all (box clipped by the frame edge).
+  const ringArea = (rx1 - rx0) * (ry1 - ry0);
+  const faceArea = Math.max(1, Math.min(width, Math.round(x + w)) - Math.max(0, Math.round(x)))
+    * Math.max(1, Math.min(height, Math.round(y + h)) - Math.max(0, Math.round(y)));
+  if (ringArea - faceArea < faceArea * 0.5) return null;
+
+  const ring: number[] = new Array(THUMB * THUMB).fill(0);
+  let kept = 0;
+  for (let ty = 0; ty < THUMB; ty += 1) {
+    const sy = Math.min(ry1 - 1, ry0 + Math.floor(((ry1 - ry0) * ty) / THUMB));
+    for (let tx = 0; tx < THUMB; tx += 1) {
+      const sx = Math.min(rx1 - 1, rx0 + Math.floor(((rx1 - rx0) * tx) / THUMB));
+
+      // Is this sample point inside the face box? Then it is not background.
+      const insideFace =
+        sx >= Math.round(x) &&
+        sx < Math.round(x) + Math.round(w) &&
+        sy >= Math.round(y) &&
+        sy < Math.round(y) + Math.round(h);
+      if (insideFace) {
+        ring[ty * THUMB + tx] = Number.NaN;
+        continue;
+      }
+
+      const i = (sy * width + sx) * 4;
+      const value = (data[i] * 299 + data[i + 1] * 587 + data[i + 2] * 114) / 1000;
+      const faceCell = faceThumbValues?.[ty * THUMB + tx];
+      if (
+        Number.isFinite(faceCell) &&
+        Math.abs(value - (faceCell as number)) <= BACKGROUND_FACE_CELL_TOLERANCE
+      ) {
+        ring[ty * THUMB + tx] = Number.NaN;
+        continue;
+      }
+      ring[ty * THUMB + tx] = value;
+      kept += 1;
+    }
+  }
+  // Too little real background survived (a close-up filling the frame): no ring.
+  if (kept < (THUMB * THUMB) / 3) return null;
+  return ring;
+}
+
+/** Mean absolute difference of two ring thumbnails, skipping cut-out cells. */
+function ringDiff(a: number[] | null, b: number[] | null): number {
+  if (!a || !b || a.length !== b.length) return 0;
+  let sum = 0;
+  let count = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    const av = a[i];
+    const bv = b[i];
+    if (!Number.isFinite(av) || !Number.isFinite(bv)) continue;
+    sum += Math.abs(av - bv);
+    count += 1;
+  }
+  if (count === 0) return 0;
+  return Math.min(1, Math.max(0, sum / count / 255));
+}
+
 function medianOf(values: number[]): number {
   if (values.length === 0) return 0;
   const sorted = [...values].sort((a, b) => a - b);
@@ -222,6 +333,124 @@ function medianOf(values: number[]): number {
   return sorted.length % 2 === 1
     ? sorted[mid]
     : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/**
+ * Test-only view of the exact same measurement `analyzeSampledFrames` performs on
+ * every sampled frame: the full-face + mouth thumbnails, the background-ring
+ * thumbnail, and the resulting background-RELATIVE motion.
+ *
+ * `previous` is the previous sampled frame (null for the first sample, which then
+ * reports motion null exactly like the pipeline does).
+ */
+export function measureFaceMotionForTests(
+  previous: { data: ArrayLike<number>; width: number; height: number } | null,
+  current: { data: ArrayLike<number>; width: number; height: number },
+  box: { x: number; y: number; w: number; h: number },
+  /** The box the same face had in `previous` (defaults to `box`). */
+  previousBox: { x: number; y: number; w: number; h: number } = box,
+): {
+  motion: number | null;
+  faceMotion: number | null;
+  backgroundMotion: number | null;
+  ring: number[] | null;
+} {
+  const currentThumb = faceThumb(
+    current.data,
+    current.width,
+    current.height,
+    box.x,
+    box.y,
+    box.w,
+    box.h,
+  );
+  const currentMouth = faceThumb(
+    current.data,
+    current.width,
+    current.height,
+    box.x,
+    box.y + box.h * 0.55,
+    box.w,
+    box.h * 0.45,
+  );
+  const currentRing = backgroundRingThumb(
+    current.data,
+    current.width,
+    current.height,
+    box.x,
+    box.y,
+    box.w,
+    box.h,
+    currentThumb,
+  );
+  if (!previous) {
+    return { motion: null, faceMotion: null, backgroundMotion: null, ring: currentRing };
+  }
+  const previousThumb = faceThumb(
+    previous.data,
+    previous.width,
+    previous.height,
+    previousBox.x,
+    previousBox.y,
+    previousBox.w,
+    previousBox.h,
+  );
+  const previousMouth = faceThumb(
+    previous.data,
+    previous.width,
+    previous.height,
+    previousBox.x,
+    previousBox.y + previousBox.h * 0.55,
+    previousBox.w,
+    previousBox.h * 0.45,
+  );
+  const previousRing = backgroundRingThumb(
+    previous.data,
+    previous.width,
+    previous.height,
+    previousBox.x,
+    previousBox.y,
+    previousBox.w,
+    previousBox.h,
+    previousThumb,
+  );
+  const faceMotion =
+    0.6 * thumbDiff(previousThumb, currentThumb) +
+    0.4 * thumbDiff(previousMouth, currentMouth);
+  const backgroundMotion =
+    previousRing && currentRing ? ringDiff(previousRing, currentRing) : null;
+  return {
+    motion:
+      backgroundMotion === null
+        ? faceMotion
+        : effectiveFaceMotion({ motion: faceMotion, faceMotion, backgroundMotion }),
+    faceMotion,
+    backgroundMotion,
+    ring: currentRing,
+  };
+}
+
+/** Test-only: the background-ring thumbnail for one frame + face box. */
+export function backgroundRingThumbForTests(
+  frame: { data: ArrayLike<number>; width: number; height: number },
+  box: { x: number; y: number; w: number; h: number },
+): number[] | null {
+  const face = faceThumb(frame.data, frame.width, frame.height, box.x, box.y, box.w, box.h);
+  return backgroundRingThumb(
+    frame.data,
+    frame.width,
+    frame.height,
+    box.x,
+    box.y,
+    box.w,
+    box.h,
+    face,
+  );
+}
+
+/** Test-only: the ring thumbnail diff (NaN cells skipped). */
+export function ringDiffForTests(a: number[] | null, b: number[] | null): number {
+  return ringDiff(a, b);
 }
 
 function maxConcurrentTracks(tracks: Track[]): number {
@@ -355,6 +584,7 @@ async function analyzeSampledFrames(
     w: number;
     full: number[];
     mouth: number[];
+    ring: number[] | null;
   }> = [];
   const measureTimings = Boolean(onStageTiming);
   let yunetDetectionMs = 0;
@@ -463,7 +693,20 @@ async function analyzeSampledFrames(
               boxW,
               boxH * 0.45,
             );
-            return { cx: face.cx, cy: face.cy, w: face.w, full, mouth };
+            // The same face box, measured on the RING of background that
+            // surrounds it. A camera shake/zoom moves both identically; only a
+            // real person moves the face without moving the wall behind them.
+            const ring = backgroundRingThumb(
+              data,
+              width,
+              height,
+              boxX,
+              boxY,
+              boxW,
+              boxH,
+              full,
+            );
+            return { cx: face.cx, cy: face.cy, w: face.w, full, mouth, ring };
           });
 
           const detections: FrameDetection[] = faces.map((face, faceIndex) => {
@@ -483,16 +726,37 @@ async function analyzeSampledFrames(
                 bestPrev = previous;
               }
             }
-            const motion = bestPrev
+            // Raw face motion (what the pixels did)...
+            const faceMotion = bestPrev
               ? 0.6 * thumbDiff(bestPrev.full, curThumbs[faceIndex].full) +
                 0.4 * thumbDiff(bestPrev.mouth, curThumbs[faceIndex].mouth)
               : null;
+            // ...and what the BACKGROUND around it did over the same interval.
+            // The speaker/liveness cues only ever see the difference: a poster,
+            // photo or framed print under a shaking/zooming camera is rigid, so
+            // its relative motion collapses to zero while a real person's head
+            // still moves against the wall behind them.
+            const backgroundMotion = bestPrev?.ring && curThumbs[faceIndex].ring
+              ? ringDiff(bestPrev.ring, curThumbs[faceIndex].ring)
+              : null;
+            const motion =
+              faceMotion === null
+                ? null
+                : backgroundMotion === null
+                  ? faceMotion
+                  : effectiveFaceMotion({
+                      motion: faceMotion,
+                      faceMotion,
+                      backgroundMotion,
+                    });
             return {
               cx: face.cx,
               cy: face.cy,
               w: face.w,
               mouthOpen: null, // YuNet has no mouth landmarks; the fusion treats this as no cue.
               motion,
+              faceMotion,
+              backgroundMotion,
             };
           });
 

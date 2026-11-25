@@ -1,4 +1,4 @@
-import { Track } from './tracker';
+import { Track, effectiveFaceMotion } from './tracker';
 
 /**
  * Active-speaker decision: fuses several INDEPENDENT cues with the audio voice
@@ -158,10 +158,13 @@ function voicedMotion(track: Track, i0: number, i1: number, fps: number, voice: 
   const t1 = (i1 + 1) / fps;
   let sum = 0;
   for (const p of track.points) {
-    if (p.t < t0 || p.t > t1 || p.motion === null) continue;
+    // Background-relative motion: rigid content (a poster, a photo on the wall)
+    // that only moved because the CAMERA moved contributes nothing here.
+    const motion = effectiveFaceMotion(p);
+    if (p.t < t0 || p.t > t1 || motion === null) continue;
     const frameIdx = Math.max(0, Math.min(voice.length - 1, Math.round(p.t * fps)));
     const v = voice[frameIdx] ?? 0;
-    if (v > VOICE_GATE) sum += (v - VOICE_GATE) * p.motion;
+    if (v > VOICE_GATE) sum += (v - VOICE_GATE) * motion;
   }
   return sum;
 }
@@ -183,8 +186,9 @@ function motionCues(
   const motions: number[] = [];
   const voiceAt: number[] = [];
   for (const p of track.points) {
-    if (p.t < t0 || p.t > t1 || p.motion === null) continue;
-    motions.push(p.motion);
+    const motion = effectiveFaceMotion(p);
+    if (p.t < t0 || p.t > t1 || motion === null) continue;
+    motions.push(motion);
     const frameIdx = Math.max(0, Math.min(voice.length - 1, Math.round(p.t * fps)));
     voiceAt.push(voice[frameIdx] ?? 0);
   }

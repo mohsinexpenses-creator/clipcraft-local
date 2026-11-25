@@ -26,8 +26,26 @@ export interface FrameDetection {
   w: number;
   /** Normalised mouth openness 0..1, or null when no landmark cue exists. */
   mouthOpen: number | null;
-  /** Normalised full-face motion 0..1 vs the previous sampled frame (thumb diff), or null. */
+  /**
+   * Normalised full-face motion 0..1 vs the previous sampled frame (thumb diff),
+   * ALREADY relative to the background that surrounds the face.
+   *
+   * A camera that shakes or zooms moves the whole image, so a printed poster's
+   * "face" changes exactly as much as the wall around it - and a raw pixel diff
+   * cannot tell that from a person turning their head. `./index` measures a RING
+   * of background around the box and subtracts its motion here, so this value is
+   * "how much did this face move on its own", not "how much did these pixels
+   * change". Null only when no measurement exists at all.
+   */
   motion?: number | null;
+  /**
+   * Raw face-region motion (0..1) before it was made background-relative, and the
+   * motion of the surrounding ring it was compared against. Both are optional so
+   * every existing producer of a FrameDetection stays valid; `isLikelyLiveTrack`
+   * only ever uses them to make a borderline track stricter.
+   */
+  faceMotion?: number | null;
+  backgroundMotion?: number | null;
 }
 
 export interface TrackPoint {
@@ -36,8 +54,15 @@ export interface TrackPoint {
   cy: number;
   w: number;
   mouthOpen: number | null;
-  /** Normalised full-face motion 0..1 vs the previous sampled frame, or null. */
+  /**
+   * Normalised face motion 0..1 that is RELATIVE to the surrounding background
+   * (see FrameDetection.motion). Null when no motion could be measured.
+   */
   motion: number | null;
+  /** Raw face motion before background subtraction (optional, diagnostics). */
+  faceMotion?: number | null;
+  /** Motion of the background ring around the face at the same instant. */
+  backgroundMotion?: number | null;
 }
 
 export interface Track {
@@ -60,10 +85,77 @@ export interface Track {
   missed: number;
 }
 
-/** Reject one-frame codec flicker: a live face needs repeated, meaningful change. */
+/**
+ * A RIGID image can only produce "liveness" if the face really moves more than
+ * its surroundings. Points that carried a background measurement must clear this
+ * ratio, otherwise they count as exactly zero motion (a poster under a shaking
+ * camera, a zoom onto a framed photo, a pan across a wall).
+ *
+ * The floor keeps honest motion measurable: on an almost still shot the ring
+ * motion is ~0.001, so the ratio would otherwise turn a genuine 0.02 lip movement
+ * into noise. Only when the surroundings move MEANINGFULLY do we ask whether this
+ * face out-moved them.
+ */
+const RIGID_FACE_RATIO = 1.5;
+const RIGID_BACKGROUND_FLOOR = 0.006;
+const RIGID_BACKGROUND_CEILING = 0.05;
+
+/**
+ * Effective motion of one point: face motion measured RELATIVE to its background.
+ *
+ *  - no background measurement (old producers / interpolated points) -> unchanged;
+ *  - background almost still -> the face's own motion is real, keep it;
+ *  - background moving a lot -> subtract it (rigid content nets out to ~0).
+ */
+export function effectiveFaceMotion(point: {
+  motion: number | null;
+  faceMotion?: number | null;
+  backgroundMotion?: number | null;
+}): number | null {
+  const background = point.backgroundMotion;
+  if (background === null || background === undefined || !Number.isFinite(background)) {
+    return point.motion;
+  }
+  // Prefer the raw face measurement when the caller kept it; `motion` is already
+  // the relative value, so using it here would subtract the ring twice.
+  const face =
+    point.faceMotion !== null && point.faceMotion !== undefined && Number.isFinite(point.faceMotion)
+      ? point.faceMotion
+      : point.motion;
+  if (face === null || face === undefined || !Number.isFinite(face)) return null;
+  if (background <= RIGID_BACKGROUND_FLOOR) return face;
+  if (face <= background * RIGID_FACE_RATIO) return 0;
+  return Math.max(0, face - background);
+}
+
+/** True when this point was measured against a background that really moved. */
+function hasRigidBackground(point: {
+  backgroundMotion?: number | null;
+}): boolean {
+  const background = point.backgroundMotion;
+  return (
+    background !== null &&
+    background !== undefined &&
+    Number.isFinite(background) &&
+    background > RIGID_BACKGROUND_CEILING
+  );
+}
+
+/**
+ * Reject one-frame codec flicker: a live face needs repeated, meaningful change.
+ *
+ * The motion values are background-relative, so camera shake and zoom cannot
+ * promote a printed poster into a "person". A track that spent most of its life
+ * on a shot whose whole image moved (a handheld pan across a wall) must also show
+ * at least one moment where the face moved on its own - otherwise it is a rigid
+ * pattern that happened to follow the camera.
+ */
 export function isLikelyLiveTrack(track: Track): boolean {
-  const motion = track.points
-    .map((point) => point.motion)
+  const points = track.points.filter(
+    (point) => point.motion !== null || point.backgroundMotion != null,
+  );
+  const motion = points
+    .map((point) => effectiveFaceMotion(point))
     .filter((value): value is number => value !== null && Number.isFinite(value));
   if (track.points.length < 5 || motion.length < 4) return false;
 
@@ -75,7 +167,33 @@ export function isLikelyLiveTrack(track: Track): boolean {
       : (sorted[middle - 1] + sorted[middle]) / 2;
   const meaningfulFrames = motion.filter((value) => value >= 0.025).length;
 
-  return medianMotion >= 0.018 && meaningfulFrames >= Math.max(3, Math.ceil(motion.length * 0.3));
+  const live =
+    medianMotion >= 0.018 &&
+    meaningfulFrames >= Math.max(3, Math.ceil(motion.length * 0.3));
+  if (!live) return false;
+
+  // Rigid-pattern guard: when the surroundings moved for most of this track, the
+  // face itself must at some point have out-moved them.
+  const rigidFrames = points.filter(hasRigidBackground).length;
+  if (rigidFrames >= Math.max(3, Math.ceil(points.length * 0.5))) {
+    return motion.some((value) => value >= 0.025);
+  }
+  return true;
+}
+
+/** Copy a detection into a track point, keeping the optional motion measurements. */
+function toTrackPoint(det: FrameDetection, t: number): TrackPoint {
+  const point: TrackPoint = {
+    t,
+    cx: det.cx,
+    cy: det.cy,
+    w: det.w,
+    mouthOpen: det.mouthOpen,
+    motion: det.motion ?? null,
+  };
+  if (det.faceMotion !== undefined) point.faceMotion = det.faceMotion;
+  if (det.backgroundMotion !== undefined) point.backgroundMotion = det.backgroundMotion;
+  return point;
 }
 
 export interface TrackerOptions {
@@ -198,7 +316,7 @@ export class Tracker {
         lastT: t,
         missed: 0,
       };
-      track.points.push({ t, cx: det.cx, cy: det.cy, w: det.w, mouthOpen: det.mouthOpen, motion: det.motion ?? null });
+      track.points.push(toTrackPoint(det, t));
       track.visibleTime += dt;
       this.tracks.push(track);
     }
@@ -220,7 +338,7 @@ export class Tracker {
     track.maxW = Math.max(track.maxW, det.w);
     track.avgW = (track.avgW * (track.points.length + 1) - track.avgW + det.w) / (track.points.length + 1);
 
-    track.points.push({ t, cx: det.cx, cy: det.cy, w: det.w, mouthOpen: det.mouthOpen, motion: det.motion ?? null });
+    track.points.push(toTrackPoint(det, t));
     track.visibleTime += dt;
   }
 
