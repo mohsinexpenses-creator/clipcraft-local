@@ -34,7 +34,7 @@ import {
   LR_ASD_FPS,
   type LrAsdRuntime,
 } from "./lr-asd";
-import type { AmbiguousWindow, SpeakerTimelineInputAsync } from "./speaker";
+import type { AmbiguousWindow, SpeakerTimelineInput } from "./speaker";
 import { computeVoiceEnvelope, extractPcmMono } from "./audio";
 import {
   effectiveFaceMotion,
@@ -254,7 +254,7 @@ export function getLrAsdSettings(
  * cheap cues could not settle, then stop. Nothing is loaded, sampled or decoded
  * until that list is non-empty, so a clip with a clear speaker never pays for it.
  */
-function collectAmbiguousWindows(input: SpeakerTimelineInputAsync): AmbiguousWindow[] {
+function collectAmbiguousWindows(input: SpeakerTimelineInput): AmbiguousWindow[] {
   const recorded: AmbiguousWindow[] = [];
   buildSpeakerTimeline({
     ...input,
@@ -383,7 +383,7 @@ async function judgeAmbiguousWindows(context: {
  * construction, identical to the timeline of a build with no referee at all.
  */
 export function planLrAsdWindows(
-  input: SpeakerTimelineInputAsync,
+  input: SpeakerTimelineInput,
   options: { maxWindows?: number } = {},
 ): {
   ambiguous: AmbiguousWindow[];
@@ -1538,7 +1538,7 @@ export async function detectSpeakerTimeline(
           sampleFps,
           analysisFps,
         );
-        const input: SpeakerTimelineInputAsync = {
+        const input: SpeakerTimelineInput = {
           duration,
           fps: analysisFps,
           voice,

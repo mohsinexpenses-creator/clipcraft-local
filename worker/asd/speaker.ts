@@ -67,6 +67,11 @@ export interface SpeakerTimelineInput {
    * with the audio" has to fall back to audio + how much the scene itself moved.
    */
   sceneMotion?: number[];
+  /**
+   * Optional audio-visual referee for the windows these cues cannot settle (see
+   * ./lr-asd and ./index). Omitted = the historical behaviour, exactly.
+   */
+  referee?: SpeakerReferee;
 }
 
 /** One window the cheap cues could not settle - the LR-ASD model's job. */
@@ -99,9 +104,7 @@ export interface SpeakerReferee {
    * as it did before.
    */
   judge: (window: AmbiguousWindow) => Map<number, number> | null;
-  /** Optional per-window hook so the caller can log/budget what it ran. */
-  onJudged?: (window: AmbiguousWindow, verdict: Map<number, number> | null) => void;
-  /** Weight of the verdict inside a window's score (0..1, default 0.25). */
+  /** Weight of the verdict inside a window's score (0..0.5, default 0.25). */
   weight?: number;
 }
 
@@ -112,10 +115,6 @@ export interface SpeakerTimelineResult {
   speakerCount: number;
   /** Windows handed to the audio-visual referee, in order. */
   ambiguousWindows: AmbiguousWindow[];
-}
-
-export interface SpeakerTimelineInputAsync extends SpeakerTimelineInput {
-  referee?: SpeakerReferee;
 }
 
 /** Windows shorter than this are merged, longer ones split, in the decision. */
@@ -316,9 +315,7 @@ function motionCues(
   return { mean, corr: Math.max(0, cov / Math.sqrt(mVar * vVar)) };
 }
 
-export function buildSpeakerTimeline(
-  input: SpeakerTimelineInputAsync,
-): SpeakerTimelineResult {
+export function buildSpeakerTimeline(input: SpeakerTimelineInput): SpeakerTimelineResult {
   const { duration, fps, voice, tracks, frameWidth, sceneMotion } = input;
   const cuts = [...(input.shotCuts ?? [])]
     .filter((cut) => Number.isFinite(cut) && cut > 1e-6 && cut < duration - 1e-6)
@@ -453,7 +450,6 @@ export function buildSpeakerTimeline(
         } catch {
           verdict = null; // a broken referee must never break the timeline
         }
-        input.referee.onJudged?.(window, verdict);
         if (verdict && verdict.size > 0) {
           ambiguousWindows.push(window);
           const weight = Math.max(0, Math.min(0.5, input.referee.weight ?? DEFAULT_REFEREE_WEIGHT));
