@@ -17,7 +17,7 @@ import { computeMfcc, mfccForVideoFrame } from './mfcc';
  *
  * License: the code AND the released weights are MIT
  * (https://github.com/Junhua-Liao/LR-ASD, license vendored at
- * models/lr-asd/LR-ASD-LICENSE.txt). The ONNX graphs are produced once by
+ * docs/licenses/LR-ASD-LICENSE.txt). The ONNX graphs are produced once by
  * `scripts/export-asd-onnx.py` (`npm run setup:asd`) - this app never runs Python.
  *
  * COST CONTROL (mandatory - the target machine is a GTX 1070 / CPU):
@@ -245,10 +245,12 @@ export interface LrAsdSegmentInput {
   start: number;
   /** Window length (seconds). */
   duration: number;
-  /** 16 kHz mono PCM of the WHOLE analysed window (starts at the clip start). */
+  /** 16 kHz mono PCM starting at clip time 0. */
   pcm: Int16Array;
   /** Sample rate of `pcm`. */
   sampleRate: number;
+  /** MFCC of `pcm`, computed ONCE per clip by the caller (it is expensive). */
+  mfcc?: { features: Float32Array; frames: number };
   /** Per-contending-person sampled frames + face boxes (source pixels). */
   candidates: Array<{
     trackId: number;
@@ -349,12 +351,10 @@ export async function scoreLrAsdWindow(
 ): Promise<LrAsdScores | null> {
   const maxFrames = Math.max(8, Math.min(400, options.maxFrames ?? 100));
   const startFrame = Math.round(input.start * LR_ASD_FPS);
-  const mfcc = computeMfcc(
-    input.pcm,
-    input.sampleRate,
-    0.025,
-    0.010,
-  );
+  // The MFCC of the whole analysed window is computed once per clip by the caller
+  // (it is O(clip length)); recomputing it per ambiguous window would quietly turn
+  // a cheap tie-breaker into the most expensive stage of the render.
+  const mfcc = input.mfcc ?? computeMfcc(input.pcm, input.sampleRate, 0.025, 0.010);
   const byTrack = new Map<number, number>();
   let framesScored = 0;
 

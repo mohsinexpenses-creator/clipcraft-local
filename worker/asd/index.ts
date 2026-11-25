@@ -25,6 +25,7 @@ import {
   type PersonDetectorSettings,
   type YoloxRuntime,
 } from "../person-detector";
+import { computeMfcc } from "./mfcc";
 import {
   lrAsdLikelihood,
   lrAsdModelPresent,
@@ -284,6 +285,7 @@ async function judgeAmbiguousWindows(context: {
   settings: ReturnType<typeof getLrAsdSettings>;
   runtime: () => Promise<LrAsdRuntime | null>;
   window: { start: number; duration: number; pcm: Int16Array };
+  mfcc: { features: Float32Array; frames: number };
   framePaths: string[];
   sampleFps: number;
   tracks: Track[];
@@ -347,6 +349,7 @@ async function judgeAmbiguousWindows(context: {
           duration: Math.max(0.2, window.t1 - window.t0),
           pcm: context.window.pcm,
           sampleRate: 16000,
+          mfcc: context.mfcc,
           candidates,
         },
         (t: number) => loadFrameAt(t),
@@ -1552,6 +1555,8 @@ export async function detectSpeakerTimeline(
           settings: lrAsdSettings,
           runtime: () => loadLrAsd(),
           window: { start, duration, pcm },
+          // One MFCC pass for the whole clip, shared by every ambiguous window.
+          mfcc: computeMfcc(pcm, 16000),
           framePaths: frames,
           sampleFps,
           tracks,

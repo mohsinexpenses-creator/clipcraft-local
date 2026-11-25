@@ -7,7 +7,7 @@ LR-ASD is a lightweight audio-visual active speaker detection model:
     Junhua Liao, Haihan Duan, Kanghui Feng, Wanbing Zhao, Yanbing Yang,
     Liangyin Chen, Yanru Chen. IJCV 2025.
     https://github.com/Junhua-Liao/LR-ASD  (MIT license - code AND weights,
-    see models/lr-asd/LR-ASD-LICENSE.txt)
+    see docs/licenses/LR-ASD-LICENSE.txt)
 
 This is a ONE-TIME developer step - the app never runs Python. It produces two
 graphs in models/lr-asd/ (gitignored, like every other model):

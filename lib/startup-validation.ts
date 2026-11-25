@@ -469,7 +469,8 @@ async function validateOptionalVisionModels(): Promise<StartupCheck[]> {
     optionalModelCheck({
       id: 'lr-asd-model',
       label: 'LR-ASD active speaker model (optional)',
-      modelPath: path.join(modelsDir, 'lr-asd', 'lr_asd.onnx'),
+      // The export writes two graphs; the frontend is the bigger, always-present one.
+      modelPath: path.join(modelsDir, 'lr-asd', 'lr-asd-frontend.onnx'),
       minBytes: 100_000,
       enabled: !flagDisabled(process.env.LR_ASD_ENABLED),
       okSummary:
@@ -477,7 +478,7 @@ async function validateOptionalVisionModels(): Promise<StartupCheck[]> {
       missingSummary:
         'LR-ASD active speaker model not found - speaker choice stays on the existing audio+motion cues.',
       resolution:
-        'Run "npm run setup:asd" to build lr_asd.onnx from the MIT weights (see SETUP.md).',
+        'Run "npm run setup:asd" to export lr-asd-frontend/backend.onnx from the MIT weights (see SETUP.md).',
     }),
   ];
 }

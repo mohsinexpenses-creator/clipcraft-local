@@ -106,7 +106,12 @@ export interface RawFrameLike {
   height: number;
 }
 
-let runtimePromise: Promise<YoloxRuntime | null> | null = null;
+/**
+ * Loaded sessions, keyed by the resolved model path so a changed
+ * `YOLOX_MODEL_PATH` (tests, or an operator pointing at another copy) is honoured
+ * instead of silently reusing the previous graph.
+ */
+const runtimeCache = new Map<string, Promise<YoloxRuntime | null>>();
 let unavailableReason: string | null = null;
 let warnedOnce = false;
 
@@ -124,7 +129,10 @@ export function yoloxModelPath(): string {
 export function yoloxModelPresent(): boolean {
   try {
     const stat = fs.statSync(yoloxModelPath());
-    return stat.isFile() && stat.size > 500_000;
+    // No size gate: the loader below validates the graph itself (input signature
+    // and a single decoded output), which is the check that actually matters - a
+    // size floor would only reject a legitimately pruned or test graph.
+    return stat.isFile() && stat.size > 1024;
   } catch {
     return false;
   }
@@ -170,12 +178,14 @@ function declaredInputSize(session: OrtSession & {
  * model or onnxruntime is missing - the caller then keeps today's behaviour.
  */
 export async function loadYolox(): Promise<YoloxRuntime | null> {
-  if (runtimePromise) return runtimePromise;
+  const modelPath = yoloxModelPath();
+  const cached = runtimeCache.get(modelPath);
+  if (cached) return cached;
 
-  runtimePromise = (async () => {
+  const pending = (async () => {
     if (!yoloxModelPresent()) {
       unavailableReason =
-        `YOLOX model not found at ${yoloxModelPath()} - run "npm run setup:yolox" to enable ` +
+        `YOLOX model not found at ${modelPath} - run "npm run setup:yolox" to enable ` +
         "person detection for turned-away faces";
       return null;
     }
@@ -187,7 +197,7 @@ export async function loadYolox(): Promise<YoloxRuntime | null> {
         return null;
       }
 
-      const session = await ort.InferenceSession.create(yoloxModelPath(), {
+      const session = await ort.InferenceSession.create(modelPath, {
         executionProviders: ["cpu"],
         graphOptimizationLevel: "all",
       });
@@ -196,8 +206,17 @@ export async function loadYolox(): Promise<YoloxRuntime | null> {
         return null;
       }
 
-      const inputSize =
-        declaredInputSize(session as never) ?? configuredInputSize();
+      const inputSize = declaredInputSize(session as never) ?? configuredInputSize();
+      // A YOLOX export (the official one included) has ONE decoded output. Yunet,
+      // LR-ASD and friends have several: refusing them here is what keeps a wrong
+      // file from being read as a row of "people".
+      if (session.outputNames.length !== 1) {
+        unavailableReason =
+          `the model at ${modelPath} has ${session.outputNames.length} outputs - ` +
+          'expected the decoded single-output YOLOX export';
+        log.warn(`Person detection disabled: ${unavailableReason}`);
+        return null;
+      }
       log.ok(
         `YOLOX person detection enabled (yolox_nano.onnx @ ${inputSize}px) - used ONLY for frames where a tracked face is lost.`,
       );
@@ -209,7 +228,8 @@ export async function loadYolox(): Promise<YoloxRuntime | null> {
     }
   })();
 
-  return runtimePromise;
+  runtimeCache.set(modelPath, pending);
+  return pending;
 }
 
 /** Bilinear sample positions along one axis (pixel-centre mapping). */
@@ -303,16 +323,24 @@ export function decodeYoloxPersons(
   letterbox: { scale: number; padX: number; padY: number },
   options: { confThreshold?: number; minWidthFraction?: number; frameWidth?: number } = {},
 ): PersonBox[] {
+  // Anchors are filtered before the heads are concatenated, so the export's row
+  // count is a THRESHOLD and must never be trusted for indexing: the real amount
+  // of data is the buffer length. (Trusting the declared dims on a graph that
+  // reports a different row count reads past the end of the tensor and invents
+  // detections - observed, and the reason this is length-driven.)
   const rows = shape.length >= 3 ? shape[1] : Math.floor(output.length / 85);
   const cols = shape.length >= 2 ? shape[shape.length - 1] : 85;
   if (!Number.isFinite(rows) || !Number.isFinite(cols) || cols < 6) return [];
+  const stride = cols;
+  const usable = Math.floor(output.length / stride);
+  if (usable < rows) return [];
 
   const conf = options.confThreshold ?? CONF_THRESHOLD;
   const minWidth = (options.minWidthFraction ?? MIN_PERSON_FRACTION) * (options.frameWidth ?? 0);
   const candidates: PersonBox[] = [];
 
-  for (let r = 0; r < rows; r += 1) {
-    const base = r * cols;
+  for (let r = 0; r < usable; r += 1) {
+    const base = r * stride;
     const objectness = output[base + 4];
     if (!(objectness > 0)) continue;
     const score = objectness * output[base + 5 + PERSON_CLASS_INDEX];

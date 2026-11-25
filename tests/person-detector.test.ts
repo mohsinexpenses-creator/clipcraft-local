@@ -16,6 +16,7 @@
  *      or add split-screen panes.
  */
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import test from 'node:test';
 import {
   decodeYoloxPersons,
@@ -391,4 +392,66 @@ test('a split-screen layout is unchanged when the only extra "person" is a body 
   });
   // One real face -> the established single-window fallback, not a second pane.
   assert.equal(plan.mode, 'single');
+});
+
+// ---------------------------------------------------------------------------
+// The real ONNX path, exercised end to end
+// ---------------------------------------------------------------------------
+
+test('a YOLOX-shaped ONNX graph drives load + detect + decode without the real weights', async () => {
+  // tests/fixtures/yolox-synthetic.onnx has EXACTLY the official export signature:
+  // input "images" [1,3,416,416], output [1,N,85] rows of
+  // [cx, cy, w, h, objectness, class scores...]. The real yolox_nano.onnx cannot
+  // be downloaded in every environment, so this proves the plumbing (letterbox,
+  // tensor, output selection, decode, NMS, coordinate mapping) on a graph we can
+  // ship - the same code path the real model takes.
+  const { loadYolox, detectPersonsYolox } = await import('../worker/person-detector');
+  const previous = process.env.YOLOX_MODEL_PATH;
+  process.env.YOLOX_MODEL_PATH = path.join(process.cwd(), 'tests', 'fixtures', 'yolox-synthetic.onnx');
+  try {
+    const runtime = await loadYolox();
+    assert.ok(runtime, 'expected the synthetic graph to load through the real loader');
+    assert.equal(runtime!.inputSize, 416, 'a static square input must be detected');
+
+    const width = 832;
+    const height = 416;
+    const data = new Uint8Array(width * height * 4).fill(90);
+    const persons = await detectPersonsYolox(runtime!, { data, width, height });
+    // Row 0 is the confident person; row 1 is a non-person class, row 2 is too
+    // weak, row 3 duplicates row 0 and must be removed by NMS.
+    assert.equal(persons.length, 1);
+    // The 832x416 frame at 416px input is scaled by 0.5 with no padding:
+    // cx 208/0.5 = 416, w 104/0.5 = 208.
+    assert.ok(Math.abs(persons[0].x + persons[0].width / 2 - 416) < 1, 'centre x');
+    assert.ok(Math.abs(persons[0].width - 208) < 1, 'width');
+    assert.ok(persons[0].score > 0.8);
+  } finally {
+    if (previous === undefined) delete process.env.YOLOX_MODEL_PATH;
+    else process.env.YOLOX_MODEL_PATH = previous;
+  }
+});
+
+test('a non-YOLOX graph is refused instead of inventing people', async () => {
+  const { loadYolox, detectPersonsYolox } = await import('../worker/person-detector');
+  const previous = process.env.YOLOX_MODEL_PATH;
+  // YuNet's ONNX has 12 outputs: the loader must not claim it is YOLOX.
+  process.env.YOLOX_MODEL_PATH = path.join(
+    process.cwd(),
+    'models',
+    'yunet',
+    'face_detection_yunet_2023mar.onnx',
+  );
+  try {
+    const runtime = await loadYolox();
+    if (!runtime) return; // older onnxruntime: nothing to assert beyond "no crash"
+    const persons = await detectPersonsYolox(runtime, {
+      data: new Uint8Array(64 * 64 * 4),
+      width: 64,
+      height: 64,
+    });
+    assert.deepEqual(persons, []);
+  } finally {
+    if (previous === undefined) delete process.env.YOLOX_MODEL_PATH;
+    else process.env.YOLOX_MODEL_PATH = previous;
+  }
 });

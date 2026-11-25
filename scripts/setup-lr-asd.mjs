@@ -3,7 +3,7 @@
  * ClipCraft local ACTIVE-SPEAKER model setup (optional).
  *
  * Downloads the official LR-ASD weights (MIT license - code AND weights, see
- * models/lr-asd/LR-ASD-LICENSE.txt), runs scripts/export-asd-onnx.py ONCE to
+ * docs/licenses/LR-ASD-LICENSE.txt), runs scripts/export-asd-onnx.py ONCE to
  * produce the two ONNX graphs the worker uses, and verifies ONNX against
  * PyTorch before telling you it worked. The app itself never runs Python.
  *
