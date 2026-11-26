@@ -1,4 +1,15 @@
 import { Track, TrackPoint, effectiveFaceMotion } from './tracker';
+import {
+  SwitchControlState,
+  SwitchDecisionLog,
+  SwitchReason,
+  SpeakerEvidence,
+  SwitchControlSettings,
+  createSwitchControl,
+  decideSpeaker,
+  mergeSpeakerSegments,
+  resolveSwitchControlSettings,
+} from './switch-control';
 
 /**
  * Active-speaker decision: fuses several INDEPENDENT cues with the audio voice
@@ -72,6 +83,19 @@ export interface SpeakerTimelineInput {
    * ./lr-asd and ./index). Omitted = the historical behaviour, exactly.
    */
   referee?: SpeakerReferee;
+  /**
+   * Switch-stability knobs (see ./switch-control): how long a challenger must
+   * lead before the frame moves, and how strongly it must lead while the
+   * incumbent is still on screen. Omitted = the documented defaults, which are
+   * the behaviour every render uses unless an env flag overrides them.
+   */
+  switchControl?: Partial<SwitchControlSettings>;
+  /**
+   * Minimum time the frame stays on a speaker after a confirmed switch. Kept a
+   * separate knob from the raw decision cadence so a very short genuine turn can
+   * still be framed without enabling per-window flicker.
+   */
+  minHoldSeconds?: number;
 }
 
 /** One window the cheap cues could not settle - the LR-ASD model's job. */
@@ -115,6 +139,12 @@ export interface SpeakerTimelineResult {
   speakerCount: number;
   /** Windows handed to the audio-visual referee, in order. */
   ambiguousWindows: AmbiguousWindow[];
+  /**
+   * Every confirmed switch with its reason, plus how many windows were held back
+   * by uncertainty or by the confirmation period. This is what `[SPEAKER]` prints:
+   * a render can then answer "why did the camera move here?" for every move.
+   */
+  decisions: SwitchDecisionLog;
 }
 
 /** Windows shorter than this are merged, longer ones split, in the decision. */
@@ -128,22 +158,24 @@ const VOICE_THRESHOLD = 0.18;
  */
 const VOICE_GATE = 0.15;
 /**
- * A challenger must beat the current speaker's score by this factor to take
- * over (anti-flicker hysteresis).
+ * Once a speaker is chosen, the frame stays on them for at least this long - the
+ * shortest genuine conversational turn the camera will follow. The real
+ * anti-flicker gate is the switch CONFIRMATION period (./switch-control); this
+ * only stops a single blip from being framed as a turn of its own.
  */
-const SWITCH_MARGIN = 1.1;
-/** Once a speaker is chosen, they are kept for at least this long. */
-const MIN_HOLD_SECONDS = 0.15;
+const MIN_HOLD_SECONDS = 0.8;
 /**
- * Reactive switch: below this normalised voice-gated motion an incumbent has
- * clearly STOPPED talking...
+ * Mean face motion below which a face is not even eligible for the frame (a
+ * portrait, a poster, a completely still listener). Matches the scale
+ * `isLikelyLiveTrack` uses for "this face really moved".
  */
-const REACTIVE_INCUMBENT_CEILING = 0.25;
+const MIN_QUALIFYING_MOTION = 0.012;
 /**
- * ...and above this a challenger has clearly STARTED talking, so the label
- * flips on the next held window even without the full SWITCH_MARGIN.
+ * Score ratio between the top two people that counts as a CLEAR lead. Below it
+ * the window is reported as uncertain and the frame stays where it is - the
+ * cheap cues cannot honestly separate the two.
  */
-const REACTIVE_CHALLENGER_FLOOR = 0.45;
+const CONFIDENT_LEAD_RATIO = 1.15;
 /** Mouth-opening std-dev that counts as "clearly articulating". */
 const MOUTH_STD_SPEAKING = 0.05;
 /** Face width (fraction of frame width) that counts as "maximally prominent". */
@@ -174,7 +206,10 @@ const DEFAULT_REFEREE_WEIGHT = 0.25;
 interface Candidate {
   trackId: number;
   score: number;
+  /** Mean motion energy, normalised 0..1 ACROSS the people on screen this window. */
   motion: number;
+  /** Absolute mean face motion (not normalised) - the "did this face move at all" test. */
+  meanMotion: number;
   /** Voice-gated motion, normalised 0..1 across the candidates of this window. */
   vm: number;
   /** Absolute voice-gated motion before candidate normalisation. */
@@ -340,12 +375,26 @@ export function buildSpeakerTimeline(input: SpeakerTimelineInput): SpeakerTimeli
   };
 
   const ambiguousWindows: AmbiguousWindow[] = [];
+  // The switch controller owns "may the frame move to somebody else, and when".
+  // It is stateful across windows on purpose: that is what turns a stream of
+  // per-window scores into a stable speaker choice.
+  const switchSettings = {
+    ...resolveSwitchControlSettings({}),
+    ...(input.switchControl ?? {}),
+  };
+  const minHold = Math.max(
+    MIN_HOLD_SECONDS,
+    input.minHoldSeconds ?? MIN_HOLD_SECONDS,
+  );
+  const switchController: SwitchControlState = createSwitchControl();
+  const emptyDecisions = switchController.log;
 
   if (visibleTracks.length === 0) {
     return {
       segments: duration > 0 ? [{ t0: 0, t1: duration, trackId: null }] : [],
       speakerCount: 0,
       ambiguousWindows,
+      decisions: emptyDecisions,
     };
   }
 
@@ -393,7 +442,17 @@ export function buildSpeakerTimeline(input: SpeakerTimelineInput): SpeakerTimeli
       const score = voiced
         ? 0.4 * vmNorm + 0.15 * corr + 0.15 * energy + 0.1 * prominence + 0.15 * continuity + 0.05 * mouth
         : 0.3 * continuity + 0.3 * prominence + 0.2 * energy + 0.15 * vmNorm + 0.05 * corr;
-      return { trackId: track.id, score, motion: energy, vm: vmNorm, rawVm: vm, prominence, corr, mouth };
+      return {
+        trackId: track.id,
+        score,
+        motion: energy,
+        meanMotion: mean,
+        vm: vmNorm,
+        rawVm: vm,
+        prominence,
+        corr,
+        mouth,
+      };
     });
 
     if (candidates.length === 0) {
@@ -403,10 +462,18 @@ export function buildSpeakerTimeline(input: SpeakerTimelineInput): SpeakerTimeli
       continue;
     }
 
-    const qualifiedCandidates = candidates.filter((candidate) =>
-      voiced
-        ? candidate.rawVm >= 0.08 || candidate.mouth >= 0.35
-        : candidate.motion >= 0.08 || candidate.mouth >= 0.35,
+    // QUALIFICATION - "is this person even eligible for the frame?" - is an
+    // ABSOLUTE test of how much the face itself moved, on the same 0.012+ scale
+    // the liveness check uses. It used to be tested on `rawVm` (voice-gated
+    // motion, a SUM over samples) and on relative energy, so a person who moved
+    // only slightly was rejected for summing to a small number - even when they
+    // were the only face on screen, which left the frame with no speaker at all
+    // and made the camera fall back on a generic position.
+    //
+    // Eligibility is a floor, not a competition: the RELATIVE comparison that
+    // decides between people happens above, in the scores.
+    const qualifiedCandidates = candidates.filter(
+      (candidate) => candidate.meanMotion >= MIN_QUALIFYING_MOTION || candidate.mouth >= 0.35,
     );
     if (qualifiedCandidates.length === 0) {
       // Do not promote the least-weak background portrait simply because it
@@ -471,26 +538,28 @@ export function buildSpeakerTimeline(input: SpeakerTimelineInput): SpeakerTimeli
       }
     }
 
-    const decided = qualifiedCandidates[0];
-    prev = state.current
-      ? qualifiedCandidates.find((c) => c.trackId === state.current!.trackId)
-      : undefined;
-
-    let chosen = decided;
-    if (prev && prev.trackId !== decided.trackId) {
-      const heldEnough = t0 - (state.current?.t0 ?? 0) >= MIN_HOLD_SECONDS;
-      const beatsByMargin = decided.score >= prev.score * SWITCH_MARGIN;
-      // Reactive turn-change: the incumbent clearly stopped talking and the
-      // challenger clearly started - flip without waiting for the margin
-      // (prominence + continuity bias the raw scores toward the incumbent).
-      const reactive =
-        voiced && prev.vm < REACTIVE_INCUMBENT_CEILING && decided.vm >= REACTIVE_CHALLENGER_FLOOR;
-      if (!heldEnough || (!beatsByMargin && !reactive)) {
-        chosen = prev; // hysteresis: the current speaker keeps the label
-      }
-    }
-
-    push(t0, nextT, chosen.trackId);
+    // 4) THE SWITCH CONTROLLER. Every window is a VOTE, not a verdict: the
+    //    controller in ./switch-control needs continuous, convincing evidence
+    //    before the frame moves to somebody else, and it protects a
+    //    just-confirmed speaker from being snatched straight back. This is the
+    //    layer that stops one loud window (a laugh, a chair, a head turn) from
+    //    dragging the camera across the picture.
+    const ordered = qualifiedCandidates.map((candidate) => ({
+      trackId: candidate.trackId,
+      score: candidate.score,
+    }));
+    const evidence: SpeakerEvidence = {
+      t: (t0 + nextT) / 2,
+      duration: nextT - t0,
+      voiced,
+      // "Confident" = the lead is clear of the noise floor the cheap cues
+      // actually produce. A near-tie is reported as uncertainty, which keeps the
+      // current framing instead of picking a winner at random.
+      confident: isConfidentLead(ordered),
+      candidates: ordered,
+    };
+    const decision = decideSpeaker(switchController, evidence, switchSettings, minHold);
+    push(t0, nextT, decision.trackId);
   }
 
   // Make sure the timeline always spans the whole clip.
@@ -507,8 +576,29 @@ export function buildSpeakerTimeline(input: SpeakerTimelineInput): SpeakerTimeli
   // speaker overlay) from holding an old angle's decision into a new angle.
   const clipped = cuts.length === 0 ? segments : splitSegmentsAtCuts(segments, cuts);
 
-  const speakerIds = new Set(clipped.map((s) => s.trackId).filter((id): id is number => id !== null));
-  return { segments: clipped, speakerCount: speakerIds.size, ambiguousWindows };
+  const merged = mergeSpeakerSegments(clipped, cuts);
+  const speakerIds = new Set(merged.map((s) => s.trackId).filter((id): id is number => id !== null));
+  return {
+    segments: merged,
+    speakerCount: speakerIds.size,
+    ambiguousWindows,
+    decisions: switchController.log,
+  };
+}
+
+/**
+ * Is the leader clear enough of the runner-up to justify ANY decision at all?
+ *
+ * The cheap cues are noisy at 4-8 fps, so a 10 % score gap means nothing; a
+ * clear lead is ~15 % or more. When this returns false the controller keeps the
+ * current framing and records the window as uncertain - the alternative (picking
+ * whoever happens to be 3 % ahead this instant) is what made the camera flicker.
+ */
+function isConfidentLead(candidates: Array<{ score: number }>): boolean {
+  const [best, second] = candidates;
+  if (!best) return false;
+  if (!second) return true;
+  return best.score >= second.score * CONFIDENT_LEAD_RATIO;
 }
 
 /** Split speaker runs on every cut, keeping the same label either side. */

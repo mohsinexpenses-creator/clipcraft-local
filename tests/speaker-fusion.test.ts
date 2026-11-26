@@ -195,7 +195,7 @@ test('reactive turn change: a new speaker takes the frame within ~1.5s of starti
   }
 });
 
-test('reactive turn change is detected within 0.2 seconds at the 8 fps speaker cadence', () => {
+test('a genuine turn change at 8 fps is confirmed after the hold, never instantly', () => {
   const fps = 8;
   const duration = 4;
   const voice = Array.from({ length: duration * fps }, (_, i) => (i % 8 < 4 ? 0.1 : 0.9));
@@ -221,7 +221,19 @@ test('reactive turn change is detected within 0.2 seconds at the 8 fps speaker c
   });
   const switched = switches(result.segments).find((entry) => entry.to === 2);
   assert.ok(switched, JSON.stringify(result.segments));
-  assert.ok(switched.t - 2 < 0.2, `switched after ${(switched.t - 2).toFixed(3)}s`);
+  const delay = switched.t - 2;
+  // The old rule flipped the label on the FIRST window that looked better, which
+  // at 8 fps is 0.1-0.2 s - fast enough that a laugh or a head turn could move
+  // the camera. A turn is now confirmed: the frame must NOT move on the very next
+  // window, and it must follow the real change promptly once the ~0.8 s evidence
+  // period is satisfied (B took the frame inside A's minimum hold here, so the
+  // hold - not the confirmation - is what bounds the delay).
+  assert.ok(delay > 0.2, `switched after ${delay.toFixed(3)}s - a single window still won the turn`);
+  assert.ok(delay <= 1.2, `switched after ${delay.toFixed(3)}s - too late for a real turn change`);
+  // And it is really a confirmation, not an accident of timing.
+  assert.equal(result.decisions.confirmed.length, 1, JSON.stringify(result.decisions));
+  assert.equal(result.decisions.confirmed[0].from, 1);
+  assert.equal(result.decisions.confirmed[0].to, 2);
 });
 
 test('hysteresis: a marginal challenger cannot flip the frame every window', () => {
