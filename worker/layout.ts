@@ -501,7 +501,8 @@ export function getSpeakerCameraSettings(
       0.1,
       2
     ),
-    minMovePct: clampNumber(numberFlag(env.CAMERA_MIN_MOVE_PCT, 0.035), 0, 0.5),
+    // A PERCENTAGE of the crop (3.5 = ignore moves smaller than 3.5% of it).
+    minMovePct: clampNumber(numberFlag(env.CAMERA_MIN_MOVE_PCT, 3.5), 0, 50) / 100,
     switchMode: switchRaw === "cut" || switchRaw === "instant" ? "cut" : "glide",
     cutaways: enabledFlag(env.SPEAKER_CUTAWAYS),
     speakerHoldSeconds: clampNumber(

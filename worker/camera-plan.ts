@@ -1428,20 +1428,27 @@ function planTimeline(
     // Walk the run's own timeline: lock → (cutaway → lock)*
     let cursor = at;
     const currentPos = run.anchor;
-    const pushLock = (start: number, until: number, pos: { x: number; y: number }, kind: CameraSegment['entry']) => {
+    const pushLock = (
+      start: number,
+      until: number,
+      pos: { x: number; y: number },
+      kind: CameraSegment['entry'],
+      /** When the window has finished travelling there (== start for a cut). */
+      arrived = start,
+    ) => {
       if (until - start <= 1e-6) return;
       segments.push({
         kind: 'lock',
         trackId: run.trackId,
         start: round3(start),
-        arrive: round3(kind === 'glide' ? start : start),
+        arrive: round3(Math.max(start, arrived)),
         until: round3(until),
         pos: { x: pos.x, y: pos.y },
         entry: kind,
       });
     };
 
-    pushLock(at, runCutaways.length > 0 ? runCutaways[0].t : run.t1, currentPos, entry);
+    pushLock(at, runCutaways.length > 0 ? runCutaways[0].t : run.t1, currentPos, entry, arrive);
 
     for (let c = 0; c < runCutaways.length; c += 1) {
       const cutaway = runCutaways[c];

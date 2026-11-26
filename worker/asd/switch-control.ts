@@ -147,6 +147,14 @@ function freshLog(): SwitchDecisionLog {
   };
 }
 
+/**
+ * Hard floor on the margin a challenger needs while the incumbent is on screen.
+ * Expressed as a score RATIO; 1.15 is the same "clear lead" bar the fusion uses to
+ * call a window decisive at all, so a setting below it cannot make the camera
+ * react to a lead the cues themselves consider ambiguous.
+ */
+const MIN_LEAD_MARGIN = 1.15;
+
 export function createSwitchControl(): SwitchControlState {
   return {
     current: null,
@@ -251,14 +259,26 @@ export function decideSpeaker(
     return { trackId: state.current, reason: 'uncertain' };
   }
 
-  const held = evidence.t - state.since >= minHoldSeconds - 1e-9;
+  // Time for a camera move to have happened and been watched. A challenger that
+  // takes over 0.1 s after the previous switch would produce TWO moves inside one
+  // transition - exactly the "two moves a few frames apart" the planner avoids.
+  // The minimum hold is therefore measured from the CONFIRMED switch, not from the
+  // moment a label was adopted.
+  const held = evidence.t - state.confirmedAt >= minHoldSeconds - 1e-9;
   const cooldownUntil = state.cooldowns.get(top.trackId) ?? Number.NEGATIVE_INFINITY;
   const inCooldown = evidence.t < cooldownUntil - 1e-9;
   // A speaker who keeps bouncing back needs progressively stronger proof.
   const repeated = state.repeatTurns.get(top.trackId) ?? 0;
-  const requiredMargin = inCooldown
-    ? settings.cooldownMargin + 0.15 * repeated
-    : settings.holdMargin;
+  // A challenger's lead must survive the noise the cheap cues actually produce:
+  // `holdMargin` (0.82 - a ~22% margin over the incumbent) is the documented floor,
+  // and the cooldown adds more on top. Anything below it is a fluctuation, not a
+  // change of speaker.
+  const requiredMargin = Math.max(
+    MIN_LEAD_MARGIN,
+    inCooldown
+      ? settings.cooldownMargin + 0.15 * repeated
+      : Math.min(1, settings.holdMargin),
+  );
   const strongLead = top.score >= incumbent.score * requiredMargin;
 
   if (!strongLead) {
@@ -371,11 +391,13 @@ export function resolveSwitchControlSettings(
       0,
       5,
     ),
-    minConfidence: clamp(
-      num(env.SPEAKER_CONFIRM_MIN_CONFIDENCE, SWITCH_CONTROL_DEFAULTS.minConfidence) / 100,
-      0,
-      1,
-    ),
+    // The flag is a PERCENTAGE (how much clearer than the runner-up the challenger
+    // must be), but the default is already a fraction - so only an explicit value
+    // is divided by 100. Without this the default silently became 0.0012 and any
+    // lead counted as convincing.
+    minConfidence: env.SPEAKER_CONFIRM_MIN_CONFIDENCE?.trim()
+      ? clamp(num(env.SPEAKER_CONFIRM_MIN_CONFIDENCE, 0) / 100, 0, 1)
+      : SWITCH_CONTROL_DEFAULTS.minConfidence,
     cooldownSeconds: clamp(
       num(env.SPEAKER_SWITCH_COOLDOWN_SECONDS, SWITCH_CONTROL_DEFAULTS.cooldownSeconds),
       0,
@@ -428,6 +450,12 @@ export function mergeSpeakerSegments(
 /**
  * Reverse switches: a turn that is undone within `windowSeconds` (A -> B -> A).
  * A high count is the signature of ping-pong, so it is reported per clip.
+ *
+ * The clock runs from the A -> B switch (when B TOOK the frame) to the B -> A
+ * switch (when it was handed back) - that interval is the one a viewer sees as
+ * "it jumped there and immediately back". Measuring from when A originally got the
+ * frame would miss every quick reversal except one that happens in the first
+ * second of a very long lock.
  */
 export function countReverseSwitches(
   segments: SpeakerSegment[],
@@ -439,7 +467,7 @@ export function countReverseSwitches(
   let reverses = 0;
   for (let i = 2; i < labels.length; i += 1) {
     const [first, second, third] = [labels[i - 2], labels[i - 1], labels[i]];
-    if (first.id === third.id && second.id !== first.id && third.t0 - first.t0 <= windowSeconds) {
+    if (first.id === third.id && second.id !== first.id && third.t0 - second.t0 <= windowSeconds) {
       reverses += 1;
     }
   }
