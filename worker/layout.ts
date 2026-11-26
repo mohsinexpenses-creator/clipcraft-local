@@ -654,6 +654,7 @@ export function formatCameraQaLog(report: CameraQaReport): string {
     `glidesOverHalfSecond=${report.glidesOverHalfSecond} ` +
     `edgeLimitedFrames=${report.edgeLimitedFrames} ` +
     `headOutsideCropFrames=${report.framesWithHeadOutsideCrop} ` +
+    `headOutsideWhileSettled=${report.framesWithHeadOutsideCropSettled} ` +
     `pctHeadInsideCrop=${report.pctFramesHeadInsideCrop}% ` +
     `headUnfittableFrames=${report.framesWithHeadUnfittable} ` +
     `pctHeadSafelyFramed=${report.pctFramesHeadSafelyFramed}% ` +

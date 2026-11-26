@@ -1685,6 +1685,8 @@ export interface CameraQaReport {
   edgeLimitedFrames: number;
   /** Frames where the head could not fit inside the crop at all. */
   framesWithHeadOutsideCrop: number;
+  /** The subset above that is NOT mid-glide: a real framing defect, not travel. */
+  framesWithHeadOutsideCropSettled: number;
   framesChecked: number;
   edgeLimited: boolean;
   /**
@@ -1874,6 +1876,7 @@ function measureRanges(
   let maxSettledOffset = 0;
   let edgeLimited = 0;
   let headOutside = 0;
+  let headOutsideSettled = 0;
   let headUnfittable = 0;
   let insideHead = 0;
   let insideSafeHead = 0;
@@ -1883,7 +1886,12 @@ function measureRanges(
   for (const range of ranges) {
     const from = Math.max(0, Math.min(range.t0, options.durationSeconds));
     const to = Math.max(from, Math.min(range.t1, options.durationSeconds));
-    for (let t = from; t < to; t += step) {
+    // Integer-stepped grid: `t += 0.1` drifts (4.999999...) and a probe epsilon
+    // past a segment boundary answers "who is speaking?" with the previous
+    // speaker, which then reads as a framing defect on a settled frame.
+    const steps = Math.ceil((to - from) / step - 1e-9);
+    for (let index = 0; index < steps; index += 1) {
+      const t = from + index * step;
       let nearest: CameraSample | null = null;
       if (lookup) {
         nearest = lookup(t, range.trackId);
@@ -1962,6 +1970,10 @@ function measureRanges(
         insideSafeHead += 1;
       } else if (cutLeft || cutRight || cutTop || cutBottom) {
         headOutside += 1;
+        // Settled frames are the ones a viewer actually sits on; mid-glide frames
+        // are on their way, so the split is what separates a framing defect from
+        // the unavoidable cost of easing into the new framing.
+        if (!isTransition(options.path, t)) headOutsideSettled += 1;
       } else {
         insideHead += 1;
         const marginX = HEAD_SAFETY_MARGIN * options.cropW;
@@ -2012,6 +2024,7 @@ function measureRanges(
     glidesOverHalfSecond: options.path.moves.filter((move) => move.duration > 0.5).length,
     edgeLimitedFrames: edgeLimited,
     framesWithHeadOutsideCrop: headOutside,
+    framesWithHeadOutsideCropSettled: headOutsideSettled,
     framesChecked: checked,
     edgeLimited: edgeLimited > 0,
     pctFramesHeadInsideCrop:

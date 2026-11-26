@@ -283,6 +283,28 @@ test('[CAMERA-MOVE] names every event and why it happened', () => {
   assert.match(line, /to=\d+,\d+/);
 });
 
+test('QA separates head-outside frames during a glide from a real framing defect', () => {
+  // Two speakers far apart: the camera MUST travel between them, so some frames
+  // are legitimately mid-glide. What must never happen is the head leaving the
+  // crop once the camera has settled - that is the defect the metric is for.
+  const a = track(1, 10, () => ({ cx: 400, cy: 420 }));
+  const b = track(2, 10, () => ({ cx: 1520, cy: 420 }));
+  const single = plan(asd([a, b], [{ trackId: 1, t0: 0, t1: 5 }, { trackId: 2, t0: 5, t1: 10 }]), {});
+  const qa = measureCameraPlanQa(single.cameraPlan!, [a, b], {
+    srcW: SRC.w,
+    srcH: SRC.h,
+    cropW: single.cropW,
+    cropH: single.cropH,
+    anchorY: ANCHOR_Y,
+    durationSeconds: 10,
+  });
+  assert.equal(qa.framesWithHeadOutsideCropSettled, 0, 'settled framing must be correct');
+  assert.ok(
+    qa.framesWithHeadOutsideCropSettled <= qa.framesWithHeadOutsideCrop,
+    'the settled count is a subset of the total',
+  );
+});
+
 test('a source cut is a hard switch, reported as one', () => {
   const speaker = track(1, 10, () => ({ cx: 400, cy: 420 }));
   const single = plan(asd([speaker], [{ trackId: 1, t0: 0, t1: 10 }]), { cuts: [5] });
