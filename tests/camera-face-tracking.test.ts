@@ -161,7 +161,8 @@ test('the opening frame is validated: the diagnostic says whether a face is real
   // nothing about the source changed).
   const openingMove = plan.path.moves.find((move) => move.t >= 2.5 - 1e-6);
   assert.ok(openingMove, JSON.stringify(plan.path.moves));
-  assert.ok(openingMove!.duration <= 0.5, 'a controlled transition, not a jump');
+  assert.ok(openingMove!.duration <= 0.8, 'a controlled transition, not a jump');
+  assert.ok(openingMove!.duration >= 0.3, `a move a viewer can follow (${openingMove!.duration}s)`);
   // One short glide, and the window is on the subject within half a second.
   const settledAt = positionAtPath(plan.path, openingMove!.t + openingMove!.duration + 0.01);
   assert.ok(Math.abs(settledAt.x - (900 - 304)) < 200, JSON.stringify(settledAt));

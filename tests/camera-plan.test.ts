@@ -149,9 +149,11 @@ test('the dead zone is 10% of the crop width and 8% of its height (flags change 
   assert.equal(settings.mode, 'locked', 'locked is the default');
   assert.equal(settings.deadZoneXPct, 0.1);
   assert.equal(settings.deadZoneYPct, 0.08);
-  assert.equal(settings.confirmSeconds, 0.4);
-  assert.equal(settings.recentreSeconds, 0.35);
-  assert.equal(settings.speakerGlideSeconds, 0.1);
+  assert.equal(settings.confirmSeconds, 0.9);
+  assert.equal(settings.recentreSeconds, 0.55);
+  assert.equal(settings.speakerGlideSeconds, 0.55);
+  assert.equal(settings.turnGlideSeconds, 0.35);
+  assert.equal(settings.minMovePct, 0.035);
   assert.equal(settings.switchMode, 'glide');
   assert.equal(settings.cutaways, false, 'SPEAKER_CUTAWAYS is off by default');
   assert.equal(settings.speakerHoldSeconds, 6);
@@ -182,14 +184,14 @@ test('the dead zone is 10% of the crop width and 8% of its height (flags change 
 // Task 1: a slow drift past the dead zone = exactly ONE re-centre
 // ---------------------------------------------------------------------------
 
-test('a slow drift beyond the dead zone is exactly ONE 0.35s recentre, never a follow', () => {
+test('a slow drift beyond the dead zone is exactly ONE ease-in recentre, never a follow', () => {
   // 90 px over 6 s, then still (a talker sliding back into the chair arm).
   const drifting = track(1, 30, (t) => ({ cx: 400 + Math.min(90, t * 15), cy: 420 }));
   const single = plan(asd([drifting], [{ trackId: 1, t0: 0, t1: 30 }]));
   const moves = single.camera!.moves;
   assert.equal(moves.length, 1, `one re-centre (got ${moves.length})`);
-  assert.equal(moves[0].duration, 0.35, 'one fixed short glide');
-  assert.ok(moves[0].t > 2, `only after the 0.4s confirmation (t=${moves[0].t})`);
+  assert.equal(moves[0].duration, 0.55, 'one fixed, eased glide the viewer can follow');
+  assert.ok(moves[0].t > 2, `only after the confirmation period (t=${moves[0].t})`);
   assert.ok(
     moves[0].x > single.camera!.x0,
     'and it moves in the direction the face went'
@@ -201,14 +203,17 @@ test('a slow drift beyond the dead zone is exactly ONE 0.35s recentre, never a f
   }
 });
 
-test('no glide longer than 0.5 s, whatever the speaker does', () => {
+test('every glide stays short enough to read as a move, never a pan', () => {
   const talker = track(1, 90, (t) => ({
     cx: 700 + 250 * Math.sin(2 * Math.PI * 0.05 * t),
     cy: 400,
   }));
   const single = plan(asd([talker], [{ trackId: 1, t0: 0, t1: 90 }]));
+  // 0.4-0.7 s is the band where a camera move reads as intentional; nothing may
+  // become a multi-second pan, and nothing may snap.
   for (const move of single.camera!.moves) {
-    assert.ok(move.duration <= 0.5, `glide at t=${move.t} lasts ${move.duration}s`);
+    assert.ok(move.duration >= 0.25, `glide at t=${move.t} snaps (${move.duration}s)`);
+    assert.ok(move.duration <= 0.8, `glide at t=${move.t} drags (${move.duration}s)`);
   }
   const qa = measureCameraQa({
     path: single.camera!,
@@ -220,7 +225,12 @@ test('no glide longer than 0.5 s, whatever the speaker does', () => {
     anchorY: single.faceAnchorY,
     durationSeconds: 90,
   });
-  assert.equal(qa.glidesOverHalfSecond, 0);
+  // A deliberate 0.55 s travel IS over the QA metric's 0.5 s "long move" bound, so
+  // that counter is no longer an all-zero guarantee - `longestGlideSeconds` is
+  // what proves nothing became a pan. What must stay bounded is how OFTEN the
+  // camera moves: a 500 px continuous sway is a genuinely moving subject, but it
+  // still may not turn into more than one camera event every two seconds.
+  assert.ok(qa.longestGlideSeconds <= 0.8, `longest glide ${qa.longestGlideSeconds}s`);
   assert.ok(qa.motionEventsPerMinute < 30, `events/min ${qa.motionEventsPerMinute}`);
 });
 
@@ -228,7 +238,7 @@ test('no glide longer than 0.5 s, whatever the speaker does', () => {
 // Task 1: alternating speakers
 // ---------------------------------------------------------------------------
 
-test('alternating speakers: one 0.1s glide per turn, instant in cut mode', () => {
+test('alternating speakers: one deliberate glide per turn, instant in cut mode', () => {
   const a = track(1, 20, () => ({ cx: 400, cy: 420 }));
   const b = track(2, 20, () => ({ cx: 1500, cy: 420 }));
   const turns = [
@@ -240,7 +250,10 @@ test('alternating speakers: one 0.1s glide per turn, instant in cut mode', () =>
   ];
   const gliding = plan(asd([a, b], turns));
   assert.equal(gliding.camera!.moves.length, 4, 'one switch per turn change');
-  for (const move of gliding.camera!.moves) assert.equal(move.duration, 0.1);
+  // A turn glide is a real camera move (0.3-0.7 s), eased, never the old 0.1 s snap.
+  for (const move of gliding.camera!.moves) {
+    assert.ok(move.duration >= 0.3 && move.duration <= 0.7, `turn glide ${move.duration}s`);
+  }
   assert.equal(gliding.camera!.cuts?.length ?? 0, 0, 'no hard switches in glide mode');
 
   const cutting = plan(asd([a, b], turns), { switchMode: 'cut' });
@@ -383,8 +396,8 @@ test('with 10 cutaways every switch still keeps its keyframes (nothing is droppe
   assert.ok(cameraPlan.glides >= 20, `every visit has its glides (${cameraPlan.glides})`);
   assert.equal(cameraPlan.glides, single.camera!.moves.length, 'all of them survive into the path');
   assert.equal(cameraPlan.keyframes, single.camera!.moves.length + (single.camera!.cuts?.length ?? 0));
-  // Still short glide after glide - no pan can cross a 0.5 s budget.
-  for (const move of single.camera!.moves) assert.ok(move.duration <= 0.5, `${move.duration}s glide`);
+  // Still short glide after glide - no single move becomes a long pan.
+  for (const move of single.camera!.moves) assert.ok(move.duration <= 0.8, `${move.duration}s glide`);
 });
 
 test('cutaway eligibility: live, big enough, on screen >=80%, co-visible, centerable', () => {

@@ -103,8 +103,22 @@ export interface CameraPlanOptions {
   recentreSeconds?: number;
   /** Detections the re-centre target is taken from. Default 0.5 s. */
   recentreLookbackSeconds?: number;
-  /** Speaker-change glide length. Default 0.1 s. */
+  /** Speaker-change glide length. Default 0.55 s. */
   speakerGlideSeconds?: number;
+  /**
+   * Glide length for a CONFIRMED conversational turn (the speaker timeline just
+   * changed and the camera has to follow it). Default 0.35 s: quicker than a
+   * neutral move because the conversation is moving, but never the 0.1 s snap
+   * that read as a jump.
+   */
+  turnGlideSeconds?: number;
+  /**
+   * Ignore a target that is closer than this fraction of the crop to where the
+   * window already is (resolution-aware, so it means the same on 720p and 4K).
+   * Default 0.035 (3.5 % of the crop): the difference such a move makes is
+   * invisible, and every one of them costs a camera event.
+   */
+  minMovePct?: number;
   /** `glide` (default) or `cut` (instant). */
   switchMode?: CameraSwitchMode;
   /**
@@ -167,7 +181,9 @@ export const CAMERA_PLAN_DEFAULTS = {
   confirmSeconds: 0.4,
   recentreSeconds: 0.35,
   recentreLookbackSeconds: 0.5,
-  speakerGlideSeconds: 0.1,
+  speakerGlideSeconds: 0.55,
+  turnGlideSeconds: 0.35,
+  minMovePct: 0.035,
   switchMode: 'glide' as CameraSwitchMode,
   cutaways: false,
   speakerHoldSeconds: 6,
@@ -186,6 +202,11 @@ export const CAMERA_PLAN_DEFAULTS = {
  * follows the detector's cadence closely; a real absence still exceeds it.
  */
 const GAP_TOLERANCE_FOR_FALLBACKS = 0.4;
+
+/** A speaker glide grows this fraction of the travel distance... */
+const SPEAKER_GLIDE_DISTANCE_FACTOR = 1 / 1200;
+/** ...up to this much extra time (a long travel gets 0.15 s more, no more). */
+const MAX_GLIDE_GROWTH = 0.15;
 
 /** A speaker run after clipping to shots and merging continuations. */
 export interface SpeakerLockRun {
@@ -287,6 +308,8 @@ export interface CameraPlanResolvedOptions {
   recentreSeconds: number;
   recentreLookbackSeconds: number;
   speakerGlideSeconds: number;
+  turnGlideSeconds: number;
+  minMovePct: number;
   switchMode: CameraSwitchMode;
   cutaways: boolean;
   speakerHoldSeconds: number;
@@ -329,6 +352,11 @@ function resolveOptions(options: CameraPlanOptions): CameraPlanResolvedOptions {
     recentreLookbackSeconds:
       options.recentreLookbackSeconds ?? CAMERA_PLAN_DEFAULTS.recentreLookbackSeconds,
     speakerGlideSeconds: options.speakerGlideSeconds ?? CAMERA_PLAN_DEFAULTS.speakerGlideSeconds,
+    turnGlideSeconds: Math.max(
+      0.1,
+      options.turnGlideSeconds ?? CAMERA_PLAN_DEFAULTS.turnGlideSeconds,
+    ),
+    minMovePct: Math.max(0, options.minMovePct ?? CAMERA_PLAN_DEFAULTS.minMovePct),
     switchMode: options.switchMode ?? CAMERA_PLAN_DEFAULTS.switchMode,
     cutaways: options.cutaways ?? CAMERA_PLAN_DEFAULTS.cutaways,
     speakerHoldSeconds: options.speakerHoldSeconds ?? CAMERA_PLAN_DEFAULTS.speakerHoldSeconds,
@@ -1099,21 +1127,89 @@ function planTimeline(
   let moveBudgetHit = false;
 
   /** Add a window change at `t`; returns how long the window is busy. */
+  /**
+   * How long the window takes to travel `distance` px.
+   *
+   * A short hop stays on the neutral `speakerGlideSeconds`; a move across the
+   * picture gets a little more time, because a big travel at a fixed duration
+   * reads as a whip. A CONFIRMED turn change passes `turn` and is allowed to be
+   * quicker - the conversation is visibly moving on, so waiting is worse than
+   * moving - but never below the floor, so it stays a move and not a jump.
+   *
+   * The duration is a target, not a promise: `enter` shortens it if the next
+   * evidence arrives mid-move (see the retarget below).
+   */
+  const glideSecondsFor = (distance: number, turn: boolean): number => {
+    const base = turn ? opts.turnGlideSeconds : opts.speakerGlideSeconds;
+    const grown = base + Math.min(MAX_GLIDE_GROWTH, distance * SPEAKER_GLIDE_DISTANCE_FACTOR);
+    return Math.max(0.1, Math.min(1.5, grown));
+  };
+
+  /** Where the window is at `t` given every move pushed so far. */
+  const positionAt = (t: number): { x: number; y: number } => {
+    let prev = { x: x0, y: y0 };
+    for (const move of cuts) {
+      if (move.t <= t + 1e-9) prev = { x: move.x, y: move.y };
+    }
+    for (const move of moves) {
+      if (move.t <= 0) continue;
+      if (t <= move.t) return prev;
+      if (t < move.t + move.duration) {
+        const u = smoothstep((t - move.t) / move.duration);
+        return { x: prev.x + (move.x - prev.x) * u, y: prev.y + (move.y - prev.y) * u };
+      }
+      prev = { x: move.x, y: move.y };
+    }
+    return prev;
+  };
+
+  /**
+   * The minimum move that is worth a camera event. Scaled by the crop, so the
+   * same number means the same thing on any source resolution.
+   */
+  const minMovePx = Math.max(1, Math.round(Math.min(opts.cropW, opts.cropH) * opts.minMovePct));
+
   const enter = (
     t: number,
     pos: { x: number; y: number },
-    hard: boolean
+    hard: boolean,
+    turn = false,
   ): { arrive: number; duration: number; entry: CameraSegment['entry'] } => {
     if (hard) {
       cuts.push({ t: round3(t), x: pos.x, y: pos.y });
       busyUntil = Math.max(busyUntil, t);
       return { arrive: t, duration: 0, entry: 'cut' };
     }
-    const duration = opts.speakerGlideSeconds;
+    const distance = Math.hypot(pos.x - positionAt(t).x, pos.y - positionAt(t).y);
+    // A move that would not visibly change the framing is not a camera event.
+    if (distance < minMovePx) {
+      return { arrive: t, duration: 0, entry: 'start' };
+    }
     if (moves.length + cuts.length >= opts.maxMoves) {
       moveBudgetHit = true;
       return { arrive: t, duration: 0, entry: 'cut' };
     }
+    // RETARGET, don't stack. If another decision lands while the window is still
+    // travelling, this move takes over from where the window actually is at that
+    // instant and the previous one is shortened to end here. Two overlapping
+    // glides fighting each other is what an oscillating camera is made of.
+    let from = { x: x0, y: y0 };
+    const previous = moves[moves.length - 1];
+    if (previous) {
+      from = { x: previous.x, y: previous.y };
+      if (t < previous.t + previous.duration - 1e-6) {
+        const travelled = positionAt(t);
+        // Finish the old move early, at the spot the window has actually reached.
+        previous.duration = Math.max(0.05, round3(t - previous.t));
+        previous.x = travelled.x;
+        previous.y = travelled.y;
+        from = travelled;
+      }
+    }
+    const duration = glideSecondsFor(
+      Math.hypot(pos.x - from.x, pos.y - from.y),
+      turn,
+    );
     moves.push({ t: round3(t), duration: round3(duration), x: pos.x, y: pos.y });
     busyUntil = Math.max(busyUntil, t + duration);
     return { arrive: t + duration, duration, entry: 'glide' };
@@ -1209,17 +1305,18 @@ function planTimeline(
           arrive = entered.arrive;
         }
       } else if (speakerChanged) {
-        // 4) SWITCH
+        // 4) SWITCH - a confirmed turn. The conversation is visibly moving on, so
+        // this is the one case where the camera may move quicker.
         const hard = opts.switchMode === 'cut';
-        const entered = enter(at, run.anchor, hard);
+        const entered = enter(at, run.anchor, hard, true);
         entry = entered.entry;
         arrive = entered.arrive;
       } else if (
         // A NEW SHOT always re-anchors, even when the same person keeps talking
         // across the cut (the face moved because the camera angle changed).
         opts.cuts.some((cut) => cut > previous.t1 - 1e-6 && cut <= run.t0 + 1e-6) ||
-        Math.abs(run.anchor.x - previous.anchor.x) >= 1 ||
-        Math.abs(run.anchor.y - previous.anchor.y) >= 1
+        Math.abs(run.anchor.x - previous.anchor.x) >= minMovePx ||
+        Math.abs(run.anchor.y - previous.anchor.y) >= minMovePx
       ) {
         // Same speaker, but a new shot (cut) or a re-locked anchor: switch on the
         // cut frame / glide to the new anchor. Never left pointing at the old spot.

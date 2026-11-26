@@ -384,9 +384,27 @@ export function detrendTrack(points: PanPoint[], strength = 1): PanPoint[] {
   return out;
 }
 
-/** How long (s) the crop window glides from one speaker to the next. */
-/** Complete a speaker-to-speaker camera move in about three frames at 30fps. */
-export const SPEAKER_GLIDE_SECONDS = 0.1;
+/**
+ * How long (s) the crop window glides from one speaker to the next.
+ *
+ * A speaker change is a real camera move - the frame travels across the picture -
+ * and 0.1 s (three frames at 30 fps) made it read as a jump rather than an
+ * operator following the conversation. 0.55 s is the slow end of the 0.4-0.7 s
+ * band that looks intentional without feeling sluggish on a fast exchange.
+ */
+export const SPEAKER_GLIDE_SECONDS = 0.55;
+/**
+ * Floor for a speaker-change glide. A move that is confirmed close to its next
+ * turn is allowed to be quicker (`SPEAKER_TURN_GLIDE_SECONDS`), but never a snap.
+ */
+export const SPEAKER_TURN_GLIDE_SECONDS = 0.35;
+/**
+ * The glide the LEGACY (rollback) path has always used. `CAMERA_MODE=legacy` must
+ * reproduce the recorded pre-lock output exactly, so it keeps this value while the
+ * locked planner moves to `SPEAKER_GLIDE_SECONDS`.
+ */
+const LEGACY_SPEAKER_GLIDE_SECONDS = 0.1;
+
 
 // ---------------------------------------------------------------------------
 // Camera settings (env flags). Every new behaviour is ON by default and every
@@ -425,10 +443,14 @@ function clampNumber(value: number, lo: number, hi: number): number {
  *   CAMERA_MODE=locked            (legacy = the previous continuous follow)
  *   CAMERA_HOLD_DEADZONE_PCT=10   % of the crop WIDTH the face may sway
  *   CAMERA_HOLD_DEADZONE_Y_PCT=8  % of the crop HEIGHT
- *   CAMERA_HOLD_CONFIRM_SECONDS=0.4   how long the face must stay out
- *   CAMERA_RECENTRE_SECONDS=0.35      one eased re-centre glide
+ *   CAMERA_HOLD_CONFIRM_SECONDS=0.9   how long the face must stay out
+ *   CAMERA_RECENTRE_SECONDS=0.55      one eased re-centre glide (the frame TRAVELS
+ *                                     from one framing to the next; 0.35 s read as
+ *                                     a twitch when the subject had really moved)
  *   CAMERA_SWITCH_MODE=glide      cut = instant speaker switches
- *   SPEAKER_GLIDE_SECONDS=0.1     speaker-change glide
+ *   SPEAKER_GLIDE_SECONDS=0.55    speaker-change glide
+ *   SPEAKER_TURN_GLIDE_SECONDS=0.35  quicker glide for a confirmed turn change
+ *   CAMERA_MIN_MOVE_PCT=3.5      ignore target moves below this % of the crop
  *   SPEAKER_CUTAWAYS=off          on = 6 s hold + 2 s listener cutaway
  *   SPEAKER_FOCUS_HOLD_SECONDS=6  SPEAKER_SWITCH_HOLD_SECONDS=2
  *   SPEAKER_CUTAWAY_PICK=random|prominent
@@ -455,8 +477,13 @@ export function getSpeakerCameraSettings(
     settleSeconds: clampNumber(numberFlag(env.CAMERA_SETTLE_SECONDS, 1), 0.2, 3),
     deadZoneXPct: clampNumber(numberFlag(env.CAMERA_HOLD_DEADZONE_PCT, 10), 0, 60) / 100,
     deadZoneYPct: clampNumber(numberFlag(env.CAMERA_HOLD_DEADZONE_Y_PCT, 8), 0, 60) / 100,
-    confirmSeconds: clampNumber(numberFlag(env.CAMERA_HOLD_CONFIRM_SECONDS, 0.4), 0, 3),
-    recentreSeconds: clampNumber(numberFlag(env.CAMERA_RECENTRE_SECONDS, 0.35), 0.1, 1.5),
+    // How long the face must stay clear of the dead zone before the frame moves.
+    // 0.4 s re-framed a slow, continuous drift every few seconds - a talker
+    // shifting their weight looked like a camera hunting for them. 0.9 s turns
+    // that into a handful of deliberate re-frames per minute; the median filter on
+    // the target still absorbs a genuine step within that time.
+    confirmSeconds: clampNumber(numberFlag(env.CAMERA_HOLD_CONFIRM_SECONDS, 0.9), 0, 3),
+    recentreSeconds: clampNumber(numberFlag(env.CAMERA_RECENTRE_SECONDS, 0.55), 0.1, 1.5),
     recentreLookbackSeconds: clampNumber(
       numberFlag(env.CAMERA_RECENTRE_LOOKBACK_SECONDS, 0.5),
       0.1,
@@ -467,6 +494,14 @@ export function getSpeakerCameraSettings(
       0.05,
       2
     ),
+    // A confirmed turn change: the same move, quicker, because the conversation
+    // is clearly moving on (never below the floor, never a snap).
+    turnGlideSeconds: clampNumber(
+      numberFlag(env.SPEAKER_TURN_GLIDE_SECONDS, SPEAKER_TURN_GLIDE_SECONDS),
+      0.1,
+      2
+    ),
+    minMovePct: clampNumber(numberFlag(env.CAMERA_MIN_MOVE_PCT, 0.035), 0, 0.5),
     switchMode: switchRaw === "cut" || switchRaw === "instant" ? "cut" : "glide",
     cutaways: enabledFlag(env.SPEAKER_CUTAWAYS),
     speakerHoldSeconds: clampNumber(
@@ -619,7 +654,7 @@ function buildSpeakerPath(asd: AsdResult, detrend = true): PanPoint[] {
       points.push({ ...previous, t: segment.t0 });
       points.push({
         ...target,
-        t: Math.min(segment.t0 + SPEAKER_GLIDE_SECONDS, segment.t1),
+        t: Math.min(segment.t0 + LEGACY_SPEAKER_GLIDE_SECONDS, segment.t1),
       });
     }
 
@@ -627,7 +662,7 @@ function buildSpeakerPath(asd: AsdResult, detrend = true): PanPoint[] {
     const trackPath = trackToResponsivePanPoints(track, detrend);
     points.push(
       ...trackPath.filter(
-        (point) => point.t > segment.t0 + SPEAKER_GLIDE_SECONDS && point.t < segment.t1,
+        (point) => point.t > segment.t0 + LEGACY_SPEAKER_GLIDE_SECONDS && point.t < segment.t1,
       ),
     );
 

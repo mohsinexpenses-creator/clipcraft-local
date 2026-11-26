@@ -2,7 +2,6 @@ import { Track, TrackPoint, effectiveFaceMotion } from './tracker';
 import {
   SwitchControlState,
   SwitchDecisionLog,
-  SwitchReason,
   SpeakerEvidence,
   SwitchControlSettings,
   createSwitchControl,
@@ -489,9 +488,6 @@ export function buildSpeakerTimeline(input: SpeakerTimelineInput): SpeakerTimeli
 
     qualifiedCandidates.sort((a, b) => b.score - a.score);
     const best = qualifiedCandidates[0];
-    let prev = state.current
-      ? qualifiedCandidates.find((c) => c.trackId === state.current!.trackId)
-      : undefined;
 
     // 3) AMBIGUOUS WINDOWS. Two people qualify and the cheap cues cannot tell
     //    them apart: the scores are within a few percent, or the leader wins on

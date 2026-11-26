@@ -135,11 +135,14 @@ test('speaker-focus plan follows the talking person and glides at the change', (
   assert.ok(plan.camera, 'has a camera path');
   const path = plan.camera!;
   assert.ok(path.x0 + plan.cropW / 2 < 800, `starts on the left speaker (x0=${path.x0})`);
-  // One 0.1 s glide to speaker B - not a continuous follow of the raw track.
+  // One glide to speaker B - not a continuous follow of the raw track.
   assert.equal(path.moves.length, 1, `exactly one speaker switch (${path.moves.length})`);
-  assert.equal(path.moves[0].duration, 0.1);
+  assert.ok(
+    path.moves[0].duration >= 0.3 && path.moves[0].duration <= 0.7,
+    `the turn glide is a deliberate move (${path.moves[0].duration}s)`
+  );
   assert.ok(path.moves[0].x + plan.cropW / 2 > 1100, `ends on the right speaker (x=${path.moves[0].x})`);
-  assert.equal(SPEAKER_GLIDE_SECONDS, 0.1, 'camera transition completes in about three frames at 30fps');
+  assert.equal(SPEAKER_GLIDE_SECONDS, 0.55, 'a speaker change is a real move, not a three-frame snap');
 });
 
 test('legacy mode (CAMERA_MODE=legacy) still emits the continuous pan keyframes', () => {
@@ -191,7 +194,12 @@ test('speaker-focus rapidly moves to the next active speaker', () => {
   const path = plan.camera!;
   assert.equal(path.moves.length, 1, 'one switch glide');
   assert.equal(path.moves[0].t, 5, 'the glide starts on the turn change');
-  assert.equal(path.moves[0].duration, 0.1, 'and reaches speaker B within 0.1 seconds');
+  // A confirmed turn change is the one case where the camera may move quickly -
+  // but it is a real move now, not the 0.1 s snap that read as a jump.
+  assert.ok(
+    path.moves[0].duration >= 0.3 && path.moves[0].duration <= 0.7,
+    `reaches speaker B in ${path.moves[0].duration}s (0.3-0.7 band)`
+  );
   assert.ok(path.moves[0].x + plan.cropW / 2 > 1100, 'camera is on speaker B');
 });
 test('motionless image faces do not become speaker-focus or split-screen people', () => {
@@ -225,8 +233,8 @@ test('motionless image faces do not become speaker-focus or split-screen people'
 test('speaker-focus: a slow drift past the dead zone gives exactly ONE short re-centre', () => {
   // A talker who slowly slides 120px over 3s and stays there. The locked camera
   // holds until the face's recent median is clearly outside the dead zone (>60px
-  // from the anchor, +15% hysteresis), then does a single 0.35s eased hop - it
-  // never chases the per-sample track.
+  // from the anchor, +15% hysteresis), then does a single eased hop - it never
+  // chases the per-sample track.
   const drift = 120;
   const moving = panTrack(
     1,
@@ -241,7 +249,7 @@ test('speaker-focus: a slow drift past the dead zone gives exactly ONE short re-
   const path = plan.camera!;
   assert.equal(plan.cameraMode, 'locked');
   assert.equal(path.moves.length, 1, `exactly one re-centre (got ${path.moves.length})`);
-  assert.equal(path.moves[0].duration, 0.35, 'one short eased glide');
+  assert.equal(path.moves[0].duration, 0.55, 'one eased glide a viewer can follow');
   // The anchor is the median of the first second (the drift has already begun).
   assert.ok(
     Math.abs(path.x0 + plan.cropW / 2 - 418) < 15,
@@ -291,7 +299,7 @@ test('cutaways on: one 2 s listener visit after the 6 s hold, then back to the s
   // Visit + return per cutaway, plus at most a re-centre or two: a handful of
   // keyframes, never a continuous follow.
   assert.ok(path.moves.length <= 6, `a handful of keyframes (${path.moves.length})`);
-  for (const move of path.moves) assert.ok(move.duration <= 0.5, `short glide (${move.duration}s)`);
+  for (const move of path.moves) assert.ok(move.duration <= 0.8, `short glide (${move.duration}s)`);
 });
 
 test('cutaways on: a listener that cannot be centred is skipped, with the reason logged', () => {
