@@ -60,13 +60,12 @@ import {
   CameraMove,
   CameraPath,
   CameraSample,
-  HEAD_DOWN,
-  HEAD_HALF_WIDTH,
-  HEAD_UP,
   FACE_DEADZONE_HYSTERESIS,
   buildLockedCamera,
   faceBoxInsideWindow,
   filterSamples,
+  HEAD_SAFETY_MARGIN,
+  headExtent,
   headInsideSafeZone,
   smoothstep,
   windowFor,
@@ -258,8 +257,18 @@ export interface CameraPlan {
   segments: CameraSegment[];
   /** Eased re-centres inside a lock (t = when the glide starts). */
   recentres: Array<{ t: number; duration: number; to: { x: number; y: number } }>;
-  /** Speaker changes (t, who, how). */
-  switches: Array<{ t: number; trackId: number; mode: 'cut' | 'glide' }>;
+  /** Speaker changes (t, who, how, and the target it moved to). */
+  switches: Array<{
+    t: number;
+    trackId: number;
+    mode: 'cut' | 'glide';
+    /** Window top-left the camera moved to. */
+    to: { x: number; y: number };
+    /** How long the move takes (0 for a hard switch). */
+    duration: number;
+    /** Why: a confirmed turn, a source cut, or entering/exiting a cutaway. */
+    reason: 'speaker-change' | 'source-cut' | 'cutaway' | 'reanchor';
+  }>;
   cutaways: Array<{ t: number; duration: number; trackId: number; speakerId: number }>;
   /** Cutaways that were considered and rejected, with the reason. */
   skippedCutaways: Array<{ t: number; reason: string }>;
@@ -399,7 +408,13 @@ function samplesBetween(track: Track, t0: number, t1: number): CameraSample[] {
   return filterSamples(
     track.points
       .filter((point) => point.t >= t0 - 1e-6 && point.t <= t1 + 1e-6)
-      .map((point) => ({ t: point.t, cx: point.cx, cy: point.cy, w: point.w }))
+      .map((point) => ({
+        t: point.t,
+        cx: point.cx,
+        cy: point.cy,
+        w: point.w,
+        ...(point.h !== undefined ? { h: point.h } : {}),
+      }))
   );
 }
 
@@ -619,6 +634,33 @@ function fillVisibleFaceFallbacks(
   return output;
 }
 
+/**
+ * Does `anchor` frame the whole head for the detections of this run (the way the
+ * quality report measures it), at least as often as the plain centre anchor?
+ *
+ * The head-aware anchor is preferred, but only when it does not actually make
+ * things worse: for a small, off-centre face the safety margin can push the window
+ * against a frame edge in the wrong direction. Asking the real detections keeps the
+ * choice honest instead of trusting the geometry in isolation.
+ */
+function anchorKeepsRunHeadInside(
+  anchor: { x: number; y: number },
+  samples: CameraSample[],
+  shape: ReturnType<typeof windowShapeOf>,
+): boolean {
+  if (samples.length === 0) return true;
+  const centre = windowFor(
+    median(samples.map((sample) => sample.cx)),
+    median(samples.map((sample) => sample.cy)),
+    shape,
+  );
+  const inside = (pos: { x: number; y: number }): number =>
+    samples.filter((sample) =>
+      faceBoxInsideWindow(sample, pos, { cropW: shape.cropW, cropH: shape.cropH }),
+    ).length;
+  return inside(anchor) >= inside(centre);
+}
+
 // ---------------------------------------------------------------------------
 // Face visibility: gaps, fallbacks and post-cut re-anchoring
 // ---------------------------------------------------------------------------
@@ -676,7 +718,7 @@ function faceNear(
     }
   }
   if (!best || bestDistance > tolerance) return null;
-  return { t: best.t, cx: best.cx, cy: best.cy, w: best.w };
+  return toSample(best);
 }
 
 /** The first detection of `track` at or after `t` (within `horizonSeconds`). */
@@ -783,15 +825,30 @@ export function buildLockedSpeakerCamera(
     const cx = median(settled.map((sample) => sample.cx));
     const cy = median(settled.map((sample) => sample.cy));
     const widths = settled.map((sample) => sample.w).sort((a, b) => a - b);
+    const heights = settled
+      .map((sample) => sample.h)
+      .filter((value): value is number => value !== undefined && Number.isFinite(value))
+      .sort((a, b) => a - b);
     const anchorSample: CameraSample = {
       t: settled[0].t,
       cx,
       cy,
       w: widths[Math.floor(widths.length / 2)] ?? 0,
+      ...(heights.length > 0 ? { h: heights[Math.floor(heights.length / 2)] } : {}),
     };
+    // ANCHOR, head-aware. `windowForHead` also has to break ties between "face at
+    // the configured headroom" and "whole head inside the crop"; near the left or
+    // right edge of the source those disagree, and keeping the head intact wins.
+    let anchor = windowForHead(anchorSample, shape);
+    if (!anchorKeepsRunHeadInside(anchor, settled, shape)) {
+      // The head-aware framing is worse for the detections this run actually has
+      // (a thin face close to an edge): keep the classic centre anchor, which is
+      // what every recorded plan and fixture was built with.
+      anchor = windowFor(anchorSample.cx, anchorSample.cy, shape);
+    }
     runs.push({
       ...run,
-      anchor: windowForHead(anchorSample, shape),
+      anchor,
       face: { cx, cy },
       settleSamples: settled.length,
       firstDetectionAt: settled[0].t,
@@ -828,10 +885,23 @@ export function buildLockedSpeakerCamera(
   for (let i = 1; i < lockSegments.length; i += 1) {
     const previous = lockSegments[i - 1];
     if (previous.trackId === lockSegments[i].trackId) continue;
+    const startsAtSourceCut = opts.cuts.some(
+      (cut) => Math.abs(cut - lockSegments[i].start) < 0.02,
+    );
+    const reanchored = timelineResult.fallbackCuts.some(
+      (entry) => Math.abs(entry.t - lockSegments[i].start) < 0.02,
+    );
     switches.push({
       t: lockSegments[i].start,
       trackId: lockSegments[i].trackId,
       mode: lockSegments[i].entry === 'cut' ? 'cut' : 'glide',
+      to: { x: lockSegments[i].pos.x, y: lockSegments[i].pos.y },
+      duration: Math.max(0, lockSegments[i].arrive - lockSegments[i].start),
+      reason: reanchored
+        ? 'reanchor'
+        : startsAtSourceCut
+          ? 'source-cut'
+          : 'speaker-change',
     });
   }
 
@@ -1610,6 +1680,32 @@ export interface CameraQaReport {
   framesWithHeadOutsideCrop: number;
   framesChecked: number;
   edgeLimited: boolean;
+  /**
+   * Share of measured frames where the COMPLETE HEAD (hair above the box, jaw
+   * below, sides of the head - not just the face centre) is inside the crop.
+   * This is the framing quality number: a face centre can sit comfortably in the
+   * dead zone while the top of the head is already cut off.
+   */
+  pctFramesHeadInsideCrop: number;
+  /**
+   * Share of measured frames where the head is inside the crop minus the safety
+   * margin (`HEAD_SAFETY_MARGIN` of the crop on each side) - "not touching the
+   * edge", the framing a viewer reads as intentional.
+   */
+  pctFramesHeadSafelyFramed: number;
+  /**
+   * Worst offset (px) between the window position the plan used and what the
+   * plan itself encodes after 1 s. They must be identical; a non-zero value means
+   * the rendered crop drifts away from the plan, which is what a large
+   * "maximum crop displacement" reading usually is.
+   */
+  maxPathDriftPx: number;
+  /**
+   * Frames where the head could not fit the crop ANYWHERE in the source (pinned
+   * against the frame edge on both sides). Counted as framed, and reported so a
+   * reviewer knows why the safe-framing number is not 100%.
+   */
+  framesWithHeadUnfittable: number;
 }
 
 /**
@@ -1704,7 +1800,7 @@ function nearestDetection(track: Track, t: number, tolerance: number): CameraSam
     if (forward === null || point.t < forward.t) forward = point;
   }
   if (forward && forward.t - t <= tolerance) {
-    return { t: forward.t, cx: forward.cx, cy: forward.cy, w: forward.w };
+    return toSample(forward);
   }
   return nearestAnyDetection(track, t, tolerance);
 }
@@ -1721,7 +1817,18 @@ function nearestAnyDetection(track: Track, t: number, tolerance: number): Camera
     }
   }
   if (!best || bestDistance > tolerance) return null;
-  return { t: best.t, cx: best.cx, cy: best.cy, w: best.w };
+  return toSample(best);
+}
+
+/** A track point as a camera sample, keeping the detected box height when present. */
+function toSample(point: Track['points'][number]): CameraSample {
+  return {
+    t: point.t,
+    cx: point.cx,
+    cy: point.cy,
+    w: point.w,
+    ...(point.h !== undefined ? { h: point.h } : {}),
+  };
 }
 
 /**
@@ -1760,6 +1867,9 @@ function measureRanges(
   let maxSettledOffset = 0;
   let edgeLimited = 0;
   let headOutside = 0;
+  let headUnfittable = 0;
+  let insideHead = 0;
+  let insideSafeHead = 0;
   let transitions = 0;
 
   const step = 0.1;
@@ -1812,16 +1922,70 @@ function measureRanges(
         // The crop cannot move any further towards this person: the framing is as
         // good as the source allows, and that is NOT a camera defect.
         edgeLimited += 1;
-      } else if (
-        (canMoveX &&
-          (nearest.cx - HEAD_HALF_WIDTH * nearest.w < win.x ||
-            nearest.cx + HEAD_HALF_WIDTH * nearest.w > win.x + options.cropW)) ||
-        (canMoveY &&
-          (nearest.cy - HEAD_UP * nearest.w < win.y ||
-            nearest.cy + HEAD_DOWN * nearest.w > win.y + options.cropH))
-      ) {
-        headOutside += 1;
       }
+      // The COMPLETE HEAD against the crop, never the face centre: a centre can
+      // be well inside a dead zone while the side of the head is already
+      // clipped. Measured on EVERY checked frame (an edge-limited frame still
+      // has a head in it, and dropping it from the denominator is how the old
+      // numbers ended up claiming 100% coverage while the head was cut). Only
+      // the axes the crop can actually move on are judged - a full-height 9:16
+      // window cannot fix a vertical problem in the source.
+      const head = headExtent(nearest);
+      const cutLeft = canMoveX && nearest.cx - head.halfW < win.x;
+      const cutRight = canMoveX && nearest.cx + head.halfW > win.x + options.cropW;
+      const cutTop = canMoveY && nearest.cy - head.up < win.y;
+      const cutBottom = canMoveY && nearest.cy + head.down > win.y + options.cropH;
+      // A head that cannot fit ANYWHERE in the source (clamped against the frame
+      // edge on both sides) is not a framing defect - the source has no such shot.
+      // It is counted as framed and reported separately, so the percentage stays
+      // honest instead of being deflated by an impossible requirement.
+      // A head the SOURCE FRAME itself cuts (someone at the edge of the picture)
+      // cannot be framed by any crop; neither can a head wider than the crop.
+      const outsideSource =
+        (canMoveX &&
+          (nearest.cx - head.halfW < 0 || nearest.cx + head.halfW > options.srcW)) ||
+        (canMoveY && (nearest.cy - head.up < 0 || nearest.cy + head.down > options.srcH)) ||
+        (canMoveX && head.halfW * 2 > options.cropW) ||
+        (canMoveY && head.up + head.down > options.cropH);
+      const unfittable = outsideSource || (cutLeft && cutRight) || (cutTop && cutBottom);
+
+      if (unfittable) {
+        headUnfittable += 1;
+        insideHead += 1;
+        insideSafeHead += 1;
+      } else if (cutLeft || cutRight || cutTop || cutBottom) {
+        headOutside += 1;
+      } else {
+        insideHead += 1;
+        const marginX = HEAD_SAFETY_MARGIN * options.cropW;
+        const marginY = HEAD_SAFETY_MARGIN * options.cropH;
+        const tightLeft = canMoveX && nearest.cx - head.halfW < win.x + marginX;
+        const tightRight = canMoveX && nearest.cx + head.halfW > win.x + options.cropW - marginX;
+        const tightTop = canMoveY && nearest.cy - head.up < win.y + marginY;
+        const tightBottom = canMoveY && nearest.cy + head.down > win.y + options.cropH - marginY;
+        if (!tightLeft && !tightRight && !tightTop && !tightBottom) {
+          insideSafeHead += 1;
+        }
+      }
+    }
+  }
+
+  // The plan and its own encoder must agree. `positionAtPath` is the maths the
+  // FFmpeg expression is generated from, so a disagreement means a glide was
+  // dropped, a cut was overridden, or two moves overlap - the class of bug that
+  // shows up as a huge "maximum crop displacement" in a render even though the
+  // plan looks fine. Checked once per move boundary (cheap, and where drift starts).
+  let maxPathDrift = 0;
+  for (const move of options.path.moves) {
+    for (const t of [move.t, move.t + move.duration / 2, move.t + move.duration]) {
+      const at = positionAtPath(options.path, t);
+      const expectedX = Math.max(0, Math.min(at.x, Math.max(0, options.srcW - options.cropW)));
+      const expectedY = Math.max(0, Math.min(at.y, Math.max(0, options.srcH - options.cropH)));
+      maxPathDrift = Math.max(
+        maxPathDrift,
+        Math.abs(at.x - expectedX),
+        Math.abs(at.y - expectedY),
+      );
     }
   }
 
@@ -1843,6 +2007,12 @@ function measureRanges(
     framesWithHeadOutsideCrop: headOutside,
     framesChecked: checked,
     edgeLimited: edgeLimited > 0,
+    pctFramesHeadInsideCrop:
+      checked === 0 ? 100 : Math.round((insideHead / checked) * 1000) / 10,
+    pctFramesHeadSafelyFramed:
+      checked === 0 ? 100 : Math.round((insideSafeHead / checked) * 1000) / 10,
+    maxPathDriftPx: Math.round(maxPathDrift * 10) / 10,
+    framesWithHeadUnfittable: headUnfittable,
   };
 }
 

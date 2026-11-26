@@ -28,6 +28,7 @@ import {
 import {
   buildLayoutPlan,
   formatCameraFaceLog,
+  formatCameraMoveLog,
   formatCameraPlanLog,
   formatCameraQaLog,
   getSpeakerCameraSettings,
@@ -782,6 +783,9 @@ export async function processClipJob(
       // One line per render: how many camera events the plan has, and - measured
       // on the very detections it was planned from - how still the framing is.
       log.info(formatCameraPlanLog(plan.cameraPlan, segmentDuration));
+      // Move by move: what each camera event was and why (turn, cut, cutaway,
+      // re-centre), with the target it moved to.
+      log.info(formatCameraMoveLog(plan.cameraPlan));
       // Why the framing starts where it does, and every point at which the
       // followed face was not there - the two questions a rendered clip raises.
       log.info(formatCameraFaceLog(plan.cameraPlan));

@@ -32,6 +32,42 @@ export interface CameraSample {
   cy: number;
   /** Face-box width. */
   w: number;
+  /**
+   * Face-box HEIGHT, when the detector reported it. YuNet's box runs brow -> chin
+   * and is ~1.25x as tall as it is wide, so the head extents (`HEAD_UP`/`HEAD_DOWN`)
+   * have always been expressed in face WIDTHS. A tall/rotated box or a profile view
+   * is not proportional though, and framing the complete head is exactly what the
+   * quality report measures - so the real height is used when it is known, and the
+   * width is used as the fallback (every existing caller keeps working).
+   */
+  h?: number;
+}
+
+/**
+ * The head's extent around the face-box centre, in SOURCE pixels: hair above the
+ * box, jaw below, and the sides of the head out past the box edges.
+ *
+ * Widths are used when no height was reported (the 1.25 ratio YuNet documents);
+ * a real height makes the estimate exact for flat/rotated boxes.
+ */
+export function headExtent(s: CameraSample): {
+  halfW: number;
+  up: number;
+  down: number;
+} {
+  const faceW = Math.max(1e-6, s.w);
+  const faceH = s.h && Number.isFinite(s.h) && s.h > 0 ? s.h : faceW / FACE_BOX_ASPECT;
+  // The head extents are expressed in FACE WIDTHS (1.15w above the box centre).
+  // A detected height says how wide an equivalent YuNet box would be
+  // (`width = height * FACE_BOX_ASPECT`), so a non-proportional box - a profile
+  // view, a tilted head, a shorter box from a different detector - still gets the
+  // right head extent instead of inheriting the standard ratio.
+  const widthFromHeight = faceH * FACE_BOX_ASPECT;
+  return {
+    halfW: HEAD_HALF_WIDTH * faceW,
+    up: HEAD_UP * widthFromHeight,
+    down: HEAD_DOWN * widthFromHeight,
+  };
 }
 
 /** An eased glide of the window to `(x, y)`, starting at `t` and taking `duration` seconds. */
@@ -161,6 +197,15 @@ export const HEAD_UP = 1.15;
 export const HEAD_DOWN = 0.69;
 /** The detector box itself (what must never be covered), same units. */
 export const FACE_HALF_HEIGHT = 0.625;
+/** YuNet's box height relative to its width (brow to chin). */
+export const FACE_BOX_ASPECT = 0.8;
+/**
+ * Safety margin kept between the head and the crop edge, as a fraction of the
+ * crop. A head that exactly touches the edge reads as "cut off" even when it is
+ * technically whole, so "safely framed" needs room to breathe - and the framing
+ * planner reserves it when it has any say in the vertical position.
+ */
+export const HEAD_SAFETY_MARGIN = 0.035;
 
 /** Seconds the window starts moving BEFORE the head reaches the safe-zone edge. */
 const ANTICIPATION_SECONDS = 0.15;
@@ -234,9 +279,7 @@ export function faceBoxInsideWindow(
 ): boolean {
   const margin = p.marginFraction ?? 0.02;
   // Head = hair above the box, jaw below it - what must not be clipped.
-  const halfW = HEAD_HALF_WIDTH * s.w;
-  const up = HEAD_UP * s.w;
-  const down = HEAD_DOWN * s.w;
+  const { halfW, up, down } = headExtent(s);
   return (
     s.cx - halfW >= win.x + margin * p.cropW &&
     s.cx + halfW <= win.x + p.cropW - margin * p.cropW &&
@@ -270,22 +313,56 @@ export function windowForHead(
   const maxX = Math.max(0, p.srcW - p.cropW);
   const maxY = Math.max(0, p.srcH - p.cropH);
   const anchorX = p.anchorX ?? 0.5;
-  const halfW = HEAD_HALF_WIDTH * s.w;
-  const padUp = marginFraction * p.cropH + HEAD_UP * s.w;
-  const padDown = marginFraction * p.cropH + HEAD_DOWN * s.w;
-  // Vertical: prefer the configured anchor, but never cut the head. When the head
-  // plus both pads is taller than the window, centre the FACE and accept a crop.
+  const { halfW, up, down } = headExtent(s);
+  // The margin is a fraction of the crop on the axis it applies to (it used to be
+  // a fraction of the HEIGHT on the horizontal padding too, which is why a
+  // head-heavy case could still end up with the side of the head 4 px outside).
+  const padX = marginFraction * p.cropW;
+  const padUp = marginFraction * p.cropH + up;
+  const padDown = marginFraction * p.cropH + down;
+  // Vertical: the configured anchor (headroom above the eyes) wins as long as it
+  // leaves the whole head inside the crop WITH the safety margin. When the head
+  // plus both pads is taller than the window, centre the face and accept a crop -
+  // no camera position can do better.
+  //
+  // This is the "natural amount of space above the head" rule: the anchor puts the
+  // face at 32% of the window (roughly a third of headroom), and the head is only
+  // moved when honouring the anchor would actually clip it.
   const idealY = s.cy - p.cropH * p.anchorY;
   const lowest = s.cy + padDown - p.cropH;
   const highest = s.cy - padUp;
   let y = idealY;
-  if (highest <= lowest) y = Math.max(lowest, Math.min(highest, idealY));
-  else y = Math.max(0, Math.min(idealY, maxY));
-  // Horizontal: the window is far wider than a head, so the anchor is fine unless
-  // the head is wider than the window itself.
-  const x = halfW * 2 + 2 * marginFraction * p.cropW <= p.cropW
-    ? Math.max(0, Math.min(s.cx - p.cropW * anchorX, maxX))
-    : Math.max(0, Math.min(s.cx - halfW - marginFraction * p.cropW, maxX));
+  if (highest <= lowest) {
+    // The head fits with room to spare: clamp the ideal anchor into the range
+    // that keeps it whole (and clear of the edges).
+    y = Math.max(lowest, Math.min(highest, idealY));
+  } else {
+    // Not enough window for the head plus margins: centre the head.
+    const centred = s.cy - p.cropH / 2;
+    y = Math.max(0, Math.min(centred, maxY));
+  }
+  // Horizontal: the anchor is fine while it leaves the whole head (plus margin)
+  // inside the crop. A person near the frame edge is where that fails: the ideal
+  // anchor would clip the side of their head, so the window is clamped to the
+  // range that keeps it whole - as far as the source frame allows at all.
+  const idealX = s.cx - p.cropW * anchorX;
+  const xLowest = s.cx + halfW + padX - p.cropW; // head (plus pad) at the right edge
+  const xHighest = s.cx - halfW - padX; // head (plus pad) at the left edge
+  let x: number;
+  // The window is placed where the head constraint says it must be, THEN clamped
+  // into the frame. A person beyond the crop centre line is exactly the case that
+  // needs this order: their window is at the frame edge, and clamping the ideal
+  // anchor first would throw the head-aware position away.
+  if (xLowest <= xHighest) {
+    x = Math.max(xLowest, Math.min(xHighest, idealX));
+  } else {
+    // Not even the bare head fits with the margin: keep it whole without it.
+    const bareLowest = s.cx + halfW - p.cropW;
+    const bareHighest = s.cx - halfW;
+    x = bareLowest <= bareHighest
+      ? Math.max(bareLowest, Math.min(bareHighest, idealX))
+      : s.cx - p.cropW / 2;
+  }
   return {
     x: Math.max(0, Math.min(x, maxX)),
     y: Math.max(0, Math.min(y, maxY)),
@@ -304,9 +381,10 @@ export function headInsideSafeZone(
   const safeT = win.y + margin * p.cropH;
   const safeB = win.y + p.cropH - margin * p.cropH;
 
-  let halfW = HEAD_HALF_WIDTH * s.w;
-  let up = HEAD_UP * s.w;
-  let down = HEAD_DOWN * s.w;
+  const extent = headExtent(s);
+  let halfW = extent.halfW;
+  let up = extent.up;
+  let down = extent.down;
 
   // A head that is bigger than the safe zone itself can only be judged by where
   // its centre is - otherwise the camera would re-centre forever.

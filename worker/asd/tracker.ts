@@ -24,6 +24,12 @@ export interface FrameDetection {
   cy: number;
   /** Face box width (also used as the association gate scale). */
   w: number;
+  /**
+   * Face-box HEIGHT in source pixels, when the detector reports it. Optional so
+   * every existing producer stays valid; the framing code falls back to the
+   * documented width:height ratio of a YuNet box.
+   */
+  h?: number;
   /** Normalised mouth openness 0..1, or null when no landmark cue exists. */
   mouthOpen: number | null;
   /**
@@ -53,6 +59,8 @@ export interface TrackPoint {
   cx: number;
   cy: number;
   w: number;
+  /** Face-box height in source pixels (optional, see FrameDetection.h). */
+  h?: number;
   mouthOpen: number | null;
   /**
    * Normalised face motion 0..1 that is RELATIVE to the surrounding background
@@ -260,6 +268,7 @@ function toTrackPoint(det: FrameDetection, t: number): TrackPoint {
     mouthOpen: det.mouthOpen,
     motion: det.motion ?? null,
   };
+  if (det.h !== undefined && Number.isFinite(det.h) && det.h > 0) point.h = det.h;
   if (det.faceMotion !== undefined) point.faceMotion = det.faceMotion;
   if (det.backgroundMotion !== undefined) point.backgroundMotion = det.backgroundMotion;
   return point;

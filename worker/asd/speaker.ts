@@ -144,6 +144,8 @@ export interface SpeakerTimelineResult {
    * a render can then answer "why did the camera move here?" for every move.
    */
   decisions: SwitchDecisionLog;
+  /** Windows the fusion evaluated (decision opportunities, not frames). */
+  windows: number;
 }
 
 /** Windows shorter than this are merged, longer ones split, in the decision. */
@@ -374,6 +376,7 @@ export function buildSpeakerTimeline(input: SpeakerTimelineInput): SpeakerTimeli
   };
 
   const ambiguousWindows: AmbiguousWindow[] = [];
+  let windowsEvaluated = 0;
   // The switch controller owns "may the frame move to somebody else, and when".
   // It is stateful across windows on purpose: that is what turns a stream of
   // per-window scores into a stable speaker choice.
@@ -394,6 +397,7 @@ export function buildSpeakerTimeline(input: SpeakerTimelineInput): SpeakerTimeli
       speakerCount: 0,
       ambiguousWindows,
       decisions: emptyDecisions,
+      windows: 0,
     };
   }
 
@@ -554,6 +558,7 @@ export function buildSpeakerTimeline(input: SpeakerTimelineInput): SpeakerTimeli
       confident: isConfidentLead(ordered),
       candidates: ordered,
     };
+    windowsEvaluated += 1;
     const decision = decideSpeaker(switchController, evidence, switchSettings, minHold);
     push(t0, nextT, decision.trackId);
   }
@@ -579,6 +584,7 @@ export function buildSpeakerTimeline(input: SpeakerTimelineInput): SpeakerTimeli
     speakerCount: speakerIds.size,
     ambiguousWindows,
     decisions: switchController.log,
+    windows: windowsEvaluated,
   };
 }
 

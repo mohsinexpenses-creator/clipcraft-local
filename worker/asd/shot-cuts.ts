@@ -99,9 +99,13 @@ export function collateSceneCuts(
   const maxCuts = Math.max(0, options.maxCuts ?? DEFAULT_OPTIONS.maxCuts);
   const upper = Math.max(0, windowSeconds - edge);
 
+  // Every frame is reported now (`select='gte(scene,0)'`), so the threshold is
+  // applied here: a scene score below it is ordinary movement, not a cut.
+  const threshold = options.threshold ?? DEFAULT_OPTIONS.threshold;
   const kept: number[] = [];
   for (const hit of [...hits].sort((a, b) => a.t - b.t)) {
     if (!Number.isFinite(hit.t) || hit.t <= edge || hit.t >= upper) continue;
+    if (hit.score < threshold) continue;
     const t = Math.round(hit.t * 1000) / 1000;
     const last = kept[kept.length - 1];
     if (last !== undefined && t - last < minGap) continue;
@@ -130,9 +134,16 @@ export async function detectShotCuts(
 
   // `metadata=mode=print` writes to the FFmpeg log, so no temp file path has to
   // survive filter-argument escaping (Windows backslashes and commas).
+  //
+  // `gte(scene,0)` passes EVERY frame: the scene score is computed for all of them
+  // and the threshold is applied here, in JS. Two reasons this matters:
+  //   - a render that found no cuts can now say WHY (the highest scene score it
+  //     saw), instead of "0 cuts" being indistinguishable from "the probe never
+  //     ran" or "the threshold is too high for this footage";
+  //   - the threshold can be changed without re-running FFmpeg.
   const filter =
     `fps=${fps.toFixed(3)},scale=${width}:-2:flags=area,format=gray,` +
-    `select='gt(scene,${threshold.toFixed(3)})',metadata=mode=print`;
+    `select='gte(scene,0)',metadata=mode=print`;
   const args = [
     "-y",
     "-hide_banner",
@@ -159,11 +170,25 @@ export async function detectShotCuts(
       label: "shot-cuts",
       signal: options.signal,
     });
-    const cuts = collateSceneCuts(parseSceneMetadata(stderr), duration, options);
+    const hits = parseSceneMetadata(stderr);
+    const cuts = collateSceneCuts(hits, duration, { ...options, threshold });
+    // The strongest scene change the probe actually saw. A hard cut between two
+    // camera angles scores far above this; ordinary movement, lighting changes and
+    // a speaker walking across frame stay low. Logging it is what makes "no cuts in
+    // this window" a measurement rather than a guess.
+    const peak = hits.reduce((max, hit) => Math.max(max, hit.score), 0);
+    const nearMiss = hits
+      .filter((hit) => hit.score >= Math.max(0.1, threshold * 0.6) && !cuts.some((cut) => Math.abs(cut - hit.t) < 0.05))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3);
     log.detail(
       `[SHOT-CUTS] event=detected window=${start.toFixed(3)}+${duration.toFixed(3)}s ` +
-        `threshold=${threshold.toFixed(2)} fps=${fps} cuts=${cuts.length}` +
-        (cuts.length > 0 ? ` times=${cuts.map((t) => t.toFixed(2)).join(",")}` : ""),
+        `threshold=${threshold.toFixed(2)} fps=${fps} cuts=${cuts.length} ` +
+        `sampled=${hits.length} peak_score=${peak.toFixed(2)}` +
+        (cuts.length > 0 ? ` times=${cuts.map((t) => t.toFixed(2)).join(",")}` : "") +
+        (cuts.length === 0 && nearMiss.length > 0
+          ? ` rejected=${nearMiss.map((hit) => `${hit.t.toFixed(2)}s:${hit.score.toFixed(2)}`).join(",")}`
+          : ""),
     );
     return cuts;
   } catch (error) {

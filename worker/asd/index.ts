@@ -149,6 +149,27 @@ export interface AsdResult {
   lrAsdWindows?: number;
   /** Empty-window runs skipped because the window showed no face at all. */
   skipEmptyLrAsdWindows?: boolean;
+  /**
+   * How the speaker timeline reached its decisions: confirmed switches with their
+   * reasons, and how many windows were held back by uncertainty or by the
+   * confirmation period. Printed as `[SPEAKER]`, so a render explains every
+   * speaker change (and every deliberate non-change) it produced.
+   */
+  speakerDecisions?: SpeakerDecisionSummary;
+}
+
+/** Per-clip summary of the speaker-switch controller (see ./switch-control). */
+export interface SpeakerDecisionSummary {
+  /** Decision windows evaluated (0.1 s each). */
+  windows: number;
+  /** Confirmed speaker changes. */
+  switches: number;
+  /** Windows where the cues were too close to decide - the frame was KEPT. */
+  uncertainWindows: number;
+  /** Windows where a challenger was ahead but not confirmed yet. */
+  blockedWindows: number;
+  /** The confirmed changes, in order (t, from, to, why). */
+  confirmed: Array<{ t: number; from: number | null; to: number; reason: string }>;
 }
 
 export type AsdTimingStage =
@@ -1179,6 +1200,9 @@ async function analyzeSampledFrames(
               cx: face.cx,
               cy: face.cy,
               w: face.w,
+              // The real box height: the head extents (and therefore whether the
+              // whole head fits the crop) are expressed relative to it.
+              h: face.h,
               mouthOpen: null, // YuNet has no mouth landmarks; the fusion treats this as no cue.
               motion,
               faceMotion,
@@ -1536,8 +1560,14 @@ export async function detectSpeakerTimeline(
     //   2. only if there are any, ask the model about them within its budget,
     //      then build the timeline again with those verdicts available.
     // The timeline stays a pure function of (tracks, voice, verdicts).
-    const { segments, speakerCount, ambiguousWindows, lrAsdWindows } =
-      await measureAsdStage(options, "tracking-speaker-fusion", async () => {
+    const {
+      segments,
+      speakerCount,
+      ambiguousWindows,
+      lrAsdWindows,
+      decisions,
+      windows: decisionWindows,
+    } = await measureAsdStage(options, "tracking-speaker-fusion", async () => {
         const tracks = interpolateTracksForAnalysis(
           analysis.tracks,
           sampleFps,
@@ -1583,6 +1613,8 @@ export async function detectSpeakerTimeline(
           speakerCount: timeline.speakerCount,
           ambiguousWindows,
           lrAsdWindows: verdicts.size,
+          decisions: timeline.decisions,
+          windows: timeline.windows,
         };
       });
     const cameraTracks = interpolateTracksForAnalysis(
@@ -1622,6 +1654,22 @@ export async function detectSpeakerTimeline(
         `(${((medianFaceWidth / videoWidth) * 100).toFixed(1)}% of the ${videoWidth}px frame), ` +
         `scanned on ${sampleWidth}px frames`,
     );
+    if (decisions) {
+      const detail = decisions.confirmed
+        .slice(0, 12)
+        .map((entry) => `${entry.t.toFixed(2)}s:${entry.from ?? '-'}->${entry.to}(${entry.reason})`)
+        .join(" ");
+      log.detail(
+        `[SPEAKER] windows=${decisionWindows} ` +
+          `switches=${decisions.switches} ` +
+          `uncertain_windows=${decisions.uncertainWindows} ` +
+          `blocked_windows=${decisions.blockedWindows}` +
+          (detail ? ` confirmed=${detail}` : "") +
+          (decisions.confirmed.length > 12
+            ? ` (+${decisions.confirmed.length - 12} more)`
+            : ""),
+      );
+    }
     if (lrAsdWindows > 0) {
       log.detail(
         `  LR-ASD decided ${lrAsdWindows} of ${ambiguousWindows.length} ambiguous window(s) ` +
@@ -1682,6 +1730,20 @@ export async function detectSpeakerTimeline(
       personHolds: analysis.personHolds,
       ambiguousWindows: ambiguousWindows.length,
       lrAsdWindows,
+      speakerDecisions: decisions
+        ? {
+            windows: decisionWindows,
+            switches: decisions.switches,
+            uncertainWindows: decisions.uncertainWindows,
+            blockedWindows: decisions.blockedWindows,
+            confirmed: decisions.confirmed.map((entry) => ({
+              t: entry.t,
+              from: entry.from,
+              to: entry.to,
+              reason: entry.reason,
+            })),
+          }
+        : undefined,
       personHoldSeconds:
         personSettings.enabled && analysis.personFramesUsed > 0
           ? personSettings.holdSeconds

@@ -593,6 +593,52 @@ export function formatCameraPlanLog(plan: CameraPlan, durationSeconds: number): 
   );
 }
 
+/**
+ * `[CAMERA-MOVE]` - why the camera moved, move by move.
+ *
+ * The plan log says HOW MANY events there were; this says WHAT each one was: a
+ * confirmed speaker turn to person N, the hard switch on a source cut, a
+ * listener cutaway, or a re-centre that kept the same subject (with the travel
+ * distance and the time it takes). When a rendered clip feels wrong, this is the
+ * line that answers "why did it go there?" without re-running the render.
+ */
+export function formatCameraMoveLog(plan: CameraPlan, maxEntries = 12): string {
+  const entries: Array<{ t: number; kind: string; text: string }> = [];
+  for (const swap of plan.switches) {
+    entries.push({
+      t: swap.t,
+      kind: swap.reason,
+      text:
+        `${swap.t.toFixed(2)}s=${swap.reason}->person#${swap.trackId}` +
+        ` ${swap.mode}${swap.duration > 0 ? `(${swap.duration.toFixed(2)}s)` : ''}` +
+        ` to=${Math.round(swap.to.x)},${Math.round(swap.to.y)}`,
+    });
+  }
+  for (const recentre of plan.recentres) {
+    entries.push({
+      t: recentre.t,
+      kind: 'recentre',
+      text:
+        `${recentre.t.toFixed(2)}s=recentre(${recentre.duration.toFixed(2)}s)` +
+        ` to=${Math.round(recentre.to.x)},${Math.round(recentre.to.y)}`,
+    });
+  }
+  for (const cutaway of plan.cutaways) {
+    entries.push({
+      t: cutaway.t,
+      kind: 'cutaway',
+      text: `${cutaway.t.toFixed(2)}s=cutaway->person#${cutaway.trackId}(${cutaway.duration}s)`,
+    });
+  }
+  entries.sort((a, b) => a.t - b.t);
+  const shown = entries.slice(0, maxEntries).map((entry) => entry.text);
+  return (
+    `[CAMERA-MOVE] events=${entries.length}` +
+    (shown.length > 0 ? ` moves=${shown.join(' ')}` : '') +
+    (entries.length > shown.length ? ` (+${entries.length - shown.length} more)` : '')
+  );
+}
+
 /** The `[CAMERA-QA]` log line. */
 export function formatCameraQaLog(report: CameraQaReport): string {
   return (
@@ -607,6 +653,10 @@ export function formatCameraQaLog(report: CameraQaReport): string {
     `glidesOverHalfSecond=${report.glidesOverHalfSecond} ` +
     `edgeLimitedFrames=${report.edgeLimitedFrames} ` +
     `headOutsideCropFrames=${report.framesWithHeadOutsideCrop} ` +
+    `pctHeadInsideCrop=${report.pctFramesHeadInsideCrop}% ` +
+    `headUnfittableFrames=${report.framesWithHeadUnfittable} ` +
+    `pctHeadSafelyFramed=${report.pctFramesHeadSafelyFramed}% ` +
+    `pathDriftPx=${report.maxPathDriftPx} ` +
     `framesChecked=${report.framesChecked} edgeLimited=${report.edgeLimited}`
   );
 }
