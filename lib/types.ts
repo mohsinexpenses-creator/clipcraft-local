@@ -662,6 +662,75 @@ export interface CropWindow {
   height: number;
 }
 
+export interface CameraDebugTrackPoint {
+  t: number;
+  cx: number;
+  cy: number;
+  w: number;
+  h?: number;
+  personHold?: boolean;
+}
+
+export interface CameraDebugTrack {
+  id: number;
+  points: CameraDebugTrackPoint[];
+  avgW: number;
+  maxW: number;
+  visibleTime: number;
+}
+
+export interface CameraDebugSpeakerSegment {
+  trackId: number | null;
+  t0: number;
+  t1: number;
+}
+
+export interface CameraDebugMove {
+  t: number;
+  duration: number;
+  x: number;
+  y: number;
+}
+
+export interface CameraDebugCut {
+  t: number;
+  x: number;
+  y: number;
+}
+
+export interface CameraDebugData {
+  srcW: number;
+  srcH: number;
+  cropW: number;
+  cropH: number;
+  hookDuration: number;
+  hookStart: number;
+  tracks: CameraDebugTrack[];
+  speakerSegments: CameraDebugSpeakerSegment[];
+  shotCuts: number[];
+  camera: {
+    x0: number;
+    y0: number;
+    moves: CameraDebugMove[];
+    cuts: CameraDebugCut[];
+  };
+  splitCells?: Array<{
+    trackId: number;
+    cellX: number;
+    cellY: number;
+    cellW: number;
+    cellH: number;
+    cropW: number;
+    cropH: number;
+    camera: {
+      x0: number;
+      y0: number;
+      moves: CameraDebugMove[];
+      cuts: CameraDebugCut[];
+    };
+  }>;
+}
+
 /**
  * How the 9:16 output frames a multi-person clip.
  * - `speaker-focus`: a single window that smoothly pans to whoever is talking.
@@ -878,6 +947,8 @@ export interface ClipRecord {
   hookStylePresetId?: string;
   ctaStylePresetId?: string;
   cropData?: CropWindow;
+  /** Opt-in preview diagnostics: source-space face tracks and active-speaker timeline. */
+  cameraDebug?: CameraDebugData;
   /**
    * Everything the AI said about this clip (score, rank, title, hook line,
    * retention, safety, packaging...). The single copy: the card, the analysis

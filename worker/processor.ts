@@ -857,6 +857,82 @@ export async function processClipJob(
         height: plan.cropH,
       };
     }
+    const debugCamera = plan.mode === "single"
+      ? plan.camera
+      : null;
+    clip.cameraDebug = {
+      srcW: sourceMeta.width,
+      srcH: sourceMeta.height,
+      cropW: plan.mode === "single" ? plan.cropW : 0,
+      cropH: plan.mode === "single" ? plan.cropH : 0,
+      hookDuration: safeHookDuration,
+      hookStart,
+      tracks: asd.tracks.map((track) => ({
+        id: track.id,
+        points: track.points.map((point) => ({
+          t: point.t,
+          cx: point.cx,
+          cy: point.cy,
+          w: point.w,
+          ...(point.h !== undefined ? { h: point.h } : {}),
+          ...(point.personHold ? { personHold: true } : {}),
+        })),
+        avgW: track.avgW,
+        maxW: track.maxW,
+        visibleTime: track.visibleTime,
+      })),
+      speakerSegments: asd.speakerSegments.map((segment) => ({
+        trackId: segment.trackId,
+        t0: segment.t0,
+        t1: segment.t1,
+      })),
+      shotCuts: asd.shotCuts ?? [],
+      camera: debugCamera
+        ? {
+            x0: debugCamera.x0,
+            y0: debugCamera.y0,
+            moves: debugCamera.moves.map((move) => ({
+              t: move.t,
+              duration: move.duration,
+              x: move.x,
+              y: move.y,
+            })),
+            cuts: (debugCamera.cuts ?? []).map((cut) => ({
+              t: cut.t,
+              x: cut.x,
+              y: cut.y,
+            })),
+          }
+        : { x0: 0, y0: 0, moves: [], cuts: [] },
+      ...(plan.mode === "split"
+        ? {
+            splitCells: plan.cells.map((cell) => ({
+              trackId: cell.trackId,
+              cellX: cell.cellX,
+              cellY: cell.cellY,
+              cellW: cell.cellW,
+              cellH: cell.cellH,
+              cropW: cell.cropW,
+              cropH: cell.cropH,
+              camera: {
+                x0: cell.camera.x0,
+                y0: cell.camera.y0,
+                moves: cell.camera.moves.map((move) => ({
+                  t: move.t,
+                  duration: move.duration,
+                  x: move.x,
+                  y: move.y,
+                })),
+                cuts: (cell.camera.cuts ?? []).map((cut) => ({
+                  t: cut.t,
+                  x: cut.x,
+                  y: cut.y,
+                })),
+              },
+            })),
+          }
+        : {}),
+    };
     // The parallel B-roll branch may already have reported overlay progress.
     // Keep progress monotonic rather than moving the UI backwards after ASD.
     clip.progress = Math.max(clip.progress ?? 0, 20);

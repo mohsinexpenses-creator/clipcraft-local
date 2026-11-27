@@ -7,6 +7,7 @@ import {
   Clock,
   Download,
   EllipsisVertical,
+  Eye,
   Film,
   Loader2,
   PencilLine,
@@ -16,7 +17,13 @@ import {
   XCircle,
 } from "lucide-react"
 import { cn } from "cn"
-import type { CaptionPreset, ClipRecord } from "@/lib/types"
+import type {
+  CameraDebugData,
+  CameraDebugTrack,
+  CameraDebugTrackPoint,
+  CaptionPreset,
+  ClipRecord,
+} from "@/lib/types"
 import { clipScore, formatTime, mediaUrlForOutputPath, scoreTone } from "@/lib/pipeline-ui"
 import { Button } from "@/components/ui/button"
 import {
@@ -115,6 +122,119 @@ function StatusChip({ clip }: { clip: ClipRecord }) {
   }
 }
 
+function smoothstep(value: number): number {
+  const u = Math.max(0, Math.min(1, value));
+  return u * u * (3 - 2 * u);
+}
+
+function cameraPositionAt(
+  camera: CameraDebugData["camera"],
+  t: number,
+): { x: number; y: number } {
+  let base = { x: camera.x0, y: camera.y0 };
+  for (const cut of [...camera.cuts].sort((a, b) => a.t - b.t)) {
+    if (cut.t <= t + 1e-6) base = { x: cut.x, y: cut.y };
+  }
+  for (const move of [...camera.moves].sort((a, b) => a.t - b.t)) {
+    if (t <= move.t) break;
+    if (t < move.t + move.duration) {
+      const u = smoothstep((t - move.t) / move.duration);
+      base = { x: base.x + (move.x - base.x) * u, y: base.y + (move.y - base.y) * u };
+      break;
+    }
+    base = { x: move.x, y: move.y };
+  }
+  return base;
+}
+
+function nearestFace(track: CameraDebugTrack, t: number): CameraDebugTrackPoint | null {
+  let nearest: CameraDebugTrackPoint | null = null;
+  let distance = Number.POSITIVE_INFINITY;
+  for (const point of track.points) {
+    const next = Math.abs(point.t - t);
+    if (next < distance) {
+      distance = next;
+      nearest = point;
+    }
+  }
+  return nearest && distance <= 0.5 ? nearest : null;
+}
+
+function activeSpeakerAt(debug: CameraDebugData, sourceTime: number): number | null {
+  const segment = debug.speakerSegments.find(
+    (item) => item.trackId !== null && sourceTime >= item.t0 - 1e-6 && sourceTime < item.t1 + 1e-6,
+  );
+  return segment?.trackId ?? null;
+}
+
+function CameraFaceBoxes({ debug, outputTime }: { debug: CameraDebugData; outputTime: number }) {
+  const sourceTime =
+    debug.hookDuration > 0 && outputTime < debug.hookDuration
+      ? debug.hookStart + outputTime
+      : outputTime - debug.hookDuration;
+  const activeTrackId = activeSpeakerAt(debug, sourceTime);
+
+  return (
+    <div className="pointer-events-none absolute inset-0 z-20" aria-hidden>
+      {debug.tracks.map((track) => {
+        const face = nearestFace(track, sourceTime);
+        if (!face) return null;
+
+        let left = 0;
+        let top = 0;
+        let width = 0;
+        let height = 0;
+
+        if (debug.splitCells && debug.splitCells.length > 0) {
+          const cell = debug.splitCells.find((candidate) => candidate.trackId === track.id);
+          if (!cell) return null;
+          const win = cameraPositionAt(cell.camera, sourceTime);
+          const faceHeight = face.h ?? face.w / 0.8;
+          left = (cell.cellX + (face.cx - win.x) * cell.cellW / cell.cropW - face.w / 2) / 1080 * 100;
+          top = (cell.cellY + (face.cy - win.y) * cell.cellH / cell.cropH - faceHeight / 2) / 1920 * 100;
+          width = face.w * cell.cellW / cell.cropW / 1080 * 100;
+          height = faceHeight * cell.cellH / cell.cropH / 1920 * 100;
+        } else {
+          const win = cameraPositionAt(debug.camera, sourceTime);
+          const faceHeight = face.h ?? face.w / 0.8;
+          left = (face.cx - win.x - face.w / 2) / debug.cropW * 100;
+          top = (face.cy - win.y - faceHeight / 2) / debug.cropH * 100;
+          width = face.w / debug.cropW * 100;
+          height = faceHeight / debug.cropH * 100;
+        }
+
+        const active = track.id === activeTrackId;
+        return (
+          <div
+            key={track.id}
+            className={
+              active
+                ? "absolute border-2 border-emerald-400 shadow-[0_0_0_1px_rgba(16,185,129,0.35)]"
+                : "absolute border-2 border-red-500 shadow-[0_0_0_1px_rgba(239,68,68,0.35)]"
+            }
+            style={{
+              left: `${left}%`,
+              top: `${top}%`,
+              width: `${width}%`,
+              height: `${height}%`,
+            }}
+          >
+            <span
+              className={
+                active
+                  ? "absolute -top-5 left-0 rounded-sm bg-emerald-500 px-1 py-0.5 text-[9px] font-bold text-white"
+                  : "absolute -top-5 left-0 rounded-sm bg-red-500 px-1 py-0.5 text-[9px] font-bold text-white"
+              }
+            >
+              #{track.id}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export interface ClipTileProps {
   clip: ClipRecord;
   captionPresets: CaptionPreset[];
@@ -146,6 +266,8 @@ export function ClipTile({
   const videoRef = React.useRef<HTMLVideoElement | null>(null);
   const [engaged, setEngaged] = React.useState(false);
   const [analysisOpen, setAnalysisOpen] = React.useState(false);
+  const [debugFaces, setDebugFaces] = React.useState(false);
+  const [debugTime, setDebugTime] = React.useState(0);
 
   const mediaUrl = mediaUrlForOutputPath(clip.outputPath);
   const isDone = clip.status === "done" && Boolean(mediaUrl);
@@ -173,6 +295,17 @@ export function ClipTile({
       void videoRef.current?.play().catch(() => undefined);
     });
   };
+
+  React.useEffect(() => {
+    if (!debugFaces) return;
+    let frame = 0;
+    const update = () => {
+      if (videoRef.current) setDebugTime(videoRef.current.currentTime);
+      frame = window.requestAnimationFrame(update);
+    };
+    frame = window.requestAnimationFrame(update);
+    return () => window.cancelAnimationFrame(frame);
+  }, [debugFaces]);
 
   return (
     <article
@@ -233,6 +366,9 @@ export function ClipTile({
             )}
           </div>
         )}
+        {debugFaces && clip.cameraDebug && (
+          <CameraFaceBoxes debug={clip.cameraDebug} outputTime={debugTime} />
+        )}
 
         {/* gradient so the chips stay legible over any frame */}
         <div
@@ -255,6 +391,26 @@ export function ClipTile({
           <ScoreGauge score={score} />
         </div>
         <div className="absolute top-2 right-2 flex flex-col items-end gap-1.5">
+          {isDone && clip.cameraDebug && (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                setDebugFaces((current) => !current);
+              }}
+              aria-pressed={debugFaces}
+              aria-label={debugFaces ? "Hide face debug boxes" : "Show face debug boxes"}
+              title={debugFaces ? "Hide face debug boxes" : "Show active-speaker face boxes"}
+              className={cn(
+                "flex size-8 items-center justify-center rounded-full ring-1 backdrop-blur-md transition-colors",
+                debugFaces
+                  ? "bg-emerald-500 text-white ring-emerald-300/60"
+                  : "bg-background/85 text-foreground/80 ring-border hover:bg-accent",
+              )}
+            >
+              <Eye className="size-4" />
+            </button>
+          )}
           <StatusChip clip={clip} />
           {rank !== undefined && (
             <span
