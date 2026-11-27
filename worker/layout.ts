@@ -642,7 +642,7 @@ export function formatCameraMoveLog(plan: CameraPlan, maxEntries = 12): string {
 
 /** The `[CAMERA-QA]` log line. */
 export function formatCameraQaLog(report: CameraQaReport): string {
-  return (
+  const base =
     `[CAMERA-QA] pctFramesInDeadzone=${report.pctFramesInDeadzone}% ` +
     `pctFramesInStableBand=${report.pctFramesInStableBand}% ` +
     `pctFramesInDeadzoneAll=${report.pctFramesInDeadzoneAll}% ` +
@@ -659,8 +659,21 @@ export function formatCameraQaLog(report: CameraQaReport): string {
     `headUnfittableFrames=${report.framesWithHeadUnfittable} ` +
     `pctHeadSafelyFramed=${report.pctFramesHeadSafelyFramed}% ` +
     `pathDriftPx=${report.maxPathDriftPx} ` +
-    `framesChecked=${report.framesChecked} edgeLimited=${report.edgeLimited}`
-  );
+    `framesChecked=${report.framesChecked} edgeLimited=${report.edgeLimited} ` +
+    `visibleFaceButMissingFromCropFrames=${report.visibleFaceButMissingFromCropFrames} ` +
+    `longestVisibleFaceMissingFrames=${report.longestVisibleFaceMissingFrames} ` +
+    `longestVisibleFaceMissingSeconds=${report.longestVisibleFaceMissingSeconds}`;
+  const failures = report.visibleFaceMissingFailures
+    .slice(0, 5)
+    .map((failure) =>
+      `src=${failure.sourceTimestamp.toFixed(3)}s ` +
+      `out=${failure.finalOutputTimestamp.toFixed(3)}s ` +
+      `selectedTrack=${failure.selectedTrackId ?? "none"} ` +
+      `alternatives=${failure.alternativeFaces.map((face) => `#${face.trackId}`).join(",") || "none"} ` +
+      `cut=${failure.sourceShotCut ? "yes" : "no"} ` +
+      `transition=${failure.cameraTransition ? "yes" : "no"}`
+    );
+  return failures.length > 0 ? `${base} [CAMERA-QA-FAILURES] ${failures.join(" | ")}` : base;
 }
 
 /** Median of a number array (unlike the mean, it rejects outlier sightings). */
@@ -797,7 +810,12 @@ export function buildSinglePlan(
       : shotCutsOf(asd),
   };
 
-  const cameraTracks = asd.tracks.filter(isCameraUsableTrack);
+  // Keep every sufficiently persistent face visible to the locked camera.
+  // The liveness classifier is for speaker evidence, not a valid-face gate:
+  // a quiet, seated, or motion-frozen person must remain eligible for framing.
+  const cameraTracks = asd.tracks.filter(
+    (track) => track.points.length >= 2 && track.visibleTime >= 0.25,
+  );
   const cameraTrackIds = new Set(cameraTracks.map((track) => track.id));
   const cameraAsd = {
     ...asd,

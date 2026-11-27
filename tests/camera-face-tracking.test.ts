@@ -123,6 +123,43 @@ function build(tracks: Track[], speakers: Array<{ trackId: number | null; t0: nu
   });
 }
 
+test('a source cut reacquires a current-shot track instead of preserving stale coordinates', () => {
+  const staleBeforeCut = trackEvery(1, 0, 4.8, () => ({ cx: 400, cy: 420, w: 180 }));
+  const validAfterCut = trackEvery(2, 5, 10, () => ({ cx: 1500, cy: 430, w: 180 }));
+  const plan = build([staleBeforeCut, validAfterCut], [{ trackId: 1, t0: 0, t1: 10 }], [5]);
+
+  const cut = plan.path.cuts?.find((entry) => Math.abs(entry.t - 5) < 1e-6);
+  assert.ok(cut, 'the cut has a hard camera switch');
+  assert.ok(cut.x > plan.path.x0 + 500, `cut reframes on the post-cut face: ${JSON.stringify(cut)}`);
+  assert.ok(
+    plan.segments.some((segment) => segment.trackId === 2 && segment.start >= 5),
+    'the post-cut segment is owned by a newly acquired track',
+  );
+});
+
+test('QA reports visible faces missing from the crop and sustained missing periods', () => {
+  const visible = trackEvery(1, 0, 3, () => ({ cx: 1500, cy: 420, w: 160 }));
+  const cameraPlan = build([visible], [{ trackId: 1, t0: 0, t1: 3 }]);
+  cameraPlan.path = { ...cameraPlan.path, x0: 0, moves: [], cuts: [] };
+  const qa = measureCameraPlanQa(
+    cameraPlan,
+    [visible],
+    {
+      srcW: SRC.w,
+      srcH: SRC.h,
+      cropW: 608,
+      cropH: 1080,
+      anchorY: ANCHOR_Y,
+      durationSeconds: 3,
+      allTracks: [visible],
+      presenceToleranceSeconds: 0.5,
+    },
+  );
+  assert.ok(qa.visibleFaceButMissingFromCropFrames > 20);
+  assert.ok(qa.longestVisibleFaceMissingSeconds >= 2);
+  assert.ok(qa.visibleFaceMissingFailures.length > 0);
+});
+
 // ---------------------------------------------------------------------------
 // 1. The video opens on a microphone before the speaker's face appears
 // ---------------------------------------------------------------------------

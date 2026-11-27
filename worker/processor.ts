@@ -794,20 +794,29 @@ export async function processClipJob(
       const followed = new Set(plan.cameraPlan.segments.map((segment) => segment.trackId));
       const followedTracks = asd.tracks.filter((track) => followed.has(track.id));
       if (followedTracks.length > 0) {
-        log.info(
-          formatCameraQaLog(
-            measureCameraPlanQa(plan.cameraPlan, followedTracks, {
-              srcW: sourceMeta.width,
-              srcH: sourceMeta.height,
-              cropW: plan.cropW,
-              cropH: plan.cropH,
-              anchorY: plan.faceAnchorY,
-              deadZoneXPct: cameraSettings.deadZoneXPct,
-              deadZoneYPct: cameraSettings.deadZoneYPct,
-              durationSeconds: segmentDuration,
-            }),
-          ),
-        );
+        const qa = measureCameraPlanQa(plan.cameraPlan, followedTracks, {
+          srcW: sourceMeta.width,
+          srcH: sourceMeta.height,
+          cropW: plan.cropW,
+          cropH: plan.cropH,
+          anchorY: plan.faceAnchorY,
+          deadZoneXPct: cameraSettings.deadZoneXPct,
+          deadZoneYPct: cameraSettings.deadZoneYPct,
+          durationSeconds: segmentDuration,
+          allTracks: asd.tracks,
+          sourceCuts: plan.cameraPlan.options.cuts,
+        });
+        log.info(formatCameraQaLog(qa));
+        if (
+          qa.visibleFaceButMissingFromCropFrames > 0 &&
+          qa.longestVisibleFaceMissingSeconds >= 1
+        ) {
+          log.error(
+            `[CAMERA-QA-FAIL] sustained_visible_face_missing ` +
+              `frames=${qa.visibleFaceButMissingFromCropFrames} ` +
+              `longest=${qa.longestVisibleFaceMissingSeconds.toFixed(3)}s`,
+          );
+        }
       }
       for (const skipped of plan.cameraPlan.skippedCutaways.slice(0, 10)) {
         log.detail(

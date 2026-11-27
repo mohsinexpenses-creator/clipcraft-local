@@ -515,7 +515,14 @@ export function buildSpeakerRuns(
       const t0 = boundaries[i];
       const t1 = boundaries[i + 1];
       if (t1 - t0 < 1e-6) continue;
-      pieces.push({ trackId: segment.trackId, t0, t1, shot: shotIndexAt(t0), startsAtCut: i > 0 });
+      pieces.push({
+        trackId: segment.trackId,
+        t0,
+        t1,
+        shot: shotIndexAt(t0),
+        startsAtCut:
+          i > 0 || orderedCuts.some((cut) => Math.abs(cut - t0) <= 1e-6),
+      });
     }
   }
   pieces.sort((a, b) => a.t0 - b.t0);
@@ -588,6 +595,7 @@ function fillVisibleFaceFallbacks(
   tracks: Track[],
   segments: SpeakerRunInput[],
   maxDetectionGap = 0.4,
+  cuts: number[] = [],
 ): SpeakerRunInput[] {
   const observations = tracks.flatMap((track) =>
     track.points.map((point) => ({ t: point.t, trackId: track.id, width: point.w })),
@@ -596,37 +604,58 @@ function fillVisibleFaceFallbacks(
 
   for (const segment of segments) {
     if (!(segment.t1 > segment.t0)) continue;
-    const nearby = observations
-      .filter((point) => point.t >= segment.t0 - maxDetectionGap && point.t <= segment.t1 + maxDetectionGap)
-      .sort((a, b) => a.t - b.t);
-    const times = [...new Set(nearby.map((point) => point.t))];
-    const boundaries = [
+    const shotBoundaries = [
       segment.t0,
-      ...times.slice(1).map((time, index) => (times[index] + time) / 2)
-        .filter((time) => time > segment.t0 && time < segment.t1),
+      ...cuts
+        .filter((cut) => cut > segment.t0 + 1e-6 && cut < segment.t1 - 1e-6)
+        .sort((a, b) => a - b),
       segment.t1,
-    ].sort((a, b) => a - b);
+    ];
+    for (let shot = 0; shot < shotBoundaries.length - 1; shot += 1) {
+      const shotStart = shotBoundaries[shot];
+      const shotEnd = shotBoundaries[shot + 1];
+      if (shotEnd - shotStart < 1e-6) continue;
+      const nearby = observations
+        .filter((point) =>
+          point.t >= shotStart - maxDetectionGap &&
+          point.t <= shotEnd + maxDetectionGap
+        )
+        .sort((a, b) => a.t - b.t);
+      const times = [...new Set(nearby.map((point) => point.t))];
+      const boundaries = [
+        shotStart,
+        ...times.slice(1)
+          .map((time, index) => (times[index] + time) / 2)
+          .filter((time) => time > shotStart && time < shotEnd),
+        shotEnd,
+      ].sort((a, b) => a - b);
 
-    for (let index = 0; index < boundaries.length - 1; index += 1) {
-      const t0 = boundaries[index];
-      const t1 = boundaries[index + 1];
-      if (t1 - t0 < 1e-6) continue;
-      const at = (t0 + t1) / 2;
-      const nearestFor = (trackId: number) => nearby
-        .filter((point) => point.trackId === trackId)
-        .sort((a, b) => Math.abs(a.t - at) - Math.abs(b.t - at))[0];
-      const preferred = segment.trackId === null ? undefined : nearestFor(segment.trackId);
-      const selected = preferred && Math.abs(preferred.t - at) <= maxDetectionGap
-        ? preferred
-        : [...nearby]
-          .sort((a, b) => Math.abs(a.t - at) - Math.abs(b.t - at) || b.width - a.width)
-          .find((point) => Math.abs(point.t - at) <= maxDetectionGap);
-      const trackId = selected?.trackId ?? null;
-      const previous = output[output.length - 1];
-      if (previous && previous.trackId === trackId && Math.abs(previous.t1 - t0) < 1e-6) {
-        previous.t1 = t1;
-      } else {
-        output.push({ trackId, t0, t1 });
+      for (let index = 0; index < boundaries.length - 1; index += 1) {
+        const t0 = boundaries[index];
+        const t1 = boundaries[index + 1];
+        if (t1 - t0 < 1e-6) continue;
+        const at = (t0 + t1) / 2;
+        const nearestFor = (trackId: number) => nearby
+          .filter((point) => point.trackId === trackId)
+          .sort((a, b) => Math.abs(a.t - at) - Math.abs(b.t - at))[0];
+        // A source cut closes old identities. Never prefer the old track in a
+        // post-cut shot; that stale ID must be reacquired as a new current-shot
+        // face before it can own the camera segment.
+        const preferred = shot === 0 && segment.trackId !== null
+          ? nearestFor(segment.trackId)
+          : undefined;
+        const selected = preferred && Math.abs(preferred.t - at) <= maxDetectionGap
+          ? preferred
+          : [...nearby]
+            .sort((a, b) => Math.abs(a.t - at) - Math.abs(b.t - at) || b.width - a.width)
+            .find((point) => Math.abs(point.t - at) <= maxDetectionGap);
+        const trackId = selected?.trackId ?? null;
+        const previous = output[output.length - 1];
+        if (previous && previous.trackId === trackId && Math.abs(previous.t1 - t0) < 1e-6) {
+          previous.t1 = t1;
+        } else {
+          output.push({ trackId, t0, t1 });
+        }
       }
     }
   }
@@ -784,6 +813,7 @@ export function buildLockedSpeakerCamera(
     tracks,
     extendRunsAcrossCuts(segments, tracks, opts),
     GAP_TOLERANCE_FOR_FALLBACKS,
+    opts.cuts,
   );
   let reanchorAfterCut = 0;
 
@@ -1007,7 +1037,8 @@ function planOpeningFraming(
   cutBeforeFirstSighting: number | null;
 } {
   const subjectVisible =
-    first.firstDetectionAt <= first.t0 + 1e-6 || first.firstDetectionAt <= 0.001;
+    !first.startsAtCut &&
+    (first.firstDetectionAt <= first.t0 + 1e-6 || first.firstDetectionAt <= 0.001);
   if (subjectVisible) {
     return { pos: first.anchor, source: 'subject', glideTo: null, cutBeforeFirstSighting: null };
   }
@@ -1655,6 +1686,29 @@ export interface CameraQaOptions {
   durationSeconds: number;
   /** Max gap (s) between detections that still counts as the same person. Default 0.5. */
   presenceToleranceSeconds?: number;
+  /** All current-shot face tracks. Used for frame-level alternative-face QA. */
+  allTracks?: Track[];
+  /** Source shot-cut times, in clip-relative seconds. */
+  sourceCuts?: number[];
+  /** Seconds added to source timestamps for final-output diagnostics. */
+  outputTimeOffsetSeconds?: number;
+}
+
+export interface VisibleFaceMissingFailure {
+  sourceTimestamp: number;
+  finalOutputTimestamp: number;
+  selectedTrackId: number | null;
+  selectedTarget: { cx: number; cy: number; w: number; h?: number } | null;
+  crop: { x: number; y: number; w: number; h: number };
+  alternativeFaces: Array<{
+    trackId: number;
+    cx: number;
+    cy: number;
+    w: number;
+    h?: number;
+  }>;
+  sourceShotCut: boolean;
+  cameraTransition: boolean;
 }
 
 export interface CameraQaReport {
@@ -1715,6 +1769,14 @@ export interface CameraQaReport {
    * reviewer knows why the safe-framing number is not 100%.
    */
   framesWithHeadUnfittable: number;
+  /** Frames with at least one reliable face visible, but no visible face inside the final crop. */
+  visibleFaceButMissingFromCropFrames: number;
+  /** Longest run of consecutive missing-crop frames at the QA grid. */
+  longestVisibleFaceMissingFrames: number;
+  /** Duration of that longest run, in seconds. */
+  longestVisibleFaceMissingSeconds: number;
+  /** Frame-level diagnostics for sustained/critical investigation. */
+  visibleFaceMissingFailures: VisibleFaceMissingFailure[];
 }
 
 /**
@@ -1781,6 +1843,8 @@ export function measureCameraPlanQa(
       ...options,
       path: plan.path,
       samples: [],
+      allTracks: options.allTracks ?? tracks,
+      sourceCuts: options.sourceCuts ?? plan.options.cuts,
     },
     ranges,
     (t, trackId) => {
@@ -1881,6 +1945,10 @@ function measureRanges(
   let insideHead = 0;
   let insideSafeHead = 0;
   let transitions = 0;
+  let visibleFaceMissing = 0;
+  let missingRun = 0;
+  let longestMissingRun = 0;
+  const visibleFaceMissingFailures: VisibleFaceMissingFailure[] = [];
 
   const step = 0.1;
   for (const range of ranges) {
@@ -1903,6 +1971,72 @@ function measureRanges(
       }
       if (!nearest) continue;
       const win = positionAtPath(options.path, t);
+      const inCrop = (face: CameraSample): boolean => {
+        const head = headExtent(face);
+        const intersects =
+          face.cx + head.halfW > win.x &&
+          face.cx - head.halfW < win.x + options.cropW &&
+          face.cy + head.down > win.y &&
+          face.cy - head.up < win.y + options.cropH;
+        return intersects &&
+          face.cx - head.halfW >= win.x &&
+          face.cx + head.halfW <= win.x + options.cropW &&
+          face.cy - head.up >= win.y &&
+          face.cy + head.down <= win.y + options.cropH;
+      };
+      const alternativeFaces: VisibleFaceMissingFailure['alternativeFaces'] = [];
+      for (const track of options.allTracks ?? []) {
+        let best: Track['points'][number] | null = null;
+        for (const point of track.points) {
+          if (track.points.length < 2) continue;
+          if (!best || Math.abs(point.t - t) < Math.abs(best.t - t)) best = point;
+        }
+        if (!best || Math.abs(best.t - t) > tolerance) continue;
+        alternativeFaces.push({
+          trackId: track.id,
+          cx: best.cx,
+          cy: best.cy,
+          w: best.w,
+          ...(best.h !== undefined ? { h: best.h } : {}),
+        });
+      }
+      if (alternativeFaces.length > 0) {
+        const nearestHeadInside = alternativeFaces.some((face) => inCrop({
+          t,
+          cx: face.cx,
+          cy: face.cy,
+          w: face.w,
+          ...(face.h !== undefined ? { h: face.h } : {}),
+        }));
+        if (!nearestHeadInside) {
+          visibleFaceMissing += 1;
+          missingRun += 1;
+          longestMissingRun = Math.max(longestMissingRun, missingRun);
+          if (visibleFaceMissingFailures.length < 40) {
+            const cutNear = (options.sourceCuts ?? []).some((cut) => Math.abs(cut - t) < 0.05);
+            visibleFaceMissingFailures.push({
+              sourceTimestamp: Math.round(t * 1000) / 1000,
+              finalOutputTimestamp:
+                Math.round((t + (options.outputTimeOffsetSeconds ?? 0)) * 1000) / 1000,
+              selectedTrackId: range.trackId,
+              selectedTarget: {
+                cx: nearest.cx,
+                cy: nearest.cy,
+                w: nearest.w,
+                ...(nearest.h !== undefined ? { h: nearest.h } : {}),
+              },
+              crop: { x: win.x, y: win.y, w: options.cropW, h: options.cropH },
+              alternativeFaces,
+              sourceShotCut: cutNear,
+              cameraTransition: isTransition(options.path, t),
+            });
+          }
+        } else {
+          missingRun = 0;
+        }
+      } else {
+        missingRun = 0;
+      }
       const centreX = win.x + options.cropW / 2;
       const centreY = win.y + options.cropH * options.anchorY;
       const offsetX = Math.abs(nearest.cx - centreX);
@@ -2033,6 +2167,10 @@ function measureRanges(
       checked === 0 ? 100 : Math.round((insideSafeHead / checked) * 1000) / 10,
     maxPathDriftPx: Math.round(maxPathDrift * 10) / 10,
     framesWithHeadUnfittable: headUnfittable,
+    visibleFaceButMissingFromCropFrames: visibleFaceMissing,
+    longestVisibleFaceMissingFrames: longestMissingRun,
+    longestVisibleFaceMissingSeconds: Math.round(longestMissingRun * step * 1000) / 1000,
+    visibleFaceMissingFailures,
   };
 }
 
